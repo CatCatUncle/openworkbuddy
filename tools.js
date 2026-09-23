@@ -20,6 +20,7 @@ const checkpoints = require("./checkpoints"); // 改文件前留检查点：整�
 const cmdRisk = require("./cmd-risk");
 const memGate = require("./memory-gate"); // 名单外那条命令跑之前先判一句（纯判据，不发请求）
 const jev = require("./jev"); // 判断模型：上面那一问就是它答的
+const CT = require("./code-tools"); // 写代码那几样：按名找文件、后台命令、进度清单、改前查有没有被动过
 
 // 工作空间可切换（默认项目内 workspace/；可在设置里改成任意文件夹）
 let workspaceDir = dataPath("workspace");
@@ -217,6 +218,7 @@ const TOOL_DEFS = [
       properties: {
         command: { type: "string", description: "要执行的完整 shell 命令（可含管道、&& 串联）" },
         purpose: { type: "string", description: "一句话说明这条命令做什么（展示给用户）" },
+        background: { type: "boolean", description: "true = 放到后台跑、立刻返回一个 id（开发服务器、watch 构建、要跑很久的测试用）。之后用 shell_output 看新输出，用 shell_kill 停掉。不传就是等它跑完" },
       },
       required: ["command"],
     },
@@ -293,6 +295,90 @@ const TOOL_DEFS = [
         max: { type: "number", description: "最多返回多少条命中，默认 60" },
       },
       required: ["query"],
+    },
+  },
+  {
+    name: "find_files",
+    description:
+      "按文件名找文件（glob），最近改过的排前面。「测试文件都在哪」「有没有 tsconfig」「所有 .vue 组件」这种问题用它，比 list_files 一层层点快。" +
+      "不带斜杠的模式按文件名匹配、哪一层都算（*.test.js）；带斜杠的按相对路径匹配（src/**/*.ts）；支持 ** * ? {a,b} [abc]。自动跳过 node_modules/.git/dist 等。按内容搜用 search_files。",
+    input_schema: {
+      type: "object",
+      properties: {
+        pattern: { type: "string", description: "glob 模式，如 **/*.test.js、src/**/*.{ts,tsx}、package.json" },
+        dir: { type: "string", description: "只在某个子目录里找，默认整个 workspace" },
+        max: { type: "number", description: "最多返回多少个，默认 200" },
+      },
+      required: ["pattern"],
+    },
+  },
+  {
+    name: "multi_edit",
+    description:
+      "对同一个文件一次做多处精确替换，按顺序一处接一处改（后一处看到的是前一处改完的结果）。要么全部成功、要么一处都不改：任何一处对不上，整个文件原样不动，并告诉你是第几处。" +
+      "同一个文件要改好几个地方时用它，比连着调好几次 edit_file 省步数，也不会改到一半停在坏状态。每一处的规则和 edit_file 一样。",
+    input_schema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "相对路径" },
+        edits: {
+          type: "array",
+          description: "按顺序执行的替换列表",
+          items: {
+            type: "object",
+            properties: {
+              old_text: { type: "string", description: "要被替换掉的原文（逐字一致，唯一）" },
+              new_text: { type: "string", description: "替换成的新内容" },
+              replace_all: { type: "boolean", description: "这一处全文替换所有匹配" },
+            },
+            required: ["old_text", "new_text"],
+          },
+        },
+      },
+      required: ["path", "edits"],
+    },
+  },
+  {
+    name: "shell_output",
+    description: "看一条后台命令（run_shell background:true 起的）从上次看过之后的新输出，以及它还在不在跑。不给 id 就列出所有后台命令。",
+    input_schema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "run_shell 返回的后台 id，如 bg1" },
+        all: { type: "boolean", description: "true = 把内存里留着的全部输出再给一遍，而不是只给新的" },
+      },
+    },
+  },
+  {
+    name: "shell_kill",
+    description: "停掉一条后台命令（连同它起的子进程一起）。开发服务器、watch 用完就停，别一直占着端口。",
+    input_schema: {
+      type: "object",
+      properties: { id: { type: "string", description: "后台 id，如 bg1" } },
+      required: ["id"],
+    },
+  },
+  {
+    name: "todo_write",
+    description:
+      "写/更新这趟任务的进度清单，用户在界面上能看到。三步以上的活开工前先列一张，每做完一条马上标 done、把下一条标 in_progress（同一时间只能有一条 in_progress）。" +
+      "每次都发整张表。一条写一个能验收的结果（「登录接口加上限流并有测试」），不写动作（「看一下代码」）。简单的一两步活不用列。",
+    input_schema: {
+      type: "object",
+      properties: {
+        todos: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              content: { type: "string" },
+              status: { type: "string", enum: ["pending", "in_progress", "done"] },
+            },
+            required: ["content", "status"],
+          },
+        },
+      },
+      required: ["todos"],
     },
   },
   {
@@ -2445,6 +2531,69 @@ function readSource(file, label) {
   return fs.readFileSync(file, "utf8");
 }
 
+/**
+ * multi_edit 的计算部分：按顺序一处接一处套 planEdit，任何一处失败整个作废。
+ * 报错带上是第几处——模型才知道前面几处没问题、只要修这一处。
+ */
+function planMulti(src, label, edits) {
+  if (!Array.isArray(edits) || !edits.length) throw new Error("edits 是空的：至少给一处 {old_text, new_text}");
+  if (edits.length > 50) throw new Error(`一次最多 50 处，你给了 ${edits.length} 处。分几次改`);
+  let cur = src;
+  const notes = [];
+  for (const [i, e] of edits.entries()) {
+    let step;
+    try {
+      step = planEdit(cur, label, e || {});
+    } catch (err) {
+      throw new Error(`第 ${i + 1} 处（共 ${edits.length} 处）改不了，整个文件没动：${err.message}` + (i ? `\n注意前 ${i} 处是按顺序先改的，第 ${i + 1} 处的 old_text 要照前面改完之后的样子写。` : ""));
+    }
+    if (!step.noop) { cur = step.out; notes.push(step.msg.replace(/^已修改 [^：]*：/, "").replace(/，\d+ → \d+ 字符$/, "")); }
+  }
+  if (cur === src) return { src, out: src, noop: true, msg: `${label} 内容没有变化` };
+  return { src, out: cur, noop: false, msg: `已修改 ${label}：${edits.length} 处全部改好（${notes.join("；")}），${src.length} → ${cur.length} 字符` };
+}
+
+/** 后台命令归谁：多人共用一台服务器时，别人不该看见、更不该停掉你的开发服务器 */
+function bgOwner(opts) {
+  const a = opts && opts.actor;
+  return String((a && typeof a === "object" ? a.id || a.name : a) || "");
+}
+
+function startBackground(cmd, cwd, opts) {
+  ensureDirs();
+  const r = CT.bgStart({
+    command: cmd,
+    cwd: cwd || ws(),
+    owner: bgOwner(opts),
+    logDir: tmpDir(),
+    spawnFn: () => {
+      const sh = pickShell(cmd);
+      return spawn(sh.bin, sh.args, {
+        cwd: cwd || ws(),
+        detached: process.platform !== "win32",
+        stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, PATH: shellPath(), OPENWORKBUDDY_HOME: DATA_DIR },
+        ...sh.opts,
+      });
+    },
+  });
+  if (r.error) return { content: r.error, isError: true };
+  return {
+    content: `已在后台起好 ${r.id}：${cmd.slice(0, 160)}\n用 shell_output {id:"${r.id}"} 看输出（起服务器的话等它打出监听端口再去访问），用完 shell_kill {id:"${r.id}"} 停掉。`,
+    isError: false,
+  };
+}
+
+let bgExitHooked = false;
+function hookBgExit() {
+  if (bgExitHooked) return;
+  bgExitHooked = true;
+  // 进程退出时把后台那几条一起收掉：不然一个 npm run dev 会在我们走了之后一直占着端口
+  const reap = () => CT.bgKillAll((c) => { try { if (process.platform === "win32") c.kill(); else process.kill(-c.pid, "SIGTERM"); } catch {} });
+  process.on("exit", reap);
+}
+hookBgExit();
+
 /** 读 → 算 → 写一步到位。不用过审批的调用方和测试用这个 */
 function editFile(file, label, input) {
   const plan = planEdit(readSource(file, label), label, input);
@@ -4109,7 +4258,67 @@ async function executeTool(name, input, opts = {}) {
         const blocked = await passGate(await judgeRisk(security.checkCommand(sec, cmd), "命令", cmd), "命令", cmd);
         if (blocked) return blocked;
         security.audit("命令执行", cmd, "放行");
+        if (input.background) return startBackground(cmd, fileBase, opts);
         return await runShell(cmd, timeoutMs, fileBase, opts.stopSignal);
+      }
+      case "shell_output": {
+        const who = bgOwner(opts);
+        if (!input.id) {
+          const mine = CT.bgList().filter((j) => j.owner === who);
+          if (!mine.length) return { content: "没有后台命令。用 run_shell 加 background:true 起一条。", isError: false };
+          return { content: mine.map((j) => `${j.id}  ${CT.bgState(j)}  ${j.command.slice(0, 120)}`).join("\n"), isError: false };
+        }
+        const job = CT.bgList().find((j) => j.id === String(input.id));
+        if (job && job.owner !== who) return { content: `没有这条后台命令：${input.id}`, isError: true };
+        const r = CT.bgRead(input.id, { all: !!input.all });
+        if (r.error) return { content: r.error, isError: true };
+        let out = `${r.job.id}：${r.state}\n`;
+        if (r.lost) out += `（中间有 ${r.lost} 字符太久没读、已从内存挤掉，全文在 ${path.basename(r.job.logFile || "")}）\n`;
+        out += r.cut + (r.text || "（从上次看过之后没有新输出）");
+        return { content: out, isError: false };
+      }
+      case "shell_kill": {
+        const job = CT.bgList().find((j) => j.id === String(input.id || ""));
+        if (!job || job.owner !== bgOwner(opts)) return { content: `没有这条后台命令：${input.id}`, isError: true };
+        const r = CT.bgKill(input.id, (c) => killTree(c));
+        if (r.already) return { content: `${job.id} 早就${CT.bgState(job)}，不用停`, isError: false };
+        return { content: `已停掉 ${job.id}（${job.command.slice(0, 80)}）。最后的输出用 shell_output 还能看`, isError: false };
+      }
+      case "find_files": {
+        try {
+          const root = resolveFile(".");
+          const base = resolveFile(input.dir || ".");
+          return { content: CT.findFilesText(root, { ...input, base }), isError: false };
+        } catch (e) {
+          return { content: e.message, isError: true };
+        }
+      }
+      case "todo_write": {
+        const r = CT.normalizeTodos(input.todos);
+        if (r.error) return { content: r.error, isError: true };
+        return { content: CT.todoReceipt(r.items), isError: false, todos: r.items };
+      }
+      case "multi_edit": {
+        const rel = String(input.path || "");
+        const p = resolveFile(rel);
+        const stale = CT.staleNote(opts.sessionId, p, rel);
+        if (stale) return { content: stale, isError: true };
+        let plan = planMulti(readSource(p, rel), rel, input.edits);
+        const blocked = await passGate(security.checkWrite(sec, rel), "改文件", rel, {
+          force: true,
+          detail: plan.noop ? "" : diffText(rel, plan.src, plan.out),
+        });
+        if (blocked) return blocked;
+        const now = readSource(p, rel);
+        if (now !== plan.src) plan = planMulti(now, rel, input.edits);
+        if (plan.noop) return { content: plan.msg, isError: false };
+        fs.writeFileSync(p, plan.out, "utf8");
+        CT.stampSeen(opts.sessionId, p);
+        const c = selfCheck(p, rel);
+        return noteChange(
+          { content: plan.msg + c.note, isError: c.bad },
+          { root: ws(), abs: p, rel, before: plan.src, after: plan.out, tool: "multi_edit", session: opts.sessionId, call: opts.callId }
+        );
       }
       case "gen_diagram": {
         const rel = String(input.filename || "diagram").replace(/\.(svg|png)$/i, "");
@@ -4144,6 +4353,10 @@ async function executeTool(name, input, opts = {}) {
         if (blocked) return blocked;
         const existed = fs.existsSync(p);
         if (existed && fs.statSync(p).isDirectory()) return { content: dirInsteadOfFile(p, rel).message, isError: true };
+        if (existed && !input.append) {
+          const stale = CT.staleNote(opts.sessionId, p, rel);
+          if (stale) return { content: stale, isError: true };
+        }
         const oldSize = existed ? fs.statSync(p).size : 0;
         fs.mkdirSync(path.dirname(p), { recursive: true });
         // 整篇重写把一个现成文件砍掉一大截 = 几乎肯定是没读全就重写，写下去就找不回来了。
@@ -4163,7 +4376,10 @@ async function executeTool(name, input, opts = {}) {
         const change = { root: ws(), abs: p, rel, before, tool: "write_file", session: opts.sessionId, call: opts.callId, record: !existed || before != null };
         const bak = existed && !input.append ? keepBackup(p, rel) : "";
         if (input.append) {
+          // 追加前它要是已经被别人改过，追加完也不能记成「看过了」：它没看过别人那一段
+          const unseen = existed && CT.staleNote(opts.sessionId, p, rel);
           fs.appendFileSync(p, body, "utf8");
+          if (!unseen) CT.stampSeen(opts.sessionId, p);
           const c = selfCheck(p, rel, true);
           return noteChange(
             { content: `已追加到 ${rel}（+${n} 字节，现共 ${fs.statSync(p).size} 字节）${c.note}`, isError: c.bad },
@@ -4171,6 +4387,7 @@ async function executeTool(name, input, opts = {}) {
           );
         }
         fs.writeFileSync(p, body, "utf8");
+        CT.stampSeen(opts.sessionId, p);
         const c = selfCheck(p, rel);
         // 覆盖和新建要说清楚：整篇重写一个已有文件，多半是该用 edit_file 却偷懒了
         return noteChange(
@@ -4189,6 +4406,8 @@ async function executeTool(name, input, opts = {}) {
       case "edit_file": {
         const rel = String(input.path || "");
         const p = resolveFile(rel);
+        const stale = CT.staleNote(opts.sessionId, p, rel);
+        if (stale) return { content: stale, isError: true };
         // 先算出改完是什么样：匹配不上、不唯一这些错当场就能报，不用先把用户叫来批一个改不成的改动
         let plan = planEdit(readSource(p, rel), rel, input);
         const blocked = await passGate(security.checkWrite(sec, rel), "改文件", rel, {
@@ -4201,6 +4420,7 @@ async function executeTool(name, input, opts = {}) {
         if (now !== plan.src) plan = planEdit(now, rel, input);
         if (plan.noop) return { content: plan.msg, isError: false };
         fs.writeFileSync(p, plan.out, "utf8");
+        CT.stampSeen(opts.sessionId, p);
         const c = selfCheck(p, rel);
         return noteChange(
           { content: plan.msg + c.note, isError: c.bad },
@@ -4225,6 +4445,7 @@ async function executeTool(name, input, opts = {}) {
         if (/\.pdf$/i.test(p)) {
           return { content: `${input.path} 是 PDF，按文本读只会得到乱码。${pdfHowTo(String(input.path))}`, isError: true };
         }
+        if (st) CT.stampSeen(opts.sessionId, p);
         const s = Math.max(0, Number(input.start_line) || 0);
         const e = Math.max(0, Number(input.end_line) || 0);
         // 大文件走分块读：整份读会把事件循环钉住十几到几百毫秒，界面当场定住
@@ -4596,4 +4817,4 @@ function markDuplicates(out) {
 }
 
 module.exports = {
-  _internals: { searchBodyError, searchHttpError, toItems, pickHits, SEARCH_HTTP_HINT, searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, pickEye, mainCanSee, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, editFile, planEdit, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES, docToText, slidesToText, sheetsToText }, TOOL_DEFS, executeTool, badToolArgs, outputFiles, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withLibraryBase, libBase, notesFileOf, LIB_DIR, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage };
+  _internals: { searchBodyError, searchHttpError, toItems, pickHits, SEARCH_HTTP_HINT, searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, pickEye, mainCanSee, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, editFile, planEdit, planMulti, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES, docToText, slidesToText, sheetsToText }, TOOL_DEFS, executeTool, badToolArgs, outputFiles, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withLibraryBase, libBase, notesFileOf, LIB_DIR, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage };

@@ -634,6 +634,13 @@ function makeEmit(state) {
     } else if (ev.type === "sleep") {
       prog(dim(`\n· ${ev.note}`));
       state.streamed = false;
+    } else if (ev.type === "todos") {
+      // 进度清单每次整张重发：终端里只画最新这张，已完成的变灰，正在做的加粗
+      const items = ev.items || [];
+      const done = items.filter((x) => x.status === "done").length;
+      const rows = items.map((x) => x.status === "done" ? dim(`  ✓ ${x.content}`) : x.status === "in_progress" ? bold(`  ▶ ${x.content}`) : `  ○ ${x.content}`);
+      prog(`\n${dim(`· 进度 ${done}/${items.length}`)}\n${rows.join("\n")}`);
+      state.streamed = false;
     } else if (ev.type === "milestones") {
       prog(dim(`\n· 进度表 ${ev.file}：${(ev.items || []).length} 项`));
       state.streamed = false;
@@ -1822,7 +1829,7 @@ function splitFiles(text) {
       for (const e of sess.history || []) {
         if (e.role !== "assistant") continue;
         for (const c of e.toolCalls || []) {
-          if (c.name !== "write_file" && c.name !== "edit_file") continue;
+          if (c.name !== "write_file" && c.name !== "edit_file" && c.name !== "multi_edit") continue;
           const p = String(((c.args || c.input || {}).path) || "").trim();
           if (p) seen.set(p, true);
         }

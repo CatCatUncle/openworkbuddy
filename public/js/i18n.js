@@ -1943,6 +1943,11 @@
       [/^已退回这步之前，(\d+) 个文件恢复了$/, "Rewound to before this step, $1 file(s) restored"],
       [/^撤销了回退，(\d+) 个文件回到改完的样子$/, "Rewind undone, $1 file(s) back to their edited state"],
       [/^第 (\d+) 步$/, "Step $1"],
+      // 过程区的进度卡：数目夹在中间
+      [/^里程碑 (\d+)\/(\d+)\s*$/, "Milestones $1/$2"],
+      [/^进度 (\d+)\/(\d+)\s*$/, "Progress $1/$2"],
+      [/^(\d+)\/(\d+) · 正在做：(.+)$/, "$1/$2 · Now: $3"],
+      [/^(\d+)\/(\d+) · 全部完成$/, "$1/$2 · All done"],
       // 资料库：数目、文件夹名、文件名都夹在句子中间，只能整条匹配
       [/^(\d+) 项$/, "$1 item(s)"],
       [/^(\d+) 分钟前$/, "$1 min ago"],
@@ -2076,6 +2081,7 @@
     "飞书文档": "Feishu doc", "推到群": "Push to group", "看排期": "Schedules", "排期": "Schedule",
     "发邮件": "Email",
     "委派专家团": "Delegate to team", "委派专家": "Delegate to",
+    "找文件": "Find files", "看后台输出": "Background output", "停后台": "Stop background", "进度": "Progress",
   };
   // 轨迹条（折叠条上那排小徽章）用的是另一套更短的标，见 app-01.js 的 TOOL_SHORT
   // 短标现在只剩字，图标是 sprite 里另一张表（app-01.js 的 TOOL_ICON）。
@@ -2088,6 +2094,7 @@
     "配音": "Voice", "转文字": "Transcribe", "记": "Save", "忘": "Forget", "库": "Library",
     "读库": "Read lib", "取素材": "Import", "存技能": "Save skill", "宠物": "Pet", "推群": "Push",
     "看排期": "Schedules", "排期": "Schedule", "发邮件": "Email",
+    "找文件": "Find files", "后台输出": "Output", "停后台": "Stop", "进度": "Progress",
   };
   for (const [zh, en] of Object.entries(TOOL_SHORT_EN)) if (!(zh in DICT.en)) DICT.en[zh] = en;
   for (const [zh, en] of Object.entries(TOOL_VERB_EN)) {

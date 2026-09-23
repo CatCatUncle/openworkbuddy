@@ -459,7 +459,7 @@ function hasRenderer() {
 
 // 「可重取」的工具结果：截掉不心疼——要用的时候再调一次工具就能拿回原文。
 // 跑代码的输出/报错不在此列：那是一次性的现场证据，截掉就真没了。
-const REFETCHABLE_TOOLS = new Set(["read_file", "read_document", "fetch_url", "list_files", "search_files", "library_read", "library_list", "web_search", "render_page", "check_page"]);
+const REFETCHABLE_TOOLS = new Set(["read_file", "read_document", "fetch_url", "list_files", "search_files", "find_files", "library_read", "library_list", "web_search", "render_page", "check_page"]);
 
 // 削到多低才收手。削"刚好够"是个隐形的烧钱姿势：一超预算就每步再削一点点，
 // 而历史被改了一个字节，后面整段缓存前缀就作废——于是每一步都是全价重买。
@@ -673,7 +673,11 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
 - read_document：读 Word/Excel/PPT/压缩包（.docx/.xlsx/.pptx/.zip）。这几种是打包格式，read_file 读出来是乱码。甲方发来的材料、自己刚产出的文档，都用它复核
 - write_file：**新建**文件。写长文档用 append:true 一节一节续写，别把前文重新吐一遍（既慢又容易越写越短）。写完会自动做语法/结构自检，报了问题就当场修
 - edit_file：改已有文件里的某一段（精确替换）。改代码、改文档只用它，不要 write_file 整篇重写
+- multi_edit：同一个文件一次改好几处，要么全改成、要么一处不动
 - search_files：全文搜索，返回 文件:行号:命中行。找定义、找调用点、改名前找引用，用它
+- find_files：按文件名找（*.test.js、src/**/*.ts），最近改过的排前面
+- run_shell 加 background:true 放后台跑（开发服务器、watch），shell_output 看新输出，shell_kill 停掉
+- todo_write：列进度清单，用户在界面上看得到做到哪了
 - list_files：列目录（depth 给 2~3 可一次看清项目结构）
 - remember / forget：把跨任务成立的用户偏好记进长期记忆 / 删掉某条
 - web_search：联网搜索（标题/链接/摘要），查资料先搜索定位来源
@@ -709,7 +713,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
    - 音频、视频（.mp3/.wav/.m4a/.mp4/…）用 transcribe_audio 转成文字再动手，**别用 read_file 读**（二进制，读出来是乱码，也别只凭文件名猜内容）。要做字幕才把 with_timestamps 设成 true，不做就别开。
    - 「粘贴文本_….txt」或「【文本摘录 N：…】」是用户粘进来的大段文字（日志、报错、整篇文档），用 read_file 读；很长就先读头尾再 search_files 定位，别整篇灌进上下文。
 4. 交付前自检：凡是生成的文件，写完必须再 read_file / list_files 读回来确认真的存在、内容完整（长文档至少核对开头结尾和篇幅），发现残缺就当场修好再交付。
-4.1 **大任务先立进度档**：预计十步以上、或要产出多个文件的任务，第一步先在工作目录 write_file 建 PROGRESS.md：目标一句话 + 分步清单（- [ ] 待做 / - [x] 已完成）。此后每完成一步就 edit_file 打勾。任务被打断或续跑时，先读 PROGRESS.md 从断点接着做，绝不从头重来。
+4.1 **三步以上的活先列清单**：开工前用 todo_write 列出要交付的几条结果，做完一条马上标 done、下一条标 in_progress，用户在界面上看得到进度。**要跨回合续跑的大任务**（预计十步以上、或要产出多个文件）改用进度档——第一步先在工作目录 write_file 建 PROGRESS.md：目标一句话 + 分步清单（- [ ] 待做 / - [x] 已完成）。此后每完成一步就 edit_file 打勾。任务被打断或续跑时，先读 PROGRESS.md 从断点接着做，绝不从头重来。
 5. 代码报错要读懂原因、修正重试，不要放弃；同一处连续失败 3 次就换思路，别在死路上空转。
 5.1 抓不到网页不等于做不到（高频翻车点）。一条路走不通就换下一条，**同一个目标至少真试满三种路子**才允许说抓不到：
 ${hasRenderer() ? "   - fetch_url 拿回来是空壳 → 原样再发一次 fetch_url，这次带 render:\"force\"，它会用内置浏览器真打开一遍；\n" : "   - fetch_url 拿回来是空壳 → 去找它背后的数据接口，或者 run_shell 调本机 curl 带上完整请求头再抓一次（当前没有内置浏览器，fetch_url 的 render 参数也不在你的清单里）；\n"}   - 页面正文是异步加载的 → 去找它背后的数据接口（站点常见的 api.xxx.com/... 形式）直接 fetch_url，接口返回 JSON 比解析 HTML 靠谱得多；
@@ -717,7 +721,7 @@ ${hasRenderer() ? "   - fetch_url 拿回来是空壳 → 原样再发一次 fetc
    - 还是不行 → web_search 搜同样的内容，从能打开的转载页/镜像站/第三方数据站拿。
    把「需要登录 Cookie / 需要官方 API 权限」当结论直接停手，是不合格的交付。真要用户的登录态才继续，先把不需要登录也能拿到的那部分做完再说。
 5.2 **不许用文字问句结束回合**：严禁用「请告诉我你的选择：1... 2... 3...」「需要我尝试哪种方式？」这类话收尾，那是把活推回给用户。**技术路线**（用哪个库、抓哪条接口、跑几轮、代码怎么组织）的优劣你自己判断得了——挑最可能成的那个直接动手，失败了再换。这一条禁的是把选择题写在**回复正文**里，**不是禁 ask_user 工具**——规范 1 那三类该问就问，它弹的是可点的选项卡片，用户点一下就继续。同理，严禁把代码贴在回复里说"我能这样做"——能跑就 run_node / run_shell 真跑，回复里只放结论。
-5.3 **只读的活一次性并发发出去**：要查 5 个关键词、要抓 6 个链接、要读 3 个文件时，在同一轮里一口气发多个工具调用（web_search / fetch_url / read_file / read_document / list_files / library_read），系统会并发执行，只花最慢那一个的时间；一个一个来是把等待时间叠加。会写文件、跑命令、委派专家的调用不要和别的混在一轮里发——那些的先后顺序有意义，混在一起会被退回串行。
+5.3 **只读的活一次性并发发出去**：要查 5 个关键词、要抓 6 个链接、要读 3 个文件时，在同一轮里一口气发多个工具调用（web_search / fetch_url / read_file / read_document / list_files / find_files / search_files / library_read），系统会并发执行，只花最慢那一个的时间；一个一个来是把等待时间叠加。会写文件、跑命令、委派专家的调用不要和别的混在一轮里发——那些的先后顺序有意义，混在一起会被退回串行。
 5.4 **出图/出片/出声也一起发**：generate_image / generate_video / text_to_speech 这三个同样可以在一轮里连着发多条，系统会并发执行（比只读那档保守，默认同时 2 条，因为每条都花钱）。这三个跟只读工具不要混在同一轮里发。**每条都给一个不一样的 filename**（voice_01.mp3 / voice_02.mp3 这样）：并发下同名就是互相覆盖，而两条都会报成功，出事了看不出来。
 6. 完成后简要总结做了什么、生成了哪些文件。
 7. 始终用中文交流——包括报错说明、失败复盘、自我纠正这些中途叙述，任何时候都不许切成英文。工具返回的英文报错要翻成人话讲给用户听（原始报错可以放进代码块，但结论必须是中文）。
@@ -728,10 +732,11 @@ ${hasRenderer() ? "   - fetch_url 拿回来是空壳 → 原样再发一次 fetc
 12. 交付只报文件路径（对话里会自动出预览卡，用户点一下就能看），**不要用 open / xdg-open / start 替用户打开文件或网页**——用户明确说「打开」才开。
 
 ## 改代码（改用户已有的项目时按这个来）
-1. 先看清楚再动手：search_files 找到要改的位置 → read_file 把那一段（含上下文）读出来。别只看文件名和函数名就下笔。
-2. 一次只改一处，用 edit_file。old_text 逐字照抄（含缩进），带足上下文保证全文唯一；报"不唯一"就多带几行再来，报"没找到"就回去 read_file 看真实内容，不要靠猜反复试。
+1. 先看清楚再动手：find_files 按文件名找（*.test.js、src/**/*.ts）、search_files 按内容找 → read_file 把那一段（含上下文）读出来。别只看文件名和函数名就下笔。先看项目根的 package.json / Makefile / README，搞清楚怎么跑测试、怎么构建。
+2. 改一处用 edit_file；同一个文件要改好几处用 multi_edit 一次发完（要么全改成、要么一处不动）。old_text 逐字照抄（含缩进），带足上下文保证全文唯一；报"不唯一"就多带几行再来，报"没找到"就回去 read_file 看真实内容，不要靠猜反复试。报"读过之后内容变了"就先重读再改。
 3. **绝不整篇重写用户的文件**。write_file 只用于新建。整篇重写会把你没读过的部分一起换掉，而且用户的 diff 会变成全红，根本没法审。
 4. 改完自检：语法能不能过（node -c 之类的检查、或直接跑起来）、项目有测试就跑测试、改了函数签名就 search_files 找出所有调用点一并改掉。自检失败自己修，别把坏的交出去。
+4.1 要一直跑着的命令（开发服务器、watch 构建）用 run_shell 加 background:true，拿到 id 后用 shell_output 看它打出监听端口再去访问；用完 shell_kill 停掉。别让前台命令干等一个不会退出的进程。
 5. 顺手发现的其它问题：说出来，但不要顺手一起改。用户要的是这一件事的干净改动。
 6. 收尾时说清楚：改了哪几个文件的哪几处、为什么这么改、验证过什么。
 
@@ -845,7 +850,7 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
     return p;
   }
 
-  const READ_ONLY_TOOLS = ["read_file", "read_document", "list_files", "search_files", "fetch_url", "render_page", "web_search", "library_list", "library_read", "look_at_image"];
+  const READ_ONLY_TOOLS = ["read_file", "read_document", "list_files", "search_files", "find_files", "fetch_url", "render_page", "web_search", "library_list", "library_read", "look_at_image"];
 
   /** 配没配群机器人。两个通道任一有地址就算配了——notify.pushBots 本来就是有哪个推哪个 */
   function botWebhookOn() {
@@ -1578,7 +1583,7 @@ function modePrompt(mode) {
           const p = String((c.args || c.input || {}).path || "").trim();
           if (!p) continue;
           if (c.name === "read_file") read.add(p);
-          else if (c.name === "write_file" || c.name === "edit_file") wrote.add(p);
+          else if (c.name === "write_file" || c.name === "edit_file" || c.name === "multi_edit") wrote.add(p);
         }
       } else if (e.role === "user" && String(e.content || "").startsWith(COMPACT_MARK)) {
         const s = String(e.content);
@@ -2176,7 +2181,8 @@ function modePrompt(mode) {
     let stopNote = "";
     let honestyRetries = 0;
     let finishRetries = 0; // 「没做完就收摊」被打回的次数（整个任务累计，不按轮重置）
-    let openLeft = [];     // 收尾时进度档里仍未打勾的条目，用来如实告诉用户还差什么
+    let openLeft = [];
+    let todoItems = null;  // todo_write 最新那张表：收尾时还有没标 done 的，同样打回     // 收尾时进度档里仍未打勾的条目，用来如实告诉用户还差什么
     // 进度档所在目录：和下面自动续跑读 PROGRESS.md 的是同一处，别让两边算出不同的路径
     const progressDir = () => { const ws = getWorkspaceDir(); return baseDir ? path.resolve(ws, baseDir) : ws; };
     let trimmedChars = 0; // 本次任务累计被上下文预算截掉的工具输出字符数
@@ -2478,8 +2484,19 @@ function modePrompt(mode) {
         // 收尾闸门：不调工具了＝它认为做完了。可进度档里还有没打勾的条目、或者它自己承认还有没做的，
         // 那就是没做完就收摊。打回去，把没打勾的条目原样念给它听——不给模糊的「继续」，给具体的清单。
         const left = unfinishedMilestones(progressDir());
-        const admits = !left.open.length && UNFINISHED_RE.test(result.text || "");
-        openLeft = left.open;
+        const todoOpen = todoItems ? todoItems.filter((x) => x.status !== "done").map((x) => x.content) : [];
+        const admits = !left.open.length && !todoOpen.length && UNFINISHED_RE.test(result.text || "");
+        openLeft = left.open.length ? left.open : todoOpen;
+        if (!left.open.length && todoOpen.length && finishRetries < 2 && Date.now() < deadline - 30000 && !(stopSignal && stopSignal.aborted)) {
+          finishRetries++;
+          history.push({
+            role: "user",
+            content: `【系统·收尾核验】你停下来了，但你自己列的进度清单里这些还没标 done：\n\n${todoOpen.slice(0, 12).map((t, i) => `${i + 1}. ${t}`).join("\n")}\n\n` +
+              `接着把它们做完，每做完一条就 todo_write 把它标成 done。确实做不了的（缺权限、缺凭证、要用户拍板），在清单里把它改成 done 并在内容后面注明「（做不了：原因）」，最终回复里单独讲清楚。清单列多了、有几条其实不用做，也照实改掉，别空着收尾。`,
+          });
+          emit({ type: "text", delta: callout.line("wait", `**还没做完，已自动打回继续做**：进度清单里还有 ${todoOpen.length} 条没打勾（${todoOpen.slice(0, 3).join("、")}${todoOpen.length > 3 ? " 等" : ""}）。`), depth });
+          continue;
+        }
         if ((left.open.length || admits) && finishRetries < 2 && Date.now() < deadline - 30000 && !(stopSignal && stopSignal.aborted)) {
           finishRetries++;
           const listed = left.open.slice(0, 12).map((t, i) => `${i + 1}. ${t}`).join("\n");
@@ -2575,6 +2592,7 @@ function modePrompt(mode) {
           ...(r.diff ? { diff: String(r.diff).slice(0, 4000) } : {}), // 改文件那几步：过程卡上直接看动了哪几行
           ...(r.ckpt ? { ckpt: r.ckpt } : {}), // 检查点 id：卡上「回退到这步之前」按的就是它
         });
+        if (Array.isArray(r.todos)) { todoItems = r.todos; emit({ type: "todos", items: r.todos, depth }); } // 进度清单：界面上画一张打勾的表
         if (!r.isError) {
           const srcs = collectSources(tc.name, tc.input, r.content);
           if (srcs.length) emit({ type: "sources", items: srcs, depth });
@@ -2830,6 +2848,7 @@ const TOOL_VERB = {
   use_skill: "用技能", desktop_pet: "桌面宠物", ask_user: "问你一句", feishu_doc: "飞书文档", notify_user: "推到群",
   schedule_task: "排期", list_schedules: "看排期", send_email: "发邮件",
   delegate_to_expert: "委派专家", delegate_to_team: "委派专家团",
+  find_files: "找文件", multi_edit: "改", shell_output: "看后台输出", shell_kill: "停后台", todo_write: "进度",
 };
 
 /** 太长的路径/命令只留尾巴：前面那截目录对人没信息量，文件名才有 */
@@ -2854,12 +2873,20 @@ function toolHeadline(name, input) {
   switch (name) {
     case "canvas_manage":
       obj = `${i.operation || "get"}${i.kind ? " · " + i.kind : ""}${i.node_id ? " · " + i.node_id : ""}`; break;
-    case "read_file": case "write_file": case "edit_file": case "html_to_image": case "look_at_image":
+    case "read_file": case "write_file": case "edit_file": case "multi_edit": case "html_to_image": case "look_at_image":
       obj = tailText(i.path, 46); break;
     case "list_files": case "search_files":
       obj = (i.query ? q(i.query) + " " : "") + tailText(i.path || "", 30); break;
     case "run_shell":
-      obj = tailText(String(i.command || "").split("\n")[0], 56); break;
+      obj = (i.background ? "[后台] " : "") + tailText(String(i.command || "").split("\n")[0], 56); break;
+    case "find_files":
+      obj = tailText(i.pattern || "", 46); break;
+    case "shell_output": case "shell_kill":
+      obj = String(i.id || "全部"); break;
+    case "todo_write": {
+      const t = Array.isArray(i.todos) ? i.todos : [];
+      obj = `${t.filter((x) => x && x.status === "done").length}/${t.length}`; break;
+    }
     case "run_node":
       obj = `${String(i.code || "").split("\n").length} 行 Node`; break;
     case "web_search":
@@ -2909,7 +2936,7 @@ function toolHeadline(name, input) {
 // 拿它当摘要等于把文件第一行糊到界面上。这些一律报「拿回来多少」。
 const DATA_RESULT_TOOLS = new Set([
   "read_file", "read_document", "list_files", "search_files", "web_search", "fetch_url", "render_page",
-  "run_shell", "run_node", "library_list", "library_read", "look_at_image", "check_page",
+  "run_shell", "run_node", "library_list", "library_read", "look_at_image", "check_page", "shell_output",
 ]);
 
 /**
@@ -2925,6 +2952,10 @@ function resultOutcome(name, content, isError) {
   if (name === "web_search") {
     const n = (text.match(/https?:\/\//g) || []).length;
     if (n) return `${n} 条结果`;
+  }
+  if (name === "find_files") {
+    const m = /^找到 (\d+) 个/.exec(text);
+    return m ? `${m[1]} 个文件` : "没找到";
   }
   if (name === "list_files" || name === "search_files") {
     return `${text.split("\n").filter((l) => l.trim()).length} 项`;

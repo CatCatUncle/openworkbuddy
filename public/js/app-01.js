@@ -31,10 +31,10 @@ let assistant = { name: "OpenWorkBuddy", avatar: ASSISTANT_MARK }; // 助理的�
 let isReplaying = false; // 回放历史任务中：事件照走一遍渲染，但不许它去动"当前"的文件面板和预览
 let replayFeedback = null; // 回放时：turn 下标 → 之前点过的 👍👎，操作条据此把高亮亮回来
 // 轨迹条上的工具短名：一枚小徽章顶一行字，扫一眼就知道这轮走了哪几步
-const TOOL_SHORT = { read_file: "读", read_document: "读文档", write_file: "写", edit_file: "改", list_files: "列", search_files: "找", run_shell: "命令", run_node: "node", web_search: "搜", fetch_url: "抓", render_page: "渲染", check_page: "查页", html_to_image: "截图", look_at_image: "看图", generate_image: "生图", generate_video: "视频", gen_diagram: "图表", text_to_speech: "配音", transcribe_audio: "转文字", remember: "记", forget: "忘", library_list: "库", library_read: "读库", library_import: "取素材", save_skill: "存技能", desktop_pet: "宠物", notify_user: "推群", schedule_task: "排期", list_schedules: "看排期", send_email: "发邮件" };
+const TOOL_SHORT = { read_file: "读", read_document: "读文档", write_file: "写", edit_file: "改", multi_edit: "改", list_files: "列", search_files: "找", find_files: "找文件", run_shell: "命令", shell_output: "后台输出", shell_kill: "停后台", todo_write: "进度", run_node: "node", web_search: "搜", fetch_url: "抓", render_page: "渲染", check_page: "查页", html_to_image: "截图", look_at_image: "看图", generate_image: "生图", generate_video: "视频", gen_diagram: "图表", text_to_speech: "配音", transcribe_audio: "转文字", remember: "记", forget: "忘", library_list: "库", library_read: "读库", library_import: "取素材", save_skill: "存技能", desktop_pet: "宠物", notify_user: "推群", schedule_task: "排期", list_schedules: "看排期", send_email: "发邮件" };
 // 图标跟短名分家，各归各的表：短名要进翻译字典（英文界面得是 "Read"），图标是 sprite 里的 symbol id。
 // 以前两者揉成一句 "📄 读"，翻译表得连图一起抄一遍，加个工具就要改两处还容易抄漏。
-const TOOL_ICON = { read_file: "file-text", read_document: "book-open-text", write_file: "file-pen-line", edit_file: "pencil", list_files: "folder", search_files: "file-search", run_shell: "terminal", run_node: "code", web_search: "globe", fetch_url: "link", render_page: "monitor", check_page: "circle-check", html_to_image: "image", look_at_image: "eye", generate_image: "palette", generate_video: "film", gen_diagram: "chart-column", text_to_speech: "volume-2", transcribe_audio: "file-audio", remember: "brain", forget: "brain", library_list: "book-open", library_read: "book-open", library_import: "download", save_skill: "puzzle", desktop_pet: "app-window", notify_user: "send", schedule_task: "timer", list_schedules: "calendar-days", send_email: "mail" };
+const TOOL_ICON = { read_file: "file-text", read_document: "book-open-text", write_file: "file-pen-line", edit_file: "pencil", multi_edit: "pencil", list_files: "folder", search_files: "file-search", find_files: "folder-tree", run_shell: "terminal", shell_output: "scroll-text", shell_kill: "square", todo_write: "list-checks", run_node: "code", web_search: "globe", fetch_url: "link", render_page: "monitor", check_page: "circle-check", html_to_image: "image", look_at_image: "eye", generate_image: "palette", generate_video: "film", gen_diagram: "chart-column", text_to_speech: "volume-2", transcribe_audio: "file-audio", remember: "brain", forget: "brain", library_list: "book-open", library_read: "book-open", library_import: "download", save_skill: "puzzle", desktop_pet: "app-window", notify_user: "send", schedule_task: "timer", list_schedules: "calendar-days", send_email: "mail" };
 // 过程区每一步只挂一个图标，动词写在正文里（`读 报告.md`，不是 `run read_file`）
 const toolIcon = (n) => TOOL_ICON[n] || "settings";
 const shortTool = (n) => TOOL_SHORT[n] || String(n || "").replace(/^mcp[_:]/, "").replace(/_/g, " ").slice(0, 12);
@@ -1645,8 +1645,10 @@ function createTurnUI(userText, turnMode, forSid) {
       if (!isReplaying) { endText(); body.appendChild(makeSweepCard(ev)); }
     } else if (ev.type === "sources") {
       renderSources(body, ev.items || []);
-    } else if (ev.type === "milestones") {
-      // 里程碑时间线：agent 每更新一次 PROGRESS.md，这张卡就在过程区原地刷新打勾状态
+    } else if (ev.type === "milestones" || ev.type === "todos") {
+      // 里程碑时间线：agent 每更新一次 PROGRESS.md（或 todo_write 发一张新清单），这张卡就在过程区原地刷新打勾状态
+      const todo = ev.type === "todos";
+      if (todo) ev = { items: (ev.items || []).map((t) => ({ text: t.content, done: t.status === "done", doing: t.status === "in_progress" })) };
       const proc = ensureProc();
       let card = proc.querySelector(".ms-card");
       if (!card) {
@@ -1656,12 +1658,12 @@ function createTurnUI(userText, turnMode, forSid) {
       }
       const items = ev.items || [];
       const doneN = items.filter((i) => i.done).length;
-      card.innerHTML = `<div class="ms-head">${ic("map-pin")}里程碑 ${doneN}/${items.length}${ev.file ? ` <span class="ms-file">${esc(ev.file)}</span>` : ""}</div>` +
-        items.map((i) => `<div class="ms-item${i.done ? " done" : ""}">${ic(i.done ? "circle-check" : "circle")}${esc(String(i.text || ""))}</div>`).join("");
+      card.innerHTML = `<div class="ms-head">${ic("map-pin")}${todo ? "进度" : "里程碑"} ${doneN}/${items.length}${ev.file ? ` <span class="ms-file">${esc(ev.file)}</span>` : ""}</div>` +
+        items.map((i) => `<div class="ms-item${i.done ? " done" : ""}${i.doing ? " doing" : ""}">${ic(i.done ? "circle-check" : i.doing ? "circle-dot" : "circle")}${esc(String(i.text || ""))}</div>`).join("");
       // 常驻那一行：折叠着也看得到进度和「现在在做哪件」——用户要的就是这个
       const live = procWrap && procWrap.querySelector(".ms-live");
       if (live && items.length) {
-        const next = items.find((i) => !i.done);
+        const next = items.find((i) => i.doing) || items.find((i) => !i.done);
         live.innerHTML = ic("map-pin") + "<span></span>";
         live.lastChild.textContent = `${doneN}/${items.length}` + (next ? ` · 正在做：${String(next.text || "").slice(0, 40)}` : " · 全部完成");
         live.hidden = false;
