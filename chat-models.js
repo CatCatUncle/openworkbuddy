@@ -21,6 +21,8 @@
  *      认不出来也只是没有渠道可挂，条目本身连同它的地址和 Key 原样留着。
  *   2. **协议归渠道管。** 一个接口地址只可能说一种话（OpenAI 兼容 / Anthropic），
  *      所以 provider 这个字段从模型收到渠道的 kind 上，压平时再写回去。
+ *      自建网关（kind=custom）的地址长得跟谁都一样，从地址上看不出后面接的是谁，
+ *      所以渠道行上可以手写一个 protocol 覆盖掉 kind 的默认协议（见 media-models.protoOfKind）。
  *   3. **同地址不同 Key 是两个渠道。** 自己的号和同事的号都指着 openrouter，那就是两行，
  *      合并会让人在不知情的情况下用别人的额度。
  */
@@ -39,9 +41,11 @@ const nb = (u) => String(u || "").trim().replace(/\/+$/, "").toLowerCase();
  *
  * 为什么协议也要算进去：Anthropic 官方没有接口地址（空串），只按地址认的话，
  * 它会跟所有「填了 Key 却忘了填地址」的条目并成一个渠道。
+ * 自建网关可以在渠道行上手写 protocol（那台机器后面接的其实是 Claude），
+ * 所以这里得按渠道行自己的协议算，不能只看 kind。
  */
 function chanKeyOf(kind, row) {
-  return `${protoOfKind(kind)} ${providerKeyOf(row)}`;
+  return `${protoOfKind(kind, (row || {}).protocol)} ${providerKeyOf(row)}`;
 }
 
 /** 新建渠道时给个像样的名字：认识的厂商用它的中文名，自建网关用域名——总比「未命名渠道」强 */
@@ -145,20 +149,44 @@ function templates() {
 }
 
 /**
+ * 向导里「地址和型号都得自己填」的那一类（OpenAI 兼容的自建网关 / 本机部署）。
+ *
+ * 它进不了 templates()：那张表有一条不成立的判据是「每家都带一个默认型号」，
+ * 而自建网关上有哪些型号，只有那台机器自己知道——所以地址和型号由向导带上来，
+ * 这里只给一份空的模板（kind 和名字），好让向导和 planTemplate 认得这个入口。
+ */
+function customTemplate() {
+  const k = PROVIDER_KINDS.find((x) => x.kind === "custom");
+  if (!k) return null;
+  return { kind: k.kind, label: k.label, name: "", base_url: "", key_url: "", model: "", local: false, custom: true };
+}
+
+/**
  * 按模板起一条模型：先算好要建什么，**不动 config**——向导要先拿它验活，验过了再 commitTemplate 落下去。
  * 同家同地址的渠道已经有了就复用（空壳补 Key；Key 一样就是同一个号）；返回 null 表示没这家。
+ *
+ * 后两个参数只给自定义那一家用：预设几家的地址是官方的、型号是目录里挑的，都不由用户说了算。
  */
-function planTemplate(config, kind, modelId) {
-  const t = templates().find((x) => x.kind === String(kind || "").trim());
+function planTemplate(config, kind, modelId, baseUrl) {
+  const kk = String(kind || "").trim();
+  const blank = customTemplate();
+  const t = templates().find((x) => x.kind === kk) || (blank && blank.kind === kk ? blank : null);
   if (!t) return null;
+  // 自建网关的地址是用户填的，没有就没得算。留着空地址往下走，落盘的就是一条必然 404 的渠道
+  const base = String((t.custom ? baseUrl : t.base_url) || "").trim();
+  if (!base) return null;
   const providers = Array.isArray(config.providers) ? config.providers : [];
   const models = Array.isArray(config.models) ? config.models : [];
   const model = String(modelId || "").trim() || t.model;
-  const prov = providers.find((p) => p.kind === t.kind && nb(p.base_url) === nb(t.base_url)) || null;
+  if (!model) return null; // 自定义那类没有默认型号：向导没点名就不算数（省得落一条模型名为空的条目）
+  const prov = providers.find((p) => p.kind === t.kind && nb(p.base_url) === nb(base)) || null;
   const taken = new Set(models.map((m) => String(m.name || "")));
-  const name = taken.has(t.name) ? `${t.name} ${model}` : t.name;
-  const row = { name, provider: protoOfKind(t.kind), base_url: baseForUse(t.base_url, "chat"), api_key: "", model };
-  return { t, prov, row };
+  // 预设的用短名（DeepSeek / Kimi）；自定义那家没有名字可用，拿域名当名字——
+  // 「gw.mycorp.com」比「自定义渠道」强，一个账号下接了两台网关时也分得清
+  const nm = t.custom ? nameForKind(t.kind, base) : t.name;
+  const name = taken.has(nm) ? `${nm} ${model}` : nm;
+  const row = { name, provider: protoOfKind(t.kind), base_url: baseForUse(base, "chat"), api_key: "", model };
+  return { t, prov, row, base_url: base };
 }
 
 /** 把 planTemplate 算好的那条落进 config：渠道（带 Key）+ 模型行（挂在它下面）。返回最后那条模型行 */
@@ -171,7 +199,13 @@ function commitTemplate(config, plan, key) {
   if (prov && String(prov.api_key || "").trim() && k && prov.api_key !== k) prov = null;
   if (!prov) {
     const ids = new Set(config.providers.map((p) => String(p.id)));
-    prov = { id: uniqueId(plan.t.kind, ids), name: plan.t.label, kind: plan.t.kind, base_url: plan.t.base_url, api_key: k };
+    // 地址用算好的那份：自定义那家是用户填的，plan.t.base_url 是空串（预设那几家两者一样）
+    const base = plan.base_url || plan.t.base_url;
+    prov = {
+      id: uniqueId(plan.t.kind, ids),
+      name: plan.t.custom ? nameForKind(plan.t.kind, base) : plan.t.label,
+      kind: plan.t.kind, base_url: base, api_key: k,
+    };
     config.providers.push(prov);
   } else if (k) prov.api_key = k;
   const dup = config.models.find((m) => m.channel === prov.id && String(m.model) === String(plan.row.model));
@@ -219,8 +253,11 @@ function normalize(config) {
 
   /** 同一家、同一个地址、但还空着 Key 的那行。它不是「另一个账号」，是「这家还没填」 */
   const nb = (u) => baseForUse(String(u || "").trim(), "media").replace(/\/+$/, "").toLowerCase();
-  const shellFor = (kind, baseUrl) => providers.find(
-    (p) => p.kind === kind && !String(p.api_key || "").trim() && nb(p.base_url) === nb(baseUrl || baseOfKind(kind))
+  // 协议也要对上：自建网关可以在渠道行上手写协议，同一个地址下「说 OpenAI 的空壳」和
+  // 「说 Anthropic 的那条」是两回事，认错了等于把 Key 填到另一条渠道上
+  const shellFor = (kind, baseUrl, protocol) => providers.find(
+    (p) => p.kind === kind && protoOfKind(p.kind, p.protocol) === protoOfKind(kind, protocol)
+      && !String(p.api_key || "").trim() && nb(p.base_url) === nb(baseUrl || baseOfKind(kind))
   );
 
   for (const m of models) {
@@ -238,7 +275,7 @@ function normalize(config) {
       // 不这么干就会分叉出第二行——用户看到两张一模一样的卡片，填的 Key 在新那行上、
       // 模型还挂在旧那行上，于是卡片照样写着「未填 Key」。这是首次开箱向导写 Key 的必经之路。
       if (!prov && String(m.api_key || "").trim()) {
-        const shell = shellFor(kind, m.base_url);
+        const shell = shellFor(kind, m.base_url, m.protocol);
         if (shell) {
           byKey.delete(chanKeyOf(shell.kind, shell));
           shell.api_key = String(m.api_key).trim();
@@ -247,12 +284,16 @@ function normalize(config) {
         }
       }
       if (!prov) {
+        // 条目上万一写着协议（手改过 config.json 的人才会这么干），新建的渠道要把它带上：
+        // 不带的话下面 byKey.set 用的那把 key 跟这条渠道自己的 key 对不上，下一条同家的模型又认不回来
+        const proto = protoOfKind(kind, m.protocol);
         prov = {
           id: uniqueId(kind, ids),
           name: nameForKind(kind, m.base_url),
           kind,
           base_url: String(m.base_url || "").trim() || baseOfKind(kind),
           api_key: String(m.api_key || "").trim(),
+          ...(proto !== protoOfKind(kind) ? { protocol: proto } : {}),
         };
         ids.add(prov.id);
         providers.push(prov);
@@ -265,7 +306,7 @@ function normalize(config) {
     // 地址过一遍 baseForUse：通义那家的对话在兼容层、画图在原生层，渠道只存一个地址，用时换对的那个
     m.base_url = baseForUse(prov.base_url, "chat");
     m.api_key = prov.api_key;
-    m.provider = protoOfKind(prov.kind);
+    m.provider = protoOfKind(prov.kind, prov.protocol);
   }
 
   config.providers = providers;
@@ -282,5 +323,5 @@ function modelsOf(config, channelId) {
 
 module.exports = {
   normalize, modelsOf, chanKeyOf, nameForKind, wantsChannel,
-  pruneSeededPresets, SEEDED_PRESETS, templates, planTemplate, commitTemplate, legacyRows,
+  pruneSeededPresets, SEEDED_PRESETS, templates, customTemplate, planTemplate, commitTemplate, legacyRows,
 };

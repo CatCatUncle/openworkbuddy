@@ -456,7 +456,10 @@ async function login(username, password) {
   // 这三样以前一样都没有，界面只能给「最近 200 条」。财务问「上个月谁花了多少」答不上来。
   // 造够两页的量，才测得出 offset/limit 是真翻页还是每次都从头切。
   // 每条的 prompt 都不一样：120 条是一口气写进去的，时间戳全撞在同一毫秒上，
-  // 拿「时间+模型+条数+人」当身份的话，两页合起来会缩成几十个，看着就像翻页翻重了
+  // 拿「时间+模型+条数+人」当身份的话，两页合起来会缩成几十个，看着就像翻页翻重了。
+  // （Linux 的 CI 上真发生过：100 条只认出 58 条。红的不是翻页坏了，是这批测试数据
+  //   认不出自己——加了序号后每一笔都可辨认，判分不依赖它的具体数值：
+  //   150 与 100+i+50 都是 1 积分，token 合计没有断言。）
   for (let i = 0; i < 120; i++) {
     account.chargeRun({ username: "xiaoyuan" },
       { prompt: 100 + i, completion: 50, model: i % 2 ? "mA" : "mB", provider: "p", source: i % 3 ? "web" : "feishu", elapsed_ms: 100 });

@@ -9764,6 +9764,7 @@ async function testOnboardingWizardApi() {
     r.end();
   });
   let fakeOllama = null;
+  let fakeGw = null;
 
   try {
     assert(up, "真 server.js 没起来，这条测试作废：" + bootWhy);
@@ -9973,6 +9974,77 @@ async function testOnboardingWizardApi() {
     assert(made2.model && made2.model !== "bge-m3:latest", "不点名时该退回模板默认值：" + JSON.stringify(made2));
     assert(!/14b/.test(made2.model || ""), "本机模板的兜底型号又换回了 14b（约 9GB，16G 的机器拉不动，连不上 Ollama 时就是拿它当默认）：" + made2.model);
 
+    // 5-quater. ★自建网关（OpenAI 兼容）那条路★：地址和型号只有用户自己知道。
+    // 以前这一类在向导里根本没有入口——只能「先跳过向导」，再去 设置 → 模型 里手建一条渠道，
+    // 而「先跳过」正是新人最不该走的那条路。这一段拿一台假网关钉住：
+    // 清单里有这个入口、{kind,base_url,model_id} 真落成渠道 + 模型行、地址或型号缺一个就当场 400、
+    // 以及渠道行上手写的协议会压平到模型条目上（llm.js 就是照它选协议）。
+    const GW_MODELS = ["deepseek-chat", "qwen3-32b"];
+    let gwListHits = 0;
+    fakeGw = http.createServer((rq, rs) => {
+      const gwSend = (code, obj) => { rs.writeHead(code, { "Content-Type": "application/json" }); rs.end(JSON.stringify(obj)); };
+      if (rq.url === "/gw/v1/models") { gwListHits++; return gwSend(200, { object: "list", data: GW_MODELS.map((id) => ({ id, object: "model" })) }); }
+      gwSend(404, { error: "no" });
+    });
+    await new Promise((r) => fakeGw.listen(0, "127.0.0.1", r));
+    const GW_HOST = "127.0.0.1:" + fakeGw.address().port;
+    const GW_BASE = "http://" + GW_HOST + "/gw/v1";
+
+    const gwList = await req("POST", "/api/provider-models", { base_url: GW_BASE });
+    assert(gwList.code === 200 && gwList.json && gwList.json.ok === true
+      && (gwList.json.models || []).map((m) => m.id).join() === GW_MODELS.join(),
+      "问不到自建网关有哪些模型：HTTP " + gwList.code + " " + gwList.body.slice(0, 200));
+    const gwProvN = (cfgOnDisk().providers || []).length;
+    const gwModelN = (cfgOnDisk().models || []).length;
+    // 缺地址 / 缺型号各拦一次，两次都不许落盘：半成品渠道会在下一次对话时才炸
+    const noBase = await req("POST", "/api/onboarding", { kind: "custom", model_id: "deepseek-chat", skip_test: true });
+    assert(noBase.code === 400 && /地址/.test((noBase.json || {}).error || ""),
+      "自建网关没填地址应 400，而且要点名是地址的事：HTTP " + noBase.code + " " + noBase.body.slice(0, 200));
+    const noModel = await req("POST", "/api/onboarding", { kind: "custom", base_url: GW_BASE, skip_test: true });
+    assert(noModel.code === 400 && /模型名/.test((noModel.json || {}).error || ""),
+      "自建网关没点名型号应 400（那台机器上有哪些我们猜不出来）：HTTP " + noModel.code + " " + noModel.body.slice(0, 200));
+    assert((cfgOnDisk().providers || []).length === gwProvN && (cfgOnDisk().models || []).length === gwModelN,
+      "被拦下的那两趟不该往 config 里留半成品：" + JSON.stringify({ p: (cfgOnDisk().providers || []).length, m: (cfgOnDisk().models || []).length }));
+    // 不带 Key 也放行：内网的 vLLM / LM Studio 大多压根不鉴权
+    const gwOk = await req("POST", "/api/onboarding", { kind: "custom", base_url: GW_BASE, model_id: "qwen3-32b", api_key: "", skip_test: true });
+    assert(gwOk.code === 200 && gwOk.json && gwOk.json.ok === true,
+      "自建网关不带 Key 也该放行（要不要 Key 由那台网关决定）：HTTP " + gwOk.code + " " + gwOk.body.slice(0, 220));
+    const gwProv = (cfgOnDisk().providers || []).find((p) => p.base_url === GW_BASE);
+    assert(gwProv && gwProv.kind === "custom" && gwProv.api_key === "",
+      "★渠道没建出来（或建成了别的类型）★：" + JSON.stringify(gwProv));
+    assert(gwProv.name === GW_HOST,
+      "★渠道名该拿域名当★ 不是「OpenAI 兼容」这么一句类型说明——一台机器上接两台网关时，两张卡会长得一模一样：" + JSON.stringify(gwProv.name));
+    const gwRow = (cfgOnDisk().models || []).find((m) => m.channel === gwProv.id);
+    assert(gwRow && gwRow.model === "qwen3-32b" && gwRow.provider === "openai" && gwRow.base_url === GW_BASE,
+      "★向导点名的那个型号没落盘 / 协议没写对 / 地址没压平★：" + JSON.stringify(gwRow));
+    assert(gwOk.json.active_model === gwRow.name, "落完该把它设成当前模型：" + gwOk.json.active_model);
+    // 同一台网关同一型号再来一次：不分叉（不然卡片越攒越多）
+    const gwAgain = await req("POST", "/api/onboarding", { kind: "custom", base_url: GW_BASE, model_id: "qwen3-32b", api_key: "", skip_test: true });
+    assert(gwAgain.code === 200 && (cfgOnDisk().providers || []).filter((p) => p.base_url === GW_BASE).length === 1
+      && (cfgOnDisk().models || []).filter((m) => m.channel === gwProv.id).length === 1,
+      "同一台网关同一型号再来一次不该多出渠道或模型行：" + JSON.stringify({ p: (cfgOnDisk().providers || []).length, m: (cfgOnDisk().models || []).length }));
+
+    // ---- 渠道行上手写的协议：这台后面接的其实是 Claude ----
+    const gwSettings = await req("GET", "/api/settings");
+    const gwCfgProv = (gwSettings.json.providers || []).find((p) => p.id === gwProv.id) || {};
+    assert(gwCfgProv.protocol === "", "没写协议时这一栏该是空的（界面据此显示「按渠道类型」）：" + JSON.stringify(gwCfgProv.protocol));
+    const setProto = await req("POST", "/api/settings",
+      { providers: (gwSettings.json.providers || []).map((p) => (p.id === gwProv.id ? { ...p, protocol: "anthropic" } : p)) });
+    assert(setProto.code === 200, "改协议存不上：HTTP " + setProto.code + " " + setProto.body.slice(0, 200));
+    const afterProto = (cfgOnDisk().models || []).find((m) => m.channel === gwProv.id) || {};
+    assert(afterProto.provider === "anthropic",
+      "★渠道上写的协议没压平到模型条目上★ llm.js 就是照 provider 选 anthropicChat 还是 openaiChat：" + JSON.stringify(afterProto.provider));
+    // 反向对照：界面没带这一栏（老客户端 / 手改过 config.json 的人）不许被顺手抹掉
+    const keepProto = await req("POST", "/api/settings",
+      { providers: (gwSettings.json.providers || []).map((p) => { const { protocol, ...rest } = p; return rest; }) });
+    assert(keepProto.code === 200 && ((cfgOnDisk().providers || []).find((p) => p.id === gwProv.id) || {}).protocol === "anthropic",
+      "★不带 protocol 的那一次保存把它抹掉了★ 手改 config.json 的人会莫名其妙挨这一下：" + keepProto.body.slice(0, 200));
+    // 反过来的反向对照：明说「按渠道类型」时得真能清掉，不然这一栏就再也改不回来了
+    const clearProto = await req("POST", "/api/settings",
+      { providers: (cfgOnDisk().providers || []).map((p) => ({ ...p, protocol: "" })) });
+    assert(clearProto.code === 200 && ((cfgOnDisk().providers || []).find((p) => p.id === gwProv.id) || {}).protocol === undefined,
+      "明确改回「按渠道类型」时该真的清掉：HTTP " + clearProto.code + " " + clearProto.body.slice(0, 200));
+
     // 6. 未登录不给看（体检表里有渠道名、目录路径）
     const anon = await new Promise((resolve) => {
       http.get({ host: "127.0.0.1", port, path: "/api/onboarding" }, (res) => { res.resume(); resolve(res.statusCode); }).on("error", () => resolve(0));
@@ -10006,9 +10078,11 @@ async function testOnboardingWizardApi() {
 
     console.log("✅ 首次开箱向导 API：新装体检表(不泄 Key)·大脑没接上 done 拒且不落盘·本机 CLI 算大脑·done 落 done_at+skipped 清洗+切工作目录·seen 留存 needs_setup 随大脑翻转·向导填 Key 落在渠道行不分叉、设置页当场认账·匿名 401 + 前端五步/关于页重开/README 命令行一节 静态闸门");
     console.log("✅ 本机 Ollama 选型号：问得到机器上装了哪些(3 个)·10 分钟走缓存(上游只打 1 次)·匿名打不到上游·没起来/地址没写全各报各的·点名的型号真拿去验并落盘·验不过不许改坏原来那条(盘上+内存都查)·模板那条也认 model_id、兜底不再是 14b");
+    console.log("✅ 自建网关（OpenAI 兼容）：向导能问到它有哪些模型·缺地址/缺型号各 400 且不留半成品·不带 Key 也放行并落成 custom 渠道(名字取域名)+模型行·同一台再来一次不分叉·手写 protocol 压平到模型条目、不带这一栏的保存不许抹掉、明说「按渠道类型」才清掉");
   } finally {
     child.kill("SIGKILL");
     try { if (fakeOllama) fakeOllama.close(); } catch {}
+    try { if (fakeGw) fakeGw.close(); } catch {}
     fs.rmSync(home, { recursive: true, force: true });
   }
 }
@@ -11699,6 +11773,50 @@ function testShortDrama() {
   console.log(`✅ AI 短剧（第一期，不碰画布）：技能教的 6 个工具参数都真收 · 分镜表 schema 钉住一镜 ${shotReq} 个必填字段 · 并发数与代码一致（${genMax}）· ${bad.length} 种改坏全被抓`);
 }
 
+/** 认得的 Linux 产物扩展名：electron-builder 的 target 名（小写）→ 上传时要收的 glob */
+const LINUX_ARTIFACT_GLOB = {
+  deb: "*.deb",
+  rpm: "*.rpm",
+  appimage: "*.AppImage",
+  snap: "*.snap",
+  "tar.gz": "*.tar.gz",
+  "tar.xz": "*.tar.xz",
+  "tar.lz": "*.tar.lz",
+  "tar.bz2": "*.tar.bz2",
+  pacman: "*.pkg.tar.zst",
+  freebsd: "*.pkg",
+  apk: "*.apk",
+  zip: "*.zip",
+  "7z": "*.7z",
+};
+
+/** 从 text[i]（一个 {）往后按括号配平，返回这整个 {...} 的原文 */
+function braceBlock(text, i) {
+  if (text[i] !== "{") return "";
+  let depth = 0;
+  for (let j = i; j < text.length; j++) {
+    if (text[j] === "{") depth++;
+    else if (text[j] === "}" && --depth === 0) return text.slice(i, j + 1);
+  }
+  return text.slice(i);
+}
+
+/** electron-builder 配置里所有 linux: {...} 块声明的 target 名（小写、去重） */
+function linuxPackageTargets(text) {
+  const out = [];
+  for (const m of text.matchAll(/^[ \t]*linux:\s*\{/gm)) {
+    const block = braceBlock(text, text.indexOf("{", m.index));
+    for (const t of block.matchAll(/target:\s*"([^"]+)"/g)) out.push(t[1].toLowerCase());
+  }
+  return [...new Set(out)];
+}
+
+/** upload-artifact 那一步的 path 里列了哪些 dist 通配符 */
+function uploadedGlobs(text) {
+  const step = (text.match(/uses:\s*actions\/upload-artifact@v\d+([\s\S]*?)(?=\n\s*- (?:uses|name|run):|$)/) || ["", ""])[1];
+  return [...step.matchAll(/dist\/(\*\.\w+(?:\.\w+)?)/g)].map((m) => m[1]);
+}
+
 /**
  * 发版这条链的静态体检。每一条对应一次真踩过或差点踩到的坑，纯读文件，不跑流水线。
  *
@@ -11715,8 +11833,8 @@ function releasePipelineDrift(src) {
   const tst = (src[".github/workflows/test.yml"] || "").replace(/^[ \t]*#.*$/gm, "");
   const all = src["test/all.js"] || "";
   const pkg = src["package.json"] || "";
-  // 注释里也会提 AppImage / linux（删掉那段时留的恢复说明），先把行注释剥掉再查，
-  // 否则「解释为什么删了」这句话本身会被当成「它还在」
+  // 注释里也会提 linux / AppImage 这类目标名（配置里留着不少解释性注释），先把行注释剥掉再查，
+  // 否则「解释为什么这么做」这句话本身会被当成一份真配置读（下面按 linux: {...} 块反查 target）
   const ebc = (src["electron-builder.config.js"] || "").replace(/^[ \t]*\/\/.*$/gm, "");
   const ish = src["install.sh"] || "";
 
@@ -11833,8 +11951,25 @@ function releasePipelineDrift(src) {
   }
 
   // —— 配了却从没在流水线上跑过的目标 = 未经验证的死代码
-  if ((/dist:linux/.test(pkg) || /AppImage/.test(ebc)) && !/\*\.AppImage/.test(rel)) {
-    miss.push("配了 Linux 目标，release.yml 的上传路径却不收它的产物 —— 这个目标从来没在流水线上打过一次（upload 那步是 if-no-files-found: error，只加腿不加 path 必红）");
+  // 这条闸门是 Linux 还没上线时写的（package.json 里没有 dist:linux，配置里只剩一段
+  // 「为什么删了」的注释），所以信号被简写成「出现 dist:linux / AppImage → 要求收 *.AppImage」。
+  // b2437e1 把 Linux 真接上线了，产物是 arm64 的 .deb（走 dpkg，不是 AppImage）：
+  // 再按 AppImage 判，就会把「收对了 deb」误判成没收。改成从 linux: {...} 里真配的 target
+  // 反推产物扩展名——以后换 rpm / AppImage / tar.gz，闸门跟着配置走，配置和流水线一错位照样当场红。
+  const uploadGlobs = uploadedGlobs(rel);
+  for (const t of linuxPackageTargets(ebc)) {
+    const glob = LINUX_ARTIFACT_GLOB[t];
+    if (!glob) {
+      miss.push(`Linux 目标 "${t}" 闸门认不出产物扩展名，收了没收没法判（认得的：${Object.keys(LINUX_ARTIFACT_GLOB).join(" / ")}）`);
+      continue;
+    }
+    if (!uploadGlobs.includes(glob)) {
+      miss.push(`Linux 目标产的是 ${glob}，release.yml 上传那步的 path 里没有它 —— 这条腿打完包什么也没收（if-no-files-found: error 会直接红）`);
+    }
+  }
+  // 脚本配了、流水线却没哪条腿调它 = 这个目标永远打不出来（只加配置不加腿，人看不出来）
+  if (/dist:linux/.test(pkg) && !/script:\s*dist:linux/.test(rel)) {
+    miss.push("package.json 里有 dist:linux，release.yml 的 build matrix 里却没有哪条腿跑它：这个目标从来不会被打出来");
   }
 
   // —— 一键安装的用法说明里还留着占位符 = 照着复制的人拿到 404
@@ -11891,8 +12026,14 @@ function testReleasePipeline() {
     ["两条腿全挂时 download-artifact 自己报错", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace(/\n\s*continue-on-error: true/, "") }],
     ["缺平台照发不落草稿", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace(/draft: .*\n/, "") }],
     ["免安装版又多产一个合体包", { "electron-builder.config.js": src["electron-builder.config.js"].replace("buildUniversalInstaller: false", "x: 1") }],
-    ["Linux 目标配了但流水线不打", { "package.json": src["package.json"].replace('"dist:mac"', '"dist:linux": "x",\n    "dist:mac"') }],
+    // Linux 那条腿整个从 matrix 里拿掉：脚本还配着 dist:linux，却没人调它
+    ["Linux 目标配了但流水线不打", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace(/\n\s*- os: ubuntu-latest\n\s*script: dist:linux\n\s*artifact: linux-arm64/, "") }],
+    // 腿照跑，但产物没被上传那步收走：这条腿白跑，而且 if-no-files-found: error 会当场红
+    ["Linux 的 deb 没收进上传路径", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace(/\n\s*dist\/\*\.deb/, "") }],
+    // 换个产物格式（deb → AppImage）：闸门得跟着配置走，不能还盯着 *.deb 放行
     ["AppImage 配了但上传路径不收它", { "electron-builder.config.js": src["electron-builder.config.js"].replace("portable: {", 'linux: { target: "AppImage" },\n  portable: {') }],
+    // 配置里冒出一个闸门不认识的 target：不许静默跳过，得说出来
+    ["Linux target 闸门认不出来", { "electron-builder.config.js": src["electron-builder.config.js"].replace('target: [{ target: "deb", arch: ["arm64"] }]', 'target: [{ target: "meiyouzhege", arch: ["arm64"] }]') }],
     ["curl 用法说明退回占位符", { "install.sh": src["install.sh"].replace("CatCatUncle/openworkbuddy/main/install.sh", "<你的仓库>/main/install.sh") }],
     ["pnpm 分支又吃 frozen-lockfile", { "install.sh": src["install.sh"].replace(" --no-frozen-lockfile", "") }],
     ["curl | bash 装完反而报失败", { "install.sh": src["install.sh"].replace("[ -t 0 ] && ", "") }],

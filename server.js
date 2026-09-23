@@ -2001,8 +2001,12 @@ app.post("/api/provider-test", async (req, res) => {
   // 没重填就点「测一下」是最常见的一次点击，这时候不该测成「Key 为空」
   const rawKey = String(b.api_key == null ? "" : b.api_key).trim();
   const key = !rawKey || /^\*+$/.test(rawKey) ? String(known.api_key || "") : rawKey;
+  // 这条渠道说哪门话：自建网关可以在渠道行上手写协议，没写才按 kind 算
+  const proto = mediaModels.protoOfKind(kind, b.protocol === undefined ? known.protocol : b.protocol);
   const local = kind === "ollama" || /localhost|127\.0\.0\.1|0\.0\.0\.0/.test(base);
-  if (!key && !local) return res.json({ ok: false, error: "这个渠道还没填 Key，填完再测" });
+  // 自建网关常见的一档是压根不鉴权（内网的 vLLM / LM Studio 默认就是这样），
+  // 「没填 Key」对它不是错误。真要 Key 而没填，下一句 probeModel 会拿 401 说话
+  if (!key && !local && kind !== "custom") return res.json({ ok: false, error: "这个渠道还没填 Key，填完再测" });
   // 判断模型（Jev）没有 /chat/completions 这条路，拿它去 ping 必然 400。
   // 它有自己的测活：真问一道题，把答案也带回来——「通了」和「答得对不对」一次看完
   if ((mediaModels.PROVIDER_KINDS.find((k) => k.kind === kind) || {}).decide_only) {
@@ -2014,7 +2018,7 @@ app.post("/api/provider-test", async (req, res) => {
       answers: r.ok ? r.answers.map((a) => systemOne.lineOf(a)) : [],
     });
   }
-  if (kind !== "anthropic" && !/^https?:\/\//i.test(base)) return res.json({ ok: false, error: "接口地址得是 http(s) 开头的完整地址" });
+  if (proto !== "anthropic" && !/^https?:\/\//i.test(base)) return res.json({ ok: false, error: "接口地址得是 http(s) 开头的完整地址" });
   const mine = (config.models || []).filter((m) => m.channel === known.id);
   const model = String(b.model || "").trim()
     || (mine[0] || {}).model
@@ -2034,7 +2038,7 @@ app.post("/api/provider-test", async (req, res) => {
     return res.json({ ok: false, error: "这个渠道下面还没挂任何模型。加一个再测——测活要拿一个真模型去打一次招呼，瞎猜一个名字测出来的 404 会让人误以为 Key 坏了" });
   }
   const t0 = Date.now();
-  const why = await probeModel({ provider: mediaModels.protoOfKind(kind), base_url: base, api_key: key, model });
+  const why = await probeModel({ provider: proto, base_url: base, api_key: key, model });
   res.json({ ok: !why, ms: Date.now() - t0, model, error: why || "" });
 });
 
@@ -2296,6 +2300,8 @@ app.get("/api/settings", (req, res) => {
     // 那是整台服务器的账单凭证，他既改不了也不该拿到手
     providers: (config.providers || []).map((p) => ({
       id: p.id, name: p.name, kind: p.kind, base_url: p.base_url,
+      // 手写协议：自建网关后面接的是谁，从地址和 kind 上都看不出来，只有这一栏说得清
+      protocol: p.protocol || "",
       api_key: p.api_key ? "********" : "",
       key_hint: isPlatformOwner(req) ? keyHint(p.api_key) : "",
       has_key: !!p.api_key,
@@ -2632,12 +2638,19 @@ app.post("/api/settings", (req, res) => {
         const prev = old.get(p.id) || {};
         // 读接口给非管理员回的是掩码。真有人把掩码原样存回来，按「没改」处理，别把 Key 抹成八个星号
         const key = String(p.api_key == null ? prev.api_key || "" : p.api_key).trim();
+        const proto = String(p.protocol || "").trim().toLowerCase();
         return {
           id: String(p.id || "").trim(),
           name: String(p.name || "").trim(),
           kind: String(p.kind || "").trim(),
           base_url: String(p.base_url || "").trim(),
           api_key: /^\*+$/.test(key) ? prev.api_key || "" : key,
+          // protocol 也是手改 config.json 的人会用的那道口子（自建网关后面接的其实是 Claude）。
+          // 界面没带这一栏时保留库里那份：不保留的话，人下次在设置页顺手点一下保存就把它抹了，
+          // 而且抹掉之后表现是「某几条模型突然 400」，根本联想不到是这儿丢的
+          protocol: p.protocol === undefined
+            ? String(prev.protocol || "")
+            : (mediaModels.PROTOCOLS.includes(proto) ? proto : ""),
         };
       });
       auditKeyChanges(req, old, config.providers);
@@ -2992,6 +3005,9 @@ app.get("/api/onboarding", async (req, res) => {
     models,
     // 向导的「服务商」清单从目录来，不再靠 config 里那排没 Key 的模板行撑场面
     templates: chatModels.templates(),
+    // 自建网关（OpenAI 兼容）单独一项：它没有默认地址、也没有默认型号，
+    // 地址和型号得用户在向导里当场填，所以它进不了上面那张「每家都带默认型号」的表
+    custom: chatModels.customTemplate(),
     any_key: models.some((m) => m.has_key && !m.local),
     engines: found.map((e) => ({ id: e.id, label: e.label, installed: e.installed, version: e.version, install: e.install || "", note: e.note || "" })),
     engine: engineId,
@@ -3008,9 +3024,19 @@ app.post("/api/onboarding", async (req, res) => {
     const key = String(b.api_key || "").trim();
     // 按厂商模板新起一条：先算好、验活、验过了才落进 config——验不过的 Key 不该留下一个半成品渠道
     if (b.kind) {
-      const plan = chatModels.planTemplate(config, b.kind, b.model_id);
-      if (!plan) throw new Error("没有这家服务商：" + b.kind);
-      if (!key && !plan.t.local) throw new Error("API Key 不能为空");
+      const kind = String(b.kind).trim();
+      const base = String(b.base_url || "").trim();
+      const blank = chatModels.customTemplate();
+      // 自建网关（OpenAI 兼容那一类）：地址和型号只有用户自己知道，所以由向导带上来。
+      // Key 不强求——内网里的 vLLM / LM Studio 大多压根不鉴权；真要 Key 而没填，
+      // 下面那一趟验活会拿 401 当场说话，不用在这儿先猜
+      if (blank && blank.kind === kind) {
+        if (!/^https?:\/\//i.test(base)) throw new Error("自建网关要填完整的接口地址（http(s)://…）");
+        if (!String(b.model_id || "").trim()) throw new Error("自建网关要填一个模型名——你那台机器上有哪些，这我猜不出来");
+      }
+      const plan = chatModels.planTemplate(config, kind, b.model_id, base);
+      if (!plan) throw new Error("没有这家服务商：" + kind);
+      if (!key && !plan.t.local && !plan.t.custom) throw new Error("API Key 不能为空");
       if (b.skip_test !== true) {
         const bad = await probeModel({ ...plan.row, api_key: key || (plan.prov ? plan.prov.api_key : "") });
         if (bad) return res.json({ ok: false, error: bad });
