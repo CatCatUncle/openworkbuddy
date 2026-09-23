@@ -73,6 +73,7 @@ const SUBS = [
   { name: "2fa", usage: "openworkbuddy 2fa <用户名> [--off]", desc: "看某个账号的二次验证状态；手机丢了用 --off 关掉" },
   { name: "owner", usage: "openworkbuddy owner [用户名]", desc: "看谁是超级管理员；给用户名就把这个位子指给他（唯一的超管进不去时的救场口）" },
   { name: "jev", usage: 'openworkbuddy jev ["材料" "问题" [选项…]]', desc: "问一下判断模型：它不写字，只回选项/分数/概率，外加一个「有多确定」。不给参数就测活" },
+  { name: "workflow", usage: "openworkbuddy workflow <流程.json>", desc: "按文件里写好的几步依次跑，{{名字}} 把前面某一步的结论贴进来；一步没成后面就停" },
   { name: "review", usage: "openworkbuddy review [基准分支]", desc: "把改动当别人的代码挑一遍毛病，只审不改；不给基准就审还没提交的" },
   { name: "worktree", usage: "openworkbuddy worktree [清理]", desc: "看有哪些「分身」：两条任务同时改一个仓库时，后来那条会去自己的 git worktree 里改" },
   { name: "completion", usage: "openworkbuddy completion <shell>", desc: "生成 Tab 补全脚本（bash / zsh / fish）" },

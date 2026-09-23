@@ -1387,6 +1387,21 @@ function splitFiles(text) {
     if (!hit) { process.stderr.write(red(`-f ${ref}：找不到这个文件\n`)); process.exit(2); }
     namedFiles.push({ ref, path: hit });
   }
+  // openworkbuddy workflow 流程.json：文件先读、先校验，写错的地方一次列全，一步都不跑。
+  // 放在 splitFiles 前面：文件名本身不是附件
+  let flow = null;
+  if (sub === "workflow") {
+    const wf = require("./workflow");
+    const file = oneShot;
+    if (!file) { process.stderr.write(red("要给一个流程文件：openworkbuddy workflow 流程.json\n")); process.exit(2); }
+    let text;
+    try { text = fs.readFileSync(path.resolve(process.cwd(), file), "utf8"); }
+    catch (e) { process.stderr.write(red(`读不了 ${file}：${e.code || e.message}\n`)); process.exit(2); }
+    const p = wf.parse(text);
+    if (p.error) { process.stderr.write(red(`${file} 有问题，一步都没跑：\n${p.error}\n`)); process.exit(2); }
+    flow = p.steps;
+    oneShot = "";
+  }
   const shot = splitFiles(oneShot);
   for (const m of shot.missing) prog(yellow(`  ！${m} 找不到，当普通文字发过去了\n`));
   if (shot.files.length) oneShot = shot.text; // 没摘出东西就一个字都不动，双空格之类的原样留着
@@ -1420,7 +1435,7 @@ function splitFiles(text) {
     process.stderr.write(dim(`把要问的话也写上：openworkbuddy -f 图.png "这张图里写了什么"\n`));
     process.exit(2);
   }
-  if (!oneShot && !process.stdin.isTTY) { console.log(cliArgs.helpText()); process.exit(1); }
+  if (!oneShot && !flow && !process.stdin.isTTY) { console.log(cliArgs.helpText()); process.exit(1); }
   const attachNames = bringIn(wanted);
   if (attachNames.length) prog(dim(`  带上了 ${attachNames.join("、")}\n`));
 
@@ -1444,6 +1459,34 @@ function splitFiles(text) {
   const permLine = permNow() === security.DEFAULT_MODE ? ""
     : ` · 权限 ${security.PERMISSION_MODES[permNow()].label}${permNow() === "full" ? yellow("（连删除也不问了）") : ""}`;
   prog(dim(`${who} · 模式 ${modes.modeLabel(opts.mode)}${permLine} · 工作目录 ${getWorkspaceDir()} · 会话 ${sessionId}\n`));
+
+  if (flow) {
+    // 几步共用一个会话；{{名字}} 贴的是那一步落盘的最终回复。管道和 -f 带进来的材料跟着第一步走
+    const wf = require("./workflow");
+    const results = {};
+    let worst = "ok";
+    for (let i = 0; i < flow.length; i++) {
+      const st = flow[i];
+      prog(yellow(`\n── 第 ${i + 1}/${flow.length} 步 · ${st.name} ──\n`));
+      let text = wf.fill(st.prompt, results);
+      if (i === 0) {
+        if (oneShot) text += `\n\n---\n材料：\n\n${oneShot}`;
+        text = attach.withNote(text, attachNames);
+      }
+      const r = await runOnce(runtime, text, st.mode || opts.mode);
+      const last = sess.transcript[sess.transcript.length - 1];
+      const said = last && last.type === "assistant" ? (last.events || []).filter((e) => e.type === "text").map((e) => e.delta).join("") : "";
+      results[st.name] = said;
+      if (r === "aborted") { mcpManager.stopAll(); process.exit(130); }
+      if (r !== "ok") {
+        worst = "error";
+        const rest = flow.length - i - 1;
+        if (!st.continueOnError && rest) { process.stderr.write(red(`第 ${i + 1} 步没成，后面 ${rest} 步不跑了\n`)); break; }
+      }
+    }
+    mcpManager.stopAll();
+    process.exit(worst === "ok" ? 0 : 1);
+  }
 
   if (oneShot) {
     const r = await runOnce(runtime, attach.withNote(oneShot, attachNames), opts.mode);

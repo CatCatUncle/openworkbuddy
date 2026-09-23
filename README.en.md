@@ -225,7 +225,7 @@ The diagram doubles as a reading order: start at `server.js`, then see how `agen
 
 ## What's new
 
-- **Sep 23** CLI gets `/review`, custom slash commands and `--model` & co.; hooks can block wrap-up until tests pass
+- **Sep 23** CLI gets `/review`, custom slash commands and `--model` & co.; hooks; `workflow` runs a multi-step file
 - **Sep 23** Better at code: find files by name, several edits to one file at once, edits blocked if the file changed since it was read, background shell commands, and a todo list it must tick off before finishing
 - **Sep 23** The preview card in the chat and the right-hand preview panel now open the same version of an image
 - **Sep 23** No more running `open` on files once done — only when you ask; a delivery just reports the path

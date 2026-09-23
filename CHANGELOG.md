@@ -9,6 +9,7 @@ English: [CHANGELOG.en.md](CHANGELOG.en.md)
 
 ## 2026
 
+- **09-23** `openworkbuddy workflow 流程.json`：把「想方案 → 照做 → 审一遍」写成文件按顺序跑，`{{名字}}` 贴前面某步的结论；一步没成后面就停，文件写错一步都不跑
 - **09-23** 钩子：`config.json` 的 `agent.hooks` 里写命令——`before_shell` 拦命令、`after_edit` 改完文件自动跑（格式化/lint）、`done` 没过不许收尾（最多打回两次）
 - **09-23** 命令行：`/review`（和 `openworkbuddy review [基准]`）把改动取好交给它审，只看不动；`.openworkbuddy/commands/*.md` 自己写斜杠命令，`$ARGUMENTS` `$1` 填参数；新开关 `--model` `--max-steps` `--append-system` 只管这一次
 - **09-23** 写代码更顺手：`find_files` 按名找文件、`multi_edit` 一个文件改多处（全成或全不动）、读后被改就拦（改前先重读）、`run_shell` 可放后台（`shell_output` / `shell_kill`）、`todo_write` 进度清单——没打勾就收工会被打回
