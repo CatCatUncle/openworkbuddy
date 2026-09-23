@@ -329,6 +329,45 @@ async function until(fn, ms = 5000) {
     ok(!r.isError && R("tab2.py") === "def f():\n\tif y:\n\t\treturn 3\n", "宽松匹配时 Tab 对 Tab 也不动（反向对照）", R("tab2.py"));
   }
 
+  console.log("\n⑩ read_file 的边角");
+  {
+    const S = { sessionId: "s_read", actor: "dan", taskLabel: "测试" };
+    W("many.txt", Array.from({ length: 300 }, (_, i) => "row " + (i + 1)).join("\n"));
+    let r = await executeTool("read_file", { path: "many.txt", offset: 290, limit: 3 }, S);
+    ok(!r.isError && /第 290-292 行/.test(r.content) && /290\trow 290\n291\trow 291\n292\trow 292$/.test(r.content), "★offset/limit 也认★ 不再被静默丢掉、从头整篇读", r.content);
+    r = await executeTool("read_file", { path: "many.txt", limit: 2 }, S);
+    ok(/第 1-2 行/.test(r.content) && !/row 3/.test(r.content), "只给 limit 从第 1 行读", r.content);
+    r = await executeTool("read_file", { path: "many.txt", start_line: 10, end_line: 11 }, S);
+    ok(/第 10-11 行/.test(r.content), "start_line/end_line 照旧（反向对照）", r.content);
+    W("blob.bin", Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0, 0, 1, 2]));
+    r = await executeTool("read_file", { path: "blob.bin" }, S);
+    ok(r.isError && /二进制/.test(r.content) && !/\u0000/.test(r.content), "★二进制文件直说，不回一堆乱码★", r.content);
+    W("text.txt", "普通 text\n");
+    r = await executeTool("read_file", { path: "text.txt" }, S);
+    ok(!r.isError && r.content === "普通 text\n", "中文文本不被当成二进制（反向对照）", r.content);
+  }
+
+  console.log("\n⑪ 等输入的命令不空等；搜索认别家的参数名");
+  {
+    const S = { sessionId: "s_misc", actor: "erin", taskLabel: "测试", timeoutMs: 15000 };
+    let t0 = Date.now();
+    let r = await executeTool("run_shell", { command: "read x; echo got=[$x]" }, S);
+    ok(Date.now() - t0 < 5000 && /got=\[\]/.test(r.content), "★run_shell 里等输入的命令当场读到结尾，不空等到超时★", { ms: Date.now() - t0, c: r.content });
+    t0 = Date.now();
+    r = await executeTool("run_node", { code: "process.stdin.on('data',()=>{}).on('end',()=>console.log('eof'))" }, S);
+    ok(Date.now() - t0 < 5000 && /eof/.test(r.content), "★run_node 同样★", { ms: Date.now() - t0, c: r.content });
+    r = await executeTool("run_shell", { command: "echo ok" }, S);
+    ok(!r.isError && /ok/.test(r.content), "普通命令照旧（反向对照）", r.content);
+    r = await executeTool("run_shell", { command: "   " }, S);
+    ok(r.isError && /command 是空的/.test(r.content), "空命令直说，不回一个假的 exit 0", r.content);
+    W("sx/a.js", "const needle = 1;\n");
+    W("sx/b.js", "needle again\n");
+    r = await executeTool("search_files", { pattern: "needle", path: "sx" }, S);
+    ok(!r.isError && /a\.js:1/.test(r.content) && /b\.js:1/.test(r.content), "pattern/path 也认", r.content);
+    r = await executeTool("search_files", { query: "needle", dir: "sx/a.js" }, S);
+    ok(!r.isError && /a\.js:1/.test(r.content) && !/b\.js/.test(r.content), "★给的是一个文件就只搜这一个★ 不再回「没搜到、扫了 0 个」", r.content);
+  }
+
   try { fs.rmSync(WS, { recursive: true, force: true }); fs.rmSync(TMP, { recursive: true, force: true }); } catch {}
   console.log(`\n${pass} 通过，${fail} 失败`);
   process.exit(fail ? 1 : 0);

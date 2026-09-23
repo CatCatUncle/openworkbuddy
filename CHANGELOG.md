@@ -9,6 +9,7 @@ English: [CHANGELOG.en.md](CHANGELOG.en.md)
 
 ## 2026
 
+- **09-23** 等输入的命令（`read`、`input()`、`npm init`）不再空等到超时：`run_shell` / `run_node` 不给 stdin，当场读到结尾，以前白等 120 秒、现在 0.07 秒回来。`read_file` 认 `offset`/`limit`（以前静默丢掉、从头整篇读），二进制文件直说不回乱码；`search_files` 认 `pattern`/`path`，给一个文件就只搜这一个；空命令报错不再假装 exit 0
 - **09-23** 改 Windows 换行（CRLF）的文件不再改出一半 `\n` 一半 `\r\n`：`edit_file` / `multi_edit` / `write_file`（含追加）都跟着文件原来的换行走；文件用 Tab、它给的是空格（或反过来）时写回去换成文件的那种，不再留下 Python 报 TabError 的混缩进。本来就混着的文件不动
 - **09-23** `openworkbuddy workflow 流程.json`：把「想方案 → 照做 → 审一遍」写成文件按顺序跑，`{{名字}}` 贴前面某步的结论；一步没成后面就停，文件写错一步都不跑
 - **09-23** 钩子：`config.json` 的 `agent.hooks` 里写命令——`before_shell` 拦命令、`after_edit` 改完文件自动跑（格式化/lint）、`done` 没过不许收尾（最多打回两次）

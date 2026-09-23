@@ -261,8 +261,8 @@ const TOOL_DEFS = [
       type: "object",
       properties: {
         path: { type: "string", description: "相对路径" },
-        start_line: { type: "number", description: "从第几行开始读（1 起，可选）" },
-        end_line: { type: "number", description: "读到第几行为止（含，可选）" },
+        start_line: { type: "number", description: "从第几行开始读（1 起，可选；也认 offset）" },
+        end_line: { type: "number", description: "读到第几行为止（含，可选；也可以用 limit 给行数）" },
       },
       required: ["path"],
     },
@@ -1762,6 +1762,8 @@ function runNode(code, timeoutMs, cwd, stopSignal) {
       // OPENWORKBUDDY_HOME：装机态下代码在只读的应用包里、数据在 ~/OpenWorkBuddy，
       // 子进程要用同一个数据根才不会各写各的
       env: { ...process.env, NODE_PATH: appPath("node_modules"), OPENWORKBUDDY_HOME: DATA_DIR, ELECTRON_RUN_AS_NODE: "1" },
+      // 同 runShell：脚本里读 stdin 就当场读到结尾，别空等到超时
+      stdio: ["ignore", "pipe", "pipe"],
     });
     const out = makeOutSink("node", 8000, 8000);
     const err = makeOutSink("node-err", 4000, 6000);
@@ -1870,6 +1872,9 @@ function runShell(command, timeoutMs, cwd, stopSignal) {
       // 同 runNode：整组一起杀，否则 `npm install` 那一窝会活过「让我停下」
       detached: process.platform !== "win32",
       env: { ...process.env, PATH: shellPath(), OPENWORKBUDDY_HOME: DATA_DIR },
+      // stdin 不给：留着一根没人写的管道，`read`、python 的 input()、npm init 这种等输入的命令
+      // 会一直等到超时才回来。给 /dev/null，它当场读到结尾，要么走默认值要么报错退出
+      stdio: ["ignore", "pipe", "pipe"],
       ...sh.opts,
     });
     const out = makeOutSink("shell", 8000, 8000);
@@ -2470,6 +2475,18 @@ function matchIndentStyle(fileLines, needleLines, repl) {
   }).join("\n");
 }
 
+/** 开头 8KB 里有 NUL 字节就当二进制。UTF-16 文本也会中，但那种按 utf8 读同样是乱码 */
+function fileHasNul(p) {
+  let fd;
+  try {
+    fd = fs.openSync(p, "r");
+    const buf = Buffer.alloc(8192);
+    const n = fs.readSync(fd, buf, 0, 8192, 0);
+    return buf.subarray(0, n).includes(0);
+  } catch { return false; }
+  finally { if (fd !== undefined) try { fs.closeSync(fd); } catch {} }
+}
+
 /** 整篇都是 \r\n 换行（一个裸 \n 都没有）。混着的文件不算：那种不替它统一 */
 function pureCrlf(text) {
   return text.includes("\r\n") && !/(^|[^\r])\n/.test(text);
@@ -3060,7 +3077,7 @@ const SEARCH_YIELD_ENTRIES = 800;
  * 停下来必须说实话：没扫完就写「没扫完」，绝不能报「没搜到」。报「没搜到」是在骗模型，
  * 它会据此断定这个符号不存在，然后把后面的活全建在这个错判上。
  */
-async function searchFiles(root, { query, regex, ext, max }) {
+async function searchFiles(root, { query, regex, ext, max, only }) {
   const limit = Math.min(Math.max(Number(max) || 60, 1), 300);
   const q = String(query || "");
   if (!q) throw new Error("query 是空的");
@@ -3103,6 +3120,7 @@ async function searchFiles(root, { query, regex, ext, max }) {
       if (++sinceYieldEntries >= SEARCH_YIELD_ENTRIES) await breathe();
       if (SEARCH_SKIP.has(e.name)) continue;
       const full = path.join(dir, e.name);
+      if (only && full !== only) continue;
       if (e.isDirectory()) {
         await walk(full);
         continue;
@@ -4309,6 +4327,7 @@ async function executeToolCore(name, input, opts = {}) {
       case "run_shell": {
         if (orgBlocksShell()) return shellBlocked("run_shell");
         const cmd = String(input.command || "");
+        if (!cmd.trim()) return { content: "command 是空的：要跑什么命令写在 command 里。", isError: true };
         const blocked = await passGate(await judgeRisk(security.checkCommand(sec, cmd), "命令", cmd), "命令", cmd);
         if (blocked) return blocked;
         const hookSays = await HK.beforeShell(opts.hooks, cmd, { cwd: fileBase, stopSignal: opts.stopSignal });
@@ -4503,9 +4522,17 @@ async function executeToolCore(name, input, opts = {}) {
         if (/\.pdf$/i.test(p)) {
           return { content: `${input.path} 是 PDF，按文本读只会得到乱码。${pdfHowTo(String(input.path))}`, isError: true };
         }
+        // 按文本读一个二进制文件（.so、.sqlite、没后缀的可执行文件）拿回来的是乱码还不报错，
+        // 模型会对着乱码硬猜。开头 8KB 里有 NUL 字节就当二进制，直说
+        if (st && st.isFile() && st.size && fileHasNul(p)) {
+          return { content: `${input.path} 是二进制文件（${st.size} 字节），按文本读只会得到乱码。想知道是什么用 run_shell 跑 \`file\`；要看字节用 \`xxd | head\`。`, isError: true };
+        }
         if (st) CT.stampSeen(opts.sessionId, p);
-        const s = Math.max(0, Number(input.start_line) || 0);
-        const e = Math.max(0, Number(input.end_line) || 0);
+        // offset/limit 是别家读文件工具的叫法，模型顺手就这么写；不认的话参数被静默丢掉、整篇从头读，
+        // 它还以为读到的是第 offset 行开始的那段
+        const off = Number(input.offset) || 0, lim = Number(input.limit) || 0;
+        const s = Math.max(0, Number(input.start_line) || off || (lim ? 1 : 0));
+        const e = Math.max(0, Number(input.end_line) || (lim ? Math.max(1, s) + lim - 1 : 0));
         // 大文件走分块读：整份读会把事件循环钉住十几到几百毫秒，界面当场定住
         if (st && st.size > READ_BIG) {
           return { content: await readBigFile(p, String(input.path), st.size, s, e), isError: false };
@@ -4547,8 +4574,16 @@ async function executeToolCore(name, input, opts = {}) {
       }
       case "list_files":
         return { content: listFiles(resolveFile(input.dir || "."), input.depth), isError: false };
-      case "search_files":
-        return { content: await searchFiles(resolveFile(input.dir || "."), input), isError: false };
+      case "search_files": {
+        // pattern/path 是 grep 类工具的叫法，模型顺手就这么写；不认的话报「query 是空的」白烧一轮
+        const q = { ...input, query: input.query || input.pattern, dir: input.dir || input.path };
+        const root = resolveFile(q.dir || ".");
+        // 给的是一个文件：只搜这一个。以前当目录去列，列不出来就回「没搜到、扫了 0 个文件」，像是真没有
+        let isFile = false;
+        try { isFile = fs.statSync(root).isFile(); } catch {}
+        if (isFile) return { content: await searchFiles(path.dirname(root), { ...q, only: root }), isError: false };
+        return { content: await searchFiles(root, q), isError: false };
+      }
       case "chrome_cdp": {
         const action = String(input.action || "list_tabs");
         if (action === "navigate" && !/^https?:\/\//i.test(String(input.url || ""))) {
