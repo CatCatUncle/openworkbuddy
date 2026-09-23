@@ -164,6 +164,25 @@ const config = store.readJson(CONFIG_PATH, {});
 if (opts.perm) {
   config.security = { ...(config.security || {}), permission_mode: opts.perm };
 }
+// ---------- --model：这一次用哪个模型 ----------
+// 跟 --perm 一样只改内存。认 models 里的名字，也认型号 id；认不出来就停，绝不退回默认那条去花钱
+if (opts.model) {
+  const want = String(opts.model).trim();
+  const ms = config.models || [];
+  const hit = ms.find((m) => m.name === want) || ms.filter((m) => m.model === want)[0];
+  if (!hit) {
+    process.stderr.write(red(`配置里没有叫「${want}」的模型。有这些：${ms.map((m) => m.name).join(" / ") || "（一个都没配）"}\n`));
+    process.exit(2);
+  }
+  config.active_model = hit.name;
+  config.agent = config.agent || {};
+  const eng = String(config.agent.engine || "builtin").trim() || "builtin";
+  if (eng !== "builtin") {
+    // 设置里挑的是本机引擎时，模型根本不起作用——换了就得说出来，账单也跟着从订阅挪回 API
+    process.stderr.write(dim(`（--model 要走内置 agent，这一次不用「${eng}」引擎）\n`));
+    config.agent.engine = "builtin";
+  }
+}
 /** 当前档位（同一份真源，网页/命令行/审批都读它） */
 const permNow = () => security.permissionMode(config.security);
 
@@ -1157,7 +1176,8 @@ async function runOnceIn(runtime, text, mode, interactive) {
       history: sess.history,
       sessionId, // 文件检查点记在这个会话名下，/rewind 才知道哪些是这趟活儿改的
       // 进行中的目标注进任务上下文：agent 每一轮都对着验收标准干活，不跑偏
-      projectContext: goalKit.contextFor(sess.goal) || undefined,
+      projectContext: [goalKit.contextFor(sess.goal), opts.appendSystem].filter(Boolean).join("\n\n") || undefined,
+      maxSteps: opts.maxSteps || undefined, // --max-steps：只管这一次
       emit: makeEmit(state),
       mode: modes.agentMode(mode), // goal 在外面那层循环里，agent 只认识 ask/plan/craft
       user: owner ? owner.username : undefined, // 记忆按人取，命令行走管理员这本账
@@ -1371,6 +1391,17 @@ function splitFiles(text) {
   for (const m of shot.missing) prog(yellow(`  ！${m} 找不到，当普通文字发过去了\n`));
   if (shot.files.length) oneShot = shot.text; // 没摘出东西就一个字都不动，双空格之类的原样留着
   const wanted = namedFiles.concat(shot.files);
+  // openworkbuddy review [基准]：diff 在这儿取好，按只看不动跑。放在 splitFiles 之后——
+  // diff 里满是路径，过一遍那个摘附件的会把半份 diff 当文件摘走
+  if (sub === "review") {
+    const rv = require("./review");
+    const r = rv.collect(getWorkspaceDir(), oneShot);
+    if (r.error) { process.stderr.write(red(r.error + "\n")); process.exit(2); }
+    if (r.empty) { process.stderr.write(dim(`${r.label}：没有改动，没什么可审的\n`)); process.exit(0); }
+    prog(dim(`审${r.label}${r.truncated ? `（太长，只放前 ${rv.DIFF_MAX} 字符）` : ""}，只审不改…\n`));
+    oneShot = rv.prompt(r);
+    opts.mode = "ask";
+  }
 
   // 管道：有任务描述时当附加材料，没有时管道内容本身就是任务（openworkbuddy < 任务.txt）
   const piped = await readStdin();
@@ -1613,17 +1644,18 @@ function splitFiles(text) {
   }
   // Tab 走的是 readline 自己的补全（菜单没开、或者这台机器上菜单用不了的时候）。
   // 两边共用 fileMenu 和 repl.menu，不会出现「菜单里有、Tab 补不出来」
+  let custom = { list: [], skipped: [] }; // 自定义斜杠命令，下面 reloadCustom 填；补全和菜单要先看得见它
   function completeLine(line) {
     const f = fileMenu(line);
     if (f) return [f.items.map((i) => i.insert), String(line == null ? "" : line)];
-    return repl.complete(line);
+    return repl.complete(line, { custom: custom.list });
   }
 
   function menuDraw() {
     if (!menuUsable() || inbox.busy) { menuClose(); return; }
     let pos = null;
     try { pos = rl.getCursorPos(); } catch { menuState.dead = true; menuClose(); return; }
-    const hit = require("./repl-commands").menu(rl.line || "") || fileMenu(rl.line || "");
+    const hit = require("./repl-commands").menu(rl.line || "", { custom: custom.list }) || fileMenu(rl.line || "");
     const items = hit ? hit.items.slice(0, MENU_MAX) : [];
     // 输入折行了就不画：底下那几行的位置算不准，宁可没菜单也不能画歪
     if (!items.length || pos.rows > 0) { menuClose(); return; }
@@ -1757,8 +1789,29 @@ function splitFiles(text) {
   });
   const nextInput = () => inbox.next();
 
+  // 自己写的斜杠命令：跟着工作目录走（/cd 之后换成那个项目的），读盘很便宜，每条输入前重读一次，
+  // 改完 .md 不用重开终端
+  const customCmds = require("./custom-commands");
+  const builtinNames = repl.COMMANDS.flatMap((c) => [c.name, ...(c.aliases || [])]);
+  const reloadCustom = () => {
+    try { custom = customCmds.load({ cwd: getWorkspaceDir(), builtins: builtinNames }); } catch { custom = { list: [], skipped: [] }; }
+    return custom;
+  };
+  reloadCustom();
+  if (custom.list.length) prog(dim(`自定义命令 ${custom.list.length} 条：${custom.list.map((c) => "/" + c.name).join(" ")}\n`));
+  for (const x of custom.skipped) prog(yellow(`  没接上 ${path.basename(x.file)}：${x.why}\n`));
+
   const runReplCommand = async (v) => {
-    if (v.name === "help") { prog(repl.helpText()); return; }
+    if (v.name === "help") { prog(repl.helpText({ custom: custom.list })); return; }
+    if (v.name === "review") {
+      // diff 在这儿取好塞进去，审查按只看不动跑：审哪一份由人定，不让模型去猜 git 参数
+      const rv = require("./review");
+      const r = rv.collect(getWorkspaceDir(), v.arg);
+      if (r.error) { prog(yellow(r.error + "\n")); return; }
+      if (r.empty) { prog(dim(`${r.label}：没有改动，没什么可审的\n`)); return; }
+      prog(dim(`审${r.label}${r.truncated ? `（太长，只放前 ${rv.DIFF_MAX} 字符）` : ""}，只审不改…\n`));
+      return { prompt: rv.prompt(r), mode: "ask" };
+    }
     if (v.name === "clear") { process.stdout.write("\x1b[2J\x1b[3J\x1b[H"); return; }
     if (v.name === "mode") {
       if (!v.arg) { prog(dim(`当前是 ${modes.modeLabel(opts.mode)}；换：/mode ${modes.MODE_ARG}\n`)); return; }
@@ -2082,7 +2135,7 @@ function splitFiles(text) {
   for (;;) {
     const line = await nextInput();
     if (line === null) { process.stdout.write("\n"); break; } // Ctrl+D / 关掉了：正常收尾，不挂死
-    let v = repl.parse(line);
+    let v = repl.parse(line, { custom: reloadCustom().list });
     if (v.kind === "blank") {
       if (pending.length) prog(dim(`  还带着 ${pending.join("、")}；打一句要问的就一块儿发出去，不要了敲 /drop\n`));
       rl.prompt();
@@ -2093,9 +2146,18 @@ function splitFiles(text) {
     // 命令现场交出来的那趟活儿（/init）：不再过 splitFiles——那一步是摘「人拖进来的文件」的，
     // 拿它去扫一句现成的话，会把 AGENTS.md 这种词当附件摘走，剩下的句子当场缺一块
     let 现成的 = "";
+    let 这趟模式 = opts.mode;
+    if (v.kind === "custom") {
+      const c = custom.list.find((x) => x.name === v.name);
+      现成的 = customCmds.expand(c.body, v.arg);
+      prog(dim(`/${c.name} → ${现成的.replace(/\s+/g, " ").slice(0, 60)}${现成的.length > 60 ? "…" : ""}\n`));
+      v = { kind: "task", text: 现成的 };
+    }
     if (v.kind === "cmd") {
       if (v.name === "exit") break;
-      const 交出来的 = await runReplCommand(v);
+      let 交出来的 = await runReplCommand(v);
+      // 命令可以连模式一起交出来：/review 必须按只看不动跑，不管当前是哪个模式
+      if (交出来的 && typeof 交出来的 === "object") { 这趟模式 = 交出来的.mode || opts.mode; 交出来的 = 交出来的.prompt; }
       if (typeof 交出来的 !== "string" || !交出来的.trim()) { rl.prompt(); continue; }
       现成的 = 交出来的;
       v = { kind: "task", text: 现成的 };
@@ -2114,7 +2176,7 @@ function splitFiles(text) {
     inbox.setBusy(true);
     menuClose(); // 活儿要开跑了，菜单先收掉——正文一冲下来它就成了屏幕上的残渣
     rl.setPrompt(""); // 任务跑着的时候别让提示符插进流式正文里
-    last = await runOnce(runtime, attach.withNote(body, pending.splice(0)), opts.mode, true);
+    last = await runOnce(runtime, attach.withNote(body, pending.splice(0)), 这趟模式, true);
     inbox.setBusy(false);
     quitArmed = 0;
     rl.setPrompt(PROMPT);

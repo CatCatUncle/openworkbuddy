@@ -266,6 +266,7 @@ The diagram doubles as a reading order: start at `server.js`, then see how `agen
 
 ## What's new
 
+- **Sep 23** CLI gets `/review` for your changes, custom slash commands, and `--model` `--max-steps` `--append-system`
 - **Sep 23** Better at code: find files by name, several edits to one file at once, edits blocked if the file changed since it was read, background shell commands, and a todo list it must tick off before finishing
 - **Sep 23** The preview card in the chat and the right-hand preview panel now open the same version of an image
 - **Sep 23** No more running `open` on files once done — only when you ask; a delivery just reports the path
@@ -273,7 +274,6 @@ The diagram doubles as a reading order: start at `server.js`, then see how `agen
 - **Sep 23** A loaded skill now lives in the system prompt and survives history compaction and the next turn
 - **Sep 22** Picking a skill with `/` no longer sends the message on Enter; newly installed skills show up without a refresh
 - **Sep 22** On a phone, the button row now has 44px touch targets, so one tap hits
-- **Sep 22** The ten-odd seconds of compacting a long session now show a status line and a timer instead of a bare spinner
 
 Older entries → **[Changelog](CHANGELOG.en.md)**.
 
@@ -373,3 +373,14 @@ Thanks to everyone who has changed something here. Want to join them: [CONTRIBUT
  </picture>
 </a>
 </p>
+
+## About the author · Work with us
+
+Former big-tech Agent engineer with extensive hands-on experience shipping Agents in production.
+
+- ✔️ AI solutions delivered for cross-border e-commerce, manufacturing, AI startups, private funds, major consumer brands and state-owned enterprises
+- ✔️ Corporate AI training ｜ Private deployment ｜ Industry agents ｜ End-to-end AI transformation ｜ AI search optimization (GEO) ｜ Agent project delivery
+
+Based in Shenzhen — visits and conversations welcome.
+
+For FDE (forward-deployed engineering), Agent projects or other enterprise AI work, email [contact@aijentra.com](mailto:contact@aijentra.com).

@@ -261,7 +261,7 @@ console.log("\n⑪ 帮助文本 ↔ 声明表");
 {
   const h = R.helpText();
   for (const c of R.COMMANDS) ok(h.includes("/" + c.name), `★/${c.name} 写进了帮助★ 实现了没写进帮助 = 没人知道它存在`);
-  const shown = Array.from(new Set((h.match(/\/[a-z?][a-z0-9-]*/g) || [])));
+  const shown = Array.from(new Set((h.match(/(?<![\w.~])\/[a-z?][a-z0-9-]*/g) || [])));
   const known = new Set(R.COMMANDS.flatMap((c) => [c.name, ...(c.aliases || [])]).map((n) => "/" + n));
   const 假的 = shown.filter((s) => !known.has(s) && s !== "//");
   eq(假的.length, 0, "★帮助里没有实现不了的命令★ 反着也要对得上", 假的);
@@ -896,7 +896,7 @@ console.log("\n㉑ 文档里的命令表");
   const missing = R.COMMANDS.map((c) => c.name).filter((n) => !new RegExp("\\|\\s*`/" + n + "[ `]").test(doc));
   ok(missing.length === 0, "★每条命令在文档表格里都有一行★ 文档少一条 = 这个功能对外等于不存在", missing);
   const CN = ["零", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十",
-    "十一", "十二", "十三", "十四", "十五", "十六", "十七", "十八", "十九", "二十"];
+    "十一", "十二", "十三", "十四", "十五", "十六", "十七", "十八", "十九", "二十", "二十一", "二十二"];
   const said = (doc.match(/([零一二三四五六七八九十]+)条内置命令/) || [])[1] || "";
   ok(said === CN[R.COMMANDS.length], `文档说的条数对得上（现在 ${R.COMMANDS.length} 条）`, { said, want: CN[R.COMMANDS.length] });
   // 反向对照：这条不是永远绿

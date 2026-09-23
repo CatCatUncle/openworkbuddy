@@ -41,6 +41,7 @@ const COMMANDS = [
   { name: "status", desc: "模式、底层引擎、工作目录、这个会话跑了几轮" },
   { name: "init", desc: "让它把这个目录看一遍，写一份 AGENTS.md，以后每趟活儿都照着它来" },
   { name: "compact", desc: "把前面聊过的压成一段摘要腾地方；原文照样归档，不删" },
+  { name: "review", arg: "[基准分支]", desc: "把改动当别人的代码挑一遍毛病，只审不改；不给基准就审还没提交的，给了就审这条分支从分叉起改的" },
   { name: "diff", desc: "这个会话动过哪些文件；工作目录要是 git 仓库，顺带把 diff 也出了" },
   { name: "rewind", arg: "[序号]", desc: "把这个会话改过的文件退回某一步之前；不给序号就列出能退的步" },
   { name: "mcp", desc: "外部连接器接上了没有、各自带了几个工具、没接上是卡在哪儿" },
@@ -59,6 +60,11 @@ const PASTE_GAP_MS = 80;
 /** 历史存多少条。再多也没人往上翻，白占地方 */
 const HISTORY_MAX = 300;
 
+/** 自定义命令（custom-commands.load 的 list）。只取名字和说明，别的这层用不上 */
+function customList(custom) {
+  return Array.isArray(custom) ? custom.filter((c) => c && c.name) : [];
+}
+
 function find(word) {
   const w = String(word || "");
   return COMMANDS.find((c) => c.name === w || (c.aliases || []).includes(w)) || null;
@@ -70,12 +76,12 @@ function find(word) {
  * 在编辑距离里那是 2，卡在 1 就一条都猜不出来。三个字母以内仍然卡死在 1，
  * 短词本来就互相像，放宽了会开始瞎猜。
  */
-function nearest(word) {
+function nearest(word, custom) {
   const w = String(word || "");
   if (!w) return null;
   const limit = w.length <= 3 ? 1 : 2;
   let best = null, bestD = Infinity;
-  for (const c of COMMANDS) {
+  for (const c of COMMANDS.concat(customList(custom))) {
     for (const n of [c.name, ...(c.aliases || [])]) {
       const d = editDistance(w, n);
       if (d > 0 && d <= limit && d < bestD) { best = c.name; bestD = d; }
@@ -91,8 +97,10 @@ function nearest(word) {
  *   { kind: "cmd", name, arg }                          内置命令
  *   { kind: "unknown", typed, suggest }                 长得像命令但没这条
  *   { kind: "bad-arg", name, arg, want }                命令对了，参数不对
+ *   { kind: "custom", name, arg }                       .openworkbuddy/commands 里自己写的命令
  */
-function parse(line) {
+function parse(line, opt) {
+  const custom = customList(opt && opt.custom);
   const raw = String(line == null ? "" : line);
   const body = raw.trim();
   if (!body) return { kind: "blank" };
@@ -114,11 +122,13 @@ function parse(line) {
 
   const cmd = find(bare.toLowerCase());
   if (!cmd) {
+    const own = custom.find((c) => c.name === bare.toLowerCase());
+    if (own) return { kind: "custom", name: own.name, arg };
     // 只有全小写的才按「打错的命令」拦下来。/Users、/Applications、/Volumes 这些是目录名，
     // 人是想跟 agent 说这个目录，拦下来纯属添乱；而 /moe 拦下来是省钱——
     // 它要是被当成任务发出去，模型会一本正经地去执行一条根本不存在的指令。
     if (bare !== bare.toLowerCase()) return { kind: "task", text: body };
-    return { kind: "unknown", typed: head, suggest: nearest(bare) };
+    return { kind: "unknown", typed: head, suggest: nearest(bare, custom) };
   }
   if (!cmd.arg && arg) return { kind: "bad-arg", name: cmd.name, arg, want: null };
   if (cmd.choices && arg && !cmd.choices.includes(arg)) return { kind: "bad-arg", name: cmd.name, arg, want: cmd.choices };
@@ -157,13 +167,13 @@ function resolveCd(arg, cwd, home) {
 }
 
 /** Tab 补全：命令名，以及带取值的命令的那几个取值 */
-function complete(line) {
+function complete(line, opt) {
   const s = String(line == null ? "" : line);
   const head = s.match(/^\/([a-z0-9-]*)$/);
   if (head) {
     const pre = head[1];
     const hits = [];
-    for (const c of COMMANDS) {
+    for (const c of COMMANDS.concat(customList(opt && opt.custom))) {
       if ([c.name, ...(c.aliases || [])].some((n) => n.startsWith(pre))) hits.push("/" + c.name);
     }
     return [hits, s];
@@ -188,13 +198,13 @@ function complete(line) {
  *
  * 返回 null 表示「这一行没什么可弹的」，UI 据此把菜单收掉。
  */
-function menu(line) {
+function menu(line, opt) {
   const s = String(line == null ? "" : line);
   const head = s.match(/^\/([a-z0-9-]*)$/);
   if (head) {
     const pre = head[1];
     const items = [];
-    for (const c of COMMANDS) {
+    for (const c of COMMANDS.concat(customList(opt && opt.custom).map((c) => ({ name: c.name, arg: "[参数]", desc: c.description || "自定义命令" })))) {
       if (![c.name, ...(c.aliases || [])].some((n) => n.startsWith(pre))) continue;
       items.push({
         text: "/" + c.name,
@@ -618,19 +628,26 @@ function compactedText(before, after, removed) {
     `${save ? "，省了 " + save + "%" : ""}。原文归档在 data/compact-archive，没删。\n`;
 }
 
-function helpText() {
+function helpText(opt) {
   const rows = COMMANDS.map((c) => ({
     left: `/${c.name}${c.arg ? " " + c.arg : ""}`,
     desc: c.desc + ((c.aliases || []).length ? `（也能写 ${c.aliases.map((a) => "/" + a).join(" ")}）` : ""),
   }));
-  const w = rows.reduce((n, r) => Math.max(n, cols(r.left)), 0);
-  const lines = rows.map((r) => `  ${padCols(r.left, w + GAP)}${r.desc}`);
+  const own = customList(opt && opt.custom).map((c) => ({
+    left: `/${c.name} [参数]`,
+    desc: c.description || `自定义命令（${c.scope === "project" ? "项目" : "个人"}）`,
+  }));
+  const w = rows.concat(own).reduce((n, r) => Math.max(n, cols(r.left)), 0);
+  const fmt = (r) => `  ${padCols(r.left, w + GAP)}${r.desc}`;
   return [
     "",
     "openworkbuddy> 这儿能敲的命令：",
     "",
-    ...lines,
+    ...rows.map(fmt),
     "",
+    ...(own.length
+      ? ["  自己写的：", ...own.map(fmt), ""]
+      : ["  想要自己的命令：把一段提示词存成 .openworkbuddy/commands/<名字>.md（或放 ~/ 下同名目录），", "  里面用 $ARGUMENTS 或 $1 $2 接参数，重开之后就能敲 /<名字>。", ""]),
     "  别的都当任务发给 agent。多行需求直接粘进来，会合成一条，不会被拆成好几条。",
     "  想发一句本来就以 / 开头的话：行首加个空格，或者写成 //。",
     "  任务跑着的时候打字回车 = 插话，下一步会带给它；Ctrl+C 停这趟活儿，不退出。",

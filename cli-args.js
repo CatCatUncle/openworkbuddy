@@ -37,6 +37,7 @@ const PERM_ARG = PERM_IDS.join("|"); // 跟 MODE_ARG 一个写法：不带尖括
  *   str    —— 必须跟一个值
  *   enum   —— 必须跟一个值，且值要在 choices 里
  *   optnum —— 可以跟一个正整数，不跟就用 fallback
+ *   num    —— 必须跟一个正整数，不超过 max
  *   strs   —— 必须跟一个值，可以重复写几次，攒成一个数组
  */
 const FLAGS = [
@@ -47,6 +48,9 @@ const FLAGS = [
   { long: "continue", short: "c", type: "bool", key: "cont", value: true, desc: "续接最近一次 CLI 会话" },
   { long: "session", type: "str", key: "session", arg: "<id>", desc: "续接指定会话" },
   { long: "list", type: "optnum", key: "list", arg: "[n]", fallback: 10, desc: "列出最近 n 个 CLI 会话（默认 10）" },
+  { long: "model", type: "str", key: "model", arg: "<名字>", desc: "这一次用哪个模型（配置里 models 的名字或 id；不改配置）" },
+  { long: "max-steps", type: "num", key: "maxSteps", arg: "<n>", max: 500, desc: "这一次最多走几步（默认按配置，上限 500）" },
+  { long: "append-system", type: "str", key: "appendSystem", arg: "<文字>", desc: "给这一次追加一段规矩，比如「只用 TypeScript」" },
   { long: "json", type: "bool", key: "json", value: true, desc: "事件按 NDJSON 输出到 stdout，给脚本用" },
   { long: "quiet", short: "q", type: "bool", key: "quiet", value: true, desc: "只输出最终答案，不打进度" },
   { long: "raw", type: "bool", key: "raw", value: true, desc: "答案原样输出 Markdown，不在终端里渲染" },
@@ -69,11 +73,12 @@ const SUBS = [
   { name: "2fa", usage: "openworkbuddy 2fa <用户名> [--off]", desc: "看某个账号的二次验证状态；手机丢了用 --off 关掉" },
   { name: "owner", usage: "openworkbuddy owner [用户名]", desc: "看谁是超级管理员；给用户名就把这个位子指给他（唯一的超管进不去时的救场口）" },
   { name: "jev", usage: 'openworkbuddy jev ["材料" "问题" [选项…]]', desc: "问一下判断模型：它不写字，只回选项/分数/概率，外加一个「有多确定」。不给参数就测活" },
+  { name: "review", usage: "openworkbuddy review [基准分支]", desc: "把改动当别人的代码挑一遍毛病，只审不改；不给基准就审还没提交的" },
   { name: "worktree", usage: "openworkbuddy worktree [清理]", desc: "看有哪些「分身」：两条任务同时改一个仓库时，后来那条会去自己的 git worktree 里改" },
   { name: "completion", usage: "openworkbuddy completion <shell>", desc: "生成 Tab 补全脚本（bash / zsh / fish）" },
 ];
 
-const DEFAULTS = { mode: "craft", session: null, mcp: true, workspace: null, files: [], cont: false, json: false, quiet: false, raw: false, list: 0, help: false, version: false, askRemote: false, off: false, score: false, perm: null };
+const DEFAULTS = { mode: "craft", session: null, mcp: true, workspace: null, files: [], cont: false, json: false, quiet: false, raw: false, list: 0, help: false, version: false, askRemote: false, off: false, score: false, perm: null, model: null, maxSteps: null, appendSystem: null };
 
 /** 编辑距离。只用来猜「你是不是想说 X」，不求快 */
 function editDistance(a, b) {
@@ -185,6 +190,15 @@ function parse(argv, spec) {
       return;
     }
     if (f.type === "strs") { opts[f.key] = (opts[f.key] || []).concat(v); return; }
+    if (f.type === "num") {
+      const n = Number(v);
+      if (!/^\d+$/.test(String(v)) || n <= 0 || n > f.max) {
+        problems.push(problem("bad-number", `${source} 要跟 1 到 ${f.max} 之间的整数，你写的是 ${v}。`, ""));
+        return;
+      }
+      opts[f.key] = n;
+      return;
+    }
     if (f.type === "optnum") {
       const n = Number(v);
       if (!/^\d+$/.test(String(v)) || n <= 0) {
