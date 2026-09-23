@@ -9,6 +9,7 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 ## 2026
 
+- **Sep 23** Editing a Windows (CRLF) file no longer leaves half `\n`, half `\r\n`: `edit_file` / `multi_edit` / `write_file` (append too) keep the file's line endings; when the file uses tabs and the edit uses spaces (or the reverse), the edit is written back in the file's style instead of leaving mixed indentation Python rejects. Files already mixed are left as they are
 - **Sep 23** `openworkbuddy workflow flow.json`: write "plan → build → review" as a file and run it step by step; `{{name}}` pastes an earlier step's answer; a failed step stops the rest, and a broken file runs nothing
 - **Sep 23** Hooks: commands in `agent.hooks` of `config.json` — `before_shell` can block a command, `after_edit` runs after each file edit (format/lint), `done` must pass before the task wraps up (sent back at most twice)
 - **Sep 23** CLI: `/review` (and `openworkbuddy review [base]`) hands your changes over for a read-only review; write your own slash commands in `.openworkbuddy/commands/*.md` with `$ARGUMENTS` / `$1`; new one-off flags `--model` `--max-steps` `--append-system`

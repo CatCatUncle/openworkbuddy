@@ -295,6 +295,40 @@ async function until(fn, ms = 5000) {
     ok(c.calls === 1, "没列清单的任务不受影响（反向对照）", c.calls);
   }
 
+  console.log("\n⑨ 换行符和缩进风格跟着文件走");
+  {
+    const S = { sessionId: "s_eol", actor: "carol", taskLabel: "测试" };
+    const E = async (rel, input, tool = "edit_file") => { await executeTool("read_file", { path: rel }, S); return executeTool(tool, { path: rel, ...input }, S); };
+    W("crlf.txt", "a = 1\r\nb = 2\r\nc = 3\r\n");
+    let r = await E("crlf.txt", { old_text: "a = 1\nb = 2", new_text: "a = 10\nb = 20" });
+    ok(!r.isError && R("crlf.txt") === "a = 10\r\nb = 20\r\nc = 3\r\n", "★CRLF 文件用 \\n 写的 old/new 也能改，改完整篇还是 CRLF★", [r.content, R("crlf.txt")]);
+    r = await E("crlf.txt", { edits: [{ old_text: "a = 10", new_text: "a = 1\na2 = 1" }, { old_text: "c = 3", new_text: "c = 4" }] }, "multi_edit");
+    ok(!r.isError && R("crlf.txt") === "a = 1\r\na2 = 1\r\nb = 20\r\nc = 4\r\n", "multi_edit 一样", [r.content, R("crlf.txt")]);
+    r = await E("crlf.txt", { content: "z\nq\n" }, "write_file");
+    ok(!r.isError && R("crlf.txt") === "z\r\nq\r\n", "write_file 整篇重写保留 CRLF", R("crlf.txt"));
+    r = await E("crlf.txt", { content: "tail\n", append: true }, "write_file");
+    ok(!r.isError && R("crlf.txt") === "z\r\nq\r\ntail\r\n", "追加也保留 CRLF", R("crlf.txt"));
+    W("mixed.txt", "a\r\nb\nc\r\n");
+    r = await E("mixed.txt", { old_text: "b", new_text: "b2\nb3" });
+    ok(!r.isError && R("mixed.txt") === "a\r\nb2\nb3\nc\r\n", "本来就混着的文件不去动它的换行（反向对照）", R("mixed.txt"));
+    W("lf.txt", "a\nb\n");
+    r = await E("lf.txt", { content: "x\ny\n" }, "write_file");
+    ok(R("lf.txt") === "x\ny\n", "LF 文件照旧是 LF（反向对照）", R("lf.txt"));
+
+    W("tab.py", "def f():\n\treturn 1\n");
+    r = await E("tab.py", { old_text: "def f():\n    return 1", new_text: "def f():\n    if x:\n        return 2" });
+    ok(!r.isError && R("tab.py") === "def f():\n\tif x:\n\t\treturn 2\n", "★文件用 Tab、给的是空格：写回去换成 Tab，不留混缩进★", R("tab.py"));
+    W("sp.py", "def f():\n    return 1\n");
+    r = await E("sp.py", { old_text: "def f():\n\treturn 1", new_text: "def f():\n\tif x:\n\t\treturn 2" });
+    ok(!r.isError && R("sp.py") === "def f():\n    if x:\n        return 2\n", "反过来：文件用空格、给的是 Tab", R("sp.py"));
+    W("sp2.py", "def f():\n    return 1\n");
+    r = await E("sp2.py", { old_text: "def f():\n    return 1", new_text: "def f():\n    return 2" });
+    ok(!r.isError && R("sp2.py") === "def f():\n    return 2\n", "缩进本来就对得上的不动（反向对照）", R("sp2.py"));
+    W("tab2.py", "def f():\n\tif y:  \n\t\treturn 1\n"); // 行尾多了空格，逼它走宽松匹配
+    r = await E("tab2.py", { old_text: "def f():\n\tif y:\n\t\treturn 1", new_text: "def f():\n\tif y:\n\t\treturn 3" });
+    ok(!r.isError && R("tab2.py") === "def f():\n\tif y:\n\t\treturn 3\n", "宽松匹配时 Tab 对 Tab 也不动（反向对照）", R("tab2.py"));
+  }
+
   try { fs.rmSync(WS, { recursive: true, force: true }); fs.rmSync(TMP, { recursive: true, force: true }); } catch {}
   console.log(`\n${pass} 通过，${fail} 失败`);
   process.exit(fail ? 1 : 0);

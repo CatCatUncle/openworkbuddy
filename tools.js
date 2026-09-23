@@ -2442,6 +2442,40 @@ function shiftIndent(fileLine, needleLine, repl) {
 }
 
 /**
+ * 文件用 Tab 缩进、它给的是空格（或反过来）：照写就是一个块里 Tab 空格混着，Python 直接 TabError。
+ * 一层等于几个空格从命中的那几行里对出来——每一对都得算出同一个整数，对不上就不猜，原样返回。
+ */
+function matchIndentStyle(fileLines, needleLines, repl) {
+  const lead = (l) => (l.match(/^[ \t]*/) || [""])[0];
+  let dir = null, unit = 0;
+  for (let j = 0; j < Math.min(fileLines.length, needleLines.length); j++) {
+    const f = lead(fileLines[j]), n = lead(needleLines[j]);
+    if (!f || !n || !fileLines[j].trim()) continue;
+    const d = /^\t+$/.test(f) && /^ +$/.test(n) ? "toTabs" : /^ +$/.test(f) && /^\t+$/.test(n) ? "toSpaces" : f === n ? "same" : "mixed";
+    if (d === "mixed" || (dir && d !== dir)) return repl;
+    dir = d;
+    if (d === "same") continue;
+    const [tabs, spaces] = d === "toTabs" ? [f.length, n.length] : [n.length, f.length];
+    if (spaces % tabs) return repl;
+    if (unit && unit !== spaces / tabs) return repl;
+    unit = spaces / tabs;
+  }
+  if (!unit || dir === "same" || !dir) return repl;
+  return repl.split("\n").map((l) => {
+    if (!l.trim()) return l;
+    const ld = lead(l);
+    const width = [...ld].reduce((w, ch) => w + (ch === "\t" ? unit : 1), 0);
+    const ind = dir === "toTabs" ? "\t".repeat(Math.floor(width / unit)) + " ".repeat(width % unit) : " ".repeat(width);
+    return ind + l.slice(ld.length);
+  }).join("\n");
+}
+
+/** 整篇都是 \r\n 换行（一个裸 \n 都没有）。混着的文件不算：那种不替它统一 */
+function pureCrlf(text) {
+  return text.includes("\r\n") && !/(^|[^\r])\n/.test(text);
+}
+
+/**
  * 没命中时，把文件在最可能那一段的**原文**直接贴回去，让它照抄——
  * 而不是只报一句「先 read_file」，逼它把整篇文件重读一遍。
  * 锚点不只看 old_text 的第一行：21 次没命中里有 10 次连提示都给不出来，就是因为只认第一行。
@@ -2483,7 +2517,16 @@ function missHint(lines, needle) {
  *
  * 只算不写：返回改完的全文和回执。先算后写，中间才插得进「给用户看 diff、等他批」这一步。
  */
-function planEdit(src, label, { old_text, new_text, replace_all }) {
+function planEdit(src, label, input) {
+  // Windows 换行的文件：它给的 old_text/new_text 几乎总是 \n。按 \n 算、写回时再换回 \r\n——
+  // 不然改过的那几行变成 \n，文件换行混着，diff 满屏红，有的 Windows 工具直接读歪
+  if (!pureCrlf(src)) return planEditLf(src, label, input);
+  const lf = (x) => (x == null ? x : String(x).replace(/\r\n/g, "\n"));
+  const r = planEditLf(src.replace(/\r\n/g, "\n"), label, { ...input, old_text: lf(input.old_text), new_text: lf(input.new_text) });
+  return { ...r, src, out: r.noop ? src : r.out.replace(/\n/g, "\r\n") };
+}
+
+function planEditLf(src, label, { old_text, new_text, replace_all }) {
   const needle = String(old_text == null ? "" : old_text);
   const repl = String(new_text == null ? "" : new_text);
   if (!needle) throw new Error("old_text 是空的：edit_file 必须给出要被替换掉的原文");
@@ -2501,7 +2544,7 @@ function planEdit(src, label, { old_text, new_text, replace_all }) {
     if (loose.length === 1) {
       const [start, end] = loose[0];
       // new_text 是空的 = 要把这几行删掉，别塞一个空行进去
-      const body = repl === "" ? [] : shiftIndent(lines[start], needle.split("\n")[0], repl).split("\n");
+      const body = repl === "" ? [] : matchIndentStyle(lines.slice(start, end), needle.split("\n"), shiftIndent(lines[start], needle.split("\n")[0], repl)).split("\n");
       const out = lines.slice(0, start).concat(body, lines.slice(end)).join("\n");
       if (out === src) return same;
       return {
@@ -4355,10 +4398,12 @@ async function executeToolCore(name, input, opts = {}) {
       case "write_file": {
         const rel = String(input.path || "");
         const p = resolveFile(rel);
-        const body = String(input.content || "");
-        const n = Buffer.byteLength(body);
+        let body = String(input.content || "");
         // 落盘之前先把 diff 算出来：审批卡上要给人看这次到底动了哪几行，看着批才算批
         const was = readBefore(p);
+        // 原文件整篇是 \r\n：它写来的 \n 跟着换，不然重写/追加一次整个文件的换行就变了
+        if (was && body.includes("\n") && !body.includes("\r") && pureCrlf(was.toString("utf8"))) body = body.replace(/\n/g, "\r\n");
+        const n = Buffer.byteLength(body);
         const blocked = await passGate(security.checkWrite(sec, rel), "写文件", rel, {
           force: true,
           detail: diffText(rel, was, input.append ? Buffer.concat([was || Buffer.alloc(0), Buffer.from(body, "utf8")]) : body),

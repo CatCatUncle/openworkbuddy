@@ -9,6 +9,7 @@ English: [CHANGELOG.en.md](CHANGELOG.en.md)
 
 ## 2026
 
+- **09-23** 改 Windows 换行（CRLF）的文件不再改出一半 `\n` 一半 `\r\n`：`edit_file` / `multi_edit` / `write_file`（含追加）都跟着文件原来的换行走；文件用 Tab、它给的是空格（或反过来）时写回去换成文件的那种，不再留下 Python 报 TabError 的混缩进。本来就混着的文件不动
 - **09-23** `openworkbuddy workflow 流程.json`：把「想方案 → 照做 → 审一遍」写成文件按顺序跑，`{{名字}}` 贴前面某步的结论；一步没成后面就停，文件写错一步都不跑
 - **09-23** 钩子：`config.json` 的 `agent.hooks` 里写命令——`before_shell` 拦命令、`after_edit` 改完文件自动跑（格式化/lint）、`done` 没过不许收尾（最多打回两次）
 - **09-23** 命令行：`/review`（和 `openworkbuddy review [基准]`）把改动取好交给它审，只看不动；`.openworkbuddy/commands/*.md` 自己写斜杠命令，`$ARGUMENTS` `$1` 填参数；新开关 `--model` `--max-steps` `--append-system` 只管这一次
