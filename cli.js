@@ -80,9 +80,11 @@ function paintDiff(text, max = 30) {
 }
 const bold = (s) => (ttyErr ? `\x1b[1m${s}\x1b[0m` : s);
 /** 进度/诊断：一律 stderr，且 --quiet / --json 下彻底闭嘴 */
-const prog = (s) => { if (!opts.quiet && !opts.json) process.stderr.write(s); };
+// 往终端印过几回。「● 工具」那行跟它的「└ 结果」之间只要插进过别的东西（审批单、提示、正文），结果前就得把调用行再印一遍
+let inkSeq = 0;
+const prog = (s) => { if (!opts.quiet && !opts.json) { inkSeq++; process.stderr.write(s); } };
 /** 模型的回答：stdout，--json 下改走事件流 */
-const answer = (s) => { if (!opts.json) process.stdout.write(s); };
+const answer = (s) => { if (!opts.json) { inkSeq++; process.stdout.write(s); } };
 /** 机器可读事件流 */
 const emitJson = (o) => { if (opts.json) process.stdout.write(JSON.stringify(o) + "\n"); };
 /**
@@ -579,6 +581,10 @@ function saveSess() {
 }
 
 // ---------- 事件渲染 ----------
+const toolView = require("./cli-toolview");
+const termWidth = () => Math.max(40, (process.stderr.columns || 80) - 2);
+/** 工具那几行的颜色：● 和名字亮一点，参数和输出压暗，出错的红 */
+const toolPaint = (s, k) => ({ bullet: (y) => (ttyErr ? `\x1b[36m${y}\x1b[39m` : y), name: bold, arg: dim, out: dim, more: dim, err: red }[k] || ((y) => y))(s);
 function makeEmit(state) {
   return (ev) => {
     // 先播给网页/手机，再管终端怎么显示：这两件事互不相干，哪边坏了都不该拖累另一边
@@ -607,16 +613,21 @@ function makeEmit(state) {
       prog(dim(`\n  ▸▸ ${ev.count} ${ev.kind === "gen" ? "条生成任务一起跑" : "个只读工具并发执行"}`));
       state.streamed = false;
     } else if (ev.type === "tool_use") {
-      const who = ev.expert ? `${ev.expert} · ` : "";
-      prog(dim(`\n  ▸ ${who}${ev.name}${ev.purpose ? `（${String(ev.purpose).slice(0, 60)}）` : ""}`));
-      state.lastToolId = ev.id;
+      // 「● Shell(npm test)」：跑的是哪条命令、动的是哪个文件，一眼看得见（见 cli-toolview.js）
+      if (!state.calls) state.calls = new Map();
+      if (ev.id) state.calls.set(ev.id, ev);
+      prog("\n" + toolView.callLine(ev, { width: termWidth(), paint: toolPaint }));
+      state.lastTool = { id: ev.id, seq: inkSeq };
       state.streamed = false;
     } else if (ev.type === "tool_result") {
-      // 并发跑的时候回来的顺序不一定，勾不能盲目贴在最后一行——那是别人的行
-      if (ev.id && state.lastToolId !== ev.id) prog(dim(`\n  ▸ ${ev.name}`));
-      prog(ev.isError ? red(" ✗") : green(" ✓"));
-      state.lastToolId = null;
-      if (ev.isError && ev.preview) prog(dim("\n    " + String(ev.preview).slice(0, 200).replace(/\n/g, " ")));
+      // └ 只能紧挨着自己那行 ●。并发回来的顺序不一定、中间还可能插进一张审批单——那就把自己那行再印一遍
+      const call = ev.id && state.calls ? state.calls.get(ev.id) : null;
+      const last = state.lastTool;
+      if (ev.id && !(last && last.id === ev.id && last.seq === inkSeq)) prog("\n" + toolView.callLine(call || ev, { width: termWidth(), paint: toolPaint }));
+      if (ev.id && state.calls) state.calls.delete(ev.id);
+      const rows = toolView.resultLines({ ...ev, name: ev.name || (call && call.name) }, { width: termWidth(), paint: toolPaint });
+      if (rows.length) prog("\n" + rows.join("\n"));
+      state.lastTool = null;
       // 改文件那几步把 diff 摆出来：加的绿、删的红。改坏了当场看得见，/rewind 退回去
       if (!ev.isError && ev.diff) { prog("\n" + paintDiff(ev.diff)); state.streamed = false; }
     } else if (ev.type === "status") {
@@ -845,6 +856,10 @@ let askCtx = null;
 let liveNow = null;
 /** 有人能回答吗：stdin 得是终端，且不是在给脚本喂 NDJSON。管道进来的内容早读完了，那头没人 */
 const somebodyHome = () => !!process.stdin.isTTY && !opts.json;
+/** 按键归谁：↑↓ 单子摆着的时候整场归它，REPL 的 readline 一个键都收不到 @type {null | ((ch: string, key: any) => void)} */
+let keyGrab = null;
+/** 交互模式那个按键拦截点装上了没有（readline 内部 _ttyWrite 拿不到就是没装） */
+let replKeyHook = false;
 
 // ---------- 手机/网页上答的那一句 ----------
 /**
@@ -972,6 +987,79 @@ function termReadLine(promptText, timeoutMs) {
 let askSeq = 0;
 const newId = (p) => `${p}_${Date.now()}_${++askSeq}`;
 
+/** 能不能摆 ↑↓ 单子：两头都是终端，交互模式还得拦得住按键。不行就退回敲一行 */
+function canPickByKey() {
+  if (!somebodyHome() || !process.stderr.isTTY) return false;
+  const ctx = askCtx;
+  if (ctx && ctx.interactive) return !!replRl && replKeyHook;
+  return typeof process.stdin.setRawMode === "function";
+}
+
+/**
+ * 在终端里摆一张 ↑↓ 挑的单子（画在 stderr），等一个选择。
+ * p.menu(sel) 给行，p.key(sel, key, ch, 摆出来多久) 说这个键干什么——都是 cli-approve 里的纯函数。
+ * @returns {Promise<string|null>} 选中第几条（"1" 起）；null = 超时 / Ctrl+C / 被手机那边抢答后撤掉
+ */
+function termPick(p, timeoutMs) {
+  const ctx = askCtx;
+  const sig = ctx ? ctx.ctrl.signal : null;
+  return new Promise((done) => {
+    let settled = false, sel = 0, drawn = 0, unRaw = null;
+    const t0 = Date.now();
+    const erase = () => {
+      if (!drawn) return;
+      try {
+        readline.moveCursor(process.stderr, 0, -drawn);
+        readline.cursorTo(process.stderr, 0);
+        readline.clearScreenDown(process.stderr);
+      } catch {}
+      drawn = 0;
+    };
+    const draw = () => {
+      erase();
+      const ls = p.menu(sel);
+      try { process.stderr.write(ls.join("\n") + "\n"); drawn = ls.length; } catch { drawn = 0; }
+    };
+    const finish = (v) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (sig) sig.removeEventListener("abort", onAbort);
+      keyGrab = null;
+      cancelAsk = null;
+      if (unRaw) unRaw();
+      erase(); // 单子收掉，结果由调用方印一行「✓ 批了这一次」
+      done(v);
+    };
+    const timer = setTimeout(() => finish(null), Math.max(5000, Number(timeoutMs) || 120000));
+    if (timer.unref) timer.unref();
+    const onAbort = () => finish(null);
+    if (sig) sig.addEventListener("abort", onAbort, { once: true });
+    cancelAsk = () => finish(null);
+    const onKey = (ch, key) => {
+      const r = p.key(sel, key || {}, ch, Date.now() - t0);
+      if (!r) return;
+      if (r.cancel) { finish(null); if (ctx) ctx.onSigint(); return; } // Ctrl+C 还是「停下这趟」，跟敲一行那条路一样
+      if ("pick" in r) return finish(String(r.pick + 1));
+      sel = r.sel;
+      draw();
+    };
+    draw();
+    if (ctx && ctx.interactive) { keyGrab = onKey; return; }
+    // 单发模式没有常驻 readline：自己开 raw 模式收键，用完原样还回去
+    const wasRaw = !!process.stdin.isRaw;
+    readline.emitKeypressEvents(process.stdin);
+    try { process.stdin.setRawMode(true); } catch {}
+    process.stdin.on("keypress", onKey);
+    process.stdin.resume();
+    unRaw = () => {
+      process.stdin.off("keypress", onKey);
+      try { process.stdin.setRawMode(wasRaw); } catch {}
+      process.stdin.pause();
+    };
+  });
+}
+
 /**
  * agent 问一句：终端里摆出来，同时推到手机上。
  *
@@ -1010,12 +1098,13 @@ async function handleApproval(entry) {
   const deadline = Number(entry.deadline) || Date.now() + 120000;
   const timeoutMs = Math.max(5000, deadline - Date.now());
   if (live) live.pend(cliApprove.card(entry, deadline));
+  const fromPhone = (a) => (a.allow ? (a.scope === "session" || a.scope === "always" ? "2" : "1") : "3");
   let v = null;
   try {
     v = await cliApprove.run(entry, {
-      write: (x) => process.stderr.write(x),
-      readLine: (promptText, ms) => raceRemote(entry.id, () => termReadLine(promptText, ms),
-        (a) => (a.allow ? (a.scope === "session" || a.scope === "always" ? "2" : "1") : "3")),
+      write: (x) => { inkSeq++; process.stderr.write(x); },
+      readLine: (promptText, ms) => raceRemote(entry.id, () => termReadLine(promptText, ms), fromPhone),
+      pick: canPickByKey() ? (p, ms) => raceRemote(entry.id, () => termPick(p, ms), fromPhone) : undefined,
       timeoutMs,
       width: (process.stderr.columns || 80) - 2,
       paint: (x, k) => ({
@@ -1057,7 +1146,7 @@ function makeAskUser(readLine) {
   // 两处都 pend 的话，同一道题会在手机上并排出现两张卡、各带一个 id，
   // 而 agent 只认 askUserBoth 那个 id——点另一张的人会发现点了没反应。
   return async (ask) => cliAsk.run(ask, {
-    write: (x) => process.stderr.write(x),
+    write: (x) => { inkSeq++; process.stderr.write(x); },
     readLine: (promptText, deadline) => readLine(promptText, deadline),
     width: (process.stderr.columns || 80) - 2,
     paint: (x, k) => (paint[k] || ((y) => y))(x),
@@ -1776,8 +1865,10 @@ function splitFiles(text) {
   // Tab 走 readline 自己的补全。宁可少一半功能，也不能因为 Node 换了实现就崩在这儿。
   const ttyWriteOrig = typeof rl._ttyWrite === "function" ? rl._ttyWrite.bind(rl) : null;
   if (ttyWriteOrig) {
+    replKeyHook = true;
     rl._ttyWrite = (ch, key) => {
       const k = key || {};
+      if (keyGrab) { keyGrab(ch, k); return; } // 审批单子摆着：按键全归它
       if (picker.on) { picker.key(ch, k); return; } // 选择器开着就整场归它，readline 一个键都收不到
       if (k.name === "tab" && k.shift) { cyclePerm(); return; } // 得排在菜单之前，不然被当成补全的 Tab 吃掉
       if (menuState.items.length && !k.ctrl && !k.meta) {

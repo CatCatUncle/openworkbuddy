@@ -155,6 +155,68 @@ async function run() {
     }
   }
 
+  // ---- ⑦ ↑↓ 单子：跟 Claude Code / Codex 一样挑，但回车不许是「单子出来前就敲下的那个」 ----
+  {
+    const K = (name, extra) => Object.assign({ name }, extra || {});
+    const late = ap.ENTER_GUARD_MS + 1;
+    assert.strictEqual(ap.menuKey(0, K("return"), "\r", 0), null, "★刚摆出来就到的回车不认★ 那是之前敲进缓冲区的，不是看着光标按的");
+    assert.strictEqual(ap.menuKey(0, K("return"), "\r", ap.ENTER_GUARD_MS - 1), null, "护栏时间内都不认");
+    assert.deepStrictEqual(ap.menuKey(0, K("return"), "\r", late), { pick: 0 }, "过了护栏，回车选光标那条");
+    assert.deepStrictEqual(ap.menuKey(2, K("enter"), "", late), { pick: 2 });
+    assert.deepStrictEqual(ap.menuKey(0, K("up"), "", 0), { sel: 2 }, "↑ 从第一条绕到最后一条");
+    assert.deepStrictEqual(ap.menuKey(2, K("down"), "", 0), { sel: 0 }, "↓ 从最后一条绕回第一条");
+    assert.deepStrictEqual(ap.menuKey(0, K("j"), "j", 0), { sel: 1 });
+    assert.deepStrictEqual(ap.menuKey(1, K("k"), "k", 0), { sel: 0 });
+    assert.deepStrictEqual(ap.menuKey(0, K("tab"), "\t", 0), { sel: 1 });
+    for (const [ch, want] of [["1", 0], ["2", 1], ["3", 2], ["y", 0], ["a", 1], ["n", 2], ["N", 2]]) {
+      assert.deepStrictEqual(ap.menuKey(0, K(ch.toLowerCase()), ch, 0), { pick: want }, `「${ch}」直接选第 ${want + 1} 条，不受回车护栏管`);
+    }
+    assert.deepStrictEqual(ap.menuKey(0, K("escape"), "\x1b", 0), { pick: 2 }, "★Esc＝不允许★ 明说出来，模型好换路");
+    assert.deepStrictEqual(ap.menuKey(0, K("c", { ctrl: true }), "\x03", 0), { cancel: true }, "Ctrl+C 是停这趟，不是选一条");
+    assert.deepStrictEqual(ap.menuKey(0, K("d", { ctrl: true }), "\x04", 0), { cancel: true });
+    for (const ch of ["x", "4", "0", " ", ""]) assert.strictEqual(ap.menuKey(1, K(ch), ch, late), null, `「${ch}」认不出来就不管，绝不往允许上靠`);
+    // 选中的三档跟敲一行那条路是同一份解析
+    for (let i = 0; i < ap.CHOICES.length; i++) {
+      const v = ap.parse(String(i + 1));
+      assert.strictEqual(v.allow, ap.CHOICES[i].allow);
+      assert.strictEqual(v.scope, ap.CHOICES[i].scope);
+    }
+
+    const { cols } = require("../text-width");
+    const m = ap.menu(1, { width: 100, wait: "2 分钟" });
+    assert.strictEqual(m.filter((l) => l.includes("❯")).length, 1, "光标只有一个");
+    assert.ok(m[1].includes("❯ 2. 这类都允许") && m[1].includes(ap.CHOICES[1].sub), "光标那条带说明");
+    assert.ok(!m[0].includes(ap.CHOICES[0].sub), "别的只留名字");
+    assert.ok(m.join("\n").includes("2 分钟没人点"), "等多久要写出来");
+    for (const w of [30, 44, 60, 80, 120]) {
+      for (let sel = 0; sel < 3; sel++) {
+        const ls = ap.menu(sel, { width: w, wait: "2 分钟" });
+        const widest = Math.max(...ls.map(cols));
+        assert.ok(widest <= w, `★宽 ${w} 的终端里一行都不许折★ 折了重画就擦不干净（最宽 ${widest}）`);
+        for (const c of ap.CHOICES) assert.ok(ls.some((l) => l.includes(c.label)), `宽 ${w} 也得三档都在`);
+      }
+    }
+
+    // run() 走单子那条路：上半截照印（原文不截），选的第几条原样回来
+    for (const [got, want] of [["1", { allow: true, scope: "once" }], ["2", { allow: true, scope: "session" }], ["3", { allow: false, scope: "once" }], [null, null]]) {
+      const out = [];
+      let seen = null;
+      const v = await ap.run({ kind: "命令执行", text: DANGER }, {
+        write: (s) => out.push(s),
+        readLine: async () => { throw new Error("有单子可挑就不该再去敲一行"); },
+        pick: async (p, ms) => { seen = { p, ms }; return got; },
+        timeoutMs: 60000,
+        width: 72,
+      });
+      assert.deepStrictEqual(v, want, `单子上选 ${got} → ${JSON.stringify(want)}`);
+      assert.ok(out.join("").includes(DANGER), "命令原文照样整条印");
+      assert.ok(!out.join("").includes("敲序号"), "有单子就别再印「敲序号」那套提示");
+      assert.strictEqual(seen.ms, 60000);
+      assert.strictEqual(seen.p.key, ap.menuKey);
+      assert.ok(seen.p.menu(0).join("\n").includes("1 分钟没人点"));
+    }
+  }
+
   // ---- ⑥ security 那个钩子：命令行怎么知道有人正等着点头 ----
   {
     const security = require("../security");
