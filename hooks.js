@@ -79,7 +79,15 @@ function runOne(hook, { cwd, env, stopSignal } = {}) {
       });
     } catch (e) { resolve({ code: null, out: e.message, timedOut: false }); return; }
     const kill = () => {
-      try { if (process.platform !== "win32") process.kill(-child.pid, "SIGKILL"); else child.kill("SIGKILL"); } catch {}
+      try {
+        if (process.platform === "win32") {
+          // shell:true 时 child 是 cmd.exe；只杀它会留下仍在执行的 Node/npm 等后代进程。
+          const killer = spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+          killer.on("error", () => { try { child.kill("SIGKILL"); } catch {} });
+        } else {
+          process.kill(-child.pid, "SIGKILL");
+        }
+      } catch { try { child.kill("SIGKILL"); } catch {} }
     };
     const finish = (r) => { if (done) return; done = true; clearTimeout(timer); if (stopSignal) stopSignal.removeEventListener?.("abort", onAbort); resolve(r); };
     const timer = setTimeout(() => { kill(); finish({ code: null, out: clip(out), timedOut: true }); }, hook.timeout * 1000);
