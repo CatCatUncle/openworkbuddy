@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * 图像 / 视频 / 语音 / 视觉 / 转写这五路模型的「多模型 + 共用 Key」层。
  *
@@ -9,7 +10,7 @@
  * 所以拆成两张表：
  *   config.providers    = [{ id, name, kind, base_url, api_key }]      一把 Key 一行
  *   config.media_models = [{ id, cap, name, provider, model, voice }]  一个模型一行，只引用渠道，不抄 Key
- * 再把「每一路当前默认是谁」压平回 config.media[cap]，于是 tools.js / agent.js 那边一行都不用改，
+ * 再把「每一路当前默认是谁」压平回 config.media[cap]，于是 src/tools/media.js / agent.js 那边一行都不用改，
  * 老配置也照跑——升级不需要用户做任何事。
  */
 
@@ -327,6 +328,231 @@ function videoProtoOf(cfg) {
   return VIDEO_PROTOS.includes(hint) ? hint : "";
 }
 
+/**
+ * ── 视频参数：时长 / 画幅 / 分辨率 ─────────────────────────────
+ *
+ * 每家收的值都不一样，给错了只有两种下场：整单 400，或者上游悄悄按默认出、钱照扣。
+ * 所以发之前按这张表夹紧：能出的就近取一个，取的跟要的不一样就在回执里说一声
+ * （夹了不说 = 静默降级）；这家压根没有的参数就不发，同样说一声。
+ * 计价也按夹完之后的秒数算——要 10 秒、实际只出了 5 秒，账上就是 5 秒。
+ *
+ * 表是照各家文档抄的（2025 年中），没逐条对过线上：
+ *   · 方舟 Seedance 1.0：参数是写在提示词里的文本指令 --duration / --ratio / --resolution；
+ *     pro 出 480p/1080p，lite 出 480p/720p，时长 5 或 10 秒。
+ *   · 万相：文生走 parameters.size（「宽*高」，按档位分），图生走 parameters.resolution，
+ *     画幅跟着首帧图走。这几个 2.x 型号时长都固定 5 秒——文档上 2.1 turbo 还收 3、4 秒，没核实前不放开。
+ *   · 智谱 CogVideoX：size 写成「宽x高」，每种画幅只有一个尺寸；3 代收 5/10 秒，flash 按 5 秒记。
+ *   · 海螺：没有画幅参数；02 收 6/10 秒、768P/1080P，但 1080P 只出 6 秒；01 系固定 6 秒 720P。
+ *   · 硅基流动 万相 2.2：接口里没有时长字段（固定 5 秒），尺寸走 image_size。
+ *
+ * 表里没有的型号（新上架的、中转改过名的）不拿老型号的表去夹：按渠道协议原样发出去，
+ * 回执里写明「没校验」，上游不收会直接报错——总比把它明明能出的值夹掉强。
+ */
+const ANY = "any";
+const WAN_T2V_SIZES = {
+  480: { "16:9": "832*480", "9:16": "480*832", "1:1": "624*624" },
+  720: { "16:9": "1280*720", "9:16": "720*1280", "1:1": "960*960", "4:3": "1088*832", "3:4": "832*1088" },
+  1080: { "16:9": "1920*1080", "9:16": "1080*1920", "1:1": "1440*1440", "4:3": "1632*1248", "3:4": "1248*1632" },
+};
+const pickTiers = (grid, keep) => Object.fromEntries(keep.map((t) => [t, grid[t]]));
+// 智谱每种画幅只有一个尺寸，档位按短边记，好跟别家的 720p/1080p 放在一把尺子上比
+const ZHIPU_SIZES = {
+  960: { "4:3": "1280x960", "3:4": "960x1280" },
+  1024: { "1:1": "1024x1024" },
+  1080: { "16:9": "1920x1080", "9:16": "1080x1920" },
+};
+const SF_SIZES = { 720: { "16:9": "1280x720", "9:16": "720x1280", "1:1": "960x960" } };
+const SEEDANCE_ASPECTS = ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "9:21"];
+
+/** 按型号认。proto 也得对上：同叫 wan2.2 的，百炼和硅基流动是两套字段 */
+const VIDEO_SPECS = [
+  { proto: "ark", re: /seedance-1-0-pro/i, durations: [5, 10], aspects: SEEDANCE_ASPECTS, resolutions: [480, 1080] },
+  { proto: "ark", re: /seedance-1-0-lite/i, durations: [5, 10], aspects: SEEDANCE_ASPECTS, resolutions: [480, 720] },
+  { proto: "dashscope", re: /^wan2\.2-t2v-plus/i, durations: [5], sizes: pickTiers(WAN_T2V_SIZES, [480, 1080]), defRes: 1080 },
+  { proto: "dashscope", re: /^wanx2\.1-t2v-turbo/i, durations: [5], sizes: pickTiers(WAN_T2V_SIZES, [480, 720]), defRes: 720 },
+  { proto: "dashscope", re: /^wanx2\.1-t2v-plus/i, durations: [5], sizes: pickTiers(WAN_T2V_SIZES, [720]), defRes: 720 },
+  { proto: "dashscope", re: /^wan2\.2-i2v-plus/i, durations: [5], resolutions: [480, 1080] },
+  { proto: "dashscope", re: /^wanx2\.1-i2v-turbo/i, durations: [5], resolutions: [480, 720] },
+  { proto: "dashscope", re: /^wanx2\.1-(i2v|kf2v)-plus/i, durations: [5], resolutions: [720] },
+  { proto: "zhipu", re: /^cogvideox-3/i, durations: [5, 10], sizes: ZHIPU_SIZES, defRes: 1080 },
+  { proto: "zhipu", re: /^cogvideox-flash/i, durations: [5], sizes: ZHIPU_SIZES, defRes: 1080 },
+  { proto: "minimax", re: /hailuo-02/i, durations: [6, 10], resolutions: [768, 1080], byRes: { 1080: [6] } },
+  { proto: "minimax", re: /^[ti]2v-01/i, durations: [6], resolutions: [720] },
+  { proto: "siliconflow", re: /wan2\.2-[ti]2v/i, durations: [5], sizes: SF_SIZES, defRes: 720 },
+];
+/** 表里没有的型号退到协议这一级：ANY = 原样透传；没写的那一项 = 这家接口里根本没这个字段 */
+const VIDEO_PROTO_SPEC = {
+  ark: { def: 5, durations: ANY, aspects: ANY, resolutions: ANY },
+  dashscope: { def: 5, durations: ANY, sizes: WAN_T2V_SIZES, defRes: 720, resolutions: ANY },
+  zhipu: { def: 5, durations: ANY, sizes: ZHIPU_SIZES, defRes: 1080 },
+  minimax: { def: 6, durations: ANY, resolutions: ANY },
+  siliconflow: { def: 5, sizes: SF_SIZES, defRes: 720 },
+};
+
+function videoSpecOf(proto, modelId) {
+  const id = String(modelId || "").trim();
+  return (id && VIDEO_SPECS.find((s) => s.proto === proto && s.re.test(id))) || null;
+}
+
+const aspectsOfSizes = (sizes) => [...new Set(Object.values(sizes || {}).flatMap((g) => Object.keys(g)))];
+const ratioOf = (a) => { const [w, h] = String(a).split(":").map(Number); return w / h; };
+/** 就近取一个；一样近取排在前面的（时长、档位都是从小到大排的，所以平手取小的——便宜的那个） */
+function nearest(list, want, dist) {
+  let best = list[0];
+  for (const x of list) if (dist(x, want) < dist(best, want)) best = x;
+  return best;
+}
+const numDist = (x, w) => Math.abs(x - w);
+const ratioDist = (x, w) => Math.abs(Math.log(ratioOf(x)) - Math.log(ratioOf(w)));
+const gcd = (a, b) => (b ? gcd(b, a % b) : a);
+const ASPECT_ALIAS = { "7:3": "21:9", "3:7": "9:21" };
+
+function parseDuration(v) {
+  if (v == null || v === "") return { none: true };
+  const s = String(v).trim().replace(/\s*(秒|s|sec|secs|seconds?)$/i, "");
+  const n = Number(s);
+  if (!s || !Number.isFinite(n) || n <= 0) return { err: `duration 要写正整数秒，比如 5。这次收到的是「${String(v).slice(0, 20)}」。` };
+  return { v: Math.max(1, Math.round(n)) };
+}
+function parseAspect(v) {
+  if (v == null || v === "") return { none: true };
+  const m = String(v).trim().match(/^(\d+(?:\.\d+)?)\s*[:：xX×*/]\s*(\d+(?:\.\d+)?)$/);
+  if (!m || !+m[1] || !+m[2]) return { err: `aspect_ratio 要写成 16:9 这样的比例。这次收到的是「${String(v).slice(0, 20)}」。` };
+  let w = +m[1], h = +m[2];
+  if (Number.isInteger(w) && Number.isInteger(h)) { const g = gcd(w, h); w /= g; h /= g; }
+  // 1920:1080 约成 16:9；但 21:9 约完是 7:3，没人这么叫，回执里写「不收 7:3」人会看不懂
+  const got = `${w}:${h}`;
+  return { v: ASPECT_ALIAS[got] || got };
+}
+function parseRes(v) {
+  if (v == null || v === "") return { none: true };
+  const s = String(v).trim().toLowerCase();
+  let m = s.match(/^(\d{3,4})\s*p?$/);
+  if (m) return { v: +m[1] };
+  m = s.match(/^([248])\s*k$/);
+  if (m) return { v: { 2: 1440, 4: 2160, 8: 4320 }[m[1]] };
+  return { err: `resolution 要写成 720p 这样的档位。这次收到的是「${String(v).slice(0, 20)}」。` };
+}
+
+/**
+ * 这一趟视频到底发什么、按几秒计价。发请求、预扣额度、记账都拿这一份，三处口径不会漂开。
+ * （缓存 key 不走这里：它按人传的原值逐字比，duration/aspect_ratio/resolution 一改就不命中。）
+ *
+ * 返回 { proto, model, known, seconds, send, notes, err }：
+ *   send     真正要发的值：duration（秒）/ aspect（"16:9"）/ resolution（短边像素）/ size（这家的尺寸串）。
+ *            没有的键就是不发——没传这几个参数时 send 是空的，请求体跟以前逐字节一样。
+ *   seconds  计价用的秒数：发了就是发的那个，没发就是这个型号默认出的时长。
+ *   notes    夹过、没发的那几项，一句一条，原样接在回执后面。
+ *   err      参数本身写坏了（「五秒」「宽屏」），发之前就该退回去。
+ */
+function videoPlan(cfg, input, opts) {
+  const c = cfg || {};
+  const inp = input || {};
+  const firstFrame = opts && opts.firstFrame != null ? !!opts.firstFrame : !!inp.first_frame;
+  const proto = videoProtoOf(c);
+  const model = String(c.model || "").trim();
+  const spec = videoSpecOf(proto, model);
+  const base = spec || VIDEO_PROTO_SPEC[proto] || null;
+  const defSec = (base && (base.def || (Array.isArray(base.durations) ? base.durations[0] : 0))) || 5;
+  const plan = { proto, model, known: !!spec, seconds: defSec, send: {}, notes: [], err: "" };
+  const d = parseDuration(inp.duration), a = parseAspect(inp.aspect_ratio), r = parseRes(inp.resolution);
+  const bad = [d, a, r].find((x) => x.err);
+  if (bad) { plan.err = bad.err; return plan; }
+  let passed = false; // 表里没这个型号、原样透传了至少一项
+
+  // 方舟的参数写在提示词里（--duration 5 --ratio 16:9 --resolution 720p）。人自己在提示词里写了的，
+  // 上游认的是那个：这边不再追加一份打架的，计价也跟着提示词走
+  const flag = (re) => (proto === "ark" ? (String(inp.prompt || "").match(re) || [])[1] : null) || null;
+  // ① 时长
+  const inPrompt = flag(/--(?:duration|dur)\s+(\d+)/);
+  if (inPrompt) {
+    plan.seconds = +inPrompt;
+    if (!d.none && d.v !== plan.seconds) plan.notes.push(`提示词里写了 --duration ${plan.seconds}，按 ${plan.seconds} 秒生成。`);
+  } else if (!d.none) {
+    if (!base) plan.seconds = d.v; // 认不出协议：这一趟发不出去，预估按人要的算
+    else if (!base.durations) {
+      if (d.v !== defSec) plan.notes.push(`该模型只支持 ${defSec} 秒，已按 ${defSec} 秒生成。`);
+    } else if (base.durations === ANY) {
+      plan.seconds = plan.send.duration = d.v;
+      passed = true;
+    } else {
+      const got = nearest(base.durations, d.v, numDist);
+      plan.seconds = got;
+      if (got !== d.v) {
+        plan.notes.push(base.durations.length === 1
+          ? `该模型只支持 ${got} 秒，已按 ${got} 秒生成。`
+          : `该模型只收 ${base.durations.join("/")} 秒，已按 ${got} 秒生成。`);
+      }
+      // 只有一档可选时不发：那一档就是它的默认，多发一个字段只是多一个被拒的机会
+      if (base.durations.length > 1) plan.send.duration = got;
+    }
+  }
+
+  // ② 画幅
+  const useSizes = !!(base && base.sizes);
+  let aspect = "";
+  const ratioFlag = flag(/--(?:ratio|rt)\s+(\S+)/);
+  if (!a.none && base) {
+    if (ratioFlag) { if (ratioFlag !== a.v) plan.notes.push(`提示词里写了 --ratio ${ratioFlag}，按提示词的来。`); }
+    else if (firstFrame) plan.notes.push("画幅跟着首帧图走，aspect_ratio 没发。");
+    else if (base.aspects === ANY) { aspect = a.v; passed = true; }
+    else {
+      const list = base.aspects || (useSizes ? aspectsOfSizes(base.sizes) : null);
+      if (!list) plan.notes.push("该模型没有画幅参数，aspect_ratio 没发。");
+      else {
+        aspect = nearest(list, a.v, ratioDist);
+        // 比例一样就不算夹（「2:1」跟表里的「2:1」之外写法不同也一样）——按比值比，不按字面比
+        if (ratioDist(aspect, a.v) > 1e-9) plan.notes.push(`该模型不收 ${a.v}，已按 ${aspect} 生成。`);
+      }
+    }
+  }
+
+  // ③ 分辨率。按尺寸串收的那几家（万相文生 / 智谱 / 硅基流动），画幅和档位合成一个 size 一起发
+  const sizeMode = useSizes && !(firstFrame && base.resolutions);
+  if (base && sizeMode) {
+    if (firstFrame) {
+      if (!r.none) plan.notes.push("尺寸跟着首帧图走，resolution 没发。");
+    } else if (aspect || !r.none) {
+      const all = aspectsOfSizes(base.sizes);
+      const asp = aspect || (all.includes("16:9") ? "16:9" : all[0]);
+      const tiers = Object.keys(base.sizes).map(Number).filter((t) => base.sizes[t][asp]).sort((x, y) => x - y);
+      const want = r.none ? (base.defRes || tiers[tiers.length - 1]) : r.v;
+      const tier = nearest(tiers, want, numDist);
+      if (!r.none && tier !== r.v) plan.notes.push(`该模型${aspect ? ` ${asp} ` : ""}不收 ${r.v}p，已按 ${tier}p 生成。`);
+      plan.send.aspect = asp;
+      plan.send.resolution = tier;
+      plan.send.size = base.sizes[tier][asp];
+      aspect = "";
+    }
+  } else if (base && !r.none) {
+    const list = base.resolutions;
+    const resFlag = flag(/--(?:resolution|rs)\s+(\S+)/);
+    if (resFlag) { if (resFlag.toLowerCase() !== `${r.v}p`) plan.notes.push(`提示词里写了 --resolution ${resFlag}，按提示词的来。`); }
+    else if (!list) plan.notes.push("该模型没有分辨率参数，resolution 没发。");
+    else if (list === ANY) { plan.send.resolution = r.v; passed = true; }
+    else {
+      // 海螺 02 的 1080P 只出 6 秒：时长跟分辨率打架时保时长、降档位——片长是分镜定死的，清晰度不是
+      const fits = list.filter((t) => !(base.byRes && base.byRes[t]) || base.byRes[t].includes(plan.seconds));
+      const tier = nearest(fits.length ? fits : list, r.v, numDist);
+      if (tier !== r.v) plan.notes.push(`该模型${fits.length < list.length ? `出 ${plan.seconds} 秒时` : ""}不收 ${r.v}p，已按 ${tier}p 生成。`);
+      // 跟时长一样：只有一档就是它的默认，不发
+      if (list.length > 1) plan.send.resolution = tier;
+    }
+  }
+  if (aspect) plan.send.aspect = aspect;
+  if (passed) plan.notes.push(`${model || "这个型号"} 不在内置参数表里，参数没校验，原样发出。`);
+  return plan;
+}
+
+// 精选目录上挂一份「能选哪些」，界面照着出下拉。从 VIDEO_SPECS 现算，不另抄一份
+for (const m of CATALOG.video) {
+  const s = videoSpecOf(m.kind, m.id);
+  if (!s) continue;
+  m.durations = s.durations.slice();
+  m.aspects = s.aspects ? s.aspects.slice() : s.sizes ? aspectsOfSizes(s.sizes) : [];
+  m.resolutions = (s.resolutions || Object.keys(s.sizes || {}).map(Number)).map((n) => n + "p");
+}
+
 /** 渠道类型对应的默认接口地址（迁移时补空用） */
 function baseOfKind(kind) {
   const k = PROVIDER_KINDS.find((p) => p.kind === kind);
@@ -504,14 +730,14 @@ function normalize(config) {
   return JSON.stringify([config.providers, config.media_models, config.media, !!config.media_migrated]) !== before;
 }
 
-/** 把每一路的默认那条压平回老的 config.media[cap]，让 tools.js 那边完全无感 */
+/** 把每一路的默认那条压平回老的 config.media[cap]，让 src/tools/media.js 那边完全无感 */
 function flatten(providers, models, prev) {
   const out = {};
   for (const cap of CAPS) {
     const m = models.find((x) => x.cap === cap && x.default) || models.find((x) => x.cap === cap);
     const p = m ? providers.find((x) => x.id === m.provider) : null;
     // kind 跟着压平下来：视频那一路要靠它认协议（渠道卡上选的比按地址猜准），
-    // 以前这里只留地址和 Key，走到 tools.js 就只剩一个地址可猜了，中转地址一律认不出
+    // 以前这里只留地址和 Key，走到 src/tools/media.js 就只剩一个地址可猜了，中转地址一律认不出
     out[cap] = m && p
       ? { base_url: baseForUse(p.base_url, "media"), api_key: p.api_key, model: m.model, kind: p.kind || "", protocol: m.protocol || "", ...(cap === "tts" ? { voice: m.voice || "" } : {}) }
       : { base_url: "", api_key: "", model: "", kind: "", protocol: "", ...(cap === "tts" ? { voice: "" } : {}) };
@@ -699,6 +925,7 @@ function rehomeMismatched(providers, models) {
 module.exports = {
   CAPS, CAP_CN, PROVIDER_KINDS, CATALOG,
   guessCap, capOfModel, guessKind, baseOfKind, catalogFor, protoOfKind, videoProtoOf, VIDEO_PROTOS, VIDEO_PROTO_CN,
+  VIDEO_SPECS, videoSpecOf, videoPlan,
   providerKeyOf, uniqueId, normalizeProviders, baseForUse, dedupeProviders,
   normalize, flatten, resolve, pick, MediaPickError,
   RELAY_KINDS, BRAND_HINTS, brandOf, brandInCatalog, arkDated, mismatch, kindLabel, rehomeMismatched,

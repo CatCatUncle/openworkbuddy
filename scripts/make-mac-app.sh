@@ -49,6 +49,22 @@ $PB -c "Set :CFBundleShortVersionString $VERSION" "$P"
 $PB -c "Set :CFBundleVersion $VERSION" "$P"
 # 中文系统下 Finder/Dock 也认 CFBundleDisplayName；InfoPlist.strings 在 Electron 包里本来就是空目录，无需改
 
+# 权限说明：操作其他应用（Apple Events）、麦克风、摄像头。Electron 自带的是英文默认值，
+# Apple Events 那条干脆没有（没有它 macOS 弹的授权框连理由都没有）。
+# 文案跟装机包读同一份（electron-builder.config.js 的 mac.extendInfo），不在这儿再抄一遍——两边各写各的迟早漂。
+# 那份配置加载时会打一行「[打包] 内置技能…」，这儿只要值，把 console.log 堵上
+USAGE_KEYS="NSAppleEventsUsageDescription NSMicrophoneUsageDescription NSCameraUsageDescription"
+usage() {
+  node -e 'console.log = () => {}; process.stdout.write(String(require(process.argv[1]).mac.extendInfo[process.argv[2]] || ""))' \
+    "$REPO/electron-builder.config.js" "$1"
+}
+for k in $USAGE_KEYS; do
+  v="$(usage "$k")"
+  [ -n "$v" ] || { echo "❌ electron-builder.config.js 的 mac.extendInfo 里没有 $k"; exit 1; }
+  # 值整句加引号传给 PlistBuddy（里面有空格）；键在就 Set，不在就 Add
+  $PB -c "Set :$k \"$v\"" "$P" 2>/dev/null || $PB -c "Add :$k string \"$v\"" "$P"
+done
+
 # 2) 图标：换成我们自己的，Electron 的删掉
 rm -f "$APP/Contents/Resources/electron.icns"
 cp "$REPO/build/icon.icns" "$APP/Contents/Resources/icon.icns"
@@ -109,6 +125,9 @@ chk "入口 main.js 存在"            "$([ -f "$APP/Contents/Resources/app/main
 chk "入口语法"                     "$(node --check "$APP/Contents/Resources/app/main.js" 2>&1 && echo ok)" "ok"
 [ -n "${OWB_SKIP_CODESIGN:-}" ] || chk "签名有效"                     "$(codesign --verify --deep --strict "$APP" 2>&1 && echo ok)" "ok"
 chk "包内不再有 Electron 二进制"   "$([ -e "$APP/Contents/MacOS/Electron" ] && echo still || echo gone)" "gone"
+for k in $USAGE_KEYS; do
+  chk "权限说明 $k" "$($PB -c "Print :$k" "$P" 2>/dev/null || true)" "$(usage "$k")"
+done
 [ $fail = 0 ] || { echo "❌ 自检没过，见上"; exit 1; }
 
 echo "✅ 已生成 ${APP}（$(du -sh "${APP}" | cut -f1)）"

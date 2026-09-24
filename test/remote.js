@@ -29,6 +29,7 @@ fs.mkdirSync(process.env.OPENWORKBUDDY_DATA_DIR, { recursive: true });
 
 const express = require("express");
 const ROOT = path.join(__dirname, "..");
+const srcLib = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
 const account = require(path.join(ROOT, "account"));
 const { createStaticCompress, _internals: sc } = require(path.join(ROOT, "static-compress"));
 const { createJsonCompress } = require(path.join(ROOT, "json-compress"));
@@ -316,7 +317,7 @@ const ck = (t) => "openworkbuddy_token=" + t;
   ok(esc2.status !== 200 || !/秘密/.test(esc2.raw.toString("utf8")), "编码过的 .. 也一样", esc2.status);
 
   // 这一层绝不能碰动态响应（SSE 会被它攒成块）
-  const src = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+  const src = srcLib.src("server");
   ok(/app\.use\(staticCompress\(\[/.test(src), "server.js 真的挂上了这层");
   ok(src.indexOf("app.use(staticCompress([") < src.indexOf('app.use(express.static(appPath("public")))'),
      "★摆在 express.static 前面★ 摆后面就永远轮不到它");
@@ -365,7 +366,7 @@ const ck = (t) => "openworkbuddy_token=" + t;
      "★压缩走异步，不许 Sync★ 同步压 936 KB 要堵住事件循环 33ms，正在推的 SSE 会当场卡一下");
   ok(/zlib\s*\.\s*brotliCompress\s*\(/.test(jsrc) && /zlib\s*\.\s*gzip\s*\(/.test(jsrc),
      "  ← 反向对照：异步那两个得真在（别把断言改绿成「两个都没有」）");
-  const ssrc = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+  const ssrc = srcLib.src("server");
   ok(/app\.use\(jsonCompress\(\)\)/.test(ssrc), "server.js 真的挂上了这层");
   ok(ssrc.indexOf("app.use(jsonCompress())") < ssrc.indexOf('app.get("/api/ping"'),
      "★摆在所有 /api 路由前面★ 摆后面就永远轮不到它");
@@ -444,7 +445,7 @@ const ck = (t) => "openworkbuddy_token=" + t;
 
   // ================= 十、响应头 =================
   console.log("\n十、几条响应头（放公网上就不只是本机自己玩了）");
-  const srcS = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+  const srcS = srcLib.src("server");
   ok(/Referrer-Policy["\s:,]+.*no-referrer/.test(srcS),
      "★no-referrer★ 配对码从 ?pair= 进来，带 Referer 的话这页上任何外链都会把码捎出去");
   ok(/X-Content-Type-Options["\s:,]+.*nosniff/.test(srcS),
@@ -462,16 +463,28 @@ const ck = (t) => "openworkbuddy_token=" + t;
   console.log("\n十一、首屏重量");
   const html = fs.readFileSync(path.join(ROOT, "public", "index.html"), "utf8");
   const tags = [...html.matchAll(/<script src="([^"]+)"/g)].map((m) => m[1]);
-  for (const heavy of ["joint.min.js", "dagre.min.js", "app-07-canvas.js"]) {
+  // 画布本体切成了几片：入口 app-07-canvas.js + 各片 app-07-canvas-*.js。名单从磁盘上读、不手抄——
+  // 以后再切一片，这里自动跟上，不会有一片悄悄挂回首屏、或者没人拉
+  const canvasParts = fs.readdirSync(path.join(ROOT, "public", "js")).filter((f) => /^app-07-canvas(-[\w-]+)?\.js$/.test(f)).sort();
+  ok(canvasParts.includes("app-07-canvas.js") && canvasParts.length > 1, "画布那几片都读到了（入口 + 拆出来的）", canvasParts.join());
+  for (const heavy of ["joint.min.js", "dagre.min.js", ...canvasParts]) {
     ok(!tags.some((t) => t.includes(heavy)),
        `★${heavy} 不在首屏★ 画布是个标签页，来聊天的人不该为它多等`, tags.filter((t) => t.includes(heavy)).join());
   }
   // 摘出去了就得有人负责把它拉回来，否则画布直接打不开
   const a3 = fs.readFileSync(path.join(ROOT, "public", "js", "app-03.js"), "utf8");
   ok(/renderCanvasLazy/.test(a3), "画布入口换成了按需加载那条");
-  for (const dep of ["/vendor/joint/joint.min.js", "/vendor/dagre/dagre.min.js", "js/app-07-canvas.js"]) {
+  for (const dep of ["/vendor/joint/joint.min.js", "/vendor/dagre/dagre.min.js", ...canvasParts.map((f) => "js/" + f)]) {
     ok(a3.includes(`"${dep}"`), `  ← 按需加载里带上了 ${dep}`);
   }
+  const canvasOrder = [...a3.matchAll(/loadScriptOnce\("js\/(app-07-canvas[\w-]*\.js)"\)/g)].map((m) => m[1]);
+  ok(canvasOrder[canvasOrder.length - 1] === "app-07-canvas.js",
+     "入口 app-07-canvas.js 排在最后拉（测试按加载顺序把几片拼回原来的样子，入口原本就在文件末尾）", canvasOrder.join(" → "));
+  // 几片是同时下载的，动态插进去的脚本默认谁先下完谁先跑。关掉 async 才按插进去的先后执行——
+  // 前面那片的常量、画布状态得先声明好，后面那片才用得上。这行被删了现在照样能跑，哪天有一片在顶层用了前一片的东西才炸
+  const lsoAt = a3.indexOf("function loadScriptOnce("), lsoEnd = a3.indexOf("\n}\n", lsoAt);
+  ok(lsoAt >= 0 && lsoEnd > lsoAt && /\n\s*el\.async = false;/.test(a3.slice(lsoAt, lsoEnd)),
+     "★画布几片按数组顺序执行★ loadScriptOnce 里关掉了 async（不关就是谁先下完谁先跑）");
   // 路径写错了的话，画布点进去永远是「正在载入」——这三条是服务端真的认的路
   ok(/app\.get\("\/vendor\/joint\/joint\.min\.js"/.test(srcS), "joint 那条路由还在（按需加载要靠它）");
   ok(/app\.get\("\/vendor\/dagre\/dagre\.min\.js"/.test(srcS), "dagre 那条路由还在");

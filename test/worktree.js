@@ -17,6 +17,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { src } = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
 const { spawnSync } = require("child_process");
 const wt = require("../worktree");
 
@@ -207,7 +208,7 @@ console.log("\n⑨ 同一条会话第二轮");
 // ── ⑩ 接线：服务端和命令行真的挂上了 ───────────────────────────────────
 console.log("\n⑩ 接线");
 {
-  const srv = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+  const srv = src("server");
   ok(/worktree\.plan\(getWorkspaceDir\(\)/.test(srv), "★服务端按当前工作目录判要不要隔离★");
   ok(/enterWorkspace\(opened\.dir\)/.test(srv), "★判出来要隔离就真的换了工作目录★ 少这行整套就是个空壳");
   ok(/cliLive\.list\(\{ prune: false \}\)[\s\S]{0,200}busy\.push/.test(srv),

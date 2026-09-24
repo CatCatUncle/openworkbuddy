@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 /**
  * /review 和 `openworkbuddy review [基准]`：让它把这批改动当别人的代码挑一遍毛病。

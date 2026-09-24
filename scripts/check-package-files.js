@@ -31,6 +31,41 @@ const ASSETS = [
 ];
 
 /**
+ * 整个目录都是运行时源码、必须原样进包的那几个子目录。
+ *
+ * 光靠爬 require 图不够：它只认字面量路径，`for (const f of fs.readdirSync("routes")) require(...)`
+ * 这种按目录挂路由/工具的写法它一个都爬不到——于是白名单漏了那个目录，这道闸门照样绿。
+ * 第 7 批要把 server.js 拆进 routes/ + lib/、tools.js 拆进 src/tools/，正是这种形状；
+ * engines/ 是 v0.1.1 栽过的那一个。"*.js" 只匹配顶层，所以这里按目录逐个核：
+ * 盘上有的运行时文件，包里一个都不许少。目录还不存在的时候什么都不查。
+ */
+const SOURCE_DIRS = ["engines", "routes", "src", "lib"];
+/** 只核运行时会读的类型；.map / .d.ts 本来就该被瘦身删掉，别让两道闸门互相打架 */
+const SOURCE_EXT = /\.(?:js|cjs|mjs|json)$/;
+
+/** SOURCE_DIRS 里盘上现有的运行时文件（仓库相对路径，posix 分隔） */
+function sourceDirFiles(root = ROOT) {
+  const out = [];
+  const walk = (rel) => {
+    let ents;
+    try { ents = fs.readdirSync(path.join(root, rel), { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      if (e.name.startsWith(".")) continue;
+      const r = rel + "/" + e.name;
+      if (e.isDirectory()) walk(r);
+      else if (e.isFile() && SOURCE_EXT.test(e.name) && !DEAD_WEIGHT.some((re) => re.test(e.name))) out.push(r);
+    }
+  };
+  for (const d of SOURCE_DIRS) walk(d);
+  return out.sort();
+}
+
+/** SOURCE_DIRS 里有、包里没有的那些 */
+function missingSourceDirFiles(appDir, root = ROOT) {
+  return sourceDirFiles(root).filter((rel) => !fs.existsSync(path.join(appDir, rel)));
+}
+
+/**
  * 只在 package.json 里挂了名字才会进装机包的那些依赖。
  *
  * 上面那句 `if (resolved.includes("node_modules")) continue;` 是故意的：文件闸门只管本仓库的文件。
@@ -136,10 +171,14 @@ function walkGraph() {
 
 /**
  * @param {string} appDir 包里 app/ 的绝对路径（Resources/app 或 resources/app）
+ * @param {string} [root] 按目录核那一半从哪个仓库列文件；只给测试做反向对照用（require 图那一半总是爬本仓库）
  * @returns {string[]} 缺失文件的仓库相对路径
  */
-function missingFrom(appDir) {
-  return walkGraph().filter((rel) => !fs.existsSync(path.join(appDir, rel)));
+function missingFrom(appDir, root = ROOT) {
+  const viaGraph = walkGraph().filter((rel) => !fs.existsSync(path.join(appDir, rel)));
+  // require 图爬不到的按目录补一遍；walkGraph 在 Windows 上给的是反斜杠，统一成 / 再去重
+  const seen = new Set(viaGraph.map((r) => r.split(path.sep).join("/")));
+  return viaGraph.concat(missingSourceDirFiles(appDir, root).filter((r) => !seen.has(r)));
 }
 
 /** electron-builder 的 afterPack 里调；缺文件直接抛，让打包红掉 */
@@ -147,12 +186,12 @@ function assertPackComplete(appDir) {
   const missing = missingFrom(appDir);
   if (missing.length) {
     throw new Error(
-      `[打包] 装机包里少了 ${missing.length} 个 require 会用到的文件，装完必定打不开：\n` +
+      `[打包] 装机包里少了 ${missing.length} 个运行时要用的文件，装完必定打不开：\n` +
         missing.map((m) => "  - " + m).join("\n") +
         `\n把它们加进 electron-builder.config.js 的 files 白名单。`
     );
   }
-  console.log(`[打包] 完整性核对通过：${walkGraph().length} 个源文件都在包里`);
+  console.log(`[打包] 完整性核对通过：${walkGraph().length} 个源文件都在包里（${SOURCE_DIRS.join("/、")}/ 下 ${sourceDirFiles().length} 个也逐个核过）`);
   return missing;
 }
 
@@ -246,7 +285,7 @@ function assertSlimmed(appDir) {
   return { files, bytes, leftovers };
 }
 
-module.exports = { walkGraph, missingFrom, assertPackComplete, assertDepsRequirable, assertSlimmed, localRequires, bareRequires, missingDeps, DEAD_WEIGHT, ENTRIES, ASSETS, RUNTIME_PROVIDED };
+module.exports = { walkGraph, missingFrom, assertPackComplete, assertDepsRequirable, assertSlimmed, localRequires, bareRequires, missingDeps, DEAD_WEIGHT, ENTRIES, ASSETS, RUNTIME_PROVIDED, SOURCE_DIRS, sourceDirFiles, missingSourceDirFiles };
 
 if (require.main === module) {
   const dir = process.argv[2];

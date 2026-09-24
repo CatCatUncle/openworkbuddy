@@ -58,7 +58,7 @@ function repairToolPairs(history) {
       results.push({
         id,
         name,
-        content: `（${name} 这一步没有留下结果：上一轮执行被中断了。把它当作没做过——需要的话重新调用一次，别假设它成功了。）`,
+        content: `（${name} 这一步结果缺失：上一轮执行被中断了。把它当作没做过——需要的话重新调用一次，别假设它成功了。）`,
         isError: true,
       });
     }
@@ -67,25 +67,86 @@ function repairToolPairs(history) {
   return out;
 }
 
+/**
+ * 发请求前把历史里的「方言」统一掉，再交给 repairToolPairs 配对。
+ *
+ * 历史不全是内置循环写的：本机 Claude Code / Codex 引擎那条路以前落盘的是
+ * { role:"assistant", content:"…" }（没有 text），老会话文件里一直躺着。按 text 读就是一条
+ * 空 assistant——部分供应商直接 400，而且会话是落盘的，之后每一轮都 400。所以：
+ *   ① 正文先认 text，没有再认 content；
+ *   ② 既没正文、也没工具调用的 assistant 整条不发（发出去只会换一个 400）；
+ *   ③ raw 里有 tool_use、toolCalls 里却没记的，补进 toolCalls——不补的话 repairToolPairs
+ *      看不见它，Claude 那边就是一个没人应答的 tool_use，同样 400。
+ * 正常历史原样返回同一批对象（一个字节都不改），不破坏前缀缓存。
+ * useRaw：Anthropic 那边会原样回传 raw（含 thinking），raw 里有东西就不算空。
+ */
+function assistantText(entry) {
+  if (typeof entry.text === "string" && entry.text) return entry.text;
+  return typeof entry.content === "string" ? entry.content : typeof entry.text === "string" ? entry.text : "";
+}
+function rawHasBody(raw) {
+  return Array.isArray(raw) && raw.some((b) => b && (b.type === "tool_use" || (b.type === "text" && String(b.text || "").trim())));
+}
+function sendableHistory(history, useRaw) {
+  const out = [];
+  let skipped = 0;
+  for (const entry of Array.isArray(history) ? history : []) {
+    if (!entry || typeof entry !== "object") continue;
+    if (entry.role !== "assistant") { out.push(entry); continue; }
+    const text = assistantText(entry);
+    let calls = Array.isArray(entry.toolCalls) ? entry.toolCalls : [];
+    if (Array.isArray(entry.raw)) {
+      const have = new Set(calls.map((c) => c && c.id));
+      const lost = entry.raw.filter((b) => b && b.type === "tool_use" && !have.has(b.id));
+      if (lost.length) calls = calls.concat(lost.map((b) => ({ id: b.id, name: b.name, input: b.input || {} })));
+    }
+    if (!String(text).trim() && !calls.length && !(useRaw && rawHasBody(entry.raw))) { skipped++; continue; }
+    out.push(text === entry.text && calls === entry.toolCalls ? entry : { ...entry, text, toolCalls: calls });
+  }
+  // 每一轮都会再跳一次，只喊第一次（同 warnedLeakedPairs 的道理）
+  if (skipped && !sendableHistory.warned) {
+    sendableHistory.warned = true;
+    console.warn(`[llm] 历史里有 ${skipped} 条空的 assistant（没正文也没工具调用），请求里不发它们`);
+  }
+  return out;
+}
+
+/**
+ * raw 原样回传，但要跟 toolCalls 对齐：toolCalls 里有、raw 里没有的 tool_use 补上（它的结果会发出去，
+ * 没有对应的 tool_use 就是孤儿结果）；空文本块去掉（Anthropic 不收空 text 块）。
+ * 返回新数组：下面打缓存断点是改数组元素，直接拿 entry.raw 去改就改进历史里了，
+ * 断点一轮轮攒下去会超过 4 个的上限。
+ */
+function rawForSend(entry) {
+  const blocks = entry.raw.filter((b) => b && !(b.type === "text" && !String(b.text || "").trim()));
+  const have = new Set(blocks.filter((b) => b.type === "tool_use").map((b) => b.id));
+  for (const tc of entry.toolCalls || []) {
+    if (!have.has(tc.id)) blocks.push({ type: "tool_use", id: tc.id, name: tc.name, input: tc.input || {} });
+  }
+  return blocks;
+}
+
 function toAnthropicMessages(rawHistory) {
-  const history = repairToolPairs(rawHistory);
+  const history = repairToolPairs(sendableHistory(rawHistory, true));
   const messages = [];
   for (const entry of history) {
     if (entry.role === "user") {
-      // 插队消息可能紧跟在 tool 结果（也是 user 角色）之后：并入上一条，保持角色交替
+      // 插队消息可能紧跟在 tool 结果（也是 user 角色）之后：并入上一条，保持角色交替。
+      // 跳过空 assistant 之后两条 user 也会挨在一起，同样并成一条
       const last = messages[messages.length - 1];
-      if (last && last.role === "user" && Array.isArray(last.content)) {
+      if (last && last.role === "user") {
+        if (!Array.isArray(last.content)) last.content = [{ type: "text", text: String(last.content) }];
         last.content.push({ type: "text", text: entry.content });
       } else {
         messages.push({ role: "user", content: entry.content });
       }
     } else if (entry.role === "assistant") {
       // raw 保留了原始 content 块（含 thinking 块），多轮 tool use 必须原样传回
-      if (entry.raw) {
-        messages.push({ role: "assistant", content: entry.raw });
+      if (Array.isArray(entry.raw) && entry.raw.length) {
+        messages.push({ role: "assistant", content: rawForSend(entry) });
       } else {
         const blocks = [];
-        if (entry.text) blocks.push({ type: "text", text: entry.text });
+        if (String(entry.text || "").trim()) blocks.push({ type: "text", text: entry.text });
         for (const tc of entry.toolCalls || []) {
           blocks.push({ type: "tool_use", id: tc.id, name: tc.name, input: tc.input });
         }
@@ -215,7 +276,27 @@ function headerKey(cfg, which) {
   return cleanKey(resolveKey(cfg, which), cfg);
 }
 
-async function anthropicChat(cfg, { system, history, tools, onTextDelta, onActivity, signal }) {
+/**
+ * system 拆成 Anthropic 的 system 块数组。
+ * stableLen 是「稳定段」的长度（角色/工具规则/技能目录/语言/模式，同一个人同一套设置下每轮逐字相同），
+ * 后面是易变段（记忆召回、项目块、媒体状态、时间）。稳定段末尾单独打一个断点：
+ * 易变段变了只作废它自己，稳定段那一大块照样走缓存读。
+ * 没给 stableLen（或者整段都稳定）就还是原来的单块写法。断点总数：稳定段 + 易变段 + 历史 = 3 个，没超 4。
+ */
+function anthropicSystemBlocks(system, stableLen) {
+  if (!system) return system;
+  const cc = { type: "ephemeral" };
+  const n = Number(stableLen) || 0;
+  if (n > 0 && n < system.length) {
+    return [
+      { type: "text", text: system.slice(0, n), cache_control: cc },
+      { type: "text", text: system.slice(n), cache_control: cc },
+    ];
+  }
+  return [{ type: "text", text: system, cache_control: cc }];
+}
+
+async function anthropicChat(cfg, { system, systemStableLen, history, tools, onTextDelta, onActivity, signal }) {
   let Anthropic;
   try {
     Anthropic = require("@anthropic-ai/sdk");
@@ -232,8 +313,9 @@ async function anthropicChat(cfg, { system, history, tools, onTextDelta, onActiv
     baseURL: anthropicBase(cfg.base_url).baseURL, // 填了中转就真走中转，跟向导验活同一个地址
   });
 
-  // Anthropic 的缓存要自己打断点（DeepSeek/OpenAI 是自动的）。两个就够：
-  // ① 工具定义 + system —— 一个任务里全程不变，是最大的一块固定前缀；
+  // Anthropic 的缓存要自己打断点（DeepSeek/OpenAI 是自动的）。最多三个：
+  // ① 工具定义 + system 的稳定段 —— 跨轮跨任务都不变，是最大的一块固定前缀；
+  //    易变段（记忆/项目/时间）单独一块再打一个断点，见 anthropicSystemBlocks；
   // ② 上一轮结尾 —— agent 的 history 是只追加的，把断点压在倒数第二条上，
   //    这一步新增的工具结果落在断点之后，前面几十步全部走缓存读。
   // 断点最多 4 个，且是前缀匹配：前面任何一个字节变了，后面全部作废——
@@ -256,7 +338,7 @@ async function anthropicChat(cfg, { system, history, tools, onTextDelta, onActiv
       model: cfg.model,
       max_tokens: 32000,
       ...think.params,
-      system: system ? [{ type: "text", text: system, cache_control: { type: "ephemeral" } }] : system,
+      system: anthropicSystemBlocks(system, systemStableLen),
       messages: amsgs,
       // 空数组要整个字段不发：不给工具是一种正当用法（比如强制收尾那一问），
       // 而一部分服务端会把 tools: [] 判成参数非法直接 400
@@ -315,11 +397,20 @@ function openaiUsage(u) {
 // ---------- OpenAI 兼容接口 (DeepSeek / Qwen / GLM / Kimi / Ollama ...) ----------
 
 function toOpenAIMessages(system, rawHistory) {
-  const history = repairToolPairs(rawHistory);
+  const cleaned = sendableHistory(rawHistory, false);
+  const history = repairToolPairs(cleaned);
+  // 跳过了空 assistant 才会出现两条 user 挨着；有的服务端（如 deepseek-reasoner）不收连续同角色，
+  // 并成一条。没跳过就一条都不动，免得改了缓存前缀
+  const mergeUsers = cleaned.length < (Array.isArray(rawHistory) ? rawHistory.length : 0);
   const messages = [{ role: "system", content: system }];
   for (const entry of history) {
     if (entry.role === "user") {
-      messages.push({ role: "user", content: entry.content });
+      const last = messages[messages.length - 1];
+      if (mergeUsers && last && last.role === "user" && typeof last.content === "string" && typeof entry.content === "string") {
+        last.content += "\n\n" + entry.content;
+      } else {
+        messages.push({ role: "user", content: entry.content });
+      }
     } else if (entry.role === "assistant") {
       const m = { role: "assistant", content: entry.text || "" };
       if (entry.toolCalls && entry.toolCalls.length) {
@@ -420,6 +511,22 @@ function createLeakGuard(onTextDelta) {
   };
 }
 
+/** OpenAI 兼容通道的输出上限：模型条目写了正整数就用它，缺省 8192；extra_body 里自己写了上限就不发 */
+const DEFAULT_MAX_TOKENS = 8192;
+function outputCap(cfg) {
+  const extra = (cfg && cfg.extra_body) || {};
+  if (extra.max_completion_tokens != null || extra.max_tokens != null) return 0;
+  const n = Math.round(Number(cfg && cfg.max_tokens));
+  return n > 0 ? n : DEFAULT_MAX_TOKENS;
+}
+/** 上限字段名：OpenAI 官方和 Azure 的推理模型（o 系列、gpt-5）不收 max_tokens，发了直接 400，
+ *  它们全系都认 max_completion_tokens；其余兼容厂商（DeepSeek/通义/方舟/Ollama/OpenRouter）只认 max_tokens */
+function outputCapField(cfg) {
+  let host = "";
+  try { host = new URL(String((cfg && cfg.base_url) || "")).hostname.toLowerCase(); } catch { /* 地址写坏了照老字段发，报错交给请求本身 */ }
+  return host === "api.openai.com" || host.endsWith(".openai.azure.com") ? "max_completion_tokens" : "max_tokens";
+}
+
 async function openaiChat(cfg, { system, history, tools, onTextDelta, onActivity, signal }) {
   // 兜底那句 "ollama" 是给本地 Ollama 的：它不校验 Key，但 Authorization 头缺了会被某些版本拒掉
   const apiKey = headerKey(cfg, "openai") || "ollama";
@@ -436,6 +543,10 @@ async function openaiChat(cfg, { system, history, tools, onTextDelta, onActivity
       // 放在 extra_body 前面 = 用户手填的 extra_body 压得住它：万一那张表哪家猜错了，
       // 用户不用等我改代码，自己就能纠正
       ...thinking.planFor(cfg, cfg.thinking).params,
+      // 输出上限：不发的话各家默认值天差地别（有的只给 4096），写长文件时工具参数被悄悄截断，
+      // 截断又没个准数，查都没法查。取模型条目的 max_tokens，缺省 8192。
+      // 同样放在 extra_body 前面：用户在 extra_body 里自己写了上限，就不再发这个
+      ...(outputCap(cfg) ? { [outputCapField(cfg)]: outputCap(cfg) } : {}),
       ...(cfg.extra_body || {}), // 模型条目可带厂商特有参数（如 OpenRouter 的 reasoning）；核心字段在后，不会被覆盖
       model: cfg.model,
       stream: useStream,
@@ -682,11 +793,80 @@ async function chatWithRetry(fn, args) {
       console.warn(`[llm] 瞬时错误，${RETRY_DELAYS[attempt] / 1000}s 后重试（第 ${attempt + 1} 次）：${msg.slice(0, 120)}`);
       // 重试以前在后台默默进行，用户只看到界面一动不动——报出去让前端显示
       if (args.onStatus) {
-        try { args.onStatus(`上游出错，${RETRY_DELAYS[attempt] / 1000} 秒后自动重试（第 ${attempt + 1}/${RETRY_DELAYS.length} 次）：${msg.slice(0, 100)}`); } catch {}
+        // 第二个参数给结构化进度（attempt 从 1 数，delayMs 是这一次要等多久），新前端拿它画倒计时；
+        // 老前端只读第一个参数的文字，不受影响
+        const info = { kind: "retry", attempt: attempt + 1, total: RETRY_DELAYS.length, delayMs: RETRY_DELAYS[attempt] };
+        try { args.onStatus(`上游出错，${RETRY_DELAYS[attempt] / 1000} 秒后自动重试（第 ${attempt + 1}/${RETRY_DELAYS.length} 次）：${msg.slice(0, 100)}`, info); } catch {}
       }
       await new Promise((r) => setTimeout(r, RETRY_DELAYS[attempt]));
     }
   }
+}
+
+// ---------- 模型上下文窗口（token） ----------
+// agent 按它算每一步能带多少历史（agent.js 的 ctxBudget）。三级来源：
+// ① 渠道配置里写了 context_window 就信它（用户最清楚自己那条中转/私有部署开了多大）；
+// ② 模型名里带了尺寸（moonshot-v1-32k、phi-3-mini-128k、qwen2.5-7b-instruct-1m）按名字算；
+// ③ 查下面这张族表；都查不到按 64k 保守估计。
+// 猜出来的值封顶 200k：窗口越大每一步重发的历史越多、越花钱，1M 窗口要用满得在渠道里显式写 context_window。
+const CONTEXT_WINDOW_DEFAULT = 64000;
+const CONTEXT_WINDOW_GUESS_MAX = 200000;
+// 顺序有讲究：窄的写在宽的前面（gpt-4o 要先于 gpt-4，qwen-max 要先于 qwen）
+const CONTEXT_WINDOW_TABLE = [
+  [/(^|\/)o1-(mini|preview)/, 128000],
+  [/claude/, 200000],
+  [/gpt-5/, 400000],
+  [/gpt-4\.1/, 1000000],
+  [/(^|\/)o[134]($|-)/, 200000],
+  [/gemini/, 1000000],
+  // gpt-4.5、gpt-4-turbo、gpt-4-1106-preview / 0125-preview 都是 128k；8k 的只有最早那批 gpt-4 / 0314 / 0613。
+  // 以前一句 /gpt-4/ 把它们全按 8k 算，历史预算塌到 1.4 万字，跑两步就把前面全截没了
+  [/gpt-4o|gpt-4\.5|gpt-4-(turbo|vision|\d{4}-preview)|chatgpt|gpt-oss/, 128000],
+  [/gpt-4($|-0314|-0613)/, 8192],
+  [/gpt-3\.5/, 16385],
+  [/deepseek/, 128000],
+  [/qwen-long/, 1000000],
+  [/qwen-?(max|vl)|qvq/, 32000],
+  [/qwen|qwq/, 128000],
+  [/glm-4v/, 8000],
+  [/glm/, 128000],
+  [/kimi|moonshot/, 128000],
+  [/doubao-seed/, 128000],
+  [/doubao/, 32000],
+  [/grok|minimax|abab/, 128000],
+  [/llama-?3\.[1-9]|llama-?4/, 128000],
+  [/llama/, 8000],
+  // mistral-large 2 / codestral / devstral / pixtral 都是 128k 往上；老的 7B、mixtral 才 32k
+  [/mistral-large|codestral|devstral|pixtral/, 128000],
+  [/mistral|mixtral/, 32000],
+];
+
+/** "128k" / "1m" / 128000 → token 数；认不出返回 0 */
+function parseWindowSize(v) {
+  if (typeof v === "number") return Number.isFinite(v) && v > 0 ? Math.floor(v) : 0;
+  const m = /^\s*(\d+(?:\.\d+)?)\s*(k|m)?\s*$/i.exec(String(v == null ? "" : v));
+  if (!m) return 0;
+  const n = parseFloat(m[1]) * (m[2] ? (m[2].toLowerCase() === "m" ? 1e6 : 1000) : 1);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
+/**
+ * 这条渠道 + 这个模型的上下文窗口（token 数）。channel 可以是 config.models 里的一条，也可以是空。
+ * 渠道显式写的值原样返回（不封顶）；小于 1024 当成写错了，不信。
+ */
+function contextWindowOf(channel, model) {
+  const explicit = parseWindowSize(channel && channel.context_window);
+  if (explicit >= 1024) return explicit;
+  const name = String(model || (channel && channel.model) || "").toLowerCase().trim();
+  if (!name) return CONTEXT_WINDOW_DEFAULT;
+  const sized = /(?:^|[-_:/])(\d+)(k|m)(?:$|[-_:])/.exec(name);
+  let guess = 0;
+  if (sized) guess = +sized[1] * (sized[2] === "m" ? 1e6 : 1000);
+  if (!(guess >= 1024)) {
+    const hit = CONTEXT_WINDOW_TABLE.find(([re]) => re.test(name));
+    guess = hit ? hit[1] : CONTEXT_WINDOW_DEFAULT;
+  }
+  return Math.min(guess, CONTEXT_WINDOW_GUESS_MAX);
 }
 
 // ---------- 统一入口 ----------
@@ -707,6 +887,7 @@ function createLLM(config) {
     return {
       provider: entry.name || provider,
       model: entry.model,
+      contextWindow: contextWindowOf(entry, entry.model),
       chat: (args) =>
         chatWithRetry((a) => (provider === "anthropic" ? anthropicChat(entry, a) : openaiChat(entry, a)), args),
     };
@@ -717,6 +898,7 @@ function createLLM(config) {
     return {
       provider,
       model: config.anthropic.model,
+      contextWindow: contextWindowOf(config.anthropic, config.anthropic.model),
       chat: (args) => chatWithRetry((a) => anthropicChat(config.anthropic, a), args),
     };
   }
@@ -724,6 +906,7 @@ function createLLM(config) {
     return {
       provider,
       model: config.openai.model,
+      contextWindow: contextWindowOf(config.openai, config.openai.model),
       chat: (args) => chatWithRetry((a) => openaiChat(config.openai, a), args),
     };
   }
@@ -874,4 +1057,4 @@ function createEmbedder(config) {
   return embed;
 }
 
-module.exports = { createLLM, createEmbedder, anthropicBase, cleanKey, _internals: { resolveKey, headerKey, cleanKey, channelEnvName, warnedEnvSkip, markEmbedChannelDead, embedChannelDead, deadEmbedChannels, warnedLeakedPairs, rescueLeakedToolCalls, createLeakGuard, openaiChat, EMBED_KNOWN, embedCandidates, repairToolPairs, toOpenAIMessages, toAnthropicMessages, keepBadArgs, parseToolArgs, sliceFirstObject } };
+module.exports = { createLLM, createEmbedder, anthropicBase, cleanKey, contextWindowOf, _internals: { chatWithRetry, RETRY_DELAYS, anthropicSystemBlocks, parseWindowSize, CONTEXT_WINDOW_DEFAULT, CONTEXT_WINDOW_GUESS_MAX, resolveKey, headerKey, cleanKey, channelEnvName, warnedEnvSkip, markEmbedChannelDead, embedChannelDead, deadEmbedChannels, warnedLeakedPairs, rescueLeakedToolCalls, createLeakGuard, openaiChat, EMBED_KNOWN, embedCandidates, repairToolPairs, toOpenAIMessages, toAnthropicMessages, keepBadArgs, parseToolArgs, sliceFirstObject, sendableHistory, outputCap, outputCapField, DEFAULT_MAX_TOKENS } };

@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 /**
  * 精灵图宠物：直接吃 Codex / Petdex 那套格式，不自己造轮子。

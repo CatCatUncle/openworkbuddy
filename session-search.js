@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 /**
  * 任务历史的检索：算分、摘要、命中片段。
@@ -60,7 +61,7 @@ function digestOf(sess, max = MAX_DIGEST) {
   const theirs = [];
   for (const turn of t) {
     if (!turn) continue;
-    if (turn.type === "user" && turn.text) mine.push(String(turn.text).trim());
+    if (turn.type === "user" && (turn.shown || turn.text)) mine.push(String(turn.shown || turn.text).trim()); // shown=人说的那句，text 可能前面拼着给模型的说明
     else if (turn.type === "assistant") {
       const s = assistantText(turn).trim();
       if (s) theirs.push(s.slice(0, 160));

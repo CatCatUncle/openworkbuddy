@@ -10,6 +10,8 @@
  * 跑法：npm test          （全部）
  *      npm run test:e2e  （只跑最大那个）
  *      node test/all.js --only icons,prefs
+ *      node test/all.js --no-electron   （没屏幕的机器：跳过要开 Electron 窗口的那几个）
+ *      npm run lint / npm run typecheck （单跑那两道静态闸门）
  *
  * 约定：每个套件自己负责断言和打印，失败时退出码非 0。这里只管调度、计时、汇总。
  * 有任何一个挂了，整体退出码就是 1 ——发版脚本看的是这个。
@@ -33,10 +35,20 @@ if (!process.env.OPENWORKBUDDY_TRACE_FILE) {
 // test/toolward.js 自己会把这个变量删掉，它测的正是这块。
 if (!process.env.OPENWORKBUDDY_TOOLWARD) process.env.OPENWORKBUDDY_TOOLWARD = "off";
 
+// 第三格写了 ELECTRON 的，是真会拉起 Electron 开窗口的套件：没屏幕的机器（Linux 服务器、
+// 无头容器）上跑必挂，用 `node test/all.js --no-electron` 跳过它们。
+// CI 的 ubuntu 那条腿不靠这个标记，而是 test.yml 里写明的 --only 名单——那张名单是不是
+// 「除了开窗口的全在」，由 test/e2e.js 的 releasePipelineDrift 按套件源码现判，不信这里的手写标记。
+// 每一项都得以 `["名字"` 开头：那道检查和 repo-hygiene 都是按这个样子从本文件里认套件的。
+const ELECTRON = { electron: true };
+
 // e2e 放最后：它最慢（会拉起真 server 和两个 Electron 窗口），
 // 前面十三个几秒钟就能把大部分低级错误拦下来，别让人等五分钟才看到一个拼写错误。
+// lint / typecheck 紧跟仓库卫生：各五秒上下，拼错的名字、写两遍的键在这儿就拦下了。
 const SUITES = [
   ["repo-hygiene", "仓库卫生：测试喂的真文件必须随包发出去（本机私货会让新克隆直接挂）"],
+  ["lint", "ESLint 十二条零误报规则：只对新增违规报红（已知的记在 test/lint-baseline.json）"],
+  ["typecheck", "tsc 类型闸门：全仓只拦找不到名字 / 键写两遍，认领了 @ts-check 的文件全拦"],
   ["icons", "图标系统：sprite 完整性、词典同步、圆角阶梯、滚动条留位"],
   ["lanes", "任务泳道调度"],
   ["md-tty", "终端里的 Markdown 渲染"],
@@ -57,6 +69,7 @@ const SUITES = [
   ["push-gate", "定时任务没变化就不推：跟上一次真推出去的那条比，没新东西就不响这一声（留痕不留白）"],
   ["ask-gate", "打断你之前先判一句：第二问起，弹给用户之前先问一道题是不是非问不可（头一问白放行，说不准照旧弹）"],
   ["skill-gate", "开工之前先挑技能：点了名的直接加载，没点名的问一道单选；加载过的挂系统提示词，压缩、下一趟都不丢"],
+  ["ui-copy-length", "界面文案长度闸门：一段说明不超过 70 个汉字，理由进注释不进界面"],
   ["memory-rules", "记忆超预算时规矩先进门：零相关的规矩留下、零相关的事实挤掉、命中只记给进了门的"],
   ["prefs", "偏好与配置落盘"],
   ["chat-models", "模型渠道与选型"],
@@ -88,21 +101,26 @@ const SUITES = [
   ["hooks", "钩子：before_shell 拦命令 / after_edit 接回执 / done 没过不许收尾"],
   ["slash-review", "自定义斜杠命令 / /review 取对改动 / --model --max-steps --append-system"],
   ["stop", "「让我停下」：正在跑的命令要真停得下来，连孙子进程一起收"],
-  ["preview-layout", "右边成果预览：每种格式在面板里摆得对不对（量面板/内容/位置，不看截图）"],
-  ["library-mkdir", "资料库「新建文件夹」：按钮点下去要真有反应（Electron 里 prompt 一调用就抛）"],
-  ["confirm-dialogs", "全站确认框：撤不回来的那一步，字得翻得了、取消得真管用、清单长了框不能顶出屏幕"],
-  ["canvas", "无限画布：反复加载和同步之后，节点、连线、选中的那一片都得还在"],
+  ["preview-layout", "右边成果预览：每种格式在面板里摆得对不对（量面板/内容/位置，不看截图）", ELECTRON],
+  ["library-mkdir", "资料库「新建文件夹」：按钮点下去要真有反应（Electron 里 prompt 一调用就抛）", ELECTRON],
+  ["confirm-dialogs", "全站确认框：撤不回来的那一步，字得翻得了、取消得真管用、清单长了框不能顶出屏幕", ELECTRON],
+  ["canvas", "无限画布：反复加载和同步之后，节点、连线、选中的那一片都得还在", ELECTRON],
   ["worktree", "两条任务撞一个仓库：后来那条进分身改，你的工作区一个字不动"],
   ["memory", "运行时内存：会话缓存有上限，清掉的必须原样读得回来（四道闸门一道不漏）"],
   ["eval", "评测题库：每道题的判分在空目录上一条都不许绿（不调模型，不花钱）"],
   ["search-providers", "联网搜索八家：请求发得对不对、200 里写着错认不认得出来（不联网，不花钱）"],
   ["model-probe", "一行一测：生图/生视频/对话每一行后面那颗「测」（不联网，也不真生成）"],
-  ["e2e", "端到端（含 frontend.js、admin-ui.js）"],
+  ["e2e", "端到端（含 frontend.js、admin-ui.js）", ELECTRON],
 ];
 
 const argOnly = process.argv.indexOf("--only");
 const only = argOnly > 0 ? String(process.argv[argOnly + 1] || "").split(",").map((s) => s.trim()).filter(Boolean) : null;
-const list = only ? SUITES.filter(([n]) => only.includes(n)) : SUITES;
+const noElectron = process.argv.includes("--no-electron");
+const list = (only ? SUITES.filter(([n]) => only.includes(n)) : SUITES)
+  .filter(([, , flag]) => !(noElectron && flag && flag.electron));
+if (noElectron) {
+  console.log("--no-electron：跳过要开 Electron 窗口的 " + SUITES.filter(([, , f]) => f && f.electron).map(([n]) => n).join(", ") + "\n");
+}
 if (only) {
   const unknown = only.filter((n) => !SUITES.some(([s]) => s === n));
   if (unknown.length) {

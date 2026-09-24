@@ -33,6 +33,7 @@ const os = require("os");
 const path = require("path");
 const zlib = require("zlib");
 const ROOT = path.join(__dirname, "..");
+const srcLib = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
 
 let pass = 0, fail = 0;
 // 失败时要把「实际拿到的是什么」打出来，可这一组测试的「实际」常常是一份 .docx 的二进制。
@@ -668,7 +669,7 @@ const run = (name, input) => tools.executeTool(name, input, { security: { gatewa
       // 8.11 「定时任务」这四个字是两边的暗号：server 给那一趟打这个标签，agent 靠它认出自己
       //      是被定时任务叫起来的。两个文件各写一遍字面量，迟早对不上，那道闸就静悄悄失效了
       eq(scheduler.SCHEDULE_LABEL, "定时任务", "暗号本身没改");
-      const srvSrc = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+      const srvSrc = srcLib.src("server");
       ok(/taskLabel:[^\n]*SCHEDULE_LABEL/.test(srvSrc),
         "★server 打标签用的是同一个常量★ 各写一遍字面量对不上时，自繁殖那道闸会静悄悄失效",
         (srvSrc.split("\n").find((l) => /taskLabel:/.test(l)) || "(没找到 taskLabel 那行)").trim());

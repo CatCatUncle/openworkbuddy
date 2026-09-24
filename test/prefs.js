@@ -20,6 +20,7 @@
  *   4. 拆墙和脱敏必须同生共死：只拆一半的话，界面把真 Key 显示成空，用户随手一存就抹了
  *   5. 偏好真的进了执行层：engines.resolve 拿到的是**这个账号**选的引擎，不是别人的
  *   6. 启动失败有出口：桌面壳在的时候把错误交回去画窗口，纯命令行照旧退出码 1
+ *   7. 桌面壳退出先问、收尾只走一遍；托盘三条；窗口记忆遇到坏文件、拔掉的屏照样开得出来（【11c】）
  */
 
 const fs = require("fs");
@@ -32,6 +33,7 @@ fs.mkdirSync(process.env.OPENWORKBUDDY_DATA_DIR, { recursive: true });
 
 const express = require("express");
 const ROOT = path.join(__dirname, "..");
+const srcLib = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
 const account = require(path.join(ROOT, "account"));
 const org = require(path.join(ROOT, "org"));
 const admin = require(path.join(ROOT, "admin"));
@@ -483,6 +485,7 @@ function 只剩一个账号(fn) {
 
   server.close();
   await runSourcePins();
+  await runShellLifecycle();
   runConfigGates();
   runSeedCopy();
   console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
@@ -500,7 +503,8 @@ function 只剩一个账号(fn) {
 //       （server.js 是 require 即 listen，electron-main.js 要有 electron 才 require 得动）
 // ===================================================================
 function slice(file, name) {
-  const src = fs.readFileSync(path.join(ROOT, file), "utf8");
+  const group = { "server.js": "server", "tools.js": "tools" }[file];
+  const src = group ? srcLib.src(group) : fs.readFileSync(path.join(ROOT, file), "utf8");
   const i = src.indexOf(`function ${name}(`);
   if (i < 0) throw new Error(`${file} 里找不到函数 ${name}`);
   const j = src.indexOf("\n}\n", i);
@@ -619,7 +623,7 @@ function runSeedCopy() {
 }
 
 async function runSourcePins() {
-  const serverSrc = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+  const serverSrc = srcLib.src("server");
   const agentSrc = fs.readFileSync(path.join(ROOT, "agent.js"), "utf8");
   const mainSrc = fs.readFileSync(path.join(ROOT, "electron-main.js"), "utf8");
 
@@ -776,7 +780,7 @@ async function runSourcePins() {
   const mkFatal = (over) => {
     const calls = { box: [], exit: [], failure: [] };
     const env = {
-      bootLog: () => {}, PAGE_UP: false, FATAL_SHOWN: false, win: null,
+      bootLog: () => {}, PAGE_UP: false, FATAL_SHOWN: false, QUIT_STATE: "", win: null,
       showBootFailure: (e) => calls.failure.push(e),
       dialog: { showErrorBox: (t, b) => calls.box.push(t + "\n" + b) },
       bootHint: () => "照着这句做", bootAdvice: (e, m, p) => (e && e.bootProblem ? e.bootProblem.fix : "照着这句做"),
@@ -802,6 +806,13 @@ async function runSourcePins() {
   ok(/npm install/.test(f.calls.box[0]),
      "★系统报错框里也是闸门那句该怎么修★ 没有窗口的时候，这个框是唯一的出口", f.calls.box[0]);
   ok(!/照着这句做/.test(f.calls.box[0]), "  └ 没有绕回去猜（猜出来的那句在这儿是错的）");
+  // 启动到一半他点了关窗：窗口一销毁，还没跑完的启动流程撞上死窗口抛错，又走到这里
+  for (const st of ["closing", "done"]) {
+    f = mkFatal({ QUIT_STATE: st });
+    f.fatal("桌面窗口初始化", new Error("Object has been destroyed"));
+    ok(f.calls.box.length === 0 && f.calls.exit.length === 0 && f.calls.failure.length === 0,
+       `已经在退了（${st}）：不再弹「启动失败」吓人，退出那条路自己会走完`, f.calls);
+  }
 
   // 启动失败页那张真页面：大标题写该怎么修，下面红框里只放结论。
   // 红框里再把解法原样重复一遍，等于同一句话读两遍，而红色的等宽字看着就像「又一条报错」
@@ -969,6 +980,734 @@ async function runSourcePins() {
   ok(/require\("\.\/paths"\)/.test(serverSrc) && /const port = resolvePort\(process\.env, config\)/.test(serverSrc)
      && !/function resolvePort/.test(serverSrc),
      "  └ 服务端也是那一份，自己没再写一个（这是两边不会漂的唯一理由）");
+
+  console.log("\n【11b】界面卡死 / 进程没了：问他一句，不替他挑，也不连累后台");
+  // 以前 Electron 默认什么都不做：进程没了窗口一片白，卡死了一直转圈，只能强退整个应用——
+  // 服务端和后台任务都在主进程里，强退连它们一起带走。这里验 attachCrashGuard 切出来真跑。
+  const CRASH_KEYS = ["hungTitle", "hungDetail", "goneTitle", "goneDetail", "reasonLabel", "reloadBtn", "waitBtn", "laterBtn"];
+  for (const k of CRASH_KEYS) {
+    const zh = SHELL_TEXT.zh[k], en = SHELL_TEXT.en && SHELL_TEXT.en[k];
+    ok(typeof zh === "string" && zh.trim() && typeof en === "string" && en.trim(),
+       `SHELL_TEXT.${k} 中英两本都有（缺一本，那个语言的用户看到的是 undefined）`, { zh, en });
+    ok(typeof en === "string" && !/[㐀-鿿]/.test(en) && en !== zh, `  └ ${k} 的英文那本真是英文，不是把中文抄过去`, en);
+  }
+  eq(SHELL_TEXT.zh.reloadBtn, "重新加载", "按钮就叫「重新加载」");
+  eq(SHELL_TEXT.zh.waitBtn, "再等等", "  └ 另一颗叫「再等等」");
+
+  const mkGuard = (over) => {
+    const boxes = [], logs = [], timers = [];
+    const handlers = {};
+    const wc = {
+      reloads: 0, kills: 0,
+      on: (ev, fn) => { handlers[ev] = fn; },
+      reload: () => { wc.reloads++; },
+      forcefullyCrashRenderer: () => { wc.kills++; },
+    };
+    const w = { webContents: wc, isDestroyed: () => false };
+    const env = {
+      // 假的系统弹框：谁按了哪颗由测试说了算；收框（signal）照 Electron 的规矩当成按了 cancelId
+      dialog: { showMessageBox: (parent, opts) => new Promise((resolve) => {
+        const box = { parent, opts, aborted: false, answer: (response) => resolve({ response }) };
+        if (opts.signal) opts.signal.addEventListener("abort", () => { box.aborted = true; resolve({ response: opts.cancelId }); });
+        boxes.push(box);
+      }) },
+      T: (l) => SHELL_TEXT[l === "en" ? "en" : "zh"], osLang: () => "zh", LAST_UI_LANG: "",
+      bootLog: (s) => logs.push(String(s)),
+      uiLang: async () => "zh",
+      setTimeout: (fn, ms) => { const t = { fn, ms, unref: () => {} }; timers.push(t); return t; },
+      clearTimeout: (t) => { const i = timers.indexOf(t); if (i >= 0) timers.splice(i, 1); },
+      ...(over || {}),
+    };
+    const keys = Object.keys(env);
+    new Function(...keys, slice("electron-main.js", "attachCrashGuard") + "\nreturn attachCrashGuard;")(...keys.map((k) => env[k]))(w);
+    const fire = (ev, details) => handlers[ev] && handlers[ev]({}, details);
+    const tick = () => new Promise((r) => setImmediate(r));
+    return { w, wc, boxes, logs, timers, fire, tick, handlers };
+  };
+  {
+    const g = mkGuard();
+    ok(["unresponsive", "responsive", "render-process-gone"].every((ev) => typeof g.handlers[ev] === "function"),
+       "卡死、缓过来、进程没了三个事件都接上了", Object.keys(g.handlers));
+    g.fire("unresponsive");
+    g.fire("unresponsive");
+    eq(g.boxes.length, 1, "卡死弹一个框；连着报两次卡死也只挂一个框");
+    const b = g.boxes[0];
+    eq(b.parent, g.w, "  └ 框挂在主窗口上（macOS 上没有父窗口，收框那一下不起作用）");
+    eq(b.opts.message, SHELL_TEXT.zh.hungTitle, "  └ 标题说的是「没响应了」");
+    eq(JSON.stringify(b.opts.buttons), JSON.stringify(["重新加载", "再等等"]), "  └ 两颗按钮：重新加载 / 再等等（两条都给，不替他挑）");
+    eq(b.opts.buttons[b.opts.defaultId], "再等等", "  └ 回车默认是「再等等」：不丢东西的那条");
+    b.answer(1);
+    await g.tick();
+    eq(g.wc.reloads + g.wc.kills, 0, "选了再等等：什么都不动");
+    eq(g.timers.length, 1, "  └ 但记着 30 秒后再看一眼");
+    eq(g.timers[0] && g.timers[0].ms, 30000, "  └ 间隔是 30 秒");
+    g.timers.shift().fn();
+    eq(g.boxes.length, 2, "30 秒后还卡着，再问一次");
+    g.fire("responsive");
+    await g.tick();
+    ok(g.boxes[1].aborted, "缓过来了就把还挂着的框收掉（别让他对着一个已经没事的窗口做选择）");
+    eq(g.wc.reloads, 0, "  └ 收掉的框按的「默认键」不算数，没有因此重载");
+    eq(g.timers.length, 0, "  └ 复查也撤了");
+  }
+  {
+    const g = mkGuard();
+    g.fire("unresponsive");
+    g.boxes[0].answer(0);
+    await g.tick();
+    eq(g.wc.kills, 1, "卡死时选重新加载：先掐掉卡住的界面进程（不然重载排在它后面永远轮不到）");
+    // 真 Electron 43 实测：掐完紧跟着 reload 不起新进程，窗口停在一片白、之后再没有任何事件
+    eq(g.wc.reloads, 0, "  └ 掐完不马上重载（紧跟着 reload 在 Electron 43 上是空操作，窗口白着）");
+    g.fire("render-process-gone", { reason: "killed", exitCode: 9 });
+    await g.tick();
+    eq(g.wc.reloads, 1, "  └ 等「没了」报上来才重载");
+    eq(g.boxes.length, 1, "  └ 自己掐的那一下不当事故，不再弹「界面停止运行了」");
+    eq(g.timers.length, 0, "  └ 等「没了」的 5 秒兜底撤了");
+    g.fire("render-process-gone", { reason: "crashed", exitCode: 11 });
+    await g.tick();
+    eq(g.boxes.length, 2, "  └ 反向对照：之后真崩了照样弹（那个豁免只管一次）");
+    eq(g.wc.reloads, 1, "  └ 真崩了不自动重载，等他选");
+  }
+  {
+    const g = mkGuard();
+    g.fire("unresponsive");
+    g.boxes[0].answer(0);
+    await g.tick();
+    const fallback = g.timers.find((t) => t.ms === 5000);
+    ok(!!fallback, "掐完记着 5 秒兜底", g.timers.map((t) => t.ms));
+    fallback.fn();
+    eq(g.wc.reloads, 1, "「没了」一直没报上来：5 秒后照样重载，不让窗口干白着");
+    g.fire("render-process-gone", { reason: "crashed", exitCode: 11 });
+    await g.tick();
+    eq(g.boxes.length, 2, "  └ 兜底过后再报的「没了」算真事故，照样弹");
+  }
+  {
+    const g = mkGuard();
+    g.wc.forcefullyCrashRenderer = () => { throw new Error("掐不动"); };
+    g.fire("unresponsive");
+    g.boxes[0].answer(0);
+    await g.tick();
+    eq(g.wc.reloads, 1, "掐进程自己抛了：直接重载，不干等");
+    eq(g.timers.length, 0, "  └ 也不留一个空等的兜底计时");
+  }
+  {
+    const g = mkGuard();
+    g.fire("render-process-gone", { reason: "crashed", exitCode: 11 });
+    eq(g.boxes.length, 1, "界面进程崩了弹框");
+    const b = g.boxes[0];
+    eq(b.opts.message, SHELL_TEXT.zh.goneTitle, "  └ 标题说的是「停止运行了」");
+    ok(/crashed/.test(b.opts.detail), "  └ 原因代码原样给出来（不替他猜是什么引起的）", b.opts.detail);
+    eq(JSON.stringify(b.opts.buttons), JSON.stringify(["重新加载", "先不管"]),
+       "  └ 进程已经没了，第二颗是「先不管」——「再等等」等不来任何东西");
+    eq(g.wc.reloads, 0, "  └ 不自动重载（一加载就崩的页面会重载成死循环）");
+    b.answer(0);
+    await g.tick();
+    eq(g.wc.reloads, 1, "选重新加载就重载");
+    eq(g.wc.kills, 0, "  └ 进程已经没了，不用再掐一次");
+    g.fire("render-process-gone", { reason: "oom" });
+    g.boxes[1].answer(1);
+    await g.tick();
+    eq(g.wc.reloads + g.timers.length, 1, "选先不管：不重载，也不排复查");
+  }
+  {
+    const g = mkGuard();
+    g.fire("render-process-gone", { reason: "clean-exit", exitCode: 0 });
+    eq(g.boxes.length, 0, "关窗、退应用时的正常退出不弹框");
+  }
+  {
+    const g = mkGuard();
+    g.fire("unresponsive");
+    g.fire("render-process-gone", { reason: "crashed" });
+    await g.tick();
+    ok(g.boxes[0].aborted, "卡死的框还挂着、进程却没了：卡死那个框收掉");
+    eq(g.boxes[1] && g.boxes[1].opts.message, SHELL_TEXT.zh.goneTitle, "  └ 换成「停止运行了」那个");
+    eq(g.wc.reloads, 0, "  └ 收掉的那个框不会顺手触发重载");
+  }
+  {
+    const g = mkGuard({ LAST_UI_LANG: "en" });
+    g.fire("unresponsive");
+    eq(JSON.stringify(g.boxes[0].opts.buttons), JSON.stringify([SHELL_TEXT.en.reloadBtn, SHELL_TEXT.en.waitBtn]),
+       "界面是英文的，框就是英文的（用的是上一次问到的界面语言，卡住的界面答不了话）");
+  }
+  {
+    const g = mkGuard({ dialog: { showMessageBox: () => Promise.reject(new Error("框弹不出来")) } });
+    g.fire("unresponsive");
+    await g.tick();
+    ok(g.logs.some((l) => /框弹不出来/.test(l)), "弹框自己失败了记进启动日志，不往外抛（兜底不能成为新的错因）", g.logs);
+  }
+  const iGuard = mainSrc.indexOf("attachCrashGuard(win)");
+  ok(iGuard > 0 && iGuard < mainSrc.indexOf('require(path.join(__dirname, "server.js"))'),
+     "界面兜底挂在 require 服务端之前（启动失败页那一页也可能卡住）");
+
+  // 「关于」面板那行：许可证从 package.json 读。以前写死 MIT，对外等于许了一个不存在的授权
+  const aboutCopyright = new Function(slice("electron-main.js", "aboutCopyright") + "\nreturn aboutCopyright;")();
+  const pkg = require(path.join(ROOT, "package.json"));
+  const about = aboutCopyright(pkg);
+  ok(about.includes(pkg.license) && !/\bMIT\b/.test(about), "「关于」面板写的是 package.json 里真实的许可证", about);
+  ok(/copyright: aboutCopyright\(require\("\.\/package\.json"\)\)/.test(mainSrc) && !/copyright: "MIT/.test(mainSrc),
+     "  └ setAboutPanelOptions 真用的是它，不是写死的字");
+  eq(aboutCopyright({ license: "X-1.0" }), "X-1.0", "  └ 没填主页也不多出一个孤零零的分隔点");
+}
+
+// ===================================================================
+// 【11c】桌面壳：退出先问、收尾一遍、托盘、窗口记忆（electron-main.js 切片跑）
+// ===================================================================
+/**
+ * 关窗、⌘Q、托盘「退出」以前都是直接 app.quit()：跑到一半的任务没人收，MCP 服务、模型起的
+ * 开发服务器留在后台占着端口。现在全都先到 requestQuit：有任务在跑先问一句，确认了走 shutdown 收尾。
+ * 这一节钉的是一破就静默的那几条：
+ *   · 字典两本都齐（缺一本，那个语言的用户看到的确认框写着 undefined）；
+ *   · window-state.json 坏了、上次那块屏拔了，都照样开得出窗口，而且开在看得见、抓得住的地方；
+ *   · 收尾只走一遍、before-quit 只挂一个（挂两个就是各拦各的，一个放行另一个还拦，退出成了死循环）；
+ *   · 源码里再没有绕过 requestQuit 直接 app.quit() 的地方。
+ */
+async function runShellLifecycle() {
+  const mainSrc = fs.readFileSync(path.join(ROOT, "electron-main.js"), "utf8");
+  const SHELL_TEXT = new Function(mainSrc.slice(
+    mainSrc.indexOf("const SHELL_TEXT = {"), mainSrc.indexOf("\nfunction osLang(")
+  ).replace("const SHELL_TEXT =", "return") + ";")();
+  const T = (l) => SHELL_TEXT[l === "en" ? "en" : "zh"];
+  // 切出来的函数，外部变量按名字注入。slice 从 function 切起，async 的那几个得把前面的 async 补上
+  const load = (name, env) => {
+    const keys = Object.keys(env || {});
+    const i = mainSrc.indexOf(`function ${name}(`);
+    const src = (mainSrc.slice(Math.max(0, i - 6), i) === "async " ? "async " : "") + slice("electron-main.js", name);
+    return new Function(...keys, src + `\nreturn ${name};`)(...keys.map((k) => env[k]));
+  };
+  const tick = async (n = 3) => { for (let k = 0; k < n; k++) await new Promise((r) => setImmediate(r)); };
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // 等一个 Promise，最多 2 秒。光写 await 的话，它要是永远不 resolve，事件循环一空 node 就静静地以 0 退出，
+  // 最后那行「全部通过」都没打，跑测试的人却看到一个绿的退出码
+  const HUNG = Symbol("hung");
+  const within = async (p, what) => {
+    let timer;
+    const r = await Promise.race([p, new Promise((res) => { timer = setTimeout(() => res(HUNG), 2000); })]);
+    clearTimeout(timer);
+    ok(r !== HUNG, `  └ ${what}：2 秒内回来了，没卡住`);
+    return r;
+  };
+  const count = (re) => (mainSrc.match(re) || []).length;
+
+  console.log("\n【11c】桌面壳：退出先问、收尾只走一遍、托盘三条、窗口记得住也找得回");
+
+  // ---- 字典 ----
+  for (const k of ["trayTip", "trayShow", "trayNewTask", "trayQuit", "quitBusy", "quitBtn", "stayBtn"]) {
+    const zh = SHELL_TEXT.zh[k], en = SHELL_TEXT.en && SHELL_TEXT.en[k];
+    const zs = typeof zh === "function" ? zh(3) : zh, es = typeof en === "function" ? en(3) : en;
+    ok(typeof zs === "string" && zs.trim() && typeof es === "string" && es.trim(),
+       `SHELL_TEXT.${k} 中英两本都有`, { zs, es });
+    ok(typeof es === "string" && !/[㐀-鿿]/.test(es) && es !== zs, `  └ ${k} 的英文那本真是英文`, es);
+  }
+  eq(SHELL_TEXT.zh.quitBusy(2), "还有 2 个任务在跑，退出会中断它们", "确认框就一句：几个任务在跑、退了会怎样");
+  eq(SHELL_TEXT.en.quitBusy(1), "1 task is still running. Quitting will stop it.", "  └ 英文单数");
+  ok(/^2 tasks .* them\.$/.test(SHELL_TEXT.en.quitBusy(2)), "  └ 英文复数（1 task / 2 tasks 分开写）", SHELL_TEXT.en.quitBusy(2));
+
+  // ---- 窗口记忆：读写都兜住 ----
+  const readWindowState = load("readWindowState", { fs });
+  const writeWindowState = load("writeWindowState", { fs, path });
+  const WD = fs.mkdtempSync(path.join(os.tmpdir(), "owb-winstate-"));
+  try {
+    const f = path.join(WD, "window-state.json");
+    eq(readWindowState(f), null, "还没存过 → null（头一回开，照默认）");
+    const bad = {
+      "半截 JSON（写到一半断电）": '{"x": 120, "y":', "空文件": "", "数组": "[1,2,3]", "null": "null",
+      "一个数": "42", "一串字": '"hello"', "乱码": "\u0000ÿ�",
+    };
+    for (const [what, body] of Object.entries(bad)) {
+      fs.writeFileSync(f, body);
+      let got, threw = null;
+      try { got = readWindowState(f); } catch (e) { threw = e; }
+      ok(!threw && got === null, `坏文件（${what}）→ 当没存过，不抛`, threw ? String(threw) : got);
+    }
+    eq(readWindowState(WD), null, "路径指着个目录 → null");
+    eq(readWindowState(undefined), null, "userData 都问不到（winStateFile 回 null）→ null");
+    const st = { x: 100, y: 80, width: 1300, height: 820, maximized: false };
+    eq(writeWindowState(f, st), true, "写得进去回 true");
+    eq(JSON.stringify(readWindowState(f)), JSON.stringify(st), "  └ 读回来原样");
+    ok(!fs.existsSync(f + ".tmp"), "  └ 旁边那份临时文件改名走了，不留垃圾");
+    const deep = path.join(WD, "a", "b", "window-state.json");
+    ok(writeWindowState(deep, st) === true && readWindowState(deep) !== null, "userData 目录还不存在也写得进去（先建目录）");
+    const blocker = path.join(WD, "blocker");
+    fs.writeFileSync(blocker, "x");
+    let r2, threw2 = null;
+    try { r2 = writeWindowState(path.join(blocker, "window-state.json"), st); } catch (e) { threw2 = e; }
+    ok(!threw2 && r2 === false, "写不进去（上一级是个文件）→ false，不抛", threw2 ? String(threw2) : r2);
+    let r3, threw3 = null;
+    try { r3 = writeWindowState(null, st); } catch (e) { threw3 = e; }
+    ok(!threw3 && r3 === false, "文件名是 null（userData 问不到）→ false，不抛", threw3 ? String(threw3) : r3);
+    const loop = { x: 1 };
+    loop.self = loop;
+    eq(writeWindowState(f, loop), false, "存的东西序列化不了 → false");
+    eq(JSON.stringify(readWindowState(f)), JSON.stringify(st), "  └ 盘上还是上一份完整的，没被写成半截");
+  } finally {
+    fs.rmSync(WD, { recursive: true, force: true });
+  }
+
+  // ---- 窗口记忆：位置还能不能原样用 ----
+  const WIN_SIZE = new Function("return " + ((mainSrc.match(/\nconst WIN_SIZE = (\{[^}]*\});/) || [])[1] || "null"))();
+  ok(WIN_SIZE && WIN_SIZE.width > 0 && WIN_SIZE.minWidth > 0 && WIN_SIZE.minHeight > 0, "默认尺寸表抠得出来", WIN_SIZE);
+  const sane = load("saneWindowBounds", {});
+  const DEF = JSON.stringify({ width: WIN_SIZE.width, height: WIN_SIZE.height });
+  const MAIN = { x: 0, y: 25, width: 1440, height: 875 };     // 笔记本自带屏（顶上 25 像素是 macOS 菜单栏）
+  const EXT = { x: 1440, y: 0, width: 2560, height: 1415 };   // 右边接的外接屏
+  const onExt = { x: 2000, y: 100, width: 1600, height: 1000, maximized: false };
+  const both = sane(onExt, [MAIN, EXT], WIN_SIZE);
+  eq(JSON.stringify(both), JSON.stringify({ width: 1600, height: 1000, x: 2000, y: 100 }), "两块屏都在：上次开在外接屏上，这次还开在那儿");
+  const unplugged = sane(onExt, [MAIN], WIN_SIZE);
+  ok(unplugged.x === undefined && unplugged.y === undefined, "外接屏拔了：不给坐标，Electron 自己居中（不开到一片不存在的地方）", unplugged);
+  ok(unplugged.width <= MAIN.width && unplugged.height <= MAIN.height, "  └ 尺寸也压回剩下那块屏以内", unplugged);
+  for (const [what, s] of [["远在左边", { x: -5000, y: 100 }], ["远在下面", { x: 100, y: 9000 }], ["标题栏在屏幕上沿外面", { x: 100, y: -200 }]]) {
+    const o = sane({ ...s, width: 1200, height: 800 }, [MAIN, EXT], WIN_SIZE);
+    ok(o.x === undefined && o.y === undefined, `坐标越界（${what}）→ 居中`, o);
+  }
+  // 边界：标题栏至少露出 80 像素才算抓得住
+  eq(sane({ x: 1340, y: 100, width: 1200, height: 800 }, [MAIN], WIN_SIZE).x, 1340, "大半截伸出右边、标题栏还露 100 像素 → 照用（是他自己摆的）");
+  eq(sane({ x: 1380, y: 100, width: 1200, height: 800 }, [MAIN], WIN_SIZE).x, undefined, "  └ 只露 60 像素 → 抓不住标题栏，居中");
+  eq(sane({ x: -1100, y: 100, width: 1200, height: 800 }, [MAIN], WIN_SIZE).x, -1100, "  └ 伸出左边同理：露 100 像素照用");
+  eq(sane({ x: -1150, y: 100, width: 1200, height: 800 }, [MAIN], WIN_SIZE).x, undefined, "  └ 露 50 像素 → 居中");
+  eq(sane({ x: 100, y: 15, width: 1200, height: 800 }, [MAIN], WIN_SIZE).y, 15, "  └ 顶上容 10 像素（Windows 窗口四周那圈看不见的缩放边）");
+  eq(sane({ x: 100, y: 10, width: 1200, height: 800 }, [MAIN], WIN_SIZE).y, undefined, "  └ 再往上就钻到菜单栏底下了 → 居中");
+  eq(sane({ x: 100, y: 860, width: 1200, height: 800 }, [MAIN], WIN_SIZE).y, 860, "  └ 往下拖到只剩标题栏还在屏里 → 照用");
+  eq(sane({ x: 100, y: 870, width: 1200, height: 800 }, [MAIN], WIN_SIZE).y, undefined, "  └ 标题栏都掉出屏底 → 居中");
+  const junk = sane({ x: "100", y: 100, width: "abc", height: NaN }, [MAIN, EXT], WIN_SIZE);
+  eq(JSON.stringify(junk), DEF, "数不像话（字符串、NaN）→ 那一项用默认，坐标不用");
+  eq(JSON.stringify(sane({ width: Infinity, height: -300 }, [MAIN, EXT], WIN_SIZE)), DEF, "  └ 无穷大、负的宽高同理");
+  const tiny = sane({ x: 100, y: 100, width: 100, height: 50 }, [MAIN], WIN_SIZE);
+  ok(tiny.width === WIN_SIZE.minWidth && tiny.height === WIN_SIZE.minHeight, "太小的抬到最小尺寸", tiny);
+  const frac = sane({ x: 100.6, y: 99.4, width: 1000.5, height: 700.2 }, [MAIN], WIN_SIZE);
+  ok([frac.x, frac.y, frac.width, frac.height].every(Number.isInteger), "带小数的取整", frac);
+  eq(sane({ maximized: true }, [MAIN], WIN_SIZE).maximized, true, "上次是最大化关的，记着");
+  eq(sane({ maximized: "true" }, [MAIN], WIN_SIZE).maximized, undefined, "  └ 只认真的 true");
+  for (const [what, s] of [["null", null], ["数组", [1, 2]], ["undefined", undefined], ["一串字", "x"]]) {
+    eq(JSON.stringify(sane(s, [MAIN, EXT], WIN_SIZE)), DEF, `存的整个不是对象（${what}）→ 全用默认`);
+  }
+  const noScr = sane(onExt, [], WIN_SIZE);
+  ok(noScr.x === undefined && noScr.width === 1600, "一块屏都问不到 → 不给坐标（不知道哪儿看得见）", noScr);
+  eq(sane(onExt, null, WIN_SIZE).x, undefined, "  └ 屏幕列表是 null 也不抛");
+  eq(sane(onExt, [null, { x: NaN, y: 0, width: 100, height: 100 }, EXT], WIN_SIZE).x, 2000, "屏幕列表里混了坏数据 → 跳过那几块，好的照用");
+
+  const iRead = mainSrc.indexOf("readWindowState(winStateFile())");
+  ok(iRead > 0 && iRead < mainSrc.indexOf("win = new BrowserWindow("), "建窗口之前先读上次的位置");
+  ok(/screen\.getAllDisplays\(\)\.map\(\(d\) => d\.workArea\)/.test(mainSrc), "  └ 跟每块屏的工作区比，不是只看主屏");
+  ok(/writeWindowState\(winStateFile\(\), \{ \.\.\.win\.getNormalBounds\(\), maximized: win\.isMaximized\(\) \}\)/.test(mainSrc),
+     "存的是「正常状态」那份外框 + 是否最大化（最大化时的外框不是他摆的位置）");
+  ok(/win\.on\("close", saveWinState\)/.test(mainSrc), "  └ 关窗那一下立刻存，不等防抖");
+
+  // ---- 快捷键：设置页的写法 → Electron 的写法（1.3 同步项）----
+  const accel = load("electronAccel", {});
+  const cases = [
+    ["Mod+Comma", true, "CommandOrControl+,"], ["Mod+Comma", false, "CommandOrControl+,"],
+    ["Meta+Shift+K", true, "Command+Shift+K"], ["Meta+Shift+K", false, "Super+Shift+K"],
+    ["Ctrl+Shift+ArrowUp", false, "Control+Shift+Up"],
+    ["Ctrl+Meta+F|F11", true, "Control+Command+F"], ["Ctrl+Meta+F|F11", false, "F11"],
+    ["Alt+Numpad1", false, "Alt+num1"], ["Shift+Mod+BracketLeft", true, "Shift+CommandOrControl+["],
+    ["Shift+Alt+W", true, "Shift+Alt+W"], ["Ctrl+Control+K", false, "Control+K"],
+    ["", true, ""], [null, false, ""],
+  ];
+  for (const [a, mac, want] of cases) eq(accel(a, mac), want, `快捷键 ${a} → ${want || "（空）"}（${mac ? "macOS" : "Windows / Linux"}）`);
+  // Electron 认得的键名（docs/api/accelerator.md），落出来的每一段都得在这张表里，不然 register 直接抛
+  const ELECTRON_TOKEN = /^(CommandOrControl|Command|Control|Alt|Shift|Super|[A-Z0-9]|F([1-9]|1\d|2[0-4])|[,./\\;'`[\]\-=]|Up|Down|Left|Right|Enter|Escape|Space|Tab|Backspace|Delete|Insert|Home|End|PageUp|PageDown|num[0-9]|numadd|numsub|nummult|numdiv|numdec)$/;
+  const app02 = fs.readFileSync(path.join(ROOT, "public", "js", "app-02.js"), "utf8");
+  const defsSrc = (app02.match(/const SHORTCUT_DEFS = \[([\s\S]*?)\n\];/) || [])[1] || "";
+  const defs = [...defsSrc.matchAll(/\["[^"]+", "[^"]+", "([^"]+)"/g)].map((m) => m[1]);
+  ok(defs.length >= 10, "设置页的默认键抠得出来", defs.length);
+  const badTok = [];
+  for (const d of defs) for (const mac of [true, false]) for (const tok of accel(d, mac).split("+")) {
+    if (!ELECTRON_TOKEN.test(tok)) badTok.push(`${d}(${mac ? "mac" : "win"})→${tok}`);
+  }
+  ok(badTok.length === 0, "设置页每个默认键落到两个平台，都是 Electron 认得的键名（改绑成哪条都注册得上）", badTok);
+  // 反向对照：以前那版只换 Meta→Command、Ctrl→Control
+  const oldAccel = (a) => String(a).replace(/\bMeta\b/g, "Command").replace(/\bCtrl\b/g, "Control");
+  ok(defs.some((d) => oldAccel(d).split("+").some((t) => !ELECTRON_TOKEN.test(t))), "  └ 反向对照：老那版过不了这把尺子（Mod、Comma 原样漏过去）");
+  {
+    const regs = [], logs = [];
+    let result = true;
+    const registerShortcuts = load("registerShortcuts", {
+      globalShortcut: { unregisterAll: () => {}, register: (a) => { regs.push(a); if (result === "throw") throw new Error("bad accel"); return result; } },
+      electronAccel: accel, process: { platform: "win32" }, win: null, bootLog: (s) => logs.push(String(s)),
+      console: { warn: (...a) => logs.push(a.join(" ")) },
+    });
+    registerShortcuts({ "toggle-window": "Mod+Shift+K" });
+    eq(regs[0], "CommandOrControl+Shift+K", "改绑成 Mod+Shift+K：注册的是 Electron 那种写法");
+    registerShortcuts(null);
+    eq(regs[1], "Shift+Alt+W", "  └ 没改绑用默认的 Shift+Alt+W");
+    result = false;
+    registerShortcuts({ "toggle-window": "Mod+Shift+K" });
+    ok(logs.some((l) => /没注册上/.test(l)), "  └ 系统不给这个组合键（register 回 false）→ 记进日志，不然看不出按了没反应是为什么", logs);
+    result = "throw";
+    let threw = null;
+    try { registerShortcuts({ "toggle-window": "Mod+Shift+K" }); } catch (e) { threw = e; }
+    ok(!threw, "  └ register 抛了也不往外抛（设置页存盘那条路不能因为它挂掉）");
+  }
+
+  // ---- 问服务端：以用户本人的身份，问不到就回 null ----
+  const mkApi = (over) => {
+    const calls = [];
+    const env = {
+      SERVER_OWN: true, PORT: 3811, AbortSignal,
+      session: { defaultSession: { cookies: { get: async (q) => {
+        calls.push(["cookies", q]);
+        return [{ name: "openworkbuddy_token", value: "tok" }, { name: "x", value: "1" }];
+      } } } },
+      fetch: async (url, init) => { calls.push(["fetch", url, init]); return { ok: true, json: async () => ["s1"] }; },
+      ...(over || {}),
+    };
+    return { apiCall: load("apiCall", env), calls };
+  };
+  {
+    const a = mkApi({ SERVER_OWN: false });
+    eq(await a.apiCall("GET", "/api/chat/running"), null, "端口上是另一台 OpenWorkBuddy（连过去的）：不问，回 null");
+    eq(a.calls.length, 0, "  └ 连请求都不发（不去叫停人家的任务）");
+  }
+  {
+    const a = mkApi();
+    eq(JSON.stringify(await a.apiCall("GET", "/api/chat/running")), '["s1"]', "问得到就把结果交回来");
+    const fc = a.calls.find((c) => c[0] === "fetch") || [];
+    eq(fc[1], "http://127.0.0.1:3811/api/chat/running", "  └ 问的是本机这个端口");
+    eq(fc[2] && fc[2].headers.cookie, "openworkbuddy_token=tok; x=1", "  └ 带着界面那个 session 的 cookie（登录令牌是 HttpOnly 的，只能从 cookie 罐里取）");
+    ok(fc[2] && fc[2].signal && !fc[2].headers["content-type"] && fc[2].body === undefined, "  └ 带超时；GET 不带请求体");
+    eq((a.calls.find((c) => c[0] === "cookies") || [])[1].url, "http://127.0.0.1:3811", "  └ cookie 按这个地址取");
+    await a.apiCall("POST", "/api/chat/stop", { sessionId: "s1" });
+    const post = a.calls.filter((c) => c[0] === "fetch")[1][2];
+    ok(post.method === "POST" && post.headers["content-type"] === "application/json" && post.body === '{"sessionId":"s1"}', "  └ POST 带 JSON 请求体", post);
+  }
+  for (const [what, over] of [
+    ["服务端回 401 / 500", { fetch: async () => ({ ok: false, json: async () => ({}) }) }],
+    ["请求抛了（超时、连不上）", { fetch: async () => { throw new Error("ECONNREFUSED"); } }],
+    ["cookie 罐取不出来", { session: { defaultSession: { cookies: { get: async () => { throw new Error("no session"); } } } } }],
+    ["回的不是 JSON", { fetch: async () => ({ ok: true, json: async () => { throw new Error("bad json"); } }) }],
+  ]) {
+    const a = mkApi(over);
+    let got, threw = null;
+    try { got = await a.apiCall("GET", "/api/chat/running"); } catch (e) { threw = e; }
+    ok(!threw && got === null, `${what} → null，不抛（退出不许因为这一问卡住）`, threw ? String(threw) : got);
+  }
+  for (const [what, v, want] of [["null", null, "[]"], ["报错对象", { error: "x" }, "[]"], ["id 列表", ["a", "b"], '["a","b"]']]) {
+    const runningTasks = load("runningTasks", { apiCall: async () => v });
+    eq(JSON.stringify(await runningTasks()), want, `在跑的任务：服务端回${what} → ${want}`);
+  }
+
+  // ---- 子进程：认得出谁是自己的 ----
+  const childTree = load("childTree", {});
+  const APP = "/Applications/OpenWorkBuddy.app/Contents";
+  const PS = [
+    "    1     0     1 /sbin/launchd",
+    `  100     1   100 ${APP}/MacOS/OpenWorkBuddy`,                                                   // 壳自己（root）
+    `  101   100   100 ${APP}/Frameworks/OpenWorkBuddy Helper (Renderer).app/Contents/MacOS/OpenWorkBuddy Helper (Renderer) --type=renderer --lang=zh-CN`, // keep 里有
+    "  102   101   100 whatever",                                                                        //   └ 它底下的也不碰
+    `  104   100   100 ${APP}/Frameworks/OpenWorkBuddy Helper (GPU).app/Contents/MacOS/OpenWorkBuddy Helper (GPU) --type=gpu-process --gpu-preferences=UAAAAAAAAAAgAAAIAAAAAAAAAAAAAAAAAABgAAAAAAAwAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAA`, // 还没进 metrics 表，靠 --type= 认
+    `  103   100   100 ${APP}/Frameworks/Electron Framework.framework/Helpers/chrome_crashpad_handler --monitor-self`, // 崩溃上报
+    "  110   100   110 node /x/mcp-server.js --stdio",                                                // 自立门户的 MCP 服务（detached）
+    "  111   110   110 npm run dev",
+    "  112   111   110 node /x/node_modules/.bin/vite",
+    "  120   100   100 /bin/bash -c sleep 99",
+    "  121   120   100 sleep 99",
+    `  130   100   100 ${APP}/MacOS/OpenWorkBuddy /x/eval/run.js`,                                     // ELECTRON_RUN_AS_NODE 跑的脚本：同一个二进制，但要收
+    "  200     1   200 /System/Applications/Finder.app/Contents/MacOS/Finder",                         // 别人家的
+    "  201   200   200 child",
+    "garbage line",
+  ].join("\n");
+  const tree = childTree(PS, 100, [101]);
+  eq(JSON.stringify(tree.pids.sort((a, b) => a - b)), "[110,111,112,120,121,130]",
+     "子孙都认得出来，连孙子、曾孙；自己、Electron 自己的（keep 里的、带 --type= 的）、崩溃上报、别人家的都不算");
+  ok(tree.pids.includes(130), "  └ 拿 Electron 二进制跑的脚本（ELECTRON_RUN_AS_NODE）照收：不能按「跟主进程同一个可执行文件」放过");
+  ok(!tree.pids.includes(104), "  └ GPU 进程还没进 metrics 表，也靠 --type= 认出来不碰（真 Electron 43 刚启动那阵就是这样）");
+  eq(JSON.stringify(tree.groups), "[110]", "  └ 自立门户的进程组组长单独挑出来（按组杀才能带走已经过继给 init 的孙子）");
+  eq(JSON.stringify(childTree("", 100, [])), '{"pids":[],"groups":[]}', "  └ ps 没输出 → 什么都不杀");
+  eq(JSON.stringify(childTree(undefined, 100, null)), '{"pids":[],"groups":[]}', "  └ ps 没跑起来（undefined）也不抛");
+  const winTree = childTree([
+    '4321 1000 0 node.exe "C:\\Program Files\\nodejs\\node.exe" mcp.js',
+    "4400 1000 0 cmd.exe C:\\Windows\\system32\\cmd.exe /d /s /c npm run dev",
+    '4500 1000 0 OpenWorkBuddy.exe "C:\\x\\OpenWorkBuddy.exe" --type=gpu-process --field-trial-handle=1',
+    "4600 1000 0 conhost.exe ",
+  ].join("\r\n") + "\r\n", 1000, []);
+  eq(JSON.stringify(winTree), '{"pids":[4321,4400,4600],"groups":[]}',
+     "Windows 那份（PowerShell 拼的「pid 父pid 0 名字 命令行」，\\r\\n 换行）也解析得了；--type= 的不碰；没有进程组");
+  if (process.platform !== "win32") {
+    const cp = require("child_process");
+    const alive = (p) => { try { process.kill(p, 0); return true; } catch { return false; } };
+    const sh = cp.spawn("sh", ["-c", "sleep 31 & sleep 32 & sleep 33 & wait"], { stdio: "ignore" });
+    const exited = new Promise((r) => sh.on("exit", () => r("exited")));
+    let kids = { pids: [] };
+    try {
+      await sleep(300);
+      kids = childTree(cp.spawnSync("ps", ["-A", "-ww", "-o", "pid=,ppid=,pgid=,args="], { encoding: "utf8" }).stdout, sh.pid, []);
+      eq(kids.pids.length, 3, "真跑一遍：ps 列出来，sh 底下三个 sleep 都认得出来", kids);
+      const keepPid = kids.pids[0];
+      // 根换成这个 sh：真杀，但只杀得到它底下，碰不到跑测试的这个进程的其他孩子
+      const killChildren = load("killChildren", {
+        require, bootLog: () => {}, childTree,
+        app: { getAppMetrics: () => [{ pid: keepPid }] }, // 假装这个是 Electron 自己的 GPU 进程
+        process: { platform: process.platform, pid: sh.pid, kill: (p, s) => process.kill(p, s) },
+      });
+      eq(killChildren("SIGTERM"), 2, "  └ 送走两个，Electron 自己那个（keep）不碰");
+      await sleep(300);
+      ok(alive(keepPid), "  └ keep 那个还活着");
+      ok(kids.pids.filter((p) => p !== keepPid).every((p) => !alive(p)), "  └ 另外两个真没了");
+      process.kill(keepPid, "SIGTERM");
+      eq(await Promise.race([exited, sleep(3000).then(() => "timeout")]), "exited", "  └ 孩子都走了，sh 的 wait 返回、自己也退了");
+    } finally {
+      for (const p of kids.pids) { try { process.kill(p, "SIGKILL"); } catch {} }
+      try { sh.kill("SIGKILL"); } catch {}
+    }
+  }
+
+  // ---- shutdown：只走一遍，最多等 3 秒 ----
+  ok(/^const SHUTDOWN_WAIT_MS = 3000;/m.test(mainSrc), "叫停之后最多等 3 秒");
+  const mkShutdown = (st) => {
+    const stops = [], kills = [], logs = [];
+    st.polls = 0;
+    const shutdown = load("shutdown", {
+      SHUTDOWN: null, SHUTDOWN_WAIT_MS: 80,
+      runningTasks: async () => { st.polls++; return st.running.slice(); },
+      apiCall: async (method, p, body) => {
+        stops.push([method, p, body && body.sessionId]);
+        if (st.stopWorks) st.running = st.running.filter((x) => x !== body.sessionId);
+        return { ok: true };
+      },
+      killChildren: (sig) => { kills.push(sig); if (st.killThrows) throw new Error("ps 没了"); return sig === "SIGTERM" ? (st.termed || 0) : 0; },
+      bootLog: (s) => logs.push(String(s)),
+    });
+    return { shutdown, stops, kills, logs };
+  };
+  {
+    const st = { running: ["a", "b"], stopWorks: true };
+    const s = mkShutdown(st);
+    const p1 = s.shutdown(), p2 = s.shutdown();
+    ok(p1 === p2, "收尾只走一遍：同时来要的两个拿到的是同一个 Promise");
+    await within(p1, "收尾");
+    eq(JSON.stringify(s.stops), '[["POST","/api/chat/stop","a"],["POST","/api/chat/stop","b"]]', "  └ 在跑的每个任务叫停一次（跟用户点「让我停下」同一条路）");
+    eq(s.kills.join(","), "SIGTERM", "  └ 然后清子进程；没有要清的就不补 SIGKILL");
+    await s.shutdown();
+    ok(s.stops.length === 2 && s.kills.length === 1, "  └ 收完了再要一次：还是那一趟，不再叫停、不再杀", { stops: s.stops.length, kills: s.kills.length });
+  }
+  {
+    const st = { running: ["a"], stopWorks: false, termed: 2 };
+    const s = mkShutdown(st);
+    const t0 = Date.now();
+    await s.shutdown();
+    const took = Date.now() - t0;
+    ok(took >= 80 + 450, "任务叫了不停：等满时限就不等了，送完 SIGTERM 半秒后补 SIGKILL", took);
+    ok(s.logs.some((l) => /不等了/.test(l)), "  └ 没等完这件事记进日志", s.logs);
+    eq(s.kills.join(","), "SIGTERM,SIGKILL", "  └ 先礼后兵");
+    const polls = st.polls;
+    await sleep(400);
+    eq(st.polls, polls, "  └ 放弃之后不再轮询（不留一个转个不停的循环）");
+  }
+  {
+    const st = { running: [] };
+    const s = mkShutdown(st);
+    const t0 = Date.now();
+    await s.shutdown();
+    ok(s.stops.length === 0 && s.kills.join(",") === "SIGTERM" && Date.now() - t0 < 80, "没有在跑的任务：不叫停、不白等，直接清子进程", { stops: s.stops, took: Date.now() - t0 });
+  }
+  {
+    const st = { running: [], killThrows: true };
+    const s = mkShutdown(st);
+    let threw = null;
+    try { await s.shutdown(); } catch (e) { threw = e; }
+    ok(!threw && s.logs.some((l) => /ps 没了/.test(l)), "收尾自己出错：记日志，不往外抛（退出照样得退）", threw ? String(threw) : s.logs);
+  }
+
+  // ---- requestQuit：有任务在跑先问，不替他挑 ----
+  const mkQuit = (over) => {
+    const boxes = [], logs = [];
+    const calls = { shutdown: 0, quit: 0, restore: 0, show: 0 };
+    const st = { running: [] };
+    const w = { isDestroyed: () => false, isMinimized: () => true, restore: () => calls.restore++, show: () => calls.show++ };
+    const env = {
+      QUIT_STATE: "", win: w, T, LAST_UI_LANG: "", osLang: () => "zh",
+      dialog: { showMessageBox: (...a) => new Promise((resolve) => {
+        boxes.push({ parent: a.length > 1 ? a[0] : null, opts: a[a.length - 1], answer: (response) => resolve({ response }) });
+      }) },
+      runningTasks: async () => st.running.slice(),
+      shutdown: async () => { calls.shutdown++; },
+      app: { quit: () => { calls.quit++; } },
+      bootLog: (s) => logs.push(String(s)),
+      ...(over || {}),
+    };
+    return { requestQuit: load("requestQuit", env), boxes, logs, calls, st, w };
+  };
+  {
+    const q = mkQuit();
+    await q.requestQuit();
+    ok(q.boxes.length === 0 && q.calls.shutdown === 1 && q.calls.quit === 1, "没有任务在跑：不打扰，收尾完直接退", q.calls);
+    await q.requestQuit();
+    ok(q.boxes.length === 0 && q.calls.shutdown === 1 && q.calls.quit === 2, "  └ 放行过之后再来要（closed、window-all-closed）：直接退，不再问、不再收尾", q.calls);
+  }
+  {
+    const q = mkQuit();
+    q.st.running = ["a", "b"];
+    const p = q.requestQuit();
+    await tick();
+    eq(q.boxes.length, 1, "2 个任务在跑：先问一句");
+    const b = q.boxes[0] || { opts: { buttons: [] } };
+    eq(b.opts.message, "还有 2 个任务在跑，退出会中断它们", "  └ 问的就是这句");
+    eq(JSON.stringify(b.opts.buttons), JSON.stringify([SHELL_TEXT.zh.quitBtn, SHELL_TEXT.zh.stayBtn]), "  └ 两颗按钮：退 / 不退（两条都给，不替他挑）");
+    eq(b.opts.buttons[b.opts.defaultId], SHELL_TEXT.zh.stayBtn, "  └ 回车默认是「先不退」：不丢东西的那条");
+    eq(b.opts.buttons[b.opts.cancelId], SHELL_TEXT.zh.stayBtn, "  └ Esc / 关掉框也算不退");
+    ok(b.parent === q.w && q.calls.restore === 1 && q.calls.show === 1, "  └ 框挂在主窗口上，窗口收着的话先叫出来（不然框也跟着看不见）", q.calls);
+    q.requestQuit();
+    await tick();
+    eq(q.boxes.length, 1, "框挂着的时候再点关闭 / 再按 ⌘Q：不叠第二个框");
+    b.answer(1);
+    await within(p, "选了先不退");
+    ok(q.calls.shutdown === 0 && q.calls.quit === 0, "选了先不退：什么都不动，任务接着跑", q.calls);
+    ok(q.logs.some((l) => /先不退/.test(l)), "  └ 记一笔（回头查「怎么没退」看得到）", q.logs);
+    const p2 = q.requestQuit();
+    await tick();
+    eq(q.boxes.length, 2, "  └ 之后再关还会问（不是问过一次就永远不问了）");
+    (q.boxes[1] || { answer: () => {} }).answer(0);
+    await within(p2, "选了中断并退出");
+    ok(q.calls.shutdown === 1 && q.calls.quit === 1, "选了中断并退出：收尾一遍，然后退", q.calls);
+  }
+  {
+    const q = mkQuit({ LAST_UI_LANG: "en" });
+    q.st.running = ["a"];
+    q.requestQuit();
+    await tick();
+    eq(q.boxes[0] && q.boxes[0].opts.message, SHELL_TEXT.en.quitBusy(1), "界面是英文的，框就是英文的");
+  }
+  {
+    const q = mkQuit({ win: null });
+    q.st.running = ["a"];
+    q.requestQuit();
+    await tick();
+    ok(q.boxes.length === 1 && q.boxes[0].parent === null, "主窗口已经没了（从托盘退）：框照样弹，不挂在死窗口上");
+  }
+  {
+    const q = mkQuit({ dialog: { showMessageBox: () => Promise.reject(new Error("框弹不出来")) } });
+    q.st.running = ["a"];
+    await within(q.requestQuit(), "弹框失败");
+    ok(q.calls.quit === 1 && q.logs.some((l) => /框弹不出来/.test(l)), "弹框自己失败了：记日志，照样退（不能让人关不掉应用）", { calls: q.calls, logs: q.logs });
+  }
+
+  // ---- 所有「要退出」的入口都到 requestQuit ----
+  const gate = (src, state) => {
+    const c = { prevent: 0, ask: 0 };
+    new Function("QUIT_STATE", "requestQuit", "return " + src)(state, () => c.ask++)({ preventDefault: () => c.prevent++ });
+    return c;
+  };
+  const bq = mainSrc.match(/\napp\.on\("before-quit", (\(e\) => \{[\s\S]*?\n\})\);/);
+  const cg = mainSrc.match(/\n {2}win\.on\("close", (\(e\) => \{[\s\S]*?\n {2}\})\);/);
+  ok(bq && cg, "before-quit 和主窗口 close 的闸都抠得出来");
+  for (const [what, m] of [["⌘Q / Dock 右键退出（before-quit）", bq], ["关主窗口（close）", cg]]) {
+    if (!m) continue;
+    let c = gate(m[1], "");
+    ok(c.prevent === 1 && c.ask === 1, `${what}：先拦下来交给 requestQuit`, c);
+    c = gate(m[1], "asking");
+    ok(c.prevent === 1 && c.ask === 1, "  └ 确认框挂着时再来：照样拦（叠不叠框归 requestQuit 管）", c);
+    c = gate(m[1], "done");
+    ok(c.prevent === 0 && c.ask === 0, "  └ 放行过了：不拦", c);
+  }
+  eq(count(/app\.on\("before-quit"/g), 1, "before-quit 只挂一个（两个各拦各的，一个放行另一个还拦，退出就成了死循环）");
+  eq(count(/^app\.on\("before-quit"/gm), 1, "  └ 挂在顶层，不在 whenReady / 建窗口里（那些地方跑两遍就挂两个）");
+  eq(count(/app\.on\("will-quit"/g), 1, "will-quit 也只挂一个");
+  eq(count(/\nfunction shutdown\(/g), 1, "shutdown 只有一份");
+  ok(/win\.on\("closed", \(\) => \{[\s\S]{0,300}?requestQuit\(\);/.test(mainSrc), "主窗口 closed 走 requestQuit");
+  ok(/^app\.on\("window-all-closed", \(\) => requestQuit\(\)\);/m.test(mainSrc), "window-all-closed 也走 requestQuit");
+  const strayQuits = (src) => {
+    const i0 = src.indexOf("async function requestQuit("), i1 = src.indexOf("\n}\n", i0);
+    const bad = [];
+    for (let i = src.indexOf("app.quit("); i >= 0; i = src.indexOf("app.quit(", i + 1)) {
+      const line = src.slice(src.lastIndexOf("\n", i) + 1, i);
+      if (/^\s*\*/.test(line) || line.includes("//")) continue; // 注释里提到的不算
+      if (i > i0 && i < i1) continue;
+      bad.push((line + src.slice(i, src.indexOf("\n", i))).trim());
+    }
+    return bad;
+  };
+  eq(JSON.stringify(strayQuits(mainSrc)), "[]", "除了 requestQuit 自己，源码里没有别处直接 app.quit()（都得先问、先收尾）");
+  const reverted = mainSrc.replace('app.on("window-all-closed", () => requestQuit());', 'app.on("window-all-closed", () => app.quit());');
+  ok(reverted !== mainSrc && strayQuits(reverted).length === 1, "  └ 反向对照：把兜底那行改回 app.quit() 就抓得到");
+  ok(/const letSystemQuit = \(\) => \{\s*QUIT_STATE = "done";/.test(mainSrc) &&
+     /win\.on\("query-session-end", letSystemQuit\)/.test(mainSrc) && /powerMonitor\.on\("shutdown", letSystemQuit\)/.test(mainSrc),
+     "系统关机 / 注销：不拦、不问（拦了用户看到的是「OpenWorkBuddy 阻止了关机」）");
+  {
+    const sq = mainSrc.match(/\n {2}let sysQuitTimer = null;\n {2}const letSystemQuit = (\(\) => \{[\s\S]*?\n {2}\});/);
+    ok(sq, "  └ letSystemQuit 抠得出来");
+    const mkSys = (SHUTDOWN) => new Function("bootLog", "SHUTDOWN", "SYS_QUIT_REARM_MS",
+      `let QUIT_STATE = ""; let sysQuitTimer = null; const f = ${sq ? sq[1] : "() => {}"};
+       return { f, get state() { return QUIT_STATE; }, set state(v) { QUIT_STATE = v; } };`)(() => {}, SHUTDOWN, 40);
+    let s = mkSys(null);
+    s.f();
+    eq(s.state, "done", "  └ 系统说要关机：立刻放行");
+    await sleep(100);
+    eq(s.state, "", "  └ 关机被取消（别的应用拦下了）、过一阵还活着：闸装回去，之后关窗照样先问、先收尾");
+    s = mkSys(Promise.resolve());
+    s.f();
+    await sleep(100);
+    eq(s.state, "done", "  └ 已经在收尾了：不去把它改回来");
+    s = mkSys(null);
+    s.f();
+    s.state = "asking";
+    await sleep(100);
+    eq(s.state, "asking", "  └ 这中间他自己又点了关窗、框正挂着：不去动");
+  }
+  ok(/app\.on\("will-quit", \(\) => \{[\s\S]{0,300}?if \(!SHUTDOWN\) killChildren\("SIGTERM"\);/.test(mainSrc),
+     "  └ 没走收尾的那条路，will-quit 里至少给子进程发一声 SIGTERM");
+  ok(/SERVER_OWN = !got\.reused;/.test(mainSrc), "服务端是不是自己这个进程起的，就绪时记下（连过去的那种不去动人家的任务）");
+
+  // ---- 托盘 ----
+  const trayMenuItems = load("trayMenuItems", {});
+  const act = { show: () => {}, newTask: () => {}, quit: () => {} };
+  const items = trayMenuItems(SHELL_TEXT.zh, act);
+  eq(items.filter((x) => x.label).map((x) => x.label).join("/"), "显示窗口/新建任务/退出", "托盘菜单三条：显示窗口 / 新建任务 / 退出");
+  ok(items[items.length - 1].click === act.quit && items[items.length - 2].type === "separator", "  └ 退出隔开放最后（别跟新建任务挨着误点）");
+  eq(trayMenuItems(SHELL_TEXT.en, act).filter((x) => x.label).map((x) => x.label).join("/"), "Show window/New task/Quit", "  └ 英文界面就是英文菜单");
+  const mkTray = (over) => {
+    const calls = { tip: [], menus: [], js: [], quit: 0, shown: 0 };
+    const env = {
+      tray: { isDestroyed: () => false, setToolTip: (s) => calls.tip.push(s), setContextMenu: (m) => calls.menus.push(m) },
+      T, LAST_UI_LANG: "", osLang: () => "zh", trayMenuItems, trayLang: "",
+      Menu: { buildFromTemplate: (t) => t },
+      showMainWindow: () => { calls.shown++; return true; },
+      win: { webContents: { executeJavaScript: (code) => { calls.js.push(code); return Promise.resolve(); } } },
+      requestQuit: () => { calls.quit++; },
+      ...(over || {}),
+    };
+    return { refreshTray: load("refreshTray", env), calls };
+  };
+  {
+    const t = mkTray();
+    t.refreshTray();
+    eq(t.calls.tip[0], SHELL_TEXT.zh.trayTip, "托盘悬停提示从字典来");
+    const menu = t.calls.menus[0] || [];
+    (menu.find((x) => x.label === "新建任务") || { click: () => {} }).click();
+    ok(t.calls.shown === 1 && /getElementById\("new-task"\)/.test(t.calls.js[0] || "") && /\.click\(\)/.test(t.calls.js[0] || ""),
+       "「新建任务」：先把窗口叫出来，再按页面上那颗新建任务按钮（新建要清什么由页面说了算）", t.calls);
+    (menu.find((x) => x.label === "退出") || { click: () => {} }).click();
+    eq(t.calls.quit, 1, "「退出」走 requestQuit，不是直接 app.quit");
+    t.refreshTray("en");
+    ok(t.calls.tip[1] === SHELL_TEXT.en.trayTip && ((t.calls.menus[1] || [])[0] || {}).label === SHELL_TEXT.en.trayShow, "界面切成英文，托盘跟着换");
+    t.refreshTray("en");
+    t.refreshTray("en");
+    eq(t.calls.menus.length, 2, "  └ 语言没变就不重建（失焦、划过托盘都会来问；Windows 上右键托盘那一下主窗口正好失焦，开着的菜单不能被换掉）");
+    t.refreshTray("zh");
+    ok(t.calls.menus.length === 3 && ((t.calls.menus[2] || [])[0] || {}).label === SHELL_TEXT.zh.trayShow, "  └ 切回中文：又换回来", t.calls.menus.length);
+  }
+  {
+    let n = 0;
+    const t = mkTray({ Menu: { buildFromTemplate: (x) => { if (n++ === 0) throw new Error("菜单建不起来"); return x; } } });
+    try { t.refreshTray("zh"); } catch {}
+    t.refreshTray("zh");
+    eq(t.calls.menus.length, 1, "  └ 上一回中途抛了：下回还会再建（没换成的不算换过）");
+  }
+  {
+    const t = mkTray({ showMainWindow: () => false });
+    t.refreshTray();
+    (t.calls.menus[0].find((x) => x.label === "新建任务") || { click: () => {} }).click();
+    eq(t.calls.js.length, 0, "  └ 主窗口已经没了：不往死窗口上跑脚本");
+  }
+  {
+    const t = mkTray({ tray: { isDestroyed: () => true, setToolTip: () => { throw new Error("destroyed"); }, setContextMenu: () => {} } });
+    let threw = null;
+    try { t.refreshTray(); } catch (e) { threw = e; }
+    ok(!threw, "托盘已经销毁：什么都不做，不抛");
+  }
+  ok(/id="new-task"/.test(fs.readFileSync(path.join(ROOT, "public", "index.html"), "utf8")),
+     "  └ 页面上真有 #new-task 那颗按钮（它改名了，托盘这条就成了空按）");
+  ok(/global\.__wbWin = win;[\s\S]{0,400}?\n {2}createTray\(\);/.test(mainSrc), "托盘在主窗口挂到 global 之后才建（点它要唤起主窗口）");
+  ok(/if \(tray\) tray\.destroy\(\);/.test(mainSrc), "  └ 退出时收掉（Windows 上不收，托盘里会留个鼠标划过才消失的空图标）");
 }
 
 // ===================================================================
@@ -977,7 +1716,7 @@ async function runSourcePins() {
 function runConfigGates() {
   const cfgMerge = require(path.join(ROOT, "config-merge"));
   const cfgLint = require(path.join(ROOT, "config-lint"));
-  const serverSrc = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+  const serverSrc = srcLib.src("server");
   const cliSrc = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
 
   console.log("\n【12】存盘不许盖掉外面手改的——用户在编辑器里粘的 Key 一个字不能少");

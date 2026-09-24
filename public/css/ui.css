@@ -415,6 +415,9 @@ html[data-theme="dark"] .ui-select {
 .canvas-toolbar-hint { color: var(--owb-text-3); }
 .canvas-zoom-box { display: inline-flex; align-items: center; gap: 3px; margin-left: auto; padding: 2px 4px; border: 1px solid var(--owb-border); border-radius: var(--radius-md); background: var(--owb-bg); }
 .canvas-zoom-box > span { min-width: 42px; text-align: center; font-variant-numeric: tabular-nums; }
+/* 一键补齐同时跑几条：挤在缩放条最右，一个字的下拉框就够 */
+.canvas-batch-limit { display: inline-flex; align-items: center; gap: 4px; margin-left: 4px; padding-left: 8px; border-left: 1px solid var(--owb-border); color: var(--owb-text-3); white-space: nowrap; }
+.canvas-batch-limit select { height: 20px; padding: 0 4px; border: 1px solid var(--owb-border); border-radius: var(--radius-sm); background: var(--owb-bg); color: var(--owb-text); font-size: 11px; font-variant-numeric: tabular-nums; }
 .canvas-viewport { position: relative; height: clamp(420px, calc(100vh - 278px - var(--cp-h, 0px)), 980px); min-height: 420px; overflow: hidden; border: 1px solid var(--owb-border); border-radius: var(--radius-xl); background-color: var(--owb-canvas); background-image: radial-gradient(circle, color-mix(in srgb, var(--owb-text-3) 18%, transparent) 1px, transparent 1px); background-size: 22px 22px; cursor: grab; touch-action: none; }
 .canvas-viewport.dragging { cursor: grabbing; }
 .canvas-world { position: relative; width: 2400px; height: 1600px; overflow: visible; }
@@ -423,6 +426,8 @@ html[data-theme="dark"] .ui-select {
 .canvas-world .joint-link .marker-target, .canvas-world .link .marker-target { fill: var(--owb-brand-text) !important; stroke: var(--owb-brand-text) !important; }
 .canvas-joint-node { width: 100%; height: 100%; overflow: visible; }
 .canvas-joint-node.is-selected .canvas-node { border-color: var(--owb-brand); box-shadow: 0 0 0 2px color-mix(in srgb, var(--owb-brand) 24%, transparent), var(--shadow-surface); }
+/* 镜头号撞了：两张卡生成会写进同一个文件，红框比选中框优先——选中的时候更该看见 */
+.canvas-joint-node.is-dup-id .canvas-node { border-color: var(--owb-err); box-shadow: 0 0 0 2px color-mix(in srgb, var(--owb-err) 24%, transparent), var(--shadow-surface); }
 .canvas-node { width: 100%; height: 100%; box-sizing: border-box; border: 1px solid color-mix(in srgb, var(--owb-brand) 28%, var(--owb-border)); border-radius: var(--radius-xl); background: color-mix(in srgb, var(--owb-brand-weak) 24%, var(--owb-bg)); box-shadow: var(--shadow-surface); color: var(--owb-text); overflow: hidden; }
 .canvas-node-head { display: flex; align-items: center; gap: 9px; min-height: 52px; padding: 0 12px; border-bottom: 1px solid var(--owb-border); }
 .canvas-node-head > div { display: flex; flex-direction: column; flex: 1; min-width: 0; }
@@ -440,6 +445,14 @@ html[data-theme="dark"] .ui-select {
 .canvas-node-hint { margin: 9px 0 0; color: var(--owb-text-3); font-size: 12px; }
 .canvas-node-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .canvas-node-copy, .canvas-shot-prompt, .canvas-media-text { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--owb-text-2); }
+/* 「AI 生成」角标：对话模型出的卡、草稿里的每一镜都挂一个。只装这四个字（英文界面是两个词），裁掉兜底 */
+.canvas-ai-badge { display: inline-block; flex: none; max-width: 112px; height: 20px; padding: 0 8px; box-sizing: border-box; border-radius: 999px; background: var(--owb-brand-weak); color: var(--owb-brand-text); font-size: 11px; font-weight: 600; line-height: 20px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
+/* 剧本卡：正文占满剩下的高度，「生成分镜表」和那句成本提示钉在卡底，正文再长也挤不掉它们 */
+.canvas-node-script { display: flex; flex-direction: column; }
+.canvas-script-body { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 8px; }
+.canvas-script-text { flex: 1; min-height: 0; overflow: hidden; }
+.canvas-script-actions { flex: none; align-items: center; }
+.canvas-script-cost { color: var(--owb-text-3); font-size: 11px; line-height: 1.4; }
 .canvas-shot-line { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--owb-border); color: var(--owb-text-3); white-space: pre-wrap; overflow-wrap: anywhere; }
 .canvas-media-kind { color: var(--owb-brand-text); font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; }
 .canvas-media-text { min-height: 72px; margin-top: 7px; font-size: 12px; }
@@ -657,7 +670,27 @@ html[data-theme="dark"] .ui-select {
 .canvas-provenance-output { display: flex; align-items: center; min-width: 0; gap: 6px; color: var(--owb-text-2); font-size: 11px; }
 .canvas-provenance-output .i { width: 14px; height: 14px; color: var(--owb-brand-text); flex: none; }
 .canvas-provenance-output span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.canvas-inspector-actions { display: flex; gap: 6px; padding: 0 14px 14px; }
+.canvas-dup-hint { color: var(--owb-err-text); }
+.canvas-dup-hint[hidden] { display: none; }
+/* 历史版本：一行一版，缩略图 + 版本号 + 「用这一版」 */
+.canvas-history-group + .canvas-history-group { margin-top: 12px; }
+.canvas-history-kind { display: block; margin-bottom: 4px; color: var(--owb-text-3); font-size: 11px; }
+.canvas-history-list { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.canvas-history-row { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 4px; border-radius: var(--radius-sm); }
+.canvas-history-row.is-current { background: var(--owb-brand-weak); }
+.canvas-history-thumb { display: flex; align-items: center; justify-content: center; flex: none; width: 40px; height: 40px; overflow: hidden; border-radius: var(--radius-sm); background: var(--owb-bg-hover); color: var(--owb-text-3); }
+.canvas-history-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.canvas-history-thumb .i { width: 16px; height: 16px; }
+.canvas-history-meta { display: flex; flex-direction: column; flex: 1; min-width: 0; gap: 4px; }
+.canvas-history-meta b { color: var(--owb-text); font-size: 12px; font-weight: 600; }
+.canvas-history-meta small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--owb-text-3); font-size: 11px; }
+.canvas-history-row .ui-btn { flex: none; }
+.canvas-inspector-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 0 14px 14px; }
+/* 生成按钮旁的预估价：跟按钮贴着，字小一号，空着的时候不占位 */
+.canvas-price { color: var(--owb-text-3); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.canvas-price:empty { display: none; }
+.canvas-reroll-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 0 14px 14px; }
+.canvas-reroll-row small { color: var(--owb-text-3); font-size: 11px; }
 .canvas-inspector-delete { margin-left: auto; color: var(--owb-err-text); }
 .canvas-chat { position: sticky; bottom: 0; z-index: 8; margin-top: 6px; border: 1px solid var(--owb-border); border-radius: var(--radius-lg); background: color-mix(in srgb, var(--owb-bg) 94%, transparent); box-shadow: var(--shadow-menu); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
 .canvas-chat-head { display: none !important; }
@@ -776,6 +809,40 @@ html[data-theme="dark"] .ui-select {
 .canvas-create-board-card input { width: 100%; box-sizing: border-box; }
 .canvas-create-board-error { min-height: 18px; padding-top: 5px; color: var(--owb-err-text); font-size: 11px; }
 .canvas-create-board-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 7px; }
+/* 新建短剧表单：名字之外多了画幅、时长、风格、两个模型，小屏上表单自己滚，不把按钮挤出屏幕 */
+.canvas-drama-form { display: grid; gap: 12px; max-height: calc(100vh - 48px); overflow: auto; box-sizing: border-box; }
+.canvas-drama-form .canvas-create-board-head { margin-bottom: 4px; }
+.canvas-drama-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+.canvas-create-board-card select { width: 100%; box-sizing: border-box; }
+.canvas-drama-price { color: var(--owb-text-3); font-size: 11px; }
+.canvas-drama-price:empty { display: none; }
+/* 分镜表草稿预览：表格区自己滚，风格栏和底部按钮一直看得见。窄屏上表格横着滚，不把整页顶宽 */
+.canvas-draft-card { display: flex; flex-direction: column; gap: 12px; width: min(960px, 100%); max-height: calc(100vh - 48px); box-sizing: border-box; }
+.canvas-draft-card .canvas-create-board-head { margin-bottom: 0; }
+.canvas-draft-card .canvas-create-board-head > div { flex: 1; min-width: 0; }
+.canvas-draft-style { flex: none; }
+.canvas-draft-warnings { flex: none; margin: 0; padding: 8px 12px 8px 28px; border-radius: var(--radius-md); background: var(--owb-bg-hover); color: var(--owb-text-2); font-size: 12px; }
+.canvas-draft-scroll { flex: 1; min-height: 120px; overflow: auto; border: 1px solid var(--owb-border); border-radius: var(--radius-md); }
+.canvas-draft-table { width: 100%; min-width: 640px; table-layout: fixed; border-collapse: collapse; font-size: 12px; }
+.canvas-draft-col-id { width: 88px; }
+.canvas-draft-col-size { width: 72px; }
+.canvas-draft-col-sec { width: 64px; }
+.canvas-draft-col-tail { width: 104px; }
+.canvas-draft-table th { position: sticky; top: 0; z-index: 1; padding: 8px; border-bottom: 1px solid var(--owb-border); background: var(--owb-bg); color: var(--owb-text-3); font-weight: 600; text-align: left; }
+.canvas-draft-table td { padding: 4px; border-bottom: 1px solid var(--owb-border); vertical-align: top; }
+.canvas-draft-table input, .canvas-draft-table textarea { width: 100%; min-width: 0; box-sizing: border-box; padding: 4px 8px; border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--owb-text); font: inherit; }
+.canvas-draft-table textarea { resize: vertical; line-height: 1.5; }
+.canvas-draft-table input:focus, .canvas-draft-table textarea:focus { border-color: var(--owb-brand); outline: none; background: var(--owb-bg); }
+.canvas-draft-scene td { padding: 8px; background: var(--owb-bg-hover); }
+.canvas-draft-scene b { margin-right: 8px; font-family: var(--font-mono); }
+.canvas-draft-scene span { color: var(--owb-text-2); }
+.canvas-draft-tail { text-align: right; }
+.canvas-draft-remove { display: inline-flex; align-items: center; justify-content: center; margin-left: 4px; padding: 4px; border: none; border-radius: var(--radius-sm); background: transparent; color: var(--owb-text-3); cursor: pointer; vertical-align: middle; }
+.canvas-draft-remove:hover { background: var(--owb-bg-hover); color: var(--owb-err-text); }
+.canvas-draft-meta { display: flex; flex-wrap: wrap; gap: 12px; color: var(--owb-text-3); font-size: 12px; }
+/* 追加 / 替换 / 取消：压在草稿预览上面一层 */
+.canvas-draft-choice { z-index: 5001; }
+.canvas-draft-choice-note { margin: 0 0 8px; color: var(--owb-text-2); font-size: 12px; }
 .canvas-page .canvas-zoom-box { pointer-events: auto; box-shadow: var(--shadow-surface); }
 .canvas-page .canvas-toolbar-hint, .canvas-page .canvas-menu-hint, .canvas-page .canvas-library summary small, .canvas-page .canvas-library-tools span { display: none !important; }
 .canvas-page .canvas-node-menu-body { max-height: 270px; overflow: auto; }
@@ -796,6 +863,78 @@ html[data-theme="dark"] .ui-select {
 .canvas-page .canvas-chat-tools { padding-top: 2px; }
 .canvas-page .canvas-chat-mode, .canvas-page .canvas-chat-model { max-width: 128px; }
 .canvas-page .canvas-chat-mention-menu { bottom: 92px; }
+/* 底部时间线：浮在对话框正上方。对话框多高由 canvasBindTimeline 量出来写进 --ctl-chat-h，量不到时按 132 算。
+   整层不接鼠标，只有面板本身接——收起来时两边空出来的地方照样能拖画布 */
+.canvas-page > .canvas-timeline { position: absolute; z-index: 24; right: 10px; bottom: calc(var(--ctl-chat-h, 132px) + 8px); left: 10px; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; pointer-events: none; }
+.canvas-page > .canvas-timeline[hidden] { display: none; }
+.canvas-page .ctl-panel { max-width: 100%; border: 1px solid var(--owb-border); border-radius: var(--radius-md); background: color-mix(in srgb, var(--owb-bg) 92%, transparent); box-shadow: var(--shadow-surface); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); pointer-events: auto; }
+.canvas-page .canvas-timeline.is-open .ctl-panel { width: 100%; }
+.canvas-page .ctl-head { display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 0 4px; color: var(--owb-text-2); font-size: 12px; }
+.canvas-page .ctl-toggle { display: inline-flex; align-items: center; gap: 4px; height: 28px; padding: 0 8px 0 4px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--owb-text); font: inherit; cursor: pointer; }
+.canvas-page .ctl-toggle:hover { background: var(--owb-bg-hover); }
+.canvas-page .ctl-toggle .i { width: 16px; height: 16px; color: var(--owb-text-2); }
+.canvas-page .ctl-meta { display: inline-flex; align-items: center; gap: 8px; min-width: 0; color: var(--owb-text-3); white-space: nowrap; }
+.canvas-page .ctl-lack { display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--owb-err-text); font: inherit; white-space: nowrap; }
+.canvas-page button.ctl-lack { cursor: pointer; }
+.canvas-page button.ctl-lack:hover { background: var(--owb-bg-hover); }
+.canvas-page .ctl-actions { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
+.canvas-page .ctl-actions .ui-btn.is-active { background: var(--owb-brand-weak); color: var(--owb-brand-text); }
+.canvas-page .ctl-strip { display: flex; gap: 4px; padding: 4px 8px 8px; overflow-x: auto; overscroll-behavior-x: contain; }
+.canvas-page .ctl-cell { position: relative; flex: 0 0 var(--ctl-w, 96px); display: flex; flex-direction: column; gap: 4px; width: var(--ctl-w, 96px); padding: 4px; border: 1px solid var(--owb-border); border-radius: var(--radius-sm); background: var(--owb-bg); color: var(--owb-text); font: inherit; text-align: left; cursor: pointer; }
+.canvas-page .ctl-cell:hover { border-color: color-mix(in srgb, var(--owb-brand-text) 40%, var(--owb-border)); }
+.canvas-page .ctl-cell.is-selected { border-color: var(--owb-brand-text); box-shadow: 0 0 0 2px var(--owb-brand-weak); }
+.canvas-page .ctl-thumb { display: flex; align-items: center; justify-content: center; height: 48px; overflow: hidden; border-radius: 4px; background: var(--owb-bg-hover); color: var(--owb-text-3); }
+.canvas-page .ctl-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.canvas-page .ctl-thumb .i { width: 16px; height: 16px; }
+.canvas-page .ctl-cap { display: flex; align-items: baseline; justify-content: space-between; gap: 4px; min-width: 0; font-size: 11px; }
+.canvas-page .ctl-cap b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.canvas-page .ctl-cap span { flex: none; color: var(--owb-text-3); }
+.canvas-page .ctl-dot { display: inline-block; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--owb-err); }
+.canvas-page .ctl-cell > .ctl-dot { position: absolute; top: 8px; right: 8px; box-shadow: 0 0 0 2px var(--owb-bg); }
+/* 角色面板：从时间线上方弹出来，跟时间线一起走 */
+.canvas-page .ctl-cast { width: min(560px, 100%); max-height: min(360px, 48vh); display: flex; flex-direction: column; border: 1px solid var(--owb-border); border-radius: var(--radius-md); background: var(--owb-bg); box-shadow: var(--shadow-menu); pointer-events: auto; }
+.canvas-page .ctl-cast-head { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 4px 0 12px; border-bottom: 1px solid var(--owb-border); font-size: 12px; }
+/* 右边那一组（全部挂上、关闭）靠右；没有「全部挂上」时关闭自己靠右 */
+.canvas-page .ctl-cast-head > .canvas-tool-button, .canvas-page .ctl-cast-head .ui-btn { margin-left: auto; }
+.canvas-page .ctl-cast-head .ui-btn + .canvas-tool-button { margin-left: 0; }
+.canvas-page .ctl-cast-list { display: grid; gap: 4px; padding: 8px; overflow-y: auto; }
+.canvas-page .ctl-cast-row { display: flex; gap: 8px; padding: 4px; border-radius: var(--radius-sm); }
+.canvas-page .ctl-cast-row:hover { background: var(--owb-bg-hover); }
+.canvas-page .ctl-cast-photo { flex: none; display: flex; align-items: center; justify-content: center; width: 48px; height: 64px; padding: 0; overflow: hidden; border: 1px solid var(--owb-border); border-radius: var(--radius-sm); background: var(--owb-bg-hover); color: var(--owb-text-3); font: inherit; font-size: 10px; line-height: 1.3; text-align: center; cursor: pointer; }
+.canvas-page .ctl-cast-photo img { width: 100%; height: 100%; object-fit: cover; }
+.canvas-page .ctl-cast-body { display: grid; align-content: start; gap: 4px; min-width: 0; }
+.canvas-page .ctl-cast-name { display: flex; align-items: baseline; gap: 8px; font-size: 12px; }
+.canvas-page .ctl-cast-name small, .canvas-page .ctl-cast-shots > small { color: var(--owb-text-3); font-size: 11px; }
+.canvas-page .ctl-cast-shots { display: flex; flex-wrap: wrap; gap: 4px; }
+.canvas-page .ctl-chip { display: inline-flex; align-items: center; height: 24px; padding: 0 8px; border: 1px solid var(--owb-border); border-radius: var(--radius-sm); background: var(--owb-bg); color: var(--owb-text-2); font: inherit; font-size: 11px; cursor: pointer; }
+.canvas-page button.ctl-chip:hover { color: var(--owb-brand-text); }
+.canvas-page .ctl-chip.is-loose { gap: 4px; padding: 0 0 0 8px; overflow: hidden; border-color: color-mix(in srgb, var(--owb-err) 45%, var(--owb-border)); color: var(--owb-err-text); cursor: default; }
+.canvas-page .ctl-chip.is-loose button { height: 100%; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.canvas-page .ctl-chip.is-loose .ctl-attach { padding: 0 8px; border-left: 1px solid color-mix(in srgb, var(--owb-err) 30%, var(--owb-border)); color: var(--owb-brand-text); }
+.canvas-page .ctl-chip.is-loose .ctl-attach:hover { background: var(--owb-brand-weak); }
+.canvas-page .ctl-cast-empty { padding: 12px; color: var(--owb-text-3); font-size: 12px; }
+/* ⌘F 搜索条：工具条正下方居中。进度带展开时一起往下让 */
+.canvas-page > .canvas-find { position: absolute; z-index: 26; top: calc(84px + var(--cp-h, 0px)); left: 50%; display: flex; align-items: center; gap: 4px; width: min(420px, calc(100% - 20px)); height: 40px; padding: 0 4px 0 8px; border: 1px solid var(--owb-border); border-radius: var(--radius-md); background: var(--owb-bg); box-shadow: var(--shadow-menu); transform: translateX(-50%); }
+.canvas-page > .canvas-find[hidden] { display: none; }
+.canvas-page .canvas-find input { flex: 1; min-width: 0; height: 28px; padding: 0 4px; border: 0; outline: none; background: transparent; color: var(--owb-text); font: inherit; font-size: 13px; }
+.canvas-page .canvas-find-count { flex: none; color: var(--owb-text-3); font-size: 12px; white-space: nowrap; }
+.canvas-page .canvas-find-count.is-miss { color: var(--owb-err-text); }
+/* 连播预览：跟看大图那层一个样子 */
+.canvas-playback { position: fixed; z-index: 1200; inset: 0; display: flex; align-items: center; justify-content: center; padding: 28px; background: rgba(8, 9, 12, .76); opacity: 0; transition: opacity .16s var(--owb-ease); }
+.canvas-playback.is-open { opacity: 1; }
+.canvas-playback .cpb-card { display: flex; flex-direction: column; width: min(960px, 94vw); max-height: 92vh; overflow: hidden; border: 1px solid color-mix(in srgb, var(--primary-foreground) 18%, transparent); border-radius: var(--radius-xl); background: var(--owb-bg); box-shadow: 0 24px 80px rgba(0, 0, 0, .42); }
+.canvas-playback .cpb-stage { display: flex; align-items: center; justify-content: center; aspect-ratio: 16 / 9; max-height: calc(92vh - 48px); background: #000; }
+.canvas-playback .cpb-media { width: 100%; height: 100%; object-fit: contain; }
+.canvas-playback .cpb-empty { display: grid; justify-items: center; gap: 8px; color: rgba(255, 255, 255, .72); font-size: 13px; }
+.canvas-playback .cpb-empty b { color: #fff; font-size: 16px; }
+.canvas-playback .cpb-bar { display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 0 12px 0 16px; border-top: 1px solid var(--owb-border); color: var(--owb-text); font-size: 12px; }
+.canvas-playback .cpb-now { font-weight: 600; white-space: nowrap; }
+.canvas-playback .cpb-note { min-width: 0; overflow: hidden; color: var(--owb-text-3); text-overflow: ellipsis; white-space: nowrap; }
+.canvas-playback .cpb-spacer { flex: 1; }
+@media (max-width: 640px) {
+  .canvas-page .ctl-meta > span:nth-child(2) { display: none; }
+  .canvas-playback { padding: 12px; }
+}
 .im-group-policy { display: grid; grid-template-columns: 110px minmax(0, 1fr); align-items: center; gap: 7px 9px; margin-top: 8px; padding: 9px 10px; border: 1px solid color-mix(in srgb, var(--owb-brand) 18%, var(--owb-border)); border-radius: var(--radius-md); background: color-mix(in srgb, var(--owb-brand) 4%, var(--owb-bg)); color: var(--owb-text-2); font-size: 12px; }
 .im-group-policy select { min-width: 0; height: 30px; padding: 0 8px; border: 1px solid var(--owb-border); border-radius: var(--radius-sm); background: var(--owb-bg); color: var(--owb-text); font: inherit; }
 .im-group-policy small { grid-column: 1 / -1; color: var(--owb-text-3); font-size: 11px; line-height: 1.45; }
@@ -1215,3 +1354,11 @@ html[data-theme="dark"] .ui-select {
 .sk-scan-foot { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
 .sk-scan-no { padding: 6px 14px; }
 .sk-scan-note { font-size: 11px; opacity: .8; flex: 1 1 200px; }
+
+/* ---- 提示条上的那颗按钮（「撤销」「重试失败的 2 条」） ----
+   提示条本身是 pointer-events:none（不挡底下的画布），挂了按钮的那一条才让它接得住点击；
+   一消失就又变回穿透，不会在右下角留一块点不透的隐形区域。 */
+#owb-toast.show:has(.owb-toast-act) { pointer-events: auto; }
+.owb-toast-act { flex: none; margin-left: 4px; padding: 0 8px; min-height: 24px; border: 1px solid color-mix(in srgb, var(--owb-brand-text) 40%, var(--owb-border)); border-radius: var(--radius-sm); background: transparent; color: var(--owb-brand-text); font: inherit; font-weight: 600; white-space: nowrap; cursor: pointer; }
+.owb-toast-act:hover { background: var(--owb-bg-hover); }
+.owb-toast-act:focus-visible { outline: 2px solid var(--owb-brand-text); outline-offset: 1px; }

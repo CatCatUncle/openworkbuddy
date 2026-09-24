@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 /**
  * 终端里的 Markdown 渲染 —— 边流边渲染。

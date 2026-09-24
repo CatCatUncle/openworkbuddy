@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 /**
  * `openworkbuddy workflow <文件.json>`：把一串任务写成文件，按顺序一步步跑。

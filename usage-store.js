@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 /**
  * 用量流水账本：按月分片的 append-only JSONL。

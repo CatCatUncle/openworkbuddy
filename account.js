@@ -627,15 +627,18 @@ function prunePairs(now = Date.now()) {
 }
 /** 生成配对码。同一个人同时只留一个——手上攥着两个有效码，自己都说不清该念哪个 */
 function newPairCode(username) {
-  prunePairs();
+  // 时间只取一次：以前存码和回给前端的倒计时各取一次 Date.now()，跨了一毫秒两边就差一截，
+  // pairStatus 按存的那个算出来的 expires_at 跟出码时回的对不上
+  const now = Date.now();
+  prunePairs(now);
   dropPairCode(username);
   // 上一轮配成功的记录要清掉。留着的话，两分钟内再出一张新码，生成的那一刻就
   // 显示「✓ 已连接」——连的是上一台，人却以为这张码已经被扫了
   claimed.delete(username);
   let code = "";
   for (let i = 0; i < PAIR_LEN; i++) code += PAIR_ALPHABET[crypto.randomInt(PAIR_ALPHABET.length)];
-  pairs.set(code, { user: username, at: Date.now() });
-  return { code, expires_in: Math.floor(PAIR_TTL_MS / 1000), expires_at: Date.now() + PAIR_TTL_MS };
+  pairs.set(code, { user: username, at: now });
+  return { code, expires_in: Math.floor(PAIR_TTL_MS / 1000), expires_at: now + PAIR_TTL_MS };
 }
 function dropPairCode(username) {
   for (const [c, p] of pairs) if (p.user === username) pairs.delete(c);

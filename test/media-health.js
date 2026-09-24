@@ -16,6 +16,7 @@
 const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
+const srcLib = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
 const mh = require("../media-health");
 
 let pass = 0, fail = 0;
@@ -163,7 +164,7 @@ console.log("\n【5】三条自愈的路都得真通");
 
 console.log("\n【6】statusOf 必须认得 tools.js 里真实的那些措辞");
 {
-  const src = fs.readFileSync(path.join(__dirname, "..", "tools.js"), "utf8");
+  const src = srcLib.src("tools");
   // 把源码里所有「…错误 ${r.status}」「…错误 ${out.http}」这类模板抠出来，
   // 换成一个真状态码，喂给 statusOf 看认不认得
   const tpl = [...src.matchAll(/`([^`]{0,40}(?:错误|HTTP)\s*[（(]?\$\{[^}]{0,40}(?:status|http)[^}]{0,20}\}[^`]{0,20})`/gi)].map((m) => m[1]);
@@ -193,7 +194,7 @@ console.log("\n【7】list() 不许把 API Key 的指纹带出门");
 
 console.log("\n【8】tools.js 与 agent.js 的接线还在");
 {
-  const t = fs.readFileSync(path.join(__dirname, "..", "tools.js"), "utf8");
+  const t = srcLib.src("tools");
   ok(/require\("\.\/media-health"\)/.test(t), "tools.js 得引着 media-health");
   ok(/async function viaMedia\(/.test(t), "五路媒体工具统一穿过 viaMedia，这个口子不能没了");
   for (const [tool, cap] of [["look_at_image", "vision"], ["generate_image", "image"], ["generate_video", "video"], ["text_to_speech", "tts"], ["transcribe_audio", "asr"]]) {
@@ -204,7 +205,7 @@ console.log("\n【8】tools.js 与 agent.js 的接线还在");
   const a = fs.readFileSync(path.join(__dirname, "..", "agent.js"), "utf8");
   ok(/deadMedia/.test(a) && /r\.mediaBreaker/.test(a),
     "agent.js 要认 mediaBreaker 标记并在本轮停用那个工具，否则 trace 里还是四十条一模一样的失败");
-  const s = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+  const s = srcLib.src("server");
   ok(/mediaHealth\.reset\(\)/.test(s), "设置页保存之后要清空熔断表，不然用户改好了还得干等半小时");
 }
 
@@ -261,7 +262,7 @@ console.log("\n【10】闸门那句话不许越过这一轮");
 
   // server.js 那一半：只在**人开口**的那一趟放行。定时任务不许放——
   // 一条死了的渠道会被 cron 每分钟重新撞一遍
-  const s2 = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+  const s2 = srcLib.src("server");
   ok(/mediaHealth\.reopen\(\)/.test(s2), "server.js 没在人开口的那一趟调 reopen()");
   ok(s2.split("\n").some((ln) => /source === "im"/.test(ln) && /reopen\(\)/.test(ln)),
     "IM 那条路（飞书/微信里说话）也得算「人开口」——在飞书里说「我充值好了」同样该让它再试一次");

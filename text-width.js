@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 /**
  * 终端里的显示宽度。

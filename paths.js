@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 /**
  * 代码在哪 vs 数据在哪。
@@ -21,6 +22,7 @@ const path = require("path");
 /** 只读：代码、public/、config.example.json、随包出厂的 skills/ */
 const APP_DIR = __dirname;
 
+/** @returns {boolean} 是不是装机态（.dmg / .exe 装出来的那份） */
 function isPackaged() {
   // ELECTRON_RUN_AS_NODE：run_node 派生出去的子进程也带 electron 版本号，但它不是应用本体
   if (!process.versions.electron || process.env.ELECTRON_RUN_AS_NODE) return false;
@@ -38,17 +40,17 @@ const DATA_DIR = process.env.OPENWORKBUDDY_HOME
     ? path.join(os.homedir(), "OpenWorkBuddy")
     : APP_DIR;
 
-/** 数据根下的路径 */
+/** 数据根下的路径 @param {...string} seg @returns {string} */
 function dataPath(...seg) {
   return path.join(DATA_DIR, ...seg);
 }
 
-/** 应用包内的只读资源 */
+/** 应用包内的只读资源 @param {...string} seg @returns {string} */
 function appPath(...seg) {
   return path.join(APP_DIR, ...seg);
 }
 
-/** 两处同名时，用户那份优先、包里那份兜底（读用；写一律写 dataPath） */
+/** 两处同名时，用户那份优先、包里那份兜底（读用；写一律写 dataPath） @param {...string} seg @returns {string} */
 function preferData(...seg) {
   const mine = dataPath(...seg);
   return fs.existsSync(mine) ? mine : appPath(...seg);
@@ -73,6 +75,7 @@ function preferData(...seg) {
  * 失败过一次就整个进程不再试——否则每个技能目录都要白 spawn 一次 cp。
  */
 let canClone = process.platform === "darwin";
+/** @param {string} from @param {string} to */
 function copyTree(from, to) {
   if (canClone) {
     try {
@@ -88,6 +91,7 @@ function copyTree(from, to) {
   fs.cpSync(from, to, { recursive: true });
 }
 
+/** @param {string} from @param {string} to @returns {boolean} 真拷了才是 true */
 function copyIfMissing(from, to) {
   if (fs.existsSync(to) || !fs.existsSync(from)) return false;
   copyTree(from, to);
@@ -120,6 +124,9 @@ function seedDataDir() {
  * 而 +"0" 是 0、是假值，于是显式设的 0 被当成没设，悄悄回落到 3800——本机正跑着一台的时候
  * 就直接撞上用户自己那台了（端到端测试里五处真起 server 全栽在这儿）。
  * 所以这里的判据是「设没设」，不是「真不真」；设了但不是个合法端口号，也当没设。
+ * @param {Record<string, string|undefined>|null|undefined} env 一般就是 process.env
+ * @param {any} [cfg] config.json，看 server.port
+ * @returns {number}
  */
 function resolvePort(env, cfg) {
   const raw = env && env.PORT;

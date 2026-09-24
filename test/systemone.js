@@ -22,6 +22,7 @@ const path = require("path");
 const fs = require("fs");
 
 const ROOT = path.join(__dirname, "..");
+const srcLib = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
 const S = require(path.join(ROOT, "systemone"));
 const jev = require(path.join(ROOT, "jev"));
 
@@ -201,20 +202,44 @@ console.log("\n⑨ 这一趟花了多少：输出 token 不要钱，这是它跟
 }
 
 // ─────────────────────────────────────────────────────────────
-console.log("\n⑩ 挑渠道：先用用户已经有的那把 Key，而且不把 A 家的 Key 发给 B 家");
+console.log("\n⑩ 挑渠道：默认不开，用户点过头才用；不把 A 家的 Key 发给 B 家");
 {
+  const envKeep = { ts: process.env.TYPESAFE_API_KEY, or: process.env.OPENROUTER_API_KEY };
+  delete process.env.TYPESAFE_API_KEY; delete process.env.OPENROUTER_API_KEY;
+
   const OR = { providers: [{ id: "openrouter", kind: "openrouter", api_key: "sk-or-x" }] };
   const r1 = jev.pickRoute(OR);
-  eq(r1.ok + ":" + r1.route, "true:openrouter", "★配过 OpenRouter 的人什么都不用填★ 没人会为试一个模型专门再办一个号");
-  eq(r1.key, "sk-or-x", "用的就是那条渠道上的 Key");
+  eq(r1.ok, false, "★配了 OpenRouter 聊天渠道 ≠ 想用判断模型★ 没点头就不开，那把 Key 是拿来聊天的");
+  ok(/TypeSafe Jev/.test(r1.how || ""), "说不能用就得说下一步去哪儿点", r1);
+  process.env.OPENROUTER_API_KEY = "sk-or-env";
+  eq(jev.pickRoute({}).ok, false, "★OPENROUTER_API_KEY 也不算★ 环境变量里那把同样是聊天用的");
+  delete process.env.OPENROUTER_API_KEY;
+  process.env.TYPESAFE_API_KEY = "sk-ts-env";
+  eq(jev.pickRoute({}).route, "typesafe", "（反向对照）TYPESAFE_API_KEY 是专门给它办的，设了就算点过头");
+  delete process.env.TYPESAFE_API_KEY;
+
+  const TS = { providers: [{ id: "ts", kind: "typesafe", api_key: "sk-ts-y" }] };
+  const r0 = jev.pickRoute(TS);
+  eq(r0.ok + ":" + r0.route, "true:typesafe", "（反向对照）自己加了「TypeSafe Jev」渠道 = 点过头了，走官方");
+  eq(r0.key, "sk-ts-y", "用的就是那条渠道上的 Key");
 
   const BOTH = { providers: [{ id: "openrouter", kind: "openrouter", api_key: "sk-or-x" }, { id: "ts", kind: "typesafe", api_key: "sk-ts-y" }] };
-  eq(jev.pickRoute(BOTH).route, "typesafe", "两条都有的时候走官方——专门去办了号，意思就是想走官方");
+  eq(jev.pickRoute(BOTH).key, "sk-ts-y", "两条都有的时候只认 Jev 那条，不拿聊天那把");
 
-  const EMPTY = { providers: [{ id: "openrouter", kind: "openrouter", api_key: "" }] };
+  const VIA_OR = { providers: [{ id: "j", kind: "typesafe", api_key: "sk-or-x", base_url: "https://openrouter.ai/api/v1" }] };
+  const r4 = jev.pickRoute(VIA_OR);
+  eq(r4.route + " " + r4.url, "openrouter https://openrouter.ai/api/alpha/decisions",
+    "Jev 渠道地址填 openrouter.ai = 想拿 OpenRouter 的 Key 跑，走它家的 decisions 路");
+  eq(jev.pickRoute({ decide: { route: "openrouter", channel: "openrouter" }, providers: OR.providers }).key, "sk-or-x",
+    "config.decide 明写 route + channel，也能借 OpenRouter 那把——写明了就是点过头");
+
+  const EMPTY = { providers: [{ id: "ts", kind: "typesafe", api_key: "" }] };
   const r2 = jev.pickRoute(EMPTY);
   eq(r2.ok, false, "（反向对照）渠道在但没 Key = 不能用，不拿空 Key 去打一趟");
   ok(/设置|Key/.test(r2.how || ""), "说不能用就得说下一步去哪儿点", r2);
+
+  if (envKeep.ts !== undefined) process.env.TYPESAFE_API_KEY = envKeep.ts;
+  if (envKeep.or !== undefined) process.env.OPENROUTER_API_KEY = envKeep.or;
 
   const DENY = { providers: [{ id: "ds", kind: "deepseek", api_key: "sk-deepseek" }] };
   eq(jev.pickRoute(DENY).ok, false, "★别家的 Key 不拿来凑数★ DeepSeek 的 Key 发给 TypeSafe，轻则 401，重则把 Key 交到了不该去的地方");
@@ -222,8 +247,8 @@ console.log("\n⑩ 挑渠道：先用用户已经有的那把 Key，而且不把
   const GW = { providers: [{ id: "gw", kind: "typesafe", api_key: "sk-gw", base_url: "http://127.0.0.1:1/v1" }] };
   eq(jev.pickRoute(GW).url, "http://127.0.0.1:1/v1/systemone",
     "★渠道里填的地址说了算★ 无视它照旧发去官方，等于把人家自建网关的 Key 送到了另一家门口");
-  eq(jev.pickRoute({ providers: [{ id: "o", kind: "openrouter", api_key: "k", base_url: "https://openrouter.ai/api/v1" }] }).url,
-    "https://openrouter.ai/api/alpha/decisions",
+  eq(jev.pickRoute({ providers: [{ id: "o", kind: "typesafe", api_key: "k", base_url: "https://api.typesafe.ai/v1" }] }).url,
+    "https://api.typesafe.ai/v1/systemone",
     "（反向对照）填的就是官方那个 base_url，照样得到官方的判断地址——不能因为「认了 base_url」就把默认那条也拧歪");
   eq(S.urlFromBase("openrouter", "https://gw.example.com/api/v1"), "https://gw.example.com/api/alpha/decisions",
     "OpenRouter 那条要先摘掉尾巴上的 /v1：decisions 不在 /v1 底下，而人填渠道时填的一定是带 /v1 的那个");
@@ -234,17 +259,17 @@ console.log("\n⑩ 挑渠道：先用用户已经有的那把 Key，而且不把
   const r3 = jev.pickRoute(CUSTOM);
   eq(r3.url, "http://127.0.0.1:9/v1/systemone", "自建网关能自己指地址");
   eq(r3.model, "jev-1.13.0", "模型名也能钉死——别名会跟着上游发版漂");
-  eq(jev.pickRoute({ decide: { off: true }, providers: [{ id: "o", kind: "openrouter", api_key: "k" }] }).ok, false, "能一键关掉");
+  eq(jev.pickRoute({ decide: { off: true }, providers: TS.providers }).ok, false, "能一键关掉");
 
-  const st = jev.status(OR);
+  const st = jev.status(TS);
   eq(st.ready, true, "状态卡说得出能不能用");
-  ok(!JSON.stringify(st).includes("sk-or-x"), "★状态卡里绝不能带 Key★ 这张卡是给设置页和 doctor 看的，会落到日志和截图里");
+  ok(!JSON.stringify(st).includes("sk-ts-y"), "★状态卡里绝不能带 Key★ 这张卡是给设置页和 doctor 看的，会落到日志和截图里");
 }
 
 // ─────────────────────────────────────────────────────────────
 console.log("\n⑪ 发不出去的请求在本地就挡住，不白花一趟往返");
 {
-  const cfg = { providers: [{ id: "o", kind: "openrouter", api_key: "sk-x" }] };
+  const cfg = { providers: [{ id: "o", kind: "typesafe", api_key: "sk-x" }] };
   return Promise.resolve()
     .then(() => jev.ask(cfg, { state: "有材料", questions: { a: { type: "yesno", instructions: "x" } } }))
     .then((r) => {
@@ -280,7 +305,7 @@ console.log("\n⑫ 挂在了该挂的地方：渠道目录、两个下拉、额�
   ok(q.CAP_KEYS.includes("decide"), "额度表里有它——一段脚本跑一夜能问出几十万道");
   eq(q.billable("decide"), false, "（反向对照）不进钱闸：价目表里没有它，硬按次折钱只会算出个假数");
 
-  const srv = src("server.js");
+  const srv = srcLib.src("server");
   ok(/app\.get\("\/api\/decide"/.test(srv) && /app\.post\("\/api\/decide"/.test(srv), "接口挂上了：GET 看状态、POST 真问");
   // “先看配没配 → 过额度闸 → 发 → 发不出去退款”这四步收在 jev.askMetered 一处，
   // 所以尺子要釘在它身上：再添一个调用点也走它，釘在某条路由里的那把下一次就量不到了。
@@ -378,7 +403,7 @@ console.log("\n⑯ 两道「别让人白撞墙」的闸");
   for (const n of ["deepseek-chat", "qwen-max", "openai/gpt-6-astra", "anthropic/claude-sonnet-5", "inclusionai/ling-3.0-flash-vl:free", "jevons-paradox-model", "x/jevel", "", null, undefined])
     ok(S.isDecisionModel(n) === false, `（反向对照）不误伤：${JSON.stringify(n)}`);
 
-  ok(/isDecisionModel\(m\.model\)/.test(src("server.js")), "★存模型行的时候真去问了这道闸★ 判得出来但没人调，跟没写一样");
+  ok(/isDecisionModel\(m\.model\)/.test(srcLib.src("server")), "★存模型行的时候真去问了这道闸★ 判得出来但没人调，跟没写一样");
 }
 
 // ───────────────────────────────────────────────────────────

@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 /**
  * 升级迁移。

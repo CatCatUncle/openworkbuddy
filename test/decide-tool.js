@@ -16,6 +16,7 @@ const path = require("path");
 const http = require("http");
 
 const ROOT = path.join(__dirname, "..");
+const { src } = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
 
 let pass = 0, fail = 0;
 function ok(cond, name, extra) {
@@ -100,6 +101,9 @@ const 工单 = "客服工单：我的收款账号连了三天都连不上，订�
     ok(a.length > 5, "打底：这张表本来就是满的（不是根本没取到）", a.length);
     ok(!a.includes("decide"), "★没配判断模型：发给模型的工具表里没有 decide★", a);
     ok(b.includes("decide"), "（反向对照）配了就摆出来，不是永远不摆");
+    const 只有聊天渠道 = { agent: { max_steps: 2 }, providers: [{ id: "or", kind: "openrouter", api_key: "sk-or-x", base_url: "https://openrouter.ai/api/v1" }] };
+    const e = await 摆了什么(只有聊天渠道, "craft");
+    ok(e.length > 5 && !e.includes("decide"), "★只配了 OpenRouter 聊天渠道也不摆★ 有 Key ≠ 想用判断模型，没点头就一次都不调", e);
 
     const c = await 摆了什么(配了, "ask");
     const d = await 摆了什么(没配, "ask");
@@ -251,7 +255,7 @@ const 工单 = "客服工单：我的收款账号连了三天都连不上，订�
   console.log("\n⑦ 记账这件事只有一份，不是各处各抄一遍");
   {
     const fs = require("fs");
-    const srv = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+    const srv = src("server");
     const ag = fs.readFileSync(path.join(ROOT, "agent.js"), "utf8");
     // 测活那条自己带着量（题数固定 3），其余都必须走 askMetered
     const hand = (srv.match(/quota\.gate\("decide"/g) || []).length;

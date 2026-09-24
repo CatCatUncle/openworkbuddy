@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 /**
  * toolward —— 技能 / 连接器安全检查的第二双眼睛。

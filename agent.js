@@ -427,6 +427,181 @@ function historyChars(history) {
   return n;
 }
 
+// 模型窗口（token）折成历史预算（字符）。以前不管接的是 8k 还是 200k 的模型，一律 12 万字符：
+// 小窗口模型跑几步就 400，大窗口模型白白压得太狠。现在按窗口算：
+// 一个 token 大约 2.5 个字符（中英混排的保守值），只拿七成给历史——剩下三成留给
+// system、工具定义和这一轮的输出。用户在设置里显式配了上限，就取两者小的那个。
+const CHARS_PER_TOKEN = 2.5;
+const CTX_WINDOW_SHARE = 0.7;
+function contextBudgetChars(windowTokens, explicitMax) {
+  const win = +windowTokens > 0 ? +windowTokens : 64000;
+  const byWindow = Math.floor(win * CHARS_PER_TOKEN * CTX_WINDOW_SHARE);
+  const cap = +explicitMax > 0 ? +explicitMax : 0;
+  return cap ? Math.min(cap, byWindow) : byWindow;
+}
+
+// ================= 历史方言（治「引擎跑完一轮，之后每轮都 400」） =================
+// 历史的正式格式见 llm.js 文件头：assistant 是 { text, toolCalls, raw? }。可本机 Claude Code / Codex
+// 那条路以前落盘写的是 { role:"assistant", content }——没有 text。转成供应商消息就是一条空 assistant，
+// 部分供应商直接 400；会话是落盘的，这段会话从此每轮都 400。
+// 读历史（runTask 开跑）和写历史（引擎回合落盘）都过这一道，老会话读一次就改回正式格式。
+
+/** 把一条历史就地改成正式格式并返回它。认不出的（null、没 role）原样放过，发请求时 llm.js 会跳过 */
+function normalizeEntry(e) {
+  if (!e || typeof e !== "object") return e;
+  if (e.role === "assistant") {
+    if (typeof e.text !== "string" || (!e.text && typeof e.content === "string" && e.content)) {
+      e.text = typeof e.content === "string" ? e.content : e.text == null ? "" : String(e.text);
+    }
+    if (typeof e.content === "string") delete e.content; // 只留一种写法：两个字段都在，下一个读的人又得猜认哪个
+    if (!Array.isArray(e.toolCalls)) e.toolCalls = [];
+    // raw 里有 tool_use、toolCalls 没记的：补进来，配对修复才认得它（否则 Claude 那边是个没人应答的 tool_use）
+    if (Array.isArray(e.raw)) {
+      for (const b of e.raw) {
+        if (b && b.type === "tool_use" && !e.toolCalls.some((c) => c && c.id === b.id)) e.toolCalls.push({ id: b.id, name: b.name, input: b.input || {} });
+      }
+    }
+  } else if (e.role === "tool") {
+    if (!Array.isArray(e.results)) e.results = [];
+  }
+  return e;
+}
+function normalizeHistory(history) {
+  if (Array.isArray(history)) for (const e of history) normalizeEntry(e);
+  return history;
+}
+
+// ================= 悬空的工具调用（治「进程崩了一次，这段会话从此每轮都 400」） =================
+// 「带 tool_calls 的 assistant」和它的工具结果是分两次 push 进历史的，中间还隔着一次存盘
+// （server.js 在 tool_result 事件上 autosave）。进程恰好死在这中间，盘上的历史就停在一个没人应答的
+// tool_use 上。llm.js 的 repairToolPairs 在转换层临时补一条占位，救得了这一次请求，
+// 可盘上那半截永远在，每轮都得重新补一遍，而且它那句话是「需要的话重新调用一次」——
+// 对写文件、跑命令、生成媒体来说，这句话就是在劝模型再扣一次钱、再发一次邮件。
+// 所以 runTask 开跑时把结果补进历史本身：调用方那份（sess.history）就地改，一次 splice 补完一整对，
+// 之后任何一次存盘写下去的都是配好对的历史，不存在「补了一半」的样子。
+
+/** 补进历史的那条工具结果。原话见路线图 5.3，别改措辞：模型读到它才知道这一步的结果不能当真 */
+const INTERRUPTED_RESULT = "上次运行在这一步中断，结果未知；如需要请先检查再决定是否重做";
+
+/**
+ * 重做一遍没有副作用的工具。不在这里的一律当「会动东西」：写文件、跑命令、生成媒体、发邮件、
+ * 委派专家、MCP 连接器……漏登一个只读工具，代价是多一句提示；把会动东西的当成只读，
+ * 代价是模型顺手再生成一遍视频、再发一遍邮件。所以名单只列确定无害的。
+ */
+const REDO_SAFE_TOOLS = new Set([
+  "read_file", "read_document", "list_files", "search_files", "find_files", "fetch_url", "render_page",
+  "web_search", "library_list", "library_read", "look_at_image", "check_page", "shell_output",
+  "list_schedules", "ask_user", "todo_write", "use_skill",
+]);
+const hasSideEffect = (name) => !REDO_SAFE_TOOLS.has(String(name || ""));
+
+/**
+ * 找出历史里没人应答的工具调用，把「结果未知」的工具结果就地补进历史。
+ *
+ * 紧跟在 assistant 后面的那几条 tool 都算它的应答（跟 llm.js 的 repairToolPairs 同一个认法）。
+ * 已经有一条 tool、只缺其中几个 id 的，补进那一条；一条都没有的，紧挨着 assistant 插一条——
+ * 插在后面那句用户消息之前，OpenAI 兼容接口要求 tool 消息紧跟 tool_calls。
+ * 每条都先过 normalizeEntry：只记在 raw 里的 tool_use 也得认出来，不然 Claude 那边照样 400。
+ *
+ * @returns 补上的调用 [{ id, name, input, sideEffect, tail }]。tail = 属于最后一条 assistant，
+ *          也就是上一趟真正断在的那一步；更早的是修这个之前留下的旧伤，只补不提。
+ *          没有悬空调用就返回空数组，历史一个字节都不动。
+ */
+function closeDanglingCalls(history) {
+  const patched = [];
+  if (!Array.isArray(history)) return patched;
+  // 记的是那条对象本身，不是下标：前面有旧伤要补时会 splice 插一条 tool，后面的下标全往后挪一格，
+  // 按下标比，最后一条 assistant 就认不出来了——上一趟真断在的那步反而不跟用户提
+  let lastAsst = null;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i] && history[i].role === "assistant") { lastAsst = history[i]; break; }
+  }
+  for (let i = 0; i < history.length; i++) {
+    const e = normalizeEntry(history[i]);
+    if (!e || e.role !== "assistant" || !e.toolCalls.length) continue;
+    let j = i + 1;
+    const answered = new Set();
+    for (; j < history.length && history[j] && history[j].role === "tool"; j++) {
+      for (const r of normalizeEntry(history[j]).results) if (r && r.id) answered.add(r.id);
+    }
+    const missing = [];
+    for (const c of e.toolCalls) {
+      if (!c || !c.id || answered.has(c.id)) continue;
+      answered.add(c.id); // 同一个 id 记了两遍的，只补一条
+      const side = hasSideEffect(c.name);
+      missing.push({
+        id: c.id,
+        name: c.name,
+        content: side
+          ? `${INTERRUPTED_RESULT}。这一步可能已经动过东西（写了文件、跑了命令、生成了媒体或发出了消息），不要自动重做：先检查现场，确实要重做先问用户${GEN_TOOLS.includes(c.name) ? "——重做会再扣一次费" : ""}。`
+          : `${INTERRUPTED_RESULT}。`,
+        isError: true,
+      });
+      patched.push({ id: c.id, name: c.name, input: c.input || {}, sideEffect: side, tail: e === lastAsst });
+    }
+    if (!missing.length) continue;
+    if (j > i + 1) history[j - 1].results.push(...missing);
+    else history.splice(i + 1, 0, normalizeEntry({ role: "tool", results: missing }));
+  }
+  return patched;
+}
+
+/**
+ * 上一趟断在会动东西的那一步：回复开头跟用户说一声断在哪、这次不会自动重做。
+ * 只读的不提（模型自己重查一遍就是了，不花钱也不动东西）；更早的旧伤不提（用户早就往下聊了）。
+ */
+function resumeNotice(patched) {
+  const hit = (patched || []).filter((p) => p.tail && p.sideEffect);
+  if (!hit.length) return "";
+  // 老数据里偶有不带 name 的调用：标题拼出来是空的，退回工具名，再没有就说「上一步」，别给用户一对空书名号
+  const head = toolHeadline(hit[0].name, hit[0].input) || String(hit[0].name || "") || "上一步";
+  // 只点名第一步，其余报个数：一口气断了好几个并行调用时，整句话也要一眼读完
+  const what = `「${head}」` + (hit.length > 1 ? `等 ${hit.length} 步` : "");
+  const paid = hit.some((p) => GEN_TOOLS.includes(p.name)) ? "重做会再扣一次费，" : "";
+  return callout.line("warn", `**上次在执行${what}时中断**：结果未知，这次不自动重做。${paid}要重做跟我说。`);
+}
+
+/**
+ * 「用户这次要的是什么」，全文件只认这一个口径。
+ *
+ * 以前三处各猜各的：记忆召回拿最后一条 user（续跑提示、核验打回也算进去了），弹问用户那道闸
+ * 和续跑前那道闸拿整段会话的第一条 user（聊到第十轮还对着第一句话判）。一遇到插话或续跑，
+ * 三处拿到的是三句不同的话。现在的口径：从后往前找最近一条真由人说的话——
+ *   系统注入的（【系统…】、【目标验收…】）跳过；压缩摘要里机械留了一行指令原文，认那一行；
+ *   任务中途的插话（【用户插话…】）是对这件事的补充，不是换了件事，跳过；
+ *   只说了「继续」「接着上次进度做」的，事还是上一句那件，接着往前找。
+ * 跳完还找不到，退回最近那条插话 / 那句「继续」，再没有就是空串。
+ * 空白压成一个空格：压缩摘要里留的指令原文就是压过的，不压的话压缩前后同一句话对不上。
+ */
+const ASK_BARE_RE = /^(?:【任务类型：[^】]*】\s*)?(?:继续|接着做|接着干|接着来|接着上次进度做|continue|go on|keep going)[\s。.!！]*$/i;
+function currentAsk(history) {
+  const list = Array.isArray(history) ? history : [];
+  const flat = (s) => String(s).replace(/\s+/g, " ").trim();
+  let fallback = "";
+  for (let i = list.length - 1; i >= 0; i--) {
+    const e = list[i];
+    if (!e || e.role !== "user" || typeof e.content !== "string") continue;
+    const c = e.content.trim();
+    if (!c) continue;
+    if (c.startsWith("【系统")) {
+      const m = /【最近的用户指令原文】([^\n]*)/.exec(c);
+      if (m && m[1].trim()) return flat(m[1]);
+      continue;
+    }
+    if (c.startsWith("【目标验收")) continue;
+    if (c.startsWith("【用户插话")) {
+      if (!fallback) fallback = flat(c.replace(/^【用户插话[^】]*】/, ""));
+      continue;
+    }
+    if (ASK_BARE_RE.test(c)) {
+      if (!fallback) fallback = flat(c);
+      continue;
+    }
+    return flat(c);
+  }
+  return fallback;
+}
+
 // 这两个工具没有渲染器就是死的：html_to_image 张口就抛「需要桌面版环境」，
 // desktop_pet 连实现都没注册。纯 node 起服务（npm start / Docker / openworkbuddy 命令行）时它们照样
 // 挂在工具清单里，模型看得见就会去用——调一次、吃一条必然的失败、再重想一个方案，
@@ -502,6 +677,99 @@ function trimHistory(history, maxChars, keepRecent = 3) {
   return saved;
 }
 
+// ================= 大工具结果落盘 =================
+// 上面 trimHistory 管的是「老」结果；这里管「刚拿到就很大」的那一条。read_file 一次 5 万字、
+// MCP 工具不设上限，整段进历史之后每一步都要重发一遍，直到它变老被截——那之前已经白付了好几轮钱。
+// 超过 SPILL_OVER 的结果全文写进工作区的 .openworkbuddy/tool-results/，历史里只留：
+// 路径 + 分段读的指引（排在最前面，trimHistory 截到只剩开头 300 字时路径也还在）+ 头尾各 SPILL_KEEP 字。
+// 只换 content，id/name/isError 原样——tool_use 和它的结果照旧成对。
+const SPILL_OVER = 20000;
+const SPILL_KEEP = 2000;
+const SPILL_REL = ".openworkbuddy/tool-results";
+const SPILL_PATH_RE = /(^|[\\/])\.openworkbuddy[\\/]tool-results[\\/]/;
+const SPILL_TTL_MS = 7 * 24 * 3600 * 1000; // 落盘的全文留一周；再老的会话要看，重新调一次工具
+const spillPrunedAt = new Map(); // 按目录记：多个工作区 / 多个租户各扫各的，别让 A 扫过了 B 就一小时不扫
+
+/** 删掉一周前落的盘。只动这个目录里我们自己起名的 .txt，同一个目录一小时最多扫一次 */
+function pruneSpills(dir, now = Date.now()) {
+  if (now - (spillPrunedAt.get(dir) || 0) < 3600 * 1000) return;
+  spillPrunedAt.set(dir, now);
+  try {
+    for (const n of fs.readdirSync(dir)) {
+      if (!/^[A-Za-z0-9_-]+\.txt$/.test(n)) continue;
+      const p = path.join(dir, n);
+      if (fs.statSync(p).mtimeMs < now - SPILL_TTL_MS) fs.rmSync(p, { force: true });
+    }
+  } catch {}
+}
+
+/** 按 UTF-16 下标切，但别把一个 emoji / 生僻字的代理对劈成两半（半个字发出去有的接口直接 400） */
+function sliceHead(s, n) {
+  let k = Math.min(n, s.length);
+  const c = s.charCodeAt(k - 1);
+  if (c >= 0xd800 && c <= 0xdbff) k--;
+  return s.slice(0, k);
+}
+function sliceTail(s, n) {
+  let k = Math.max(0, s.length - n);
+  const c = s.charCodeAt(k);
+  if (c >= 0xdc00 && c <= 0xdfff) k++;
+  return s.slice(k);
+}
+
+/**
+ * 一条工具结果（{ id, name, content, isError }）超长就落盘，返回要进历史的那一条。
+ * 没超、或者读的就是落盘文件本身（再落一次就成了套娃，模型永远读不到正文）、或者写盘失败，都原样返回。
+ */
+function spillToolResult(entry, input) {
+  const text = String(entry.content == null ? "" : entry.content);
+  if (text.length <= SPILL_OVER) return entry;
+  if (entry.name === "read_file" && SPILL_PATH_RE.test(String((input && input.path) || ""))) return entry;
+  let rel = "";
+  try {
+    const dir = path.join(getWorkspaceDir(), ...SPILL_REL.split("/"));
+    fs.mkdirSync(dir, { recursive: true });
+    // 工作区常常就是用户自己的 git 仓库（隔离副本模式还会 git add -A 整个提交）。
+    // 工具原文里可能有密钥、整页网页，别让它们被顺手提交、也别让工作区一直显示「有改动」
+    try { fs.writeFileSync(path.join(dir, ".gitignore"), "*\n", { flag: "wx" }); } catch {}
+    pruneSpills(dir);
+    // 调用 id 当文件名。有的 OpenAI 兼容接口每轮都从 call_0 数起，撞名了往后加 -2、-3，绝不覆盖
+    const base = String(entry.id || "").replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 80) || `call_${Date.now().toString(36)}`;
+    const tryWrite = (name) => {
+      try {
+        fs.writeFileSync(path.join(dir, name), text, { encoding: "utf8", flag: "wx" });
+        rel = `${SPILL_REL}/${name}`;
+      } catch (e) {
+        if (!e || e.code !== "EEXIST") throw e;
+      }
+    };
+    for (let i = 1; i <= 50 && !rel; i++) tryWrite(i === 1 ? `${base}.txt` : `${base}-${i}.txt`);
+    // 一周里 call_0 撞满 50 个也不能就此不落盘了：换个不会撞的名字
+    if (!rel) tryWrite(`${base}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}.txt`);
+    if (!rel) throw new Error(`${base}.txt 同名文件太多`);
+  } catch (e) {
+    console.warn(`[agent] ${entry.name} 的结果（${text.length} 字）没能落盘，整段进历史：${(e && e.message) || e}`);
+    return entry;
+  }
+  const head = sliceHead(text, SPILL_KEEP);
+  const tail = sliceTail(text, SPILL_KEEP);
+  const omitted = text.length - head.length - tail.length;
+  return {
+    ...entry,
+    content:
+      `【这一步结果共 ${text.length} 字，全文已存到 ${rel}，可用 read_file 分段读（带 start_line/end_line）。这里只留头尾各 ${SPILL_KEEP} 字】\n` +
+      head +
+      `\n\n…（中间省略 ${omitted} 字，全文见 ${rel}）…\n\n` +
+      tail,
+  };
+}
+
+/** llm.js 重试时 onStatus 的第二个参数 → 状态事件上的 retry 字段。别的状态（或没给第二个参数）一个字段都不加 */
+function retryField(info) {
+  if (!info || info.kind !== "retry") return {};
+  return { retry: { attempt: info.attempt, total: info.total, delayMs: info.delayMs } };
+}
+
 /**
  * 系统提示词里注入真实日期：不给的话模型会拿训练截止日当"今天"，凡是"最新/本周"的任务全歪。
  * 只精确到小时——分钟是个昂贵的小数点：system 是所有 provider 缓存前缀的第一段，
@@ -513,6 +781,14 @@ function envToday() {
   const week = "日一二三四五六"[d.getDay()];
   const slot = d.getHours() < 5 ? "凌晨" : d.getHours() < 12 ? "上午" : d.getHours() < 18 ? "下午" : "晚上";
   return `${d.getFullYear()} 年 ${d.getMonth() + 1} 月 ${d.getDate()} 日（星期${week}）${slot} ${d.getHours()} 点左右`;
+}
+
+/**
+ * 易变段的「当前时间」一节。以前这行写在「当前环境」里、排在整段 system 的第三行，
+ * 钟点一变（每小时）整段前缀跟着作废；现在放在易变段末尾，一变只作废它自己。
+ */
+function timeBlock() {
+  return `\n\n## 当前时间\n- 现在是 ${envToday()}。`;
 }
 
 function safeWorkspaceDir(baseDir) {
@@ -535,7 +811,7 @@ function worktreeLine() {
 /**
  * 当前生效的模型渠道（base_url / api_key / model / provider / caps），给「拿主模型看图」用。
  *
- * caps 必须带上：那是设置页里「能看图」那个勾，用户自己勾的。tools.js 的 pickEye 就靠它
+ * caps 必须带上：那是设置页里「能看图」那个勾，用户自己勾的。src/tools/media.js 的 pickEye 就靠它
  * 判断这张图该不该绕开单配的看图模型——丢了它就只能按型号名猜，
  * 而名字是一层很薄的伪装（同一个理由见 media-models.js capOfModel 那段）。
  */
@@ -546,6 +822,9 @@ function activeChannel(config) {
   const legacy = config.provider === "anthropic" ? config.anthropic : config.openai;
   return legacy && legacy.model ? { ...legacy, provider: config.provider } : {};
 }
+
+/** 连着两次回复撞上输出长度上限时的停止原因。主循环落 stopNote、stopNotice 认前缀都用这一份 */
+const TRUNC_STOP = "输出被截断，已停止执行";
 
 /**
  * 被掐掉时追在正文后面的那半句。两条引擎路径（内置循环 / 本机 CLI 引擎）共用这一份，措辞不会漂开。
@@ -563,6 +842,9 @@ function stopNotice(note) {
   }
   // 死循环停下来的，劝人去调大上限是反的——上限再大它也只是多转几圈
   if (String(note).startsWith("陷入死循环")) return `注意：${note}，已经停下来不再烧时间和额度，这种停不会自动续跑。先把它撞墙的那条路修好（渠道、文件或命令），或者把要求说得更具体，再跟我说「接着上次进度做」。`;
+  // 截断是单条回复写不下，跟步数/时长上限无关，劝人调「执行上限」同样是答非所问。
+  // 这里不说「调用没有执行」：纯正文被截两次也走这条，那时根本没有调用（有没有调用由循环里那条提示说）
+  if (String(note).startsWith(TRUNC_STOP)) return `注意：${note}。模型连着两次写满单条回复的上限，不会自动续跑。把要求拆小，再跟我说「接着上次进度做」。`;
   return `注意：${note}，任务强制收尾。${resume}；想让它一口气跑更久，去「设置 → 执行上限」调大上限、或把「自动续跑轮数」设成 1 以上（这页归平台管理员）。`;
 }
 
@@ -662,7 +944,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
     let p = `你是 ${myName}，一个 AI 办公智能体。用户用自然语言下达办公任务，你自主思考、拆解任务、规划步骤、调用工具执行，最终交付可验证的成果。用户叫你「${myName}」，被问到你是谁就用这个名字。
 
 ## 当前环境
-- 现在是 ${envToday()}。凡是涉及"最新/今年/近期/本周"的判断一律以这个日期为准，不要用你训练数据里的时间。用户说"现在/马上/今晚"这类词时，按上面的钟点安排，别默认从早上开始。需要最新事实（价格、政策、版本号、人事、榜单）必须 web_search 现查，不许凭记忆答。
+- 今天几号、现在几点，看下面「当前时间」那一节。凡是涉及"最新/今年/近期/本周"的判断一律以那个日期为准，不要用你训练数据里的时间。用户说"现在/马上/今晚"这类词时，按那里的钟点安排，别默认从早上开始。需要最新事实（价格、政策、版本号、人事、榜单）必须 web_search 现查，不许凭记忆答。
 - 工作目录（成果文件都放这里）：${safeWorkspaceDir(baseDir)}${worktreeLine()}
 - 写文件一律用**相对文件名**（\`报告.html\`、\`demo/index.js\`），相对路径就是从上面这个目录起算的。别再在前面拼一遍目录名——那会在它下面又建一层同名目录。
 - 运行环境：${{ darwin: "macOS", win32: "Windows", linux: "Linux" }[process.platform] || process.platform}，本机执行，run_shell 拿到的是用户的真实电脑。
@@ -807,12 +1089,11 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
     if (config.persona) {
       p += `\n\n## 用户的个性化偏好\n${config.persona}`;
     }
-    // 记忆按账号取：共享的 + 这个人自己的。别人的偏好不该串到他头上；
-    // hint 是本次任务线索，记忆装不下提示词预算时按它挑最相关的
     // 自进化规则排在记忆前面：记忆是"这个用户怎么想的"，规则是"你自己在哪儿摔过"。
     // 摔过的坑得先想起来，不然照着用户偏好又摔一次。两块都过预算上限，不会无限撑长。
+    // 规则只在审过一条新规则时才变，算稳定段；长期记忆按本次任务线索（hint）挑条目，
+    // 每轮都可能不一样，挪到了易变段（见 volatileSystemBlock）。hint 参数留着是为了调用方不用改
     try { p += evolve.promptBlock(); } catch {} // 规则目录读不了不该让整个任务起不来
-    p += await memory.promptBlock(user, hint);
     return p;
   }
 
@@ -849,6 +1130,52 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
     }
     p += `\n\n你是被主协调者委派的专家。完成后用一段简明汇报结束：做了什么、产出了哪些文件（写真实文件名）、关键结论、还有什么没做完。汇报会被原样交回协调者，别写客套话。`;
     return p;
+  }
+
+  /**
+   * system 的易变段：长期记忆、项目块、媒体渠道状态、当前时间——每一轮都可能不一样。
+   *
+   * 各家的提示词缓存都是前缀匹配：前面任何一个字节变了，后面整段作废。以前记忆（按本次
+   * 线索挑条目）和项目块夹在角色/工具规则和语言/模式中间，换一句话问，整段几万字的
+   * system 就全价重买一遍。现在它们一律排在稳定段后面，变了只作废自己这一小截。
+   *
+   * 记忆按账号取：共享的 + 这个人自己的。别人的偏好不该串到他头上；
+   * memHint 是本次任务线索，记忆装不下提示词预算时按它挑最相关的。
+   */
+  async function volatileSystemBlock({ user, memHint, projBlock, mediaReopened }) {
+    let v = "";
+    try {
+      v += await memory.promptBlock(user, memHint);
+    } catch (e) {
+      // 记忆读不出来不该让整个任务起不来；但得留痕，不然用户只会觉得「它怎么又忘了」
+      console.warn(`[agent] 长期记忆这一轮没带上：${(e && e.message) || e}`);
+    }
+    return v + projBlock + pausedMediaBlock() + reopenedMediaBlock(mediaReopened) + timeBlock();
+  }
+
+  /**
+   * 这一步能带多少字符的历史：min(用户显式配的上限, 模型窗口折算的字符数)。
+   * 窗口优先取 LLM 客户端自己报的（llm.js createLLM 按渠道算好的 contextWindow）；
+   * 测试里的假客户端或老客户端没报，就按名字回 config.models 里找那条渠道再算一遍。
+   * 压缩阈值、每步截短、收尾那一压、前端的上下文用量条，全用这一份，数字才对得上。
+   */
+  function ctxBudget(lm) {
+    const explicit = +((config.agent || {}).max_context_chars) || 0;
+    return contextBudgetChars(ctxWindowOf(lm), explicit);
+  }
+  function ctxWindowOf(lm) {
+    const cw = lm && +lm.contextWindow;
+    if (cw > 0) return cw;
+    const { contextWindowOf } = require("./llm"); // 懒 require，同 makeLLM
+    const list = Array.isArray(config.models) ? config.models : [];
+    const model = lm && lm.model;
+    // 先按渠道名认（createLLM 报的 provider 就是渠道名），再退到当前选中的那条；
+    // 型号对不上说明不是这条渠道（比如测试里的假客户端），只按型号名猜，别借别人的 context_window
+    const entry = (lm && lm.provider && list.find((m) => m.name === lm.provider))
+      || list.find((m) => m.name === config.active_model) || list[0]
+      || (config.provider === "anthropic" ? config.anthropic : config.openai) || null;
+    if (entry && (!model || !entry.model || entry.model === model)) return contextWindowOf(entry, model || entry.model);
+    return contextWindowOf(null, model);
   }
 
   const READ_ONLY_TOOLS = ["read_file", "read_document", "list_files", "search_files", "find_files", "fetch_url", "render_page", "web_search", "library_list", "library_read", "look_at_image"];
@@ -1051,7 +1378,8 @@ function modePrompt(mode) {
       return { content: text, isError: false };
     }
     if (mcpManager.isMcpTool(tc.name)) {
-      return await mcpManager.call(tc.name, tc.input);
+      // 点了停止要能叫停在途的 MCP 调用：发 notifications/cancelled、不再干等它的结果
+      return await mcpManager.call(tc.name, tc.input, { signal: stopSignal });
     }
     if (tc.name === "notify_user") {
       const raw = String(tc.input.text || "").trim();
@@ -1499,19 +1827,22 @@ function modePrompt(mode) {
    * 各写各的早晚会漂：少传一个 media，generate_image 连模型都点不了名；
    * 少传一个 actor，审批卡片就跑去问了别人。
    */
-  function execOpts({ depth = 0, deadline, stopSignal, taskLabel, user, baseDir, sec, sessionId, callId }) {
+  function execOpts({ depth = 0, deadline, stopSignal, signal, taskLabel, user, baseDir, sec, sessionId, callId }) {
     return {
       knownTools: toolList(depth, "craft").map((t) => t.name), // 拼错工具名时用来给出最接近的真名
       timeoutMs: config.agent.tool_timeout_ms,
       search: config.search,
       media: mediaModels.resolve(config), // 带上全表，generate_image 这些才能按名字点名用哪个模型
-      visionFallback: activeChannel(config), // 主模型自己会看图就直接用它，单配的看图模型是给「主模型看不了图」的人预备的（见 tools.js pickEye）
+      visionFallback: activeChannel(config), // 主模型自己会看图就直接用它，单配的看图模型是给「主模型看不了图」的人预备的（见 src/tools/media.js pickEye）
       // IM/定时等无人值守场景可传 sec 覆盖权限档位（没人守着屏幕点审批）
       security: sec || config.security,
       // 判断模型那条路。只带它认路要用的两样，不把整份 config（连着所有 Key）递进工具层
       decideConfig: { decide: config.decide, providers: config.providers },
       deadline,
       stopSignal,
+      // ctx.signal：媒体工具把它和 stopSignal 合成一路挂到每个 fetch 上（tools.js withStop）。
+      // 对话里就是任务的停止信号；直调接口（runTool）另有一路请求级的，由服务端传进来
+      signal: signal || stopSignal,
       taskLabel, // 审批卡片上标明发起任务，多任务并行时才分得清是谁在求批
       actor: user, // 审批归谁：多人共用一台服务器时，别人不该看见、更不该替他点「允许」
       baseDir, // 相对路径读写、脚本 cwd、产物落点全在本对话的成果子目录
@@ -1539,7 +1870,7 @@ function modePrompt(mode) {
    * 强制收尾时的最后一句话。不给工具、单独一小段超时预算（撞的就是时间上限，不能再等 5 分钟），
    * 失败就悄悄算了——收尾说明没拿到，也不该把整个任务变成一次报错。
    */
-  async function wrapUp({ history, system, stopNote, emit, depth, stats, llmOverride, traceNode }) {
+  async function wrapUp({ history, system, systemStableLen, stopNote, emit, depth, stats, llmOverride, traceNode }) {
     history.push({
       role: "user",
       content: `【系统】任务已到上限被强制收尾（${stopNote}）。现在不要再调用任何工具，直接给用户一段收尾说明：
@@ -1556,9 +1887,10 @@ function modePrompt(mode) {
       metadata: { depth, stop_note: stopNote },
     });
     try {
-      trimHistory(history, config.agent.max_context_chars || 120000); // 最后一次工具输出可能刚把上下文顶爆，先压一压
+      trimHistory(history, ctxBudget(L2)); // 最后一次工具输出可能刚把上下文顶爆，先压一压
       const result = await L2.chat({
         system,
+        systemStableLen, // 跟主循环切在同一处：收尾这一问的 system 前缀照样走缓存读
         history,
         tools: [],
         signal: AbortSignal.timeout(Math.min(90000, config.agent.llm_timeout_ms || 300000)),
@@ -1624,9 +1956,9 @@ function modePrompt(mode) {
    *
    * 只在百分比真的变了的时候播。长任务一步一算，不挡着的话一轮能往 SSE 里塞几百条一模一样的。
    */
-  function emitContext(history, emit, state) {
+  function emitContext(history, emit, state, lm) {
     if ((config.agent || {}).context_meter === false) return;
-    const budget = config.agent.max_context_chars || 120000;
+    const budget = ctxBudget(lm || llm); // 跟 compactHistory 同一个口径：用量条上的阈值线就是真会触发压缩的那条
     const threshold = config.agent.compact_threshold_chars || Math.floor(budget * 0.6);
     const used = historyChars(history);
     const pct = Math.round((used / budget) * 100);
@@ -1642,8 +1974,11 @@ function modePrompt(mode) {
     // 渠道填成了判断模型（Jev），对话本身走的是按对话选的另一条，压缩那一下却撞到 Jev 的 400
     // 「is a decisions model」——整趟任务因此报错，而用户根本没在那条渠道上跑过任何东西。
     const lm = useLlm || llm;
+    // 手动 /compact（cli.js）不经过 runTask，历史没被 normalizeHistory 过：老会话里引擎写的
+    // { content } 回复在下面按 e.text 摊转写时整条消失，字数也按 0 算——摘要里就少了那几轮
+    normalizeHistory(history);
     if (!force && (config.agent || {}).compact === false) return;
-    const budget = config.agent.max_context_chars || 120000;
+    const budget = ctxBudget(lm);
     const threshold = config.agent.compact_threshold_chars || Math.floor(budget * 0.6);
     if (!force && historyChars(history) <= threshold) return;
     const keepTurns = config.agent.compact_keep_turns || 4;
@@ -1687,27 +2022,14 @@ function modePrompt(mode) {
     let transcript = lines.join("\n");
     if (transcript.length > 60000) transcript = "…（更早部分略）\n" + transcript.slice(-60000); // 压缩请求本身也别把上下文顶爆
     const fileOps = collectFileOps(old);
-    // 分轮压缩会把本任务的原始指令一起压掉，摘要没写好任务就跑偏——指令原文机械保留，不过模型的手
-    let lastInstr = "";
-    if (splitMode) {
-      for (let i = old.length - 1; i >= 0; i--) {
-        const e = old[i];
-        if (e.role !== "user") continue;
-        const c = String(e.content || "");
-        if (c.startsWith(COMPACT_MARK) || c.startsWith("【系统")) continue;
-        lastInstr = c.replace(/\s+/g, " ").slice(0, 2000);
-        break;
-      }
-      // 连续多次分轮压缩后，原始指令只活在上一份摘要里——像文件清单一样机械接续，不能靠摘要模型转述
-      if (!lastInstr) {
-        for (let i = old.length - 1; i >= 0 && !lastInstr; i--) {
-          const e = old[i];
-          if (e.role !== "user" || !String(e.content || "").startsWith(COMPACT_MARK)) continue;
-          const m = /【最近的用户指令原文】([^\n]*)/.exec(String(e.content));
-          if (m) lastInstr = m[1].trim();
-        }
-      }
-    }
+    // 分轮压缩会把本任务的原始指令一起压掉，摘要没写好任务就跑偏——指令原文机械保留，不过模型的手。
+    // 留哪一句就是压缩前 currentAsk 认的那句：以前这里拿最后一条非系统 user，压掉的要是「继续」或一条插话，
+    // 留下的就是「继续」/插话本身，压缩前后认的不是同一句，续跑闸门和 stats.asked 就对不上了。
+    // 什么时候留也按它判：留下的那截自己认得出来就不重复；认不出来就得留——不止分轮压缩，会话轮次压缩
+    // 碰上最近几轮全是自动续跑 / 插话 / 验收反馈时，原始指令同样整句被压掉。
+    // 连续多次压缩后，指令只活在上一份摘要那一行里——currentAsk 认那一行，照样机械接续
+    const askNow = currentAsk(history);
+    const lastInstr = askNow && currentAsk(history.slice(cut)) !== askNow ? askNow.slice(0, 2000) : "";
     // 压缩自己也要跟模型说一次话，长会话十几秒都算快的——而这一步正卡在「他按下发送」和
     // 「第一个字出来」中间。一声不吭的话，他看到的就是一个不知道在干什么的转圈，
     // 只能猜是模型卡了还是网断了。所以先报一声在压什么、压多少，压完那条 compact 再把
@@ -1849,8 +2171,9 @@ function modePrompt(mode) {
       });
       try { filesOut.push(true); } catch {} // 收尾这一下必须立刻发：产出得赶在这一轮结束前落到界面上
       const rawFinal = (r.finalText || "").trim();
-      // 调用方（Web / IM / 定时任务）都指望 runTask 就地把回复追加进 history
-      if (rawFinal) history.push({ role: "assistant", content: rawFinal });
+      // 调用方（Web / IM / 定时任务）都指望 runTask 就地把回复追加进 history。
+      // 按正式格式写（text，不是 content）：以前写的是 content，下一轮转成供应商消息就是空 assistant，整段会话从此 400
+      if (rawFinal) history.push(normalizeEntry({ role: "assistant", text: rawFinal, toolCalls: [] }));
       // 撞上限 / 手动停止 / 跑超时：内置引擎会发 limit 事件、并把这半句写进正文（见下面 stopNote 那段），
       // CLI 引擎这条路以前只把 stopped 塞在返回值里。于是谁忘了接这个返回值，谁那边就把半截活儿
       // 显示成干完了——IM 就是这么把「跑满 25 步被掐掉」当成一条正常回复发到用户手机上的。
@@ -1890,9 +2213,11 @@ function modePrompt(mode) {
     const list = Array.isArray(history) ? history : [];
     const lastUser = [...list].reverse().find((e) => e && e.role === "user" && typeof e.content === "string");
     if (engineSession) return lastUser ? lastUser.content : "继续。";
-    const turns = list.filter((e) => e && typeof e.content === "string" && (e.role === "user" || e.role === "assistant"));
+    // assistant 的正文在 text 里（老会话里引擎写的是 content，开跑时已被 normalizeHistory 改过来）
+    const said = (e) => (e.role === "assistant" ? (typeof e.text === "string" ? e.text : e.content) : e.content);
+    const turns = list.filter((e) => e && (e.role === "user" || e.role === "assistant") && typeof said(e) === "string" && said(e).trim());
     if (turns.length <= 1) return lastUser ? lastUser.content : "";
-    return turns.map((e) => (e.role === "user" ? "【用户】" : "【你之前的回复】") + "\n" + e.content).join("\n\n");
+    return turns.map((e) => (e.role === "user" ? "【用户】" : "【你之前的回复】") + "\n" + said(e)).join("\n\n");
   }
 
   /**
@@ -1958,9 +2283,8 @@ function modePrompt(mode) {
     // 顺序同内置：个性化偏好 → 自进化规则（自己摔过的坑）→ 长期记忆 → 项目指令。
     if (config.persona) parts.push(`\n## 用户的个性化偏好\n${config.persona}`);
     try { const ev = evolve.promptBlock(); if (ev) parts.push(ev.trim()); } catch {} // 规则目录读不了不该让任务起不来
-    // 记忆召回线索：用户最后一条消息的前 500 字，记忆超预算时按它挑最相关的
-    const lastUser = [...(extra.history || [])].reverse().find((e) => e && e.role === "user" && typeof e.content === "string");
-    const hint = lastUser ? lastUser.content.slice(0, 500) : "";
+    // 记忆召回线索：用户这次要的事（currentAsk，跟内置引擎同一个口径）的前 500 字，记忆超预算时按它挑最相关的
+    const hint = currentAsk(extra.history || []).slice(0, 500);
     try { const mb = await memory.promptBlock(user, hint); if (mb) parts.push(mb.trim()); } catch {}
     if (extra.projectContext) parts.push(`\n## 当前项目的背景与规范（用户在项目设置里写的，必须遵守）\n${extra.projectContext}`);
     if (extra.lang) parts.push(langBlock(extra.lang));
@@ -2056,6 +2380,14 @@ function modePrompt(mode) {
    * @returns { finalText }
    */
   async function runTask({ history, emit = () => {}, systemPrompt, depth = 0, mode = "craft", deadline, stats, stopSignal, getInterject, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride, askUser, engineSession, lang, sessionId, traceNode, mediaReopened, maxSteps: maxStepsOverride }) {
+    // 读历史先过 normalizeEntry：老会话里引擎回合写的 { content } 就地改成 { text }。
+    // 就地改的是调用方那份会话（sess.history），下次落盘就是正式格式，这段会话从此不再带着方言走
+    normalizeHistory(history);
+    // 上一趟崩在工具执行中间留下的半截对子，结果补进历史本身（见 closeDanglingCalls）。
+    // 放在一切事件之前：server.js 在事件上存盘，第一次存下去的就已经是配好对的历史。
+    // 只补结果、不重放：断在写文件/跑命令/生成媒体上的，重放等于替用户再做一遍、再扣一次钱
+    const danglingCalls = closeDanglingCalls(history);
+    const resumeNote = depth === 0 ? resumeNotice(danglingCalls) : "";
     // ── 执行追踪 ─────────────────────────────────────────────────────────
     // 顶层任务开一条 trace，这一趟里每次模型调用、每个工具都挂在它底下；专家子任务收到的是
     // 「委派」那次工具调用的 span，接着往下挂，层级跟界面上看到的一模一样。
@@ -2074,6 +2406,9 @@ function modePrompt(mode) {
       : tracing.noop);
     // 链接开工就给，不等跑完——长任务里最想点开看的恰恰是跑到一半的时候
     if (ownsTrace && tr.enabled) emit({ type: "trace", url: tr.url, id: tr.id, depth: 0 });
+    // 回复开头就说断在哪：网页上是正文第一条提示条，IM / 定时任务读的是 finalText，收尾时同样拼在最前面
+    if (resumeNote) emit({ type: "text", delta: resumeNote, depth });
+    const withResumeNote = (text) => (resumeNote ? (text ? `${resumeNote.trim()}\n\n${text}` : resumeNote.trim()) : text);
 
     // ── 底层引擎分岔 ──────────────────────────────────────────────────────
     // 用户在设置里选了「本机 Claude Code / 本机 Codex」时，这一整趟任务交给那个 CLI 跑，
@@ -2105,6 +2440,7 @@ function modePrompt(mode) {
           });
           sp.end({ output: out.finalText || "", usage: out.usage, metadata: { stopped: out.stopped || "", engine_session: out.sessionId || "" } });
           if (ownsTrace) tr.end({ output: out.finalText || "", usage: out.usage, metadata: { engine: picked.backend.id } });
+          if (resumeNote) out.finalText = withResumeNote(out.finalText || "");
           return out;
         } catch (e) {
           const why = (e && e.message) || String(e);
@@ -2118,10 +2454,15 @@ function modePrompt(mode) {
     if (!runToken) runToken = ++runSeq; // 专家子任务从父任务继承，同一任务树内不互相抢认领
     // 项目指令：用户在「项目」里写的背景/规范。不进提示词的话，那个输入框就是个摆设
     const projBlock = projectContext ? `\n\n## 当前项目的背景与规范（用户在项目设置里写的，必须遵守）\n${projectContext}` : "";
-    // 记忆召回的线索：用户最后一条消息的前 500 字。记忆超预算时按它挑相关条目
-    const lastUserMsg = [...history].reverse().find((e) => e && e.role === "user" && typeof e.content === "string");
-    const memHint = lastUserMsg ? lastUserMsg.content.slice(0, 500) : "";
-    const system = (systemPrompt || (await coordinatorSystemPrompt(user, memHint, baseDir))) + projBlock + langBlock(lang) + modePrompt(mode) + pausedMediaBlock() + reopenedMediaBlock(mediaReopened);
+    // 记忆召回的线索：用户这次要的事（currentAsk）的前 500 字。记忆超预算时按它挑相关条目
+    const memHint = currentAsk(history).slice(0, 500);
+    // system 分两段拼：稳定段在前（角色、工具规则、技能目录、语言、模式），易变段在后（记忆、项目块、
+    // 媒体状态、时间）。以前是 `…提示词 + projBlock + langBlock(lang) + modePrompt(mode) + 媒体状态`，
+    // 记忆和项目块夹在中间，换一句话问、换一个项目，后面的语言/模式连同前缀缓存一起作废。
+    // stableSystem 的长度一路带给 L.chat（systemStableLen），Anthropic 通道在这里打缓存断点
+    const stableSystem = (systemPrompt || (await coordinatorSystemPrompt(user, memHint, baseDir))) + langBlock(lang) + modePrompt(mode);
+    const system = stableSystem + (await volatileSystemBlock({ user, memHint, projBlock, mediaReopened }));
+    const systemStableLen = stableSystem.length;
     const tools = toolList(depth, mode);
     // ── 已加载的技能：挂在系统提示词里，不进历史 ───────────────────────────
     // 名字 → 全文。use_skill 往这儿放（见 runToolCall），每一步的 system 都带上它（见下面 skillBlock）。
@@ -2189,13 +2530,15 @@ function modePrompt(mode) {
     // 用户原话记一份在账本上：弹给用户那道闸在 runToolCall 里，够不着 history，
     // 而「这一问该不该打断人」离了「他本来让你干什么」判不了。只在顶层记，
     // 专家子任务的 history 是临时的，记下来反而把真正的那句话盖掉
-    if (depth === 0 && !stats.asked) stats.asked = String((history.find((h) => h.role === "user") || {}).content || taskLabel || "").slice(0, 400);
+    if (depth === 0 && !stats.asked) stats.asked = String(currentAsk(history) || taskLabel || "").slice(0, 400);
     let finalText = "";
     let stopNote = "";
     let honestyRetries = 0;
     let hookRetries = 0; // done 钩子没过被打回的次数
     let edited = false; // 这一趟真改过文件没有：没改过就不跑 done 钩子
     let finishRetries = 0; // 「没做完就收摊」被打回的次数（整个任务累计，不按轮重置）
+    let truncStreak = 0; // 连着几次回复撞上输出上限（max_tokens / length）；没撞就清零
+    let textCarry = ""; // 正文写到一半被截、让它接着写时，前半段先存这儿，交付时跟后半段拼起来
     let openLeft = [];
     let todoItems = null;  // todo_write 最新那张表：收尾时还有没标 done 的，同样打回     // 收尾时进度档里仍未打勾的条目，用来如实告诉用户还差什么
     // 进度档所在目录：和下面自动续跑读 PROGRESS.md 的是同一处，别让两边算出不同的路径
@@ -2278,7 +2621,7 @@ function modePrompt(mode) {
       try { await compactHistory(history, { emit, stats, traceNode: tr, llm: L, skills: [...loadedSkills.keys()] }); }
       catch (e) { console.warn("[agent] 上下文压缩失败，本次跳过:", e.message); }
       // 压完再播：让界面上那根条直接落到压缩后的真实位置，而不是先闪一下旧数字
-      emitContext(history, emit, ctxState);
+      emitContext(history, emit, ctxState, L);
     }
 
     // 自动续跑：撞「最大步数/最大运行时间」后自动开下一轮接着干（仅顶层任务；手动停止、模型挂死不续跑）。
@@ -2298,7 +2641,7 @@ function modePrompt(mode) {
       if (!jev.status(config).ready) return "";
       let progress = "";
       try { progress = fs.readFileSync(path.join(progressDir(), "PROGRESS.md"), "utf8"); } catch {}
-      const asked = (history.find((h) => h.role === "user") || {}).content || taskLabel || "";
+      const asked = currentAsk(history) || taskLabel || "";
       try {
         const out = await jev.askMetered(
           config,
@@ -2353,8 +2696,8 @@ function modePrompt(mode) {
       // 跑到几十步的长任务只能靠 trimHistory 把早期工具输出截成空壳，模型越跑越失忆
       try { await compactHistory(history, { emit, stats, traceNode: tr, llm: L, skills: [...loadedSkills.keys()] }); }
       catch (e) { console.warn("[agent] 任务中压缩失败，本步跳过:", e.message); }
-      if (depth === 0) emitContext(history, emit, ctxState);
-      const trimmed = trimHistory(history, config.agent.max_context_chars || 120000);
+      if (depth === 0) emitContext(history, emit, ctxState, L);
+      const trimmed = trimHistory(history, ctxBudget(L)); // 按这一步真正要发的那条渠道的窗口算（换过道就按新渠道）
       if (trimmed) {
         trimmedChars += trimmed;
         console.warn(`[agent] 上下文超预算，已截断历史工具输出 ${trimmed} 字符（depth=${depth} step=${step + 1}）`);
@@ -2398,11 +2741,14 @@ function modePrompt(mode) {
       try {
         result = await L.chat({
           system: sys,
+          systemStableLen,
           history,
           tools,
           signal,
           onActivity,
-          onStatus: (text) => emit({ type: "status", text, depth }),
+          // 重试时 llm.js 会给第二个参数 { kind:"retry", attempt, total, delayMs }，原样挂在事件的 retry 上，
+          // 新前端拿它画倒计时；老前端只读 text，不受影响
+          onStatus: (text, info) => emit({ type: "status", text, depth, ...retryField(info) }),
           onTextDelta: (delta) => emit({ type: "text", delta, depth }),
         });
         // 这一步到底干了什么：说了什么话 + 要调哪几个工具。只记正文的话，纯调工具的那些步
@@ -2455,13 +2801,61 @@ function modePrompt(mode) {
         stats.cached = (stats.cached || 0) + (result.usage.cached || 0);
         stats.calls++;
       }
+      // ── 输出撞上长度上限（Anthropic 报 max_tokens，OpenAI 兼容报 length）──────────────
+      // 截在工具调用中间时，最后那个调用的参数是半截的：Anthropic SDK 会把半截 JSON 硬解析成一个
+      // 看着完整的对象，OpenAI 这边是 _raw 残片——哪种拿去执行都是替用户瞎编（写一半的文件、截断的命令）。
+      // 所以只丢最后那一个（排在它前面的调用参数已经闭合，照常执行），再追加一次续写提示；
+      // 紧接着又被截一次就停：同样的上限再续一次还是同样的结局，只会烧钱。
+      const truncated = result.stopReason === "max_tokens" || result.stopReason === "length";
+      truncStreak = truncated ? truncStreak + 1 : 0;
+      let cutCall = null;
+      let truncAsk = "";
+      if (truncated) {
+        const calls = Array.isArray(result.toolCalls) ? result.toolCalls : [];
+        cutCall = calls.length ? calls[calls.length - 1] : null;
+        // 第二次被截就整批都不执行：马上要停了，执行了也没人接着用这些结果
+        const drop = truncStreak >= 2 ? calls : calls.slice(-1);
+        if (drop.length) {
+          const ids = new Set(drop.map((c) => c.id));
+          result.toolCalls = calls.filter((c) => !ids.has(c.id));
+          // raw 里的 tool_use 一起摘掉，不然发回去是一个没人应答的 tool_use
+          if (Array.isArray(result.raw)) result.raw = result.raw.filter((b) => !(b && b.type === "tool_use" && ids.has(b.id)));
+        }
+      }
       history.push({
         role: "assistant",
         text: result.text,
         toolCalls: result.toolCalls,
         raw: result.raw,
       });
-      if (result.text) finalText = result.text;
+      if (result.text) finalText = textCarry + result.text;
+      textCarry = "";
+
+      if (truncated) {
+        if (truncStreak >= 2) {
+          stopNote = TRUNC_STOP;
+          // 只有真摘掉了调用才说「没有执行」；纯正文被截，半截正文照样交给用户（finalText 已拼好）
+          emit({ type: "text", delta: callout.line("warn", `**${TRUNC_STOP}**：连着两次写满单条回复的上限${cutCall ? "，这一批调用都没有执行" : ""}。`), depth });
+          break;
+        }
+        truncAsk = cutCall
+          ? `【系统·输出截断】你上一条回复撞上了输出长度上限，最后那个 ${cutCall.name} 调用的参数没写完，没有执行。重发这一步，但要拆小：长文件用 write_file 带 append:true 一节一节写，长参数拆成几次调用。`
+          : `【系统·输出截断】你上一条回复写到一半撞上了输出长度上限。从断开的地方接着写，别重复已经写过的部分；还很长就分几次说完，或者写进文件。`;
+        emit({
+          type: "text",
+          delta: callout.line("warn", cutCall ? `**输出被截断**：\`${cutCall.name}\` 的参数没写完，没有执行，已让它拆小重发。` : "**输出被截断**：已让它从断开的地方接着写。"),
+          depth,
+        });
+        // 纯正文被截：下一条是后半段，交付时拼起来。只存这一条自己的正文——推理模型可能把额度全花在
+        // 思考上、正文一个字没有，这时 finalText 还是更早那步的旁白，存它会被拼到最终答复前面
+        if (!cutCall) textCarry = result.text || "";
+        if (!result.toolCalls.length) {
+          history.push({ role: "user", content: truncAsk });
+          if (step === maxSteps - 1) stopNote = `已达最大步数（${maxSteps} 步）`;
+          continue;
+        }
+        // 前面还有参数完整的调用：照常执行，续写提示排在它们的工具结果后面（见下面 push tool 那里）
+      }
 
       if (!result.toolCalls.length) {
         // 成果核验：声称已生成的文件不在磁盘上、或者只是个 0 字节空壳 → 打回去重做（最多打回 2 次）
@@ -2630,7 +3024,9 @@ function modePrompt(mode) {
           const srcs = collectSources(tc.name, tc.input, r.content);
           if (srcs.length) emit({ type: "sources", items: srcs, depth });
         }
-        return { id: tc.id, name: tc.name, content: String(r.content), isError: r.isError };
+        // 超过 2 万字的结果全文落盘，历史里只留头尾和路径（见 spillToolResult）。上面的事件、trace、
+        // 死循环判定用的都是原文，只有进历史的这一份换掉
+        return spillToolResult({ id: tc.id, name: tc.name, content: String(r.content), isError: r.isError }, tc.input);
       };
 
       // 只读工具（搜索/抓网页/读文件）并发跑：深度研究一口气抓五个链接，串行是五次网络等待
@@ -2663,6 +3059,7 @@ function modePrompt(mode) {
         throw e;
       }
       history.push({ role: "tool", results: toolResults });
+      if (truncAsk) history.push({ role: "user", content: truncAsk }); // 这一批里最后那个调用被截断没执行，让它拆小重发
       filesOut.push();
 
       // 循环检测的提醒紧跟在工具结果后面注入，模型下一步就能看到；同时在界面明说，别让用户干瞪着它转圈
@@ -2731,8 +3128,9 @@ function modePrompt(mode) {
       // 撞上限时，finalText 往往是半句过程叙述（"我先看一下这个文件"），直接抛给用户等于没有交代。
       // 再花一次调用让它把话说完：做到哪、有什么、还差什么。手动停止的不做——用户喊停就是不想再花钱。
       // 手动停止不花钱；模型响应超时也跳过——模型都挂起了，再拿它写收尾只是多等一轮超时
-      if (!(stopSignal && stopSignal.aborted) && !stopNote.startsWith("模型响应超时")) {
-        const wrapped = await wrapUp({ history, system, stopNote, emit, depth, stats, llmOverride: L, traceNode: tr });
+      // 输出截断也跳过：它刚连着两次写爆上限，再让它写一段收尾大概率还是截断，白花一次钱
+      if (!(stopSignal && stopSignal.aborted) && !stopNote.startsWith("模型响应超时") && !stopNote.startsWith(TRUNC_STOP)) {
+        const wrapped = await wrapUp({ history, system, systemStableLen, stopNote, emit, depth, stats, llmOverride: L, traceNode: tr });
         if (wrapped) finalText = wrapped;
       }
       // 「没做完」和「撞上限」得给不同的话：前者要把还差哪几项摆出来，后者才是叫用户调上限
@@ -2741,6 +3139,7 @@ function modePrompt(mode) {
         : stopNotice(stopNote);
       finalText = finalText ? `${finalText}\n\n${notice}` : notice;
     }
+    finalText = withResumeNote(finalText);
 
     const usage = {
       prompt: stats.prompt,
@@ -2781,14 +3180,17 @@ function modePrompt(mode) {
    * 白名单只有这四个，形状都是「给定输入 → 一个产物文件」的纯函数。写文件、跑脚本这些
    * 不在里面：那些要的是模型的判断，不该做成一颗界面上能直接按的按钮。
    */
-  async function runTool(name, input, { user, baseDir, taskLabel, sec, stopSignal } = {}) {
+  async function runTool(name, input, { user, baseDir, taskLabel, sec, stopSignal, signal } = {}) {
     if (!DIRECT_TOOLS.includes(String(name || ""))) {
       throw Object.assign(new Error(`「${name}」不支持直调。能直接跑的只有：${DIRECT_TOOLS.join("、")}`), { status: 400 });
     }
     // 不给 deadline：它在 executeTool 里只用来压缩审批的等待时间，而这四个工具一个闸门都不过。
     // 真正的超时是工具自己那份（生图/配音最少给到 5 分钟），拿一个更短的期限去卡它只会误伤。
+    // signal 是服务端按这一次请求给的（用户在画布上点停止 / 连接断了），stopSignal 是所属任务的；
+    // 两路哪路先断都算停，合并在 tools.js 的 withStop 里做
     return await executeTool(String(name), input || {}, execOpts({
       stopSignal,
+      signal,
       taskLabel: taskLabel || "直调工具",
       user,
       baseDir,
@@ -2807,7 +3209,7 @@ const PARALLEL_MAX = 3;
  *
  * 跟只读工具分成两类而不是并进一类，是因为这两类的约束正好相反：
  *   · 只读工具便宜、快、失败了重来一次也不心疼，瓶颈只是网络往返；
- *   · 生成类每一条都要钱（视频按条计费），慢的以分钟计（tools.js 里视频轮询上限 10 分钟），
+ *   · 生成类每一条都要钱（视频按条计费），慢的以分钟计（src/tools/media.js 里视频轮询上限 10 分钟），
  *     而且**会写文件**。
  * 所以两类既不能混进同一段（只读段里混进写文件的，会打乱「先写再读」的先后依赖），
  * 并发上限也得各给各的。
@@ -3179,4 +3581,4 @@ function makeOwnership() {
   return { claimBaseDir, inForeignDir, mine, _dirOwners: dirOwners, _fileClaims: fileClaims };
 }
 
-module.exports = { createAgentRuntime, splitParallelRuns, toolHeadline, resultOutcome, missingDeliverables, unseenVisualClaims, unfinishedMilestones, UNFINISHED_RE, trimHistory, historyChars, collectSources, mapPool, PARALLEL_MAX, GEN_TOOLS, DIRECT_TOOLS, GEN_PARALLEL_MAX, makeOwnership, makeFilesEmitter, deadLoop, findCycle, pausedMediaBlock, reopenedMediaBlock, stopNotice, DEAD_LOOP_LIMITS };
+module.exports = { createAgentRuntime, contextBudgetChars, spillToolResult, retryField, SPILL_OVER, SPILL_KEEP, splitParallelRuns, toolHeadline, resultOutcome, missingDeliverables, unseenVisualClaims, unfinishedMilestones, UNFINISHED_RE, trimHistory, historyChars, collectSources, mapPool, PARALLEL_MAX, GEN_TOOLS, DIRECT_TOOLS, GEN_PARALLEL_MAX, makeOwnership, makeFilesEmitter, deadLoop, findCycle, pausedMediaBlock, reopenedMediaBlock, stopNotice, DEAD_LOOP_LIMITS, TRUNC_STOP, currentAsk, normalizeEntry, normalizeHistory, closeDanglingCalls, resumeNotice, INTERRUPTED_RESULT, REDO_SAFE_TOOLS };

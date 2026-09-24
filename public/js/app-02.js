@@ -1022,7 +1022,7 @@ function renderHistory() {
   const empty = histQuery.trim()
     ? (histErr ? esc(histErr) : `没有名字里带「${esc(histQuery.trim())}」的任务——正文还在找`)
     : (activeLane === "cli"
-      ? "这条线还空着。在终端里跑 <code>openworkbuddy 你的活儿</code>，它就会出现在这儿——手机上也看得见。"
+      ? "还没有终端任务。在终端跑 <code>openworkbuddy 你的活儿</code> 就会出现在这里。"
       : (projectsLocked ? "这条线上还没有任务" : "该项目在这条线上还没有任务"));
   document.getElementById("history").innerHTML = head + rows.join("")
     || `<div class="hist-empty">${empty}</div>`;
@@ -1137,7 +1137,7 @@ async function openSession(id, opts) {
   try {
     for (const entry of transcript) {
       if (entry.type === "user") {
-        ui = createTurnUI(entry.text, entry.mode);
+        ui = createTurnUI(entry.text, entry.mode, undefined, entry.shown);
         未收尾 = ui;
       } else if (entry.type === "assistant" && ui) {
         for (const ev of entry.events || []) ui.handleEvent(ev);
@@ -1214,7 +1214,7 @@ function renderProjects() {
   box.querySelectorAll(".proj-item").forEach(el => el.onclick = async (e) => {
     const name = el.dataset.name;
     if (e.target.closest(".del")) {
-      if (!(await askConfirm({ title: `把项目「${name}」从列表移除？`, hint: "只是从这个列表里拿掉，硬盘上的目录和文件一个都不动。", ok: "移除" }))) return;
+      if (!(await askConfirm({ title: `把项目「${name}」从列表移除？`, hint: "只从列表移除，不删硬盘上的文件。", ok: "移除" }))) return;
       await fetch("/api/projects/" + encodeURIComponent(name), { method: "DELETE" });
       refreshProjects().then(refreshSettingsCache);
       return;
@@ -1245,14 +1245,16 @@ refreshProjects();
 
 // ================= 发送（运行中按钮变「停止」） =================
 // ================= 并行任务：运行态/排队按会话隔离，不同对话互不阻塞 =================
+// 每条都带上「@ / 能用」：闲着时的提示语是用户唯一会看的说明书，以前只有首屏 HTML 里写了，
+// 一切模式就被这张表盖掉，用户根本不知道 @ 能引文件、/ 能调技能
 const MODE_PLACEHOLDER = {
-  ask: "问我任何问题（不会修改文件）…",
-  goal: "描述你的目标，我拆成验收标准，没达成自动接着跑…",
-  plan: "描述任务，我先给你出执行计划…",
-  craft: "今天帮你做些什么？可以让我处理数据、写报告、做 PPT、联网调研…",
+  ask: "问我任何问题（不改文件）。@ 引用文件，/ 调用技能与指令",
+  goal: "描述目标，没达成我自动接着跑。@ 引用文件，/ 调用技能与指令",
+  plan: "描述任务，我先出执行计划。@ 引用文件，/ 调用技能与指令",
+  craft: "今天帮你做些什么？@ 引用文件，/ 调用技能与指令",
 };
 const BUSY_PLACEHOLDER = "想补一句或改方向？直接打字，按 Enter 就插进来，我做完这一步就看";
-const QUEUE_PLACEHOLDER = "打字按 Enter 排进队尾，不打断现在这件事——想立刻插进去，把上面的开关拨到「插队」";
+const QUEUE_PLACEHOLDER = "Enter 排到队尾；要立刻插进去，切到「插队」";
 const CLI_PLACEHOLDER = "这趟是在终端里跑的。打字按 Enter 能插一句给它；想让它停，回终端按 Ctrl+C";
 /** 输入框的提示语跟着状态走：任务在跑时告诉用户「打字 + Enter 就能插话」，闲着时按模式提示 */
 function syncPlaceholder() {
@@ -1302,10 +1304,10 @@ function renderQueueBar() {
   const sw = curBusy() ? `<span class="qb-sw" role="radiogroup" aria-label="任务在跑时，我发的消息怎么算">
       <button type="button" class="qb-o${busySendMode === "interject" ? " is-on" : ""}" data-m="interject"
         role="radio" aria-checked="${busySendMode === "interject"}"
-        title="立刻把这句注入当前任务——适合「等等，标题用蓝色」这种就地纠偏">${ic("zap")}插队</button>
+        title="立刻插入当前任务，用于就地纠偏">${ic("zap")}插队</button>
       <button type="button" class="qb-o${busySendMode === "queue" ? " is-on" : ""}" data-m="queue"
         role="radio" aria-checked="${busySendMode === "queue"}"
-        title="不打断现在这件事，等它做完再按顺序开始——适合「顺便再做个 B」这种新活儿">${ic("hourglass")}排队</button>
+        title="等当前任务做完再按顺序开始">${ic("hourglass")}排队</button>
     </span>` : "";
   bar.innerHTML =
     q.map((m, i) => `<span class="q-chip" title="${esc(m.text)}"><span class="qt">${ic("hourglass")}${esc(m.text.slice(0, 30))}</span><span class="qx" data-i="${i}" title="取消这条">${ic("x", "i-sm")}</span></span>`).join("") +
@@ -1429,7 +1431,7 @@ async function send() {
 const sessionListed = () => !!sessionId && sessions.some((s) => s.id === sessionId);
 
 // regen=true 表示「重新生成」：服务端回滚最后一轮再重跑同一条消息
-async function doSend(text, mode, regen) {
+async function doSend(text, mode, regen, shown) {
   if (curBusy()) return;
   closeAssistView();
   if (!sessionListed()) {
@@ -1440,7 +1442,7 @@ async function doSend(text, mode, regen) {
     document.getElementById("session-title").textContent = shortTitle;
     if (pendingModel) { const pm = pendingModel; pendingModel = undefined; await setSessionModel(pm); }
   }
-  await runTurn(sessionId, text, mode, regen);
+  await runTurn(sessionId, text, mode, regen, shown);
 }
 
 // 真正执行一轮任务：绑定 sid 而不是全局 sessionId——用户切走后它继续在后台跑
@@ -1504,7 +1506,7 @@ async function keepAttached(sid, ui, rc, sawDone, netErr) {
       await new Promise((r) => setTimeout(r, 1500));
     }
   }
-  if (netErr) ui.handleEvent({ type: "error", message: "连接中断：" + netErr.message + "。这一趟可能还在后台跑——刷新页面就会接回来，别急着点重新生成（那会让同一件事跑两遍）" });
+  if (netErr) ui.handleEvent({ type: "error", message: "连接中断：" + netErr.message + "。任务可能仍在后台运行，刷新即可接回；别点重新生成，会重复执行" });
 }
 
 /**
@@ -1522,24 +1524,24 @@ async function probeRunning(tries = 4) {
   return null;
 }
 
-/** 一轮任务收尾（正常结束/出错/被停止都走这里） */
-function endRun(sid, ui) {
+/** 一轮任务收尾（正常结束/出错/被停止都走这里）。opts.quiet：发起的那一页自己已经报过「完成」了，别再弹 toast */
+function endRun(sid, ui, opts) {
   ui.finish();
   runningSessions.delete(sid);
   updateSendUI();
-  if (!(sessionQueues.get(sid) || []).length) notifyRunDone(sid, ui); // 还有排队消息就不算完
+  if (!(sessionQueues.get(sid) || []).length) notifyRunDone(sid, ui, opts); // 还有排队消息就不算完
   if (sid === sessionId) inputEl.focus();
   drainQueue(sid); // 本会话运行期间排队的消息按序自动执行
 }
 
 /** 并行任务多了得知道哪个跑完了：后台会话完成弹 toast；窗口失焦时发系统通知 */
-function notifyRunDone(sid, ui) {
+function notifyRunDone(sid, ui, opts) {
   const s = sessions.find((x) => x.id === sid);
   const name = stripSceneTag(s && s.title) || "任务";
   // 长跑完成通知带上战报：用时/步数/产出件数，长任务离开视线也知道干了多少活
   const st = ui && ui.stats ? ui.stats() : null;
   const detail = st ? `用时 ${st.dur}${st.steps ? ` · ${st.steps} 步` : ""}${st.rounds ? ` · 续跑 ${st.rounds} 轮` : ""}${st.outs ? ` · 产出 ${st.outs} 件` : ""}` : "";
-  if (sid !== sessionId) toast(`「${name}」已完成${detail ? `（${detail}）` : ""}，点侧栏查看`, "circle-check");
+  if (sid !== sessionId && !(opts && opts.quiet)) toast(`「${name}」已完成${detail ? `（${detail}）` : ""}，点侧栏查看`, "circle-check");
   if (document.hidden) bumpDoneWhileAway(name);
   if (document.hidden && "Notification" in window) {
     try {
@@ -1592,7 +1594,7 @@ async function reattachRunning() {
     const lastUser = t.map((e) => e.type).lastIndexOf("user");
     if (lastUser < 0) continue;
     const evs = (t[lastUser + 1] && t[lastUser + 1].events) || [];
-    const ui = createTurnUI(t[lastUser].text, t[lastUser].mode, sid);
+    const ui = createTurnUI(t[lastUser].text, t[lastUser].mode, sid, t[lastUser].shown);
     const rc = makeRecCounter();
     isReplaying = true;
     try { for (const ev of evs) { rc.feed(ev); ui.handleEvent(ev); } } finally { isReplaying = false; }
@@ -1610,9 +1612,9 @@ async function reattachRunning() {
   }
 }
 
-async function runTurn(sid, text, mode, regen) {
+async function runTurn(sid, text, mode, regen, shown) {
   if (runningSessions.has(sid)) { qOf(sid).push({ text, mode }); if (sid === sessionId) renderQueueBar(); return; }
-  const ui = createTurnUI(text, mode, sid);
+  const ui = createTurnUI(text, mode, sid, shown);
   runningSessions.set(sid, { ui });
   updateSendUI();
   if (sid === sessionId) scrollBottom(true);
@@ -1623,7 +1625,7 @@ async function runTurn(sid, text, mode, regen) {
     const resp = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId: sid, message: text, mode, regen: !!regen, lane: laneOfSession(sessions.find(x => x.id === sid)), lang: typeof I18N !== "undefined" ? I18N.getLang() : "zh" }),
+      body: JSON.stringify({ sessionId: sid, message: text, ...(shown ? { shown } : {}), mode, regen: !!regen, lane: laneOfSession(sessions.find(x => x.id === sid)), lang: typeof I18N !== "undefined" ? I18N.getLang() : "zh" }),
     });
     if (!resp.ok) {
       const d = await resp.json().catch(() => ({}));
@@ -1681,36 +1683,50 @@ async function openModal(kind, subTab) {
     await renderAccount();
   } else if (kind === "settings") {
     mTitle.textContent = "设置";
-    renderSettings(subTab || "models");
+    await renderSettings(subTab || "models"); // 等面板画完再返回：checkUpdate 要接着点关于页里的按钮
   }
 }
 
 // ================= 快捷键引擎 =================
+// 默认键里的 Mod = 这台机器的主修饰键：mac 上是 ⌘（metaKey），Windows/Linux 上是 Ctrl（ctrlKey）。
+// 以前默认键写死 Meta+X，而 Windows/Linux 上的 Meta 是 Win 键，默认快捷键在那边全部按不出来。
+// 用户自己录的键一律存成具体的 Meta/Ctrl（accelFromEvent 只产出这两个），老存档里的 Meta+X 原样认。
+// 这两个常量别挪进下面 SHORTCUT_DEFS 的方括号里：e2e 的 auditShortcuts 把那张表单独切出来放 vm 里跑，那儿没有 navigator
+const SC_PLATFORM = (() => {
+  const nav = typeof navigator !== "undefined" ? navigator : {};
+  return String((nav.userAgentData && nav.userAgentData.platform) || nav.platform || "");
+})();
+const SC_MAC = /mac|iphone|ipad|ipod/i.test(SC_PLATFORM);
 // [id, 名称, 默认键, 固定?, 系统级?]；用户改绑存 config.shortcuts（只存改过的项）
+// 默认键写成「mac 那份|其他平台那份」时按平台二选一：只有全屏那条这么写——
+// mac 惯例 ⌃⌘F 改成 Ctrl+Mod+F 的话，到 Windows 上会塌成 Ctrl+F，跟对话内搜索撞车；那边的惯例是 F11
 const SHORTCUT_DEFS = [
-  ["open-settings", "打开设置", "Meta+Comma"],
-  ["chat-search", "对话内搜索", "Meta+F"],
+  ["open-settings", "打开设置", "Mod+Comma"],
+  ["chat-search", "对话内搜索", "Mod+F"],
   ["send", "发送消息", "Enter", true],
   ["newline", "输入时换行", "Shift+Enter", true],
-  ["new-chat", "新建对话", "Meta+N"],
+  ["new-chat", "新建对话", "Mod+N"],
   ["stop", "让我停下 / 关闭弹层", "Escape"],
-  ["prev-task", "上一个任务", "Meta+BracketLeft"],
-  ["next-task", "下一个任务", "Meta+BracketRight"],
-  ["toggle-sidebar", "切换左侧栏", "Meta+B"],
-  ["toggle-files", "切换右侧产物面板", "Shift+Meta+B"],
-  ["fullscreen", "进入/退出全屏", "Ctrl+Meta+F"],
+  ["prev-task", "上一个任务", "Mod+BracketLeft"],
+  ["next-task", "下一个任务", "Mod+BracketRight"],
+  ["toggle-sidebar", "切换左侧栏", "Mod+B"],
+  ["toggle-files", "切换右侧产物面板", "Shift+Mod+B"],
+  ["fullscreen", "进入/退出全屏", "Ctrl+Meta+F|F11"],
   ["toggle-window", "唤起/隐藏主窗口", "Shift+Alt+W", false, true],
-  ["open-skills", "打开技能广场", "Shift+Meta+K"],
-  ["open-experts", "打开专家团", "Shift+Meta+E"],
-  ["open-prompts", "打开参考模板库", "Shift+Meta+P"],
-  ["open-library", "打开资料库", "Shift+Meta+L"],
-  ["open-sched", "打开定时任务", "Shift+Meta+T"],
-  ["open-assistant", "打开本地助理", "Shift+Meta+A"],
+  ["open-skills", "打开技能广场", "Shift+Mod+K"],
+  ["open-experts", "打开专家团", "Shift+Mod+E"],
+  ["open-prompts", "打开参考模板库", "Shift+Mod+P"],
+  ["open-library", "打开资料库", "Shift+Mod+L"],
+  ["open-sched", "打开定时任务", "Shift+Mod+T"],
+  ["open-assistant", "打开本地助理", "Shift+Mod+A"],
 ];
+/** 归一成「Ctrl+Alt+Shift+Meta+键」：Mod 和「mac|其他」在这里就按平台落成具体的键，比对、查冲突、存盘都只见具体的 */
 function canonAccel(a) {
+  let s = String(a || "");
+  if (s.includes("|")) s = s.split("|")[SC_MAC ? 0 : 1] || "";
   const mods = [], keys = [];
-  for (const p of String(a || "").split("+").map(x => x.trim()).filter(Boolean)) {
-    const m = { meta: "Meta", cmd: "Meta", command: "Meta", ctrl: "Ctrl", control: "Ctrl", alt: "Alt", option: "Alt", shift: "Shift" }[p.toLowerCase()];
+  for (const p of s.split("+").map(x => x.trim()).filter(Boolean)) {
+    const m = { mod: SC_MAC ? "Meta" : "Ctrl", meta: "Meta", cmd: "Meta", command: "Meta", ctrl: "Ctrl", control: "Ctrl", alt: "Alt", option: "Alt", shift: "Shift" }[p.toLowerCase()];
     if (m) { if (!mods.includes(m)) mods.push(m); } else keys.push(p);
   }
   const order = { Ctrl: 0, Alt: 1, Shift: 2, Meta: 3 };
@@ -1729,11 +1745,17 @@ function accelFromEvent(e) {
 }
 function accelDisplay(a) {
   const KEY = { Comma: ",", Period: ".", BracketLeft: "[", BracketRight: "]", Escape: "Esc", Enter: "⏎", Space: "空格", Minus: "-", Equal: "=", Slash: "/", Backslash: "\\", Semicolon: ";", Quote: "'", Backquote: "`" };
-  const MOD = { Meta: "⌘", Ctrl: "⌃", Alt: "⌥", Shift: "⇧" };
   const parts = canonAccel(a).split("+");
-  // mac 习惯顺序 ⌃⌥⇧⌘
-  const mods = ["Ctrl", "Alt", "Shift", "Meta"].filter(m => parts.includes(m)).map(m => MOD[m]);
-  return mods.join("") + parts.filter(p => !MOD[p]).map(p => KEY[p] || p).join("");
+  if (SC_MAC) {
+    const MOD = { Meta: "⌘", Ctrl: "⌃", Alt: "⌥", Shift: "⇧" };
+    // mac 习惯顺序 ⌃⌥⇧⌘
+    const mods = ["Ctrl", "Alt", "Shift", "Meta"].filter(m => parts.includes(m)).map(m => MOD[m]);
+    return mods.join("") + parts.filter(p => !MOD[p]).map(p => KEY[p] || p).join("");
+  }
+  // Windows/Linux 不认 ⌘⌃ 这些符号，写成文字用 + 连（Ctrl+Shift+B）；Meta 在这边是 Win 键（Linux 叫 Super）
+  const MOD = { Meta: /win/i.test(SC_PLATFORM) ? "Win" : "Super", Ctrl: "Ctrl", Alt: "Alt", Shift: "Shift" };
+  const mods = ["Meta", "Ctrl", "Alt", "Shift"].filter(m => parts.includes(m)).map(m => MOD[m]);
+  return mods.concat(parts.filter(p => !MOD[p]).map(p => p === "Enter" ? "Enter" : (KEY[p] || p))).join("+");
 }
 let toastTimer = null;
 // 仓库里的调用一律走第二个参数 toast(文字, "circle-x") 指定图标。
@@ -1932,7 +1954,7 @@ async function pollApprovals() {
       pollApprovals();
       return;
     }
-    if (allow && r.downgraded) toast(`已允许，本次运行期间不再问「${r.ruleKey}」。写进永久放行名单要平台管理员来做`);
+    if (allow && r.downgraded) toast(`已允许，本次运行期间不再问「${r.ruleKey}」。永久放行需平台管理员设置`);
     else if (allow && r.scope === "always" && r.ruleKey) toast(`已永久放行「${r.ruleKey}」（可在 设置 → 安全中心 的放行名单里删掉）`);
     else if (allow && r.scope === "session" && r.ruleKey) toast(`本次运行期间不再问「${r.ruleKey}」`);
     pollApprovals();
@@ -2159,7 +2181,7 @@ function renderProfile() {
     <div class="card-item" style="margin-top:14px">
       <div class="t">登录名</div>
       <div class="d" style="margin-bottom:8px">登录时输的那个名字，现在是 <b>${esc(u.username)}</b>。
-        改它等于换身份，所以要拿密码确认一次；历史会话、用量流水、登录状态都会一起搬过去，不用重新登录。</div>
+        需要密码确认；历史会话和用量都会保留，不用重新登录。</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <input id="pf-uname" maxlength="24" placeholder="新的登录名" value="${esc(u.username)}" style="max-width:180px">
         <input id="pf-upass" type="password" placeholder="当前密码" style="max-width:180px">
@@ -2479,7 +2501,7 @@ async function saveInlineFile(name, content, btn, saveAs) {
   if (saveAs && r && r.no_dialog) {
     browserDownload(name, content);
     flashBtn(btn, "已下载");
-    return toast("网页端没有系统保存框，已交给浏览器下载；想换地方去浏览器的下载设置里改");
+    return toast("已交给浏览器下载");
   }
   if (!r?.ok) return toast("保存失败：" + (r?.error || why || "没说原因"), "circle-x");
   if (r.files) renderFiles(r.files);
@@ -2560,12 +2582,33 @@ function openFigZoom(fig) {
   ov.addEventListener("pointerup", () => { drag = null; ov.classList.remove("dragging"); });
 }
 
+/**
+ * 头像菜单「检查更新」。以前走 POST /api/app/update-check，那条是拿 git 数提交的：
+ * 装包用户没有 .git，永远报不出新版。现在跟关于页同一条路——GET /api/update?force=1（查 GitHub Releases），
+ * 结果交给关于页的 drawUpdate 画：版本号、有没有新版、这种装法怎么升、去下载页，一处都不少。
+ * drawUpdate / loadUpdate 是 renderAboutPane 里的闭包，外面摸不着，所以这里打开关于页、按它自己那颗「检查更新」
+ * （#ab-up-btn → loadUpdate(true) → /api/update?force=1 → drawUpdate）。
+ * 更干净的做法是 renderAboutPane 自己收一个 force 选项，那得改 app-06，留给它的负责人。
+ */
 async function checkUpdate() {
   toast("正在检查更新…");
-  const r = await fetch("/api/app/update-check", { method: "POST" }).then(x => x.json()).catch(() => null);
-  if (!r) return toast("检查更新失败：接口无响应");
-  if (!r.ok) return toast(`当前版本 v${r.version || "?"} · ${r.reason}`);
-  toast(r.behind > 0 ? `发现新版本：本地落后 ${r.behind} 个提交，在项目目录执行 git pull 后重启即可` : `已是最新版本（v${r.version}）`);
+  try { await openModal("settings", "about"); } catch {}
+  const btn = document.getElementById("ab-up-btn");
+  if (!btn) return toast("设置页没打开，这次没查更新", "circle-x");
+  // 关于页一打开就先按缓存问一次（不带 force）。等那一问落了地再按按钮：两问并发的话，缓存那份先回来，
+  // 顺手把「查询中…」抹掉——强查还在路上，用户看到的却是缓存结论，以为已经查完了。
+  // 落地 = 版本号那格变了（画出来了），或者消息那格出了字（报错了）。最多等 3 秒，缓存命中正常几毫秒就回
+  const ver = document.getElementById("ab-ver"), msg = document.getElementById("ab-up-msg");
+  if (ver && msg) {
+    const v0 = ver.textContent, landed = () => ver.textContent !== v0 || !!msg.textContent;
+    if (!landed()) await new Promise((res) => {
+      const mo = new MutationObserver(() => { if (landed()) fin(); });
+      const timer = setTimeout(fin, 3000);
+      function fin() { mo.disconnect(); clearTimeout(timer); res(); }
+      mo.observe(btn.parentNode, { childList: true, characterData: true, subtree: true });
+    });
+  }
+  btn.click();
 }
 const SRC_TXT = { web: "网页", cli: "CLI", im: "IM", schedule: "定时" };
 
@@ -2739,7 +2782,7 @@ const PLUS_RENDER = {
       `<div class="pm-list">${list.length
         ? list.slice(0, 60).map((s) => plusItem(s.plugin ? "puzzle" : "wrench", s.name,
             s.description || "（这份技能没写说明）", { val: s.name })).join("")
-        : plusEmpty(q ? `没有匹配「${plusSkillQ}」的技能` : "还没有技能。技能就是一份写给 agent 看的操作说明书，装一个或自己写一份。")}</div>` +
+        : plusEmpty(q ? `没有匹配「${plusSkillQ}」的技能` : "还没有技能。装一个或自己写一份。")}</div>` +
       plusFoot(plusItem("settings", "管理技能", "从 GitHub 装、自己写、改正文", { act: "manage" }));
     const box = sub.querySelector("#pm-skill-q");
     if (box) {

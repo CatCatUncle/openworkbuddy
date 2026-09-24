@@ -458,7 +458,13 @@ console.log("\n【6】require 得到的文件，得真的在仓库里");
   // 而这个文件在本机工作区里好端端地躺着。
   // （这一节写下来的当天就抳了一个：account.js 要 require("./usage-store")，
   //   而 usage-store.js 当时还是 ?? 未跟踪。）
-  const tracked = new Set(execFileSync("git", ["ls-files"], { cwd: ROOT, encoding: "utf8" }).trim().split("\n"));
+  // 工作区里已经删掉、还没提交的文件（git ls-files --deleted）不算：它下一个提交就没了，
+  // 读它会 ENOENT；谁还 require 它，等于 require 一个新克隆里没有的文件，照样得报。
+  // 用 -z 按 \0 切：不带 -z 时 git 把中文文件名转义成 "skills/…/\345\210\206…" 这种带引号的八进制，
+  // require("./…/分镜表.schema.json") 明明跟踪着也对不上，报成「盘上有但没进 git」
+  const lsZ = (args) => execFileSync("git", ["ls-files", "-z", ...args], { cwd: ROOT, encoding: "utf8" }).split("\0").filter(Boolean);
+  const deleted = new Set(lsZ(["--deleted"]));
+  const tracked = new Set(lsZ([]).filter((f) => !deleted.has(f)));
   if (!tracked.has("account.js")) throw new Error("git ls-files 没拿到东西（连 account.js 都不在里头），下面算出来的不作数");
 
   // 能解成哪些真文件。没后缀、.js、目录里的 index.js、.json 都算。
@@ -607,9 +613,15 @@ console.log("\n【8】仓库里不许有作者本人的痕迹，也不许有真 
   take("机器名", os.hostname());
 
   /** 一段文字里有没有出现「这台机器的身份」。判据抽出来，下面拿编的数据反向验 */
-  const meHits = (text, who) => who.filter((m) => text.toLowerCase().includes(m.v.toLowerCase()));
+  // 锁文件里的 integrity 是 base64 随机串，五六个字母的名字不分大小写地撞进去是迟早的事
+  // （装 eslint 带进来的一个传递依赖，哈希里就恰好拼出了开发机的用户名）。哈希不是谁写的字，先剥掉再找人
+  const SRI_RE = /\bsha(?:1|256|384|512)-[A-Za-z0-9+/]{20,}={0,2}/g;
+  const meHits = (text, who) => {
+    const t = text.replace(SRI_RE, "").toLowerCase();
+    return who.filter((m) => t.includes(m.v.toLowerCase()));
+  };
 
-  // 这六个是仓库里现有的假 Key，逐字钉死。钉死而不是「test/ 下的一律放过」：
+  // 下面这几个是仓库里现有的假 Key，逐字钉死。钉死而不是「test/ 下的一律放过」：
   // 放过一整个目录，哪天有人把真 Key 粘进某个测试里就再也没人拦得住。
   // 逐字钉死的代价是改动任何一个假 Key 都会红一次——那正是想要的：
   // 凡是 Key 形状的字面量有变动，就该有人当面看一眼。
@@ -620,6 +632,7 @@ console.log("\n【8】仓库里不许有作者本人的痕迹，也不许有真 
     "sk-abcdefghijklmnopqrstuvwxyz1234",
     "sk-abcdefghijklmnopqrstuvwxyz123456",
     "sk-this-key-must-never-reach-the-index-9527",      // gen-cache：缓存键里不许带 Key
+    "sk-or-fake-not-a-real-key",                        // e2e：只配了 OpenRouter 聊天渠道，判断模型不该自己开
   ]);
   const KEY_RE = new RegExp([
     "sk-ant-[A-Za-z0-9_-]{20,}", "sk-[A-Za-z0-9_-]{20,}", "ghp_[A-Za-z0-9]{30,}",
@@ -664,12 +677,15 @@ console.log("\n【8】仓库里不许有作者本人的痕迹，也不许有真 
   ok(meHits("路径是 /Users/zqxjw/Library/x", FAKE_ME).length === 1, "反向对照：家目录里的用户名抓得到");
   ok(meHits("路径是 /Users/ZQXJW/Library/x", FAKE_ME).length === 1, "反向对照：大小写不同也算（macOS 路径不分大小写）");
   ok(meHits("路径是 /Users/xxx/Library/x", FAKE_ME).length === 0, "反向对照：占位名不误报（不然改完还是红）");
+  const sri = '"integrity": "sha512-Q9x' + 'ZqXjW' + 'Tt3kLm0pR4sV8wY2bN6cD1eF5gH7iJ=="';
+  ok(meHits(sri, FAKE_ME).length === 0 && meHits(sri + "\n/Users/zqxjw/x", FAKE_ME).length === 1,
+    "反向对照：integrity 哈希里碰巧拼出来的不算，哈希旁边真写着的照样抓");
   // 拼出来再递进去：这个文件自己被上面那轮扫描扫到，写成一整串的话它当场把自己判红
   ok(keyHits("const k = \"" + "sk-ant-" + "api03-Q7vK2mBz9LpR4tYw8XnC1sEdHgJfUiOa" + "\";").length === 1,
     "反向对照：没见过的 Key 形状抓得到");
   ok(keyHits("这段话里有 sketch、skill、sk-8 这些词，都不是 Key").length === 0,
     "反向对照：长得像但不够长的普通词不误报");
-  ok(keyHits([...FAKE_KEYS].join("\n")).length === 0, "反向对照：名单里那六个假 Key 全部放行");
+  ok(keyHits([...FAKE_KEYS].join("\n")).length === 0, `反向对照：名单里那 ${FAKE_KEYS.size} 个假 Key 全部放行`);
 }
 
 console.log("\n【9】README 第一屏那排徽章，数字得是真的");
@@ -702,6 +718,101 @@ console.log("\n【9】README 第一屏那排徽章，数字得是真的");
     S.COUNTED.map((k) => `${k}=${now[k]}`).join(" "));
   ok(String(now.version) === String(require("../package.json").version),
     "compute() 读的版本号就是 package.json 那一个");
+}
+
+console.log("\n【10】public/js 下每个脚本都得有人加载：页面里的 <script>，或者 loadScriptOnce");
+{
+  // 由来：app-07-drama.js 在 public/js 下躺过一阵，没有任何页面加载它——测试照样读它、照样绿，
+  // 用户那边一行都跑不到。第 7 批要把画布拆成 app-07-canvas-*.js，拆出来的片忘了挂上
+  // 也是这个样子：测试经 test/lib/src.js 拼起来全绿，装好的应用里那段代码根本不存在。
+  //
+  // 「谁加载了谁」跟 src("canvas") 用同一张表（test/lib/src.js 的 publicScriptRefs），
+  // 不在这儿另写一份解析：两份迟早分叉，一边说有人加载、一边拼不进来。
+  const os = require("os");
+  const { publicScriptRefs } = require("./lib/src");
+  const jsUnder = (root, rel) => {
+    let ents;
+    try { ents = fs.readdirSync(path.join(root, rel), { withFileTypes: true }); } catch { return []; }
+    return ents.flatMap((e) => (e.isDirectory() ? jsUnder(root, rel + "/" + e.name)
+      : e.isFile() && e.name.endsWith(".js") ? [rel + "/" + e.name] : [])).sort();
+  };
+  /** public/js 下（含子目录）没有任何页面、任何 loadScriptOnce 拉进来的脚本 */
+  const unreached = (root) => {
+    const loaded = new Set(publicScriptRefs(root).map((r) => r.file));
+    return jsUnder(root, "public/js").filter((f) => !loaded.has(f));
+  };
+
+  const all = jsUnder(ROOT, "public/js");
+  const refs = publicScriptRefs(ROOT);
+  ok(all.length >= 8 && refs.length >= 8, `public/js 下 ${all.length} 个脚本，页面一共拉进来 ${refs.length} 个`,
+    "数字小得不像话，多半是扫描没解对，下一条等于没测");
+  const dead = unreached(ROOT);
+  ok(dead.length === 0, "public/js 下没有谁都不加载的脚本",
+    dead.join("、") + "\n      要么在页面里加 <script src>，要么在用到的地方 loadScriptOnce(\"js/…\")；真不要了就删掉");
+
+  // 反向对照：编一个小站点，该抓的抓到、该放的放过。没这几条的话，把 unreached 写成 `() => []` 也全绿
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "owb-reach-"));
+  try {
+    const put = (rel, text) => {
+      fs.mkdirSync(path.dirname(path.join(tmp, rel)), { recursive: true });
+      fs.writeFileSync(path.join(tmp, rel), text);
+    };
+    put("public/index.html", '<script src="js/app-01.js"></script>\n'
+      + '<!-- <script src="js/old.js"></script> -->\n<script defer src="/js/app-02.js?v=3"></script>\n');
+    put("public/js/app-01.js", 'function go() { return loadScriptOnce("js/app-07-canvas.js"); }\n'
+      + '// loadScriptOnce("js/commented.js");\n');
+    put("public/js/app-02.js", "");
+    put("public/js/app-07-canvas.js", 'loadScriptOnce("js/sub/deep.js");\n');
+    for (const f of ["sub/deep.js", "app-07-drama.js", "old.js", "commented.js"]) put("public/js/" + f, "");
+    const got = unreached(tmp);
+    ok(got.includes("public/js/app-07-drama.js"), "反向对照：谁都不加载的 app-07-drama.js 抓得到", got.join("、"));
+    ok(got.includes("public/js/old.js") && got.includes("public/js/commented.js"),
+      "反向对照：html 注释里的 <script>、// 注释掉的 loadScriptOnce 都不算有人加载", got.join("、"));
+    ok(got.length === 3, "反向对照：<script src>（含 /js/…?v= 写法）、loadScriptOnce、懒加载的脚本再懒加载的，都算有人加载",
+      got.join("、"));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+console.log("\n【11】test/lib/src.js：没拆时逐字等于原文件，拆了按规矩拼");
+{
+  // 几十个测试都经它读 server / tools / canvas。它自己不是套件，没人测的话，第 7 批拆完它漏拼一个文件，
+  // 那些「源码里不许再有某句话」的反向断言会静悄悄全绿——所以在编的小仓库里把拼法钉死
+  const os = require("os");
+  const { src, files } = require("./lib/src");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "owb-src-"));
+  try {
+    const put = (rel, text) => {
+      fs.mkdirSync(path.dirname(path.join(tmp, rel)), { recursive: true });
+      fs.writeFileSync(path.join(tmp, rel), text);
+    };
+    put("server.js", "S\n");
+    put("tools.js", "T");
+    put("public/index.html", '<script src="js/app-03.js"></script>\n');
+    put("public/js/app-03.js", 'loadScriptOnce("js/app-07-canvas.js");\n');
+    put("public/js/app-07-canvas.js", 'loadScriptOnce("js/app-07-canvas-z.js"); loadScriptOnce("js/app-07-canvas-a.js");');
+    ok(src("server", tmp) === "S\n" && src("tools", tmp) === "T"
+      && src("canvas", tmp) === fs.readFileSync(path.join(tmp, "public/js/app-07-canvas.js"), "utf8"),
+      "目录还没建：三组都只读主文件，逐字一样（不多一个换行）");
+
+    for (const [rel, text] of [["routes/b.js", "B"], ["routes/a/x.js", "AX"], ["lib/c.js", "C"], ["lib/note.txt", "不是 js"],
+      ["src/tools/z.js", "Z"], ["src/other.js", "不是 src/tools"], ["public/js/app-07-canvas-a.js", "PA"],
+      ["public/js/app-07-canvas-z.js", "PZ"], ["public/js/app-07-canvas-orphan.js", "PO"]]) put(rel, text);
+    const got = ["server", "tools", "canvas"].map((g) => files(g, tmp).join(","));
+    ok(got[0] === "server.js,routes/a/x.js,routes/b.js,lib/c.js" && got[1] === "tools.js,src/tools/z.js",
+      "拆了之后：主文件打头，routes/ lib/ src/tools/ 下的 .js 递归拼上，别的不拼", got.slice(0, 2).join(" | "));
+    ok(got[2] === "public/js/app-07-canvas.js,public/js/app-07-canvas-z.js,public/js/app-07-canvas-a.js,public/js/app-07-canvas-orphan.js"
+      && src("canvas", tmp).endsWith("\nPZ\nPA\nPO"),
+      "画布按加载顺序拼（不是按文件名），没人加载的片也拼在最后，测试照样看得见", got[2]);
+    let threw = 0;
+    try { src("routes", tmp); } catch { threw++; }
+    fs.rmSync(path.join(tmp, "server.js"));
+    try { src("server", tmp); } catch { threw++; }
+    ok(threw === 2, "不认识的组名、主文件读不到，都当场抛（不许拼出一段不含主文件的源码让断言空跑）");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 }
 console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
 process.exit(fail ? 1 : 0);

@@ -23,6 +23,7 @@ const fs = require("fs");
 const os = require("os");
 
 const ROOT = path.join(__dirname, "..");
+const { src } = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
 const cg = require(path.join(ROOT, "continue-gate"));
 const systemone = require(path.join(ROOT, "systemone"));
 const jev = require(path.join(ROOT, "jev"));
@@ -261,7 +262,7 @@ const out = (...answers) => ({ ok: true, answers });
     ok(/jev\.status\(config\)\.ready/.test(ag), "  └ 没配判断模型也不发请求");
     ok(/unfinishedMilestones\(progressDir\(\)\)/.test(ag), "  └ 免费那把尺子读的是 agent 自己那份进度档路径，不另算一条");
 
-    const srv = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+    const srv = src("server");
     ok(/continue_gate: !!config\.agent\.continue_gate/.test(srv), "设置接口读得出来");
     ok(/config\.agent\.continue_gate = !!b\.agent\.continue_gate/.test(srv), "  └ 也存得回去");
     ok(/judge_ready: jev\.status\(config\)\.ready/.test(srv), "  └ 界面能知道判断模型配没配（两个开关共用这一面旗子）");
@@ -285,6 +286,99 @@ const out = (...answers) => ({ ok: true, answers });
     eq(cfg.agent.continue_gate, false, "  └ 配置模板里默认关着");
     ok(typeof cfg.agent._continue_gate_说明 === "string" && cfg.agent._continue_gate_说明.length > 40,
       "  └ 模板里写清楚它是干什么的（手改配置的人只看得到这一行）");
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  console.log("\n⑦ 上游繁忙自动重试：状态事件带 retry 字段，前端才画得出倒计时");
+  // ─────────────────────────────────────────────────────────────
+  // 以前重试只有一句文字，前端要显示「3 秒后第 2/3 次重试」只能拿正则去抠。
+  // 契约（3.4 界面那边照这个读）：retry = { attempt 从 1 数, total, delayMs }；text 一个字不改，老前端照读
+  {
+    const llmMod = require(path.join(ROOT, "llm"));
+    const { retryField } = require(path.join(ROOT, "agent"));
+    const { chatWithRetry, RETRY_DELAYS } = llmMod._internals;
+    const realAsk = jev.askMetered;
+    jev.askMetered = async () => ({ ok: false, error: "测试桩：不发网络" });
+
+    // A llm.js 这一层：onStatus 的第二个参数
+    {
+      const realST = global.setTimeout;
+      const waited = [];
+      const got = [];
+      let n = 0;
+      global.setTimeout = (fn, ms, ...a) => { waited.push(ms); return realST(fn, 0, ...a); }; // 不真等 2+5 秒
+      let res;
+      try {
+        res = await chatWithRetry(async () => {
+          n++;
+          if (n <= 2) throw new Error("LLM 接口错误 503: upstream busy");
+          return { text: "好了", toolCalls: [] };
+        }, { onStatus: (text, info) => got.push({ text, info }) });
+      } finally {
+        global.setTimeout = realST;
+      }
+      eq(res && res.text, "好了", "两次 503 之后第三次成功：照常交回结果");
+      eq(got.length, 2, "  └ 每重试一次报一次");
+      eq(JSON.stringify(got.map((g) => g.info)), JSON.stringify([
+        { kind: "retry", attempt: 1, total: 3, delayMs: 2000 },
+        { kind: "retry", attempt: 2, total: 3, delayMs: 5000 },
+      ]), "★第二个参数是结构化的进度★ attempt 从 1 数，delayMs 就是这一次真要等的那么久");
+      eq(JSON.stringify(waited), JSON.stringify([2000, 5000]), "  └ 报出去的 delayMs 跟真等的一样（倒计时不许骗人）");
+      eq(got[0].info.total, RETRY_DELAYS.length, "  └ total 跟着重试表走，不是写死的 3");
+      ok(/2 秒后自动重试（第 1\/3 次）/.test(got[0].text), "  └ 第一个参数的文字没变：老前端照读", got[0].text);
+
+      // 反向对照：不可重试的错不报、不等
+      const got2 = [];
+      let threw = null;
+      try {
+        await chatWithRetry(async () => { throw new Error("LLM 接口错误 401: bad key"); }, { onStatus: (t, i) => got2.push(i) });
+      } catch (e) { threw = e; }
+      ok(threw && /401/.test(threw.message) && got2.length === 0, "  └（对照）401 不重试，也不发重试进度");
+    }
+
+    // B agent.js 这一层：原样挂在 status 事件上
+    {
+      eq(JSON.stringify(retryField({ kind: "retry", attempt: 2, total: 3, delayMs: 5000 })), JSON.stringify({ retry: { attempt: 2, total: 3, delayMs: 5000 } }),
+        "retryField：重试进度 → 事件上的 retry 字段");
+      eq(JSON.stringify(retryField(undefined)), "{}", "  └ 没给第二个参数：一个字段都不加（别的状态事件长相不变）");
+      eq(JSON.stringify(retryField({ kind: "别的" })), "{}", "  └ 不是重试的也不加");
+    }
+
+    // C 真跑一趟：真的 createLLM + 桩 fetch，上游先 503 一次再正常。会真等 2 秒（这是 RETRY_DELAYS 第一档）
+    {
+      const realFetch = global.fetch;
+      let posts = 0;
+      global.fetch = async (url) => {
+        if (!/\/chat\/completions$/.test(String(url))) throw new Error("测试里不该有别的请求：" + url);
+        posts++;
+        if (posts === 1) return new Response("upstream busy", { status: 503 });
+        return new Response(JSON.stringify({ choices: [{ message: { content: "写好了。" }, finish_reason: "stop" }], usage: { prompt_tokens: 10, completion_tokens: 4 } }),
+          { status: 200, headers: { "Content-Type": "application/json" } });
+      };
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-cgate-"));
+      const events = [];
+      try {
+        const llm = llmMod.createLLM({ models: [{ name: "桩", provider: "openai", base_url: "http://127.0.0.1:9/v1", api_key: "sk-test-offline", model: "mock-model", stream: false }] });
+        const rt = createAgentRuntime({ config: { agent: { max_steps: 3, tool_timeout_ms: 30000 } }, llm, mcpManager: new McpManager(), experts: [] });
+        const r = await tools.withWorkspace(dir, () => rt.runTask({ history: [{ role: "user", content: "写一句话" }], emit: (e) => events.push(e) }));
+        eq(posts, 2, "503 一次、重试一次成功：一共两次请求");
+        ok(/写好了/.test(r.finalText), "  └ 重试成功后照常交付", r.finalText);
+      } finally {
+        global.fetch = realFetch;
+        try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+      }
+      const st = events.filter((e) => e.type === "status");
+      const rs = st.filter((e) => e.retry);
+      ok(rs.length === 1, "★★重试时发出的状态事件带 retry★★ 前端拿它画倒计时", st.map((e) => e.text));
+      const ev = rs[0] || {};
+      eq(ev.retry && ev.retry.attempt, 1, "  └ retry.attempt = 1（从 1 数）");
+      eq(ev.retry && ev.retry.total, 3, "  └ retry.total = 3");
+      eq(ev.retry && ev.retry.delayMs, 2000, "  └ retry.delayMs = 2000");
+      ok(/上游出错，2 秒后自动重试/.test(ev.text || "") && ev.depth === 0, "  └ text 和 depth 照旧：老前端只读 text，看到的还是那句话", ev);
+      ok(st.filter((e) => !/上游出错/.test(e.text || "")).every((e) => !("retry" in e)), "  └ 别的状态事件不带 retry（界面不会把普通状态当成重试）");
+    }
+
+    jev.askMetered = realAsk;
   }
 
   finished = true;

@@ -16,12 +16,12 @@ function renderSecurityPane(pane, s) {
   pane.innerHTML = `
     <div class="card-item">
       <div class="t">${ic("key-round")} 二次验证</div>
-      <div class="d">开了之后，光有密码登不进来——还要验证器 App 上那串每 30 秒一换的 6 位数字。密码可能在别处泄漏、可能被人看着敲，而那串数字只在你手机上。</div>
+      <div class="d">开启后，登录除了密码还要验证器 App 上的 6 位动态码。</div>
       <div id="tfa-box" style="margin-top:10px;font-size:13px">读取中…</div>
     </div>
     <div class="card-item">
       <div class="t">${ic("sliders-horizontal")} 权限档位</div>
-      <div class="d">决定 AI 动手前问不问你。改文件、跑命令都按这个档来；文件黑名单在任何档位下都拦得住。${po ? "输入框下方那个盾牌下拉也能随时切。" : "<b>这台服务器上大家共用一个档位，归平台管理员设。</b>下面是当前生效的这档。"}</div>
+      <div class="d">决定 AI 改文件、跑命令前问不问你。文件黑名单任何档都生效。${po ? "输入框下方那个盾牌下拉也能随时切。" : "<b>全服务器共用一档，由平台管理员设。</b>"}</div>
       <div id="sec-modes" style="display:flex;flex-direction:column;gap:6px;margin-top:8px"></div>
       <div style="margin-top:8px;font-size: 13px;color:var(--owb-text-3)">
         本次运行期间记住的批准：<span id="sec-sess-allow">（无）</span>
@@ -30,18 +30,17 @@ function renderSecurityPane(pane, s) {
     </div>
     <div class="card-item">
       <div class="t">${ic("smartphone")} 远程访问 · 已授权设备</div>
-      <div class="d">想在手机或另一台电脑上用，<b>不用把密码敲过去</b>：在这台已经登录的机器上生成一串配对码，去那台设备上填，就换到一条只属于那台设备的凭证。谁能进来这里全列着，哪台不想要了当场踢掉——不用改密码，也不会把别的设备一起踢下线。</div>
+      <div class="d">在这里生成配对码，到新设备上填入即可登录，不用传密码。可随时单独踢掉某台设备。</div>
       <div id="dev-pair-box" style="margin-top:10px"></div>
       <div id="dev-list" style="margin-top:10px;font-size: 13px">读取中…</div>
       <div style="margin-top:8px;font-size: 13px;color:var(--owb-text-3)">
-        配对码三分钟就作废，只能用一次，只存在内存里——重启服务就没了，硬盘上不留。
-        这张表里的「设备 id」是凭证的哈希，不是凭证本身：就算这一页被别人看见，他也拿不走任何一台设备的登录态。
+        配对码 3 分钟内有效、只能用一次、不落盘。「设备 id」是哈希，被看到也登不进来。
       </div>
     </div>
     ${!po ? `
     <div class="card-item">
       <div class="t">${ic("shield")} 剩下这些归平台管理员</div>
-      <div class="d">数据安全总开关、文件 / 命令 / 网络的黑白名单、内置运行时开关、系统授权、审计日志——它们管的是整台服务器上所有人的任务，不是你一个人的，所以只有平台管理员能改。<br>轮到<b>你</b>拍板的地方在对话里：agent 要跑一条需要批准的命令时，输入框上方会弹出审批条，批不批由你说了算。</div>
+      <div class="d">安全开关、黑白名单、运行时、系统授权、审计日志影响所有人，只有平台管理员能改。<br>需批准的命令会在输入框上方弹审批条，由你决定。</div>
     </div>` : `
     <div class="card-item">
       <div class="t">${ic("shield")} 数据安全</div>
@@ -51,11 +50,11 @@ function renderSecurityPane(pane, s) {
         批量删除审批阈值 <input id="sec-batch" type="number" min="1" style="width:70px;margin:0" value="${esc(String(sec.batch_delete_threshold ?? 50))}"> 个文件 ·
         审批等待上限 <input id="sec-aptimeout" type="number" min="10" style="width:70px;margin:0" value="${esc(String(sec.approval_timeout_s ?? 120))}"> 秒（超时按拒绝）
       </div>
-      <div style="font-size: 13px;color:var(--owb-text-3)">传输加密：前后端走本机回环地址通信不经公网；对外仅按你配置的通道（飞书/企微/钉钉官方 HTTPS API）传输。</div>
+      <div style="font-size: 13px;color:var(--owb-text-3)">传输：前后端走本机回环；对外只走你配置的官方 HTTPS 通道。</div>
     </div>
     <div class="card-item">
       <div class="t">${ic("folder")} 沙箱安全 · 文件</div>
-      <div class="d">工作目录内默认可读写；黑名单永远拦截；工作目录之外只有白名单目录可访问。每行一条，支持 ~ 与 &lt;app&gt;（应用目录）。</div>
+      <div class="d">工作目录内可读写，目录外仅白名单可访问，黑名单始终拦截。每行一条，支持 ~ 和 &lt;app&gt;。</div>
       <div style="display:flex;gap:10px">
         ${listCol("白名单（workspace 外可访问）", "sec-fwl", joinLines(sec.file_whitelist))}
         ${listCol("黑名单（永远拦截）", "sec-fbl", joinLines(sec.file_blacklist))}
@@ -63,18 +62,18 @@ function renderSecurityPane(pane, s) {
     </div>
     <div class="card-item">
       <div class="t">${ic("keyboard")} 沙箱安全 · 命令</div>
-      <div class="d">run_shell 的命令按前缀逐段核对：放行名单直接执行；询问名单挂起，输入框上方弹出审批条等你批准。每行一个命令前缀。</div>
+      <div class="d">按命令前缀匹配：放行名单直接执行，询问名单等你批准。每行一个。</div>
       <div style="display:flex;gap:10px">
         ${listCol("放行名单（直接执行）", "sec-cal", joinLines(sec.cmd_allow))}
         ${listCol("询问名单（需批准）", "sec-cak", joinLines(sec.cmd_ask))}
       </div>
       ${chk("sec-crisk", sec.cmd_risk_gate === true, "名单外先判一句",
-        "两张名单都没命中的命令，在「自动」档是一声不吭直接跑的——<code>git reset --hard</code>、<code>docker volume rm</code>、<code>npm publish</code> 都从这儿过去。名单再加也补不完，每加一条都得先有人被坑过。打开之后，这类命令跑之前先花一道题问判断模型：撤不撤得回来。它说撤不回来、而且自己拿得准，就弹一张审批卡给你，批不批还是你说了算；说不准、答不上、问不成，一律照旧跑。run_node 里的代码同样过这一道。<b>命令原文会发给判断模型</b>，每条约两万分之一美金，同一条命令一次运行里只问一遍。放行名单也盖不住它——名单是按前缀放行的，写一条 git 就把整套子命令都放了。"
-        + (s.agent && s.agent.judge_ready ? "" : "<br><b>现在还没配判断模型，勾上也不会生效</b>——去 设置 → 模型 填一条 OpenRouter 或 TypeSafe 的 Key。"))}
+        "名单外的命令（含 run_node）先问判断模型能否撤回，撤不回就弹审批，拿不准照跑。<b>命令原文会发给判断模型</b>，每条约两万分之一美金。默认关"
+        + (s.agent && s.agent.judge_ready ? "" : "<br><b>没配判断模型，勾了也不生效</b>（设置 → 模型 填 Key）"))}
     </div>
     <div class="card-item">
       <div class="t">${ic("globe")} 沙箱安全 · 网络</div>
-      <div class="d">fetch_url 抓取的域名规则（自动含子域名）。黑名单拦截；白名单非空时只允许名单内域名。每行一个域名。</div>
+      <div class="d">fetch_url 的域名规则，含子域名。白名单非空时只放行名单内的。每行一个。</div>
       <div style="display:flex;gap:10px">
         ${listCol("白名单（非空=只允许这些）", "sec-uwl", joinLines(sec.url_whitelist), 3)}
         ${listCol("黑名单（拦截）", "sec-ubl", joinLines(sec.url_blacklist), 3)}
@@ -87,7 +86,7 @@ function renderSecurityPane(pane, s) {
     </div>
     <div class="card-item">
       <div class="t">${ic("shield-check")} 技能与连接器体检 · 第二把尺子</div>
-      <div class="d">装技能、存连接器之前都会先扫一遍：自带的那把尺子一定跑，这里说的是要不要再叫一把外面的（<a class="link" href="https://github.com/CatCatUncle/toolward" target="_blank" rel="noopener">toolward</a>，37 条规则，认提示词注入、工具投毒、供应链、密钥外传那几类）。两把尺子照着不同的案例写，重合的互相印证，不重合的才是真多出来的覆盖面。</div>
+      <div class="d">装技能、存连接器前，内置检查之外再用 <a class="link" href="https://github.com/CatCatUncle/toolward" target="_blank" rel="noopener">toolward</a> 扫一遍（注入、投毒、供应链、密钥外传）。</div>
       <div id="sec-tw" style="margin-top:10px;font-size: 13px">检测中…</div>
     </div>
     <div class="card-item">
@@ -154,9 +153,9 @@ function renderSecurityPane(pane, s) {
          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;font-size: 14px">
            指定路径 <input id="sec-tw-bin" style="flex:1;min-width:220px;margin:0;font-family:Consolas,monospace;font-size:12px" placeholder="留空 = 自己在 PATH 里找" value="${esc(d.bin_pref || "")}">
          </div>
-         <div style="color:var(--owb-text-3);margin-top:8px">拦下来的技能，平台管理员在技能页点「仍然安装」还是装得进去，那一下会记进日志和 .install.json。连接器那边只提醒、从不拦。</div>
+         <div style="color:var(--owb-text-3);margin-top:8px">被拦的技能，管理员仍可点「仍然安装」，会记日志。连接器只提醒不拦。</div>
          <div style="color:var(--owb-text-3);margin-top:6px">${esc(d.licence || "")}</div>`
-      : `<div>没在用：${esc(d.why || "本机没找到 toolward")}。自带的那把尺子照样在跑，功能一个不少。</div>
+      : `<div>没在用：${esc(d.why || "本机没找到 toolward")}。内置检查照常运行。</div>
          <div style="margin-top:8px">想加上第二把：<code style="font-size:12px">${esc(d.install || "npm i -g toolward")}</code></div>
          <div style="color:var(--owb-text-3);margin-top:6px">${esc(d.licence || "")}</div>`;
   }
@@ -212,7 +211,7 @@ function renderSecurityPane(pane, s) {
         // 一直刷，刷多少次都是同一个结果——得把该去哪儿打开这件事说出来
         if (d && d.remote_off) {
           e.target.disabled = false;
-          box.innerHTML = `<div style="font-size:13px;color:var(--owb-text-2);line-height:1.7">远程设备接入是关着的（<b>默认就是关的</b>）。要在手机上用，先去 <b>企业管理后台 → 客户端安全 → 远程访问与远程操控</b> 打开「允许远程设备接入」。</div>`;
+          box.innerHTML = `<div style="font-size:13px;color:var(--owb-text-2);line-height:1.7">远程设备接入未开启（默认关）。到 <b>企业管理后台 → 客户端安全 → 远程访问与远程操控</b> 打开。</div>`;
           return;
         }
         if (!d || !d.pretty) { e.target.disabled = false; return toast("生成失败，刷新页面再试", "circle-x"); }
@@ -239,11 +238,10 @@ function renderSecurityPane(pane, s) {
           ${cur ? `<div style="font-size: 13px;color:var(--owb-text-2);line-height:1.7">
             手机要和这台电脑连<b>同一个 Wi-Fi</b>。${cur.qr ? "扫不了的话，" : ""}在手机浏览器里打开
             <b style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace">${esc(cur.host)}</b>，填上面这串码。
-            <span style="color:var(--owb-text-3)">这是这台电脑在局域网里的地址，换个网络、或者用手机流量都打不开。</span>
+            <span style="color:var(--owb-text-3)">仅限同一局域网，手机流量打不开。</span>
             ${addrs.length > 1 ? `<a href="#" class="link" id="dev-pair-addr">打不开？换一个地址（还有 ${addrs.length - 1} 个）</a>` : ""}
           </div>` : `<div style="font-size: 13px;color:var(--owb-text-2);line-height:1.7">
-            这台电脑没翻到局域网地址 —— 多半是没连 Wi-Fi，或者网卡都被 VPN / Docker 占着。
-            手机得先和它连同一个网络，这串码才填得进去。
+            没找到局域网地址，可能没连 Wi-Fi 或被 VPN / Docker 占用。手机须和电脑在同一网络。
           </div>`}
           <div style="font-size: 13px;margin-top:12px">
             <span id="dev-pair-left" style="color:var(--owb-text-3)"></span>
@@ -372,7 +370,7 @@ function renderSecurityPane(pane, s) {
       row("完全磁盘访问权限", "fulldisk", d.fulldisk) +
       row("辅助功能", "accessibility", d.accessibility) +
       row("自动化（Apple Events）", "automation", autoState || d.automation, ' <a href="#" class="link" id="sec-autochk">检测/授权</a>') +
-      (d.desktop ? "" : '<div style="font-size: 13px;color:var(--owb-text-3);margin-top:6px">当前是 Web 模式：授权对象是启动本服务的终端；「辅助功能」状态仅桌面版（npm run app）能查询。</div>');
+      (d.desktop ? "" : '<div style="font-size: 13px;color:var(--owb-text-3);margin-top:6px">Web 模式：授权给启动服务的终端；「辅助功能」状态仅桌面版可查。</div>');
     el.querySelectorAll("[data-pane]").forEach(a => a.onclick = (ev) => {
       ev.preventDefault();
       fetch("/api/security/system/open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pane: a.dataset.pane }) });
@@ -489,7 +487,7 @@ async function renderTwoFactorBox(box, opts) {
       <div style="border:1px solid var(--owb-warn,#e0a33e);border-radius:10px;padding:14px">
         <div style="font-weight:600;margin-bottom:4px"><span>${esc(title)}</span> · <span>下面这 ${codes.length} 条是恢复码，现在存好。</span></div>
         <div style="color:var(--owb-text-2);line-height:1.7"><span>手机丢了、验证器被误删了，就拿它们登进来，</span><b>一条只能用一次。</b>
-          <b>这一屏关掉之后再也看不到</b><span>——服务端存的是哈希，它自己也认不回原文。存到密码管理器里，或者抄在纸上收好；别存在这台电脑上跟密码同一个地方。</span></div>
+          <b>这一屏关掉之后再也看不到</b><span>——请存进密码管理器或抄在纸上。</span></div>
         <div style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:14px;line-height:1.9;margin:10px 0;column-count:2;column-gap:20px">${
           codes.map((c) => `<div>${esc(c)}</div>`).join("")}</div>
         <button class="btn-plain" id="tfa-copy-rc">${ic("copy")} 复制全部</button>
@@ -543,7 +541,7 @@ async function renderTwoFactorBox(box, opts) {
       // 组织强制的时候关不掉，这是后端的判断。但**不能画一颗点了才报 403 的按钮**：
       // 那样用户会以为是程序坏了。链接照留，点开直说为什么关不了、该找谁
       if (s.required) {
-        sub.innerHTML = `<div style="color:var(--owb-text-2)"><b>这个组织开了「强制二次验证」，关不掉。</b>真要关，先让管理员到 企业管理后台 → 客户端安全 里取消强制。</div>`;
+        sub.innerHTML = `<div style="color:var(--owb-text-2)"><b>本组织强制二次验证，关不掉。</b>如需关闭请联系管理员。</div>`;
         return;
       }
       sub.innerHTML = `
@@ -588,7 +586,7 @@ function renderShortcutsPane(pane, s) {
       <input id="sc-search" placeholder="搜索快捷键" style="flex:1;margin:0">
       <button class="btn-brand" id="sc-reset" style="white-space:nowrap">全部恢复默认</button>
     </div>
-    <div class="d" style="margin-bottom:4px">共 ${SHORTCUT_DEFS.length} 条 · 点击右侧按键，然后直接按下新组合键即可改绑；不想改了按 Esc、点「取消」、或者鼠标点到别处都行。「唤起/隐藏主窗口」是系统级快捷键，仅桌面版生效。</div>
+    <div class="d" style="margin-bottom:4px">共 ${SHORTCUT_DEFS.length} 条 · 点右侧按键后按新组合键改绑，Esc 取消。「唤起/隐藏主窗口」仅桌面版生效。</div>
     <div id="sc-list"></div><span class="ok-msg" id="sc-msg" style="display:block;margin-top:8px"></span>`;
   const draw = (filter) => {
     pane.querySelector("#sc-list").innerHTML = SHORTCUT_DEFS
@@ -726,10 +724,8 @@ async function renderEvolvePane(pane) {
   pane.innerHTML = `
     <div class="card-item">
       <div class="t">${ic("repeat")} 它自己怎么变好的</div>
-      <div class="d">你在每条回复下点的 ${ic("thumbs-up")}${ic("thumbs-down")} 会落盘；加上任务里真实的失败（工具报错、超时、被打断返工）一起数成「信号」。
-      复盘时模型只看这些数字提<b>最小</b>改动，能不能上由你点头——<b>提案永远不会自动生效</b>。
-      规则最多 ${caps.rules} 条、每条 ≤ ${caps.ruleChars || 400} 字，满了必须换下一条才能加，避免措辞越堆越厚而数字不动。
-      一条规则至少要有 ${caps.minEvidence} 次证据才准提。</div>
+      <div class="d">根据你的 ${ic("thumbs-up")}${ic("thumbs-down")} 和任务失败记录提改进规则，<b>须你批准才生效</b>。
+      最多 ${caps.rules} 条、每条 ≤ ${caps.ruleChars || 400} 字、至少 ${caps.minEvidence} 次证据。</div>
       <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <button class="btn-brand" id="ev-run" style="height:30px;padding:0 14px;font-size: 13px">跑一轮复盘</button>
         <span style="font-size: 13px;color:var(--owb-text-3)">统计最近 <input id="ev-days" type="number" min="1" max="365" value="${caps.window}" style="width:56px;height:26px;margin:0;font-size: 13px"> 天 · 会调一次模型，花钱</span>
@@ -739,20 +735,20 @@ async function renderEvolvePane(pane) {
       <label style="display:flex;align-items:center;gap:6px;font-size: 13px;color:var(--owb-text-2);margin-top:10px;cursor:pointer">
         <input type="checkbox" id="ev-auto" style="margin:0" ${auto.auto ? "checked" : ""}>
         每天 <input id="ev-hour" type="number" min="0" max="23" value="${auto.hour === undefined ? 3 : auto.hour}" style="width:48px;height:24px;margin:0;font-size: 13px"> 点自动跑一轮
-        <span style="color:var(--owb-text-3)">（默认关，因为每次都要调一次模型花钱；跑出来的提案仍然要你点头才生效）</span>
+        <span style="color:var(--owb-text-3)">（默认关，每次调模型花钱）</span>
       </label>
       ${runs.length ? `<div style="margin-top:6px;font-size: 13px;color:var(--owb-text-3)">上次：${esc((runs[0].at || "").slice(0, 16).replace("T", " "))} · ${esc(runs[0].trigger || "")} · ${runs[0].ok ? `${runs[0].turns} 个回合，新提案 ${runs[0].added} 条` : `<span style="color:var(--owb-err-text)">没跑成：${esc(runs[0].error || "")}</span>`}</div>` : ""}
     </div>
     <div class="card-item">
       <div class="t">${ic("chart-column")} 最近 ${sg.days || caps.window} 天的信号（${sg.turns || 0} 个助手回合）</div>
-      <div class="d" style="margin-bottom:6px">按次数排。只有标「提示词能治」的才允许变成规则——改代码/换渠道的毛病，加多少句提示词都没用。</div>
+      <div class="d" style="margin-bottom:6px">按次数排序。只有「提示词能治」的才能变成规则。</div>
       ${sigRows}
     </div>
     <div class="hub-sec-title" style="margin:16px 0 8px">${ic("inbox")} 待你裁决（${pending.length}）</div>
     ${propCards}
     <div class="card-item">
       <div class="t">${ic("pin")} 已生效的规则（${rules.length}/${caps.rules}）</div>
-      <div class="d" style="margin-bottom:4px">这些原样拼进每次任务的系统提示词，排在记忆前面。打分看的是「基线出现率 → 现在的出现率」，没降就该下架。</div>
+      <div class="d" style="margin-bottom:4px">原样加进每次任务的系统提示词。出现率没降的应下架。</div>
       ${ruleRows}
     </div>
     ${decided.length ? `<div class="card-item"><div class="t">${ic("folder-tree")} 审过的（近 ${decided.length} 条）</div>${decided.map(p => `<div style="padding:4px 0;font-size: 13px;color:var(--owb-text-2);border-bottom:1px solid var(--owb-border)"><b>${p.status === "applied" ? "已采纳" : p.status === "rejected" ? "已驳回" : "被闸门拦下"}</b> · ${escInline(p.title || p.rule || "")}${p.reason ? " · " + esc(p.reason) : ""}${p.gate ? " · " + esc(p.gate) : ""}</div>`).join("")}</div>` : ""}`;
@@ -790,7 +786,7 @@ async function renderEvolvePane(pane) {
   pane.querySelectorAll("[data-retire]").forEach(a => a.onclick = async (e) => {
     e.preventDefault();
     // 下架是写服务端的：规则文件被挪进 retired/，界面上没有重新上架的入口，对用户就是单向的
-    if (!(await askConfirm({ title: "下架这条规则？", hint: "往后的提示词里不再带它。界面上没有重新上架的入口，想要回来得去服务器的 retired/ 里捞。", ok: "下架", danger: true }))) return;
+    if (!(await askConfirm({ title: "下架这条规则？", hint: "之后不再生效，界面上无法恢复。", ok: "下架", danger: true }))) return;
     const r = await fetch("/api/evolve/rule/" + encodeURIComponent(a.dataset.retire) + "/retire", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ why: "在设置里人工下架" }),
     }).then(r => r.json()).catch(() => ({ error: "网络错误" }));
@@ -868,26 +864,25 @@ function renderAboutPane(pane) {
     </div>
     <div class="card-item">
       <div class="t">${ic("compass")} 新手引导</div>
-      <div class="d" style="margin-bottom:8px">五步走一遍：大模型 → 联网搜索 → 图/视频/语音 → 远程指挥 → 工作目录。哪一步没配、该去哪拿 Key，向导里都写着。</div>
+      <div class="d" style="margin-bottom:8px">五步：大模型 → 联网搜索 → 图/视频/语音 → 远程指挥 → 工作目录。</div>
       <button class="btn-plain" id="about-onb">重新打开新手引导</button>
     </div>
     <div class="card-item">
       <div class="t">${ic("scale")} 授权</div>
       <div class="d">著作权人：开发者猫叔。本软件按 <b>PolyForm Noncommercial License 1.0.0</b> 发布：<br>
       自己用、学习研究、学校与公益机构用 —— 免费，不用问。<br>
-      公司或任何以营利为目的的使用（内部提效、对外产品、给客户交付、打包售卖）—— 需要单独购买商业授权。<br>
+      公司或任何营利用途 —— 需购买商业授权。<br>
       名称「OpenWorkBuddy」和项目标志不在授权范围内，换名换标对外售卖要另谈。<br>
-      买授权不解锁功能：只有一份代码，你装的这份功能就是全部。买的是「可以拿它赚钱」这件事、商标口子和有人接电话。<br>
-      部署配置、CI、脚本、评测集、技能模板和文档里的示例代码另按 MIT 发布，商用也随便拿。<br>
+      买授权不解锁功能，买的是商用许可和支持。<br>
+      部署配置、脚本、技能模板等示例代码按 MIT 发布，可商用。<br>
       <a class="link" href="https://github.com/CatCatUncle/openworkbuddy/blob/main/COMMERCIAL-LICENSE.md" target="_blank" rel="noreferrer">商业授权怎么谈</a>
       · <a class="link" href="https://github.com/CatCatUncle/openworkbuddy/blob/main/LICENSE-ECOSYSTEM.md" target="_blank" rel="noreferrer">哪些按 MIT</a>
       · <a class="link" href="https://github.com/CatCatUncle/openworkbuddy/blob/main/LICENSE" target="_blank" rel="noreferrer">许可证全文</a></div>
     </div>
     <div class="card-item">
       <div class="t">${ic("message-circle")} 帮助与反馈</div>
-      <div class="d">快速上手：输入框里 <b>@</b> 引用工作空间文件、<b>/</b> 调用技能；侧栏「技能库 / 专家团 / 定时任务」都支持增删改热生效；手机远程用 设置→助理设置 绑定飞书或企业微信。<br>
-      遇到问题：先看 设置→安全中心→审计中心 是不是被安全闸拦了；LLM 报 503 是上游服务繁忙（已内置自动重试，连续失败可到 设置→模型 换渠道）。<br>
-      反馈：本地部署版没有云端客服，问题与建议直接发给维护它的 AI 助理（就是让我改），改完重启即生效。</div>
+      <div class="d">快速上手：输入框里 <b>@</b> 引用文件、<b>/</b> 调用技能；手机远程在 设置→助理设置 绑定飞书或企业微信。<br>
+      遇到问题：先看 设置→安全中心→审计中心 是否被拦；LLM 报 503 是上游繁忙，可在 设置→模型 换渠道。</div>
     </div>`;
   pane.querySelector("#about-onb").onclick = () => { mask.classList.remove("show"); openOnboarding(); };
 
@@ -903,8 +898,8 @@ function renderAboutPane(pane) {
     if (!d || !d.current) {
       upVer.textContent = "版本号没读到";
       upHow.textContent = d && /未登录|登录/.test(String(d.error || ""))
-        ? "登录状态过期了，刷新一下页面重新登录，这里就能看到版本和更新。"
-        : "点右边「检查更新」再试一次；一直这样就是本机服务没起来，重启一下 OpenWorkBuddy。";
+        ? "登录已过期，刷新页面重新登录。"
+        : "点「检查更新」重试；仍不行请重启 OpenWorkBuddy。";
       upLink.style.display = "none";
       upCmd.style.display = "none";     // 上一次画出来的那条命令别挂在「版本号没读到」下面
       return;

@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 /**
  * 动态 JSON 响应的压缩层。

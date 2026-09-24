@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 /**
  * 把 OpenWorkBuddy 自己的工具，借给本机 CLI 引擎用。

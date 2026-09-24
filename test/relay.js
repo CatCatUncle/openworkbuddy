@@ -42,6 +42,7 @@ process.env.OPENWORKBUDDY_DATA_DIR = path.join(HOME, "data");
 fs.mkdirSync(process.env.OPENWORKBUDDY_DATA_DIR, { recursive: true });
 
 const ROOT = path.join(__dirname, "..");
+const srcLib = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
 const express = require(path.join(ROOT, "node_modules/express"));
 const pricing = require(path.join(ROOT, "pricing"));
 const budget = require(path.join(ROOT, "budget"));
@@ -906,7 +907,7 @@ console.log("\n【6】离职：停用账号关的是他本人的路，中转站�
 
   // ---- ④ server.js 里那两处闸门：切真源码出来跑，不抄一份 ----
   // 抄一份的坏处：源码改了、抄的这份没改，测试照样绿。
-  const SRC9 = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+  const SRC9 = srcLib.src("server");
   function blockAround(src, anchor, head) {
     const at = src.indexOf(anchor);
     if (at < 0) return null;

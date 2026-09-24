@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "strict": false,
+    "target": "es2023",
+    "lib": ["es2023"],
+    "module": "node16",
+    "moduleResolution": "node16",
+    "types": ["node"],
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "maxNodeModuleJsDepth": 0,
+    "noErrorTruncation": true
+  },
+  "include": ["*.js", "engines/**/*.js", "routes/**/*.js", "lib/**/*.js", "src/**/*.js", "scripts/**/*.js", "eval/*.js", "types/**/*.d.ts"],
+  "exclude": ["types/globals.d.ts", "node_modules", "workspace", "projects", "dist", "build", "eval/runs"]
+}

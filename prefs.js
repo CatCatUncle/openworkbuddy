@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 /**
  * 按账号存的个人偏好。

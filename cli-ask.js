@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 /**
  * 终端里回答 agent 的提问 —— 纯的：不碰 process、不碰 fs、不打印、不读键盘。

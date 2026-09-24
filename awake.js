@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 /**
  * 本机睡眠治理（借鉴自 CatClaw 的 sleep-watch / keep-awake 设计）。两件事：

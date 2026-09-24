@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 /**
  * 对话模型的「渠道共用一把 Key」层。

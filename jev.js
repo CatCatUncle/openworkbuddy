@@ -5,14 +5,15 @@
  * 纯逻辑在 systemone.js，这儿只管「联网」这件带副作用的事。分两个文件是为了
  * 测试能把请求体和回答解析测透而一分钱不花——判断本身是纯函数，网络不是。
  *
- * 渠道怎么挑：**先用用户已经有的那把 Key**。
- * 绝大多数人不会为了试一个模型专门再去办一个号，而 OpenRouter 上就有这个模型
- * （走 /api/alpha/decisions 那条路，不是 /chat/completions）。所以配过 OpenRouter 的人
- * 什么都不用填就能用；真办了 TypeSafe 官方号的人，加一条 typesafe 渠道会优先走官方。
+ * 渠道怎么挑：**默认一条都不挑**。
+ * 判断模型要钱，而且挂上之后 agent 手里会多一个 decide 工具、/goal 验收会先问它。
+ * 所以只认用户自己点过头的：加了一条「TypeSafe Jev」渠道，或者在 config.decide 里写明。
+ * 配了 OpenRouter 聊天渠道不算——那把 Key 是拿来聊天的，不能顺手拿去跑判断。
+ * 想走 OpenRouter 那条路：Jev 渠道的地址填 openrouter.ai，或 config.decide.route = "openrouter"。
  *
- * 一条规矩跟 llm.js 一样：**不猜别家的 Key**。环境变量里的 TYPESAFE_API_KEY 只喂官方那条路，
- * OPENROUTER_API_KEY 只喂 OpenRouter 那条路，按渠道点名的 OPENWORKBUDDY_KEY_<渠道id> 最优先——
- * 那是用户自己指的。把 A 家的 Key 发给 B 家，轻则 401，重则把 Key 交到了不该去的地方。
+ * 一条规矩跟 llm.js 一样：**不猜别家的 Key**。环境变量里只认 TYPESAFE_API_KEY（专给它办的），
+ * 按渠道点名的 OPENWORKBUDDY_KEY_<渠道id> 最优先——那是用户自己指的。
+ * 把 A 家的 Key 发给 B 家，轻则 401，重则把 Key 交到了不该去的地方。
  */
 
 const so = require("./systemone");
@@ -56,28 +57,26 @@ function pickRoute(config) {
     return { ok: true, route: base.id, label: trim(d.name) || base.label, url, model, key, from: "config.decide" };
   }
 
-  // ② 配过的渠道。官方排在 OpenRouter 前面：专门去办了号的人，意思就是想走官方
+  // ② 用户自己加的「TypeSafe Jev」渠道。别的渠道（OpenRouter 聊天那条也一样）一律不碰：
+  //   有 Key ≠ 想用判断模型，不点头就不花这份钱
   const provs = Array.isArray(cfg.providers) ? cfg.providers : [];
-  for (const kind of ["typesafe", "openrouter"]) {
-    const hit = provs.filter((p) => trim(p.kind) === kind).map((p) => ({ p, key: keyOfProvider(p) })).find((x) => x.key);
-    if (hit) {
-      const base = so.ROUTES[ROUTE_OF_KIND[kind]];
-      // 他在渠道里填的地址说了算：填的是官方那个就还是官方，填的是自建网关就发去自建网关
-      const url = so.urlFromBase(base.id, hit.p.base_url);
-      return { ok: true, route: base.id, label: trim(hit.p.name) || base.label, url, model: trim(d.model) || base.model, key: hit.key, from: "渠道「" + (trim(hit.p.name) || hit.p.id) + "」" };
-    }
+  const hit = provs.filter((p) => trim(p.kind) === "typesafe").map((p) => ({ p, key: keyOfProvider(p) })).find((x) => x.key);
+  if (hit) {
+    // 地址填的是 openrouter.ai，就是想拿 OpenRouter 的 Key 走它家那条 decisions 路
+    const base = /openrouter\.ai/i.test(trim(hit.p.base_url)) ? so.ROUTES.openrouter : so.ROUTES.typesafe;
+    // 他在渠道里填的地址说了算：填的是官方那个就还是官方，填的是自建网关就发去自建网关
+    const url = so.urlFromBase(base.id, hit.p.base_url);
+    return { ok: true, route: base.id, label: trim(hit.p.name) || base.label, url, model: trim(d.model) || base.model, key: hit.key, from: "渠道「" + (trim(hit.p.name) || hit.p.id) + "」" };
   }
 
-  // ③ 通用环境变量兜底。各认各家，不串
+  // ③ 专给它办的 Key 放在环境变量里，也算点过头。OPENROUTER_API_KEY 不算：那是聊天用的
   const ts = trim(process.env.TYPESAFE_API_KEY);
   if (ts) return { ok: true, route: "typesafe", label: so.ROUTES.typesafe.label, url: so.ROUTES.typesafe.url, model: trim(d.model) || so.ROUTES.typesafe.model, key: ts, from: "环境变量 TYPESAFE_API_KEY" };
-  const or = trim(process.env.OPENROUTER_API_KEY);
-  if (or) return { ok: true, route: "openrouter", label: so.ROUTES.openrouter.label, url: so.ROUTES.openrouter.url, model: trim(d.model) || so.ROUTES.openrouter.model, key: or, from: "环境变量 OPENROUTER_API_KEY" };
 
   return {
     ok: false,
-    why: "还没有能用的渠道",
-    how: "两条路随便挑一条：① 设置 → 模型 里已经有 OpenRouter 渠道的话，填上 Key 就能用，判断模型跟对话模型共用同一把；② 去 " + so.ROUTES.typesafe.key_url + " 办一把 TypeSafe 的 Key，加一条「TypeSafe」渠道",
+    why: "判断模型默认不开",
+    how: "要用就在 设置 → 模型 加一条「TypeSafe Jev」渠道（Key 在 " + so.ROUTES.typesafe.key_url + "；想用 OpenRouter 的 Key，地址填 openrouter.ai）",
   };
 }
 

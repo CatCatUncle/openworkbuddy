@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 /**
  * Agent Plugins 1.0.0 客户端 — https://agent-plugins.org

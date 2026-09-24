@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 /**
  * Jev / System One —— 「判断模型」这条调用路的纯逻辑层。
@@ -41,7 +42,7 @@ const ROUTES = {
     strip_v1: true,
     model: "typesafe/jev-1.13",
     key_url: "https://openrouter.ai/keys",
-    why: "已经配了 OpenRouter 的人不用再办一个号，原来那把 Key 直接能用",
+    why: "想拿 OpenRouter 的 Key 跑：Jev 渠道的地址填 openrouter.ai（不会自动借聊天那条渠道）",
   },
   typesafe: {
     id: "typesafe",

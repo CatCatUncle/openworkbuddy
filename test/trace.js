@@ -36,6 +36,7 @@ const path = require("path");
 const http = require("http");
 
 const ROOT = path.join(__dirname, "..");
+const srcLib = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
 const tracing = require(path.join(ROOT, "trace"));
 const { messagesOf, cleanHost, readCfg, labelFromInput } = tracing._internals;
 
@@ -713,7 +714,7 @@ async function main() {
     eq(ex.langfuse.secret_key, "", "私钥默认空");
     ok(/Docker|自己/.test(ex.langfuse._说明 || ""), "  └ 说明里讲清「自建就在自己机器里、填官方 cloud 就是发给别人」", (ex.langfuse._说明 || "").slice(0, 40));
 
-    const srv = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+    const srv = srcLib.src("server");
     ok(/isPlatformOwner\(req\)\s*\?\s*\(config\.langfuse\s*\|\|\s*\{\}\)\.secret_key/.test(srv),
        "★私钥只给平台管理员看原文★，别人拿到的是星号（成员账号能看到设置页）");
     ok(/has_secret/.test(srv), "  └ 另给一个 has_secret 布尔，界面才分得清「没填」和「填了但打了码」");
@@ -734,7 +735,7 @@ async function main() {
     ok(/PLATFORM_ONLY_CATS[\s\S]{0,200}"trace"/.test(a05), "设置页那一栏是平台管理员专属");
     ok(/\/api\/trace\/test/.test(a05), "  └ 界面上那颗「测一下」真的连到了接口");
     ok(/st\.bad_host/.test(a05), "  └ 账本那块单独说「地址不像网址」，不跟「钥匙没填全」混成一句（不然用户去翻错的地方）");
-    ok(a05.indexOf("st.bad_host") < a05.indexOf('"开着，但钥匙没填全'),
+    ok(a05.indexOf("st.bad_host") < a05.indexOf('"已开启，但 Key 没填全'),
        "  └ 而且这一条排在钥匙那条前面：地址错的时候 ready 也是 false，顺序反了就永远显示不出来");
   }
 

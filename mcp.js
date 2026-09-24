@@ -10,11 +10,159 @@
  *    { "name": "remote", "transport": "streamable-http", "url": "https://tools.example.com/mcp" }]
  * 也接受 Agent Plugins 插件 mcp.json 里声明的服务器（见 plugins.js）。
  * 服务器暴露的工具会自动注入 agent 工具列表，命名为 mcp__<服务器名>__<工具名>。
+ *
+ * 工作区 .openworkbuddy/ 底下两样东西归这里管：
+ *   mcp-tools-cache.json  上次连上时记下的工具表。开机读它，配置没变的等第一次调用再连（见 startAll）
+ *   mcp-media/            工具结果里的图片/音频解码落盘，结果文字里给路径和 mimeType（见 renderContent）
  */
 
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
 const { spawn } = require("child_process");
 
 const PROTOCOL_VERSION = "2025-06-18";
+
+/** tools/list 最多翻几页。正常的服务器一两页就翻完了；到这儿还有下一页，多半是游标在原地打转 */
+const MAX_TOOL_PAGES = 20;
+/** 上次连上时记下的工具表（相对工作区根） */
+const TOOLS_CACHE_REL = ".openworkbuddy/mcp-tools-cache.json";
+/** 工具结果里的图片/音频落在这儿（相对工作区根）。模型拿这个相对路径去 look_at_image */
+const MEDIA_REL = ".openworkbuddy/mcp-media";
+
+/**
+ * 工作区根。tools.js 很重，只在真要读写盘时才懒加载——也免得模块加载时绕成一个环（anySignal 那儿同一个顾虑）。
+ * which="default"：默认工作区。工具表缓存是整台机器一份的（连接器配置就是整台机器一份），不跟着某个租户/项目的任务走。
+ * 否则：当前这条异步链的工作区。图片跟着这一单任务落，租户之间看不见彼此的图。
+ */
+function workspaceRoot(which) {
+  try {
+    const t = require("./tools");
+    return which === "default" ? t.getDefaultWorkspaceDir() : t.getWorkspaceDir();
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * 一条连接器配置的指纹：只取决定「连到哪、怎么连」的那几样。指纹变了，缓存里那份工具表就不作数了。
+ * env / headers 里是 Key：只进哈希，缓存文件里不落明文。
+ */
+function cfgFingerprint(cfg = {}) {
+  const sorted = (o) => Object.keys(o || {}).sort().map((k) => [k, String(o[k])]);
+  const pick = {
+    transport: cfg.transport || "",
+    command: cfg.command || "",
+    args: (cfg.args || []).map(String),
+    env: sorted(cfg.env),
+    cwd: cfg.cwd || "",
+    url: cfg.url || "",
+    headers: sorted(cfg.headers),
+    plugin: cfg.plugin || "",
+  };
+  return crypto.createHash("sha256").update(JSON.stringify(pick)).digest("hex");
+}
+
+const MEDIA_EXT = {
+  "image/png": "png", "image/jpeg": "jpg", "image/jpg": "jpg", "image/gif": "gif", "image/webp": "webp",
+  "image/svg+xml": "svg", "image/bmp": "bmp", "audio/wav": "wav", "audio/x-wav": "wav", "audio/mpeg": "mp3",
+  "audio/mp3": "mp3", "audio/ogg": "ogg", "audio/webm": "webm", "audio/mp4": "m4a", "audio/aac": "aac", "audio/flac": "flac",
+};
+
+/**
+ * 一个图片/音频内容块解码落盘。返回 { path, file, mimeType, bytes }；没存成就是 { mimeType, error }。
+ * root 可以是目录或返回目录的函数；不给就落当前任务的工作区。
+ */
+function saveMedia(c, { server, root } = {}) {
+  // mimeType 是对方说的，拼进文字和文件名之前先规整：不像 MIME 的一律当二进制
+  const rawType = String(c.mimeType || "").trim().toLowerCase();
+  const mimeType = rawType.length <= 100 && /^[a-z0-9][\w.+-]*\/[\w.+-]+$/.test(rawType) ? rawType : "application/octet-stream";
+  // 有的服务器不守规矩，塞的是整条 data: URL，把头剥掉
+  const b64 = String(typeof c.data === "string" ? c.data : "").replace(/^data:[^,]*,/, "").replace(/\s+/g, "");
+  if (!b64) return { mimeType, error: "服务器没给数据" };
+  if (!/^[A-Za-z0-9+/_-]+={0,2}$/.test(b64)) return { mimeType, error: "数据不是 base64" };
+  const buf = Buffer.from(b64, "base64");
+  if (!buf.length) return { mimeType, error: "数据是空的" };
+  try {
+    const base = (typeof root === "function" ? root() : root) || workspaceRoot();
+    if (!base) return { mimeType, error: "找不到工作区" };
+    const dir = path.join(base, ...MEDIA_REL.split("/"));
+    fs.mkdirSync(dir, { recursive: true });
+    // 工作区常常就是用户自己的 git 仓库：工具吐出来的图别被顺手提交（跟 tool-results 同一个做法）
+    try { fs.writeFileSync(path.join(dir, ".gitignore"), "*\n", { flag: "wx" }); } catch {}
+    const sub = mimeType.split("/")[1];
+    const ext = MEDIA_EXT[mimeType] || (/^[a-z0-9]{1,5}$/.test(sub) ? sub : "bin");
+    const who = String(server || "mcp").replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 40) || "mcp";
+    // 按内容起名：同一张图调十次只落一份
+    const name = `${who}-${crypto.createHash("sha256").update(buf).digest("hex").slice(0, 16)}.${ext}`;
+    const file = path.join(dir, name);
+    try { fs.writeFileSync(file, buf, { flag: "wx" }); } catch (e) { if (!e || e.code !== "EEXIST") throw e; }
+    return { path: `${MEDIA_REL}/${name}`, file, mimeType, bytes: buf.length };
+  } catch (e) {
+    return { mimeType, error: (e && e.message) || String(e) };
+  }
+}
+
+/** look_at_image 收得下的图（跟 src/tools/media.js 的 IMAGE_EXT 一个口径） */
+const LOOKABLE = /\.(png|jpe?g|webp|gif|bmp)$/i;
+
+/**
+ * 工具结果的内容块 → 给模型看的一段文字 + 落了盘的媒体清单。
+ *
+ * 文字原样拼。图片（和同形状的音频）以前只剩一个 `[image]`，截图类的服务器等于白调。
+ * 现在解码落到工作区 .openworkbuddy/mcp-media/，文字里给相对路径和 mimeType——
+ * 图本身不进对话历史（每步重发一遍又贵，纯文本模型还会直接报错），要看内容走 look_at_image。
+ */
+function renderContent(blocks, { server, root } = {}) {
+  const parts = [];
+  const media = [];
+  for (const c of Array.isArray(blocks) ? blocks : []) {
+    if (!c || typeof c !== "object") continue;
+    if (c.type === "text") parts.push(String(c.text == null ? "" : c.text));
+    else if (c.type === "image" || c.type === "audio") {
+      const what = c.type === "image" ? "图片" : "音频";
+      const m = saveMedia(c, { server, root });
+      if (m.path) {
+        media.push(m);
+        // 只对 look_at_image 认得的格式（src/tools/media.js IMAGE_EXT）提它，svg 这类提了也是白调一轮
+        const canLook = c.type === "image" && LOOKABLE.test(m.path);
+        parts.push(`[${what} ${m.mimeType}，已存到 ${m.path}${canLook ? "，要看内容用 look_at_image" : ""}]`);
+      } else parts.push(`[${what} ${m.mimeType}，没存下来：${m.error}]`);
+    } else parts.push(`[${c.type}]`);
+  }
+  return { text: parts.join("\n"), media };
+}
+
+/**
+ * 用户点了停止：这一单不等了。抛的是这个，McpManager.call 认 stopped 标记回一句「已停止」，
+ * 不说成「调用失败」——后者会让模型当故障去换参数重试，正是停止要拦的。
+ */
+function stoppedErr(name, method) {
+  return Object.assign(new Error(`MCP ${name}.${method} 已停止`), { stopped: true });
+}
+
+/** 几路信号合成一路（Node 18 没有 AbortSignal.any）。跟 src/tools/media.js 那份同理，这里不 require 它免得绕一圈依赖 */
+function anySignal(...signals) {
+  const list = [...new Set(signals.filter(Boolean))];
+  const ctl = new AbortController();
+  const offs = [];
+  const release = () => { while (offs.length) offs.pop()(); };
+  const hit = list.find((s) => s.aborted);
+  if (hit) ctl.abort(hit.reason);
+  else {
+    for (const s of list) {
+      const on = () => { release(); ctl.abort(s.reason); };
+      s.addEventListener("abort", on, { once: true });
+      offs.push(() => s.removeEventListener("abort", on));
+    }
+  }
+  ctl.signal.release = release;
+  return ctl.signal;
+}
+
+/** 按协议告诉服务器「这一单不要了」。它可以就此停手；不理也没关系，我们已经不等了 */
+const CANCELLED = "notifications/cancelled";
+const cancelParams = (id) => ({ requestId: id, reason: "用户已停止" });
 
 /**
  * 把连接失败翻译成「下一步该干什么」。
@@ -108,18 +256,33 @@ class StdioTransport {
     this.proc.on("close", (code, signal) => this._failAll(new Error(`MCP 服务器 ${this.name} 已退出` + this._why(code, signal))));
   }
 
-  request(method, params, timeoutMs) {
+  request(method, params, timeoutMs, signal) {
     const id = this.nextId++;
     const payload = JSON.stringify({ jsonrpc: "2.0", id, method, params });
     return new Promise((resolve, reject) => {
+      if (signal && signal.aborted) return reject(stoppedErr(this.name, method));
+      let onAbort = null;
+      const settle = () => { clearTimeout(timer); if (onAbort) signal.removeEventListener("abort", onAbort); };
       const timer = setTimeout(() => {
         this.pending.delete(id);
+        settle();
         reject(new Error(`MCP ${this.name}.${method} 超时`));
       }, timeoutMs);
       this.pending.set(id, {
-        resolve: (v) => { clearTimeout(timer); resolve(v); },
-        reject: (e) => { clearTimeout(timer); reject(e); },
+        resolve: (v) => { settle(); resolve(v); },
+        reject: (e) => { settle(); reject(e); },
       });
+      if (signal) {
+        // 停了就从 pending 里摘掉：之后它再回结果，_onData 找不到这个 id，直接丢
+        onAbort = () => {
+          if (!this.pending.has(id)) return;
+          this.pending.delete(id);
+          settle();
+          try { this.notify(CANCELLED, cancelParams(id)); } catch {}
+          reject(stoppedErr(this.name, method));
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
       this.proc.stdin.write(payload + "\n");
     });
   }
@@ -208,13 +371,13 @@ class HttpTransport {
     return h;
   }
 
-  async _post(body, timeoutMs) {
+  async _post(body, timeoutMs, signal) {
     const resp = await fetch(this.url, {
       method: "POST",
       headers: this._headers(),
       body: JSON.stringify(body),
       redirect: "manual", // 配置的 header 绝不能跟着跳转发到别的源去
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: signal || AbortSignal.timeout(timeoutMs),
     });
     if (resp.status >= 300 && resp.status < 400) {
       const loc = resp.headers.get("location") || "";
@@ -223,22 +386,33 @@ class HttpTransport {
     return resp;
   }
 
-  async request(method, params, timeoutMs) {
+  async request(method, params, timeoutMs, signal) {
     const id = this.nextId++;
-    const resp = await this._post({ jsonrpc: "2.0", id, method, params }, timeoutMs);
-    const sid = resp.headers.get("mcp-session-id");
-    if (sid) this.sessionId = sid;
-    if (!resp.ok) {
-      const t = await resp.text().catch(() => "");
-      throw new Error(`MCP ${this.name}.${method} HTTP ${resp.status}${t ? `：${t.slice(0, 200)}` : ""}`);
+    if (signal && signal.aborted) throw stoppedErr(this.name, method);
+    // 时限和停止合成一路，一直挂到读完响应体为止：SSE 流可能推很久，停止得能掐断正在读的流
+    const sig = anySignal(signal, AbortSignal.timeout(timeoutMs));
+    try {
+      const resp = await this._post({ jsonrpc: "2.0", id, method, params }, timeoutMs, sig);
+      const sid = resp.headers.get("mcp-session-id");
+      if (sid) this.sessionId = sid;
+      if (!resp.ok) {
+        const t = await resp.text().catch(() => "");
+        throw new Error(`MCP ${this.name}.${method} HTTP ${resp.status}${t ? `：${t.slice(0, 200)}` : ""}`);
+      }
+      const ctype = (resp.headers.get("content-type") || "").toLowerCase();
+      const msg = ctype.includes("text/event-stream")
+        ? await this._readSse(resp, id)
+        : await resp.json();
+      if (!msg) throw new Error(`MCP ${this.name}.${method} 没有返回对应 id=${id} 的响应`);
+      if (msg.error) throw new Error(msg.error.message || JSON.stringify(msg.error));
+      return msg.result;
+    } catch (e) {
+      if (!(signal && signal.aborted)) throw e;
+      this.notify(CANCELLED, cancelParams(id)); // 不等它：notify 自己吞错，停止不该被一个通知拖住
+      throw stoppedErr(this.name, method);
+    } finally {
+      sig.release();
     }
-    const ctype = (resp.headers.get("content-type") || "").toLowerCase();
-    const msg = ctype.includes("text/event-stream")
-      ? await this._readSse(resp, id)
-      : await resp.json();
-    if (!msg) throw new Error(`MCP ${this.name}.${method} 没有返回对应 id=${id} 的响应`);
-    if (msg.error) throw new Error(msg.error.message || JSON.stringify(msg.error));
-    return msg.result;
   }
 
   /** 读 SSE 流，直到拿到 id 匹配的那条 JSON-RPC 响应（中间的通知/日志一律丢掉） */
@@ -284,6 +458,8 @@ class McpClient {
     this.name = name;
     this.cfg = cfg;
     this.tools = [];
+    // true = 工具表是从缓存里拿的，还没真连过。第一次调用它的工具时 McpManager 才去连（见 _wake）
+    this.lazy = false;
     const isHttp = cfg.transport === "streamable-http" || (!cfg.command && cfg.url);
     this.transport = isHttp ? new HttpTransport(name, cfg) : new StdioTransport(name, cfg);
     this.kind = isHttp ? "streamable-http" : "stdio";
@@ -299,15 +475,52 @@ class McpClient {
     // 服务器可能协商到另一个版本，之后的 HTTP 请求要按它回的版本带头
     this.transport.negotiatedVersion = (init && init.protocolVersion) || PROTOCOL_VERSION;
     await this.transport.notify("notifications/initialized", {});
-    const res = await this.transport.request("tools/list", {}, timeoutMs);
-    this.tools = res.tools || [];
+    this.tools = await this.listTools(timeoutMs);
     return this.tools;
   }
 
-  async callTool(toolName, args, timeoutMs = 60000) {
-    const res = await this.transport.request("tools/call", { name: toolName, arguments: args }, timeoutMs);
-    const parts = (res.content || []).map((c) => (c.type === "text" ? c.text : `[${c.type}]`));
-    return { content: parts.join("\n") || "(空结果)", isError: !!res.isError };
+  /**
+   * tools/list 按游标翻页拉全。
+   *
+   * 协议里工具表是分页的：回包带 nextCursor 就还有下一页。以前只取第一页，
+   * 工具多的服务器第二页起全丢了，模型压根不知道还有这些工具。
+   * 最多翻 MAX_TOOL_PAGES 页；到头了还有下一页、或者游标给回了同一个，记一笔日志，拿到多少用多少。
+   * 同名工具只留第一个：重名进了工具表，有的模型接口整轮 400。
+   */
+  async listTools(timeoutMs = 20000) {
+    const tools = [];
+    const names = new Set();
+    let cursor;
+    for (let page = 1; ; page++) {
+      const res = (await this.transport.request("tools/list", cursor ? { cursor } : {}, timeoutMs)) || {};
+      for (const t of Array.isArray(res.tools) ? res.tools : []) {
+        if (!t || !t.name || names.has(t.name)) continue;
+        names.add(t.name);
+        tools.push(t);
+      }
+      const next = typeof res.nextCursor === "string" ? res.nextCursor : "";
+      if (!next) break;
+      if (next === cursor) {
+        console.warn(`[MCP] ${this.name} 的工具列表第 ${page} 页给回了同一个游标，不再往下翻（已拿到 ${tools.length} 个工具）`);
+        break;
+      }
+      if (page >= MAX_TOOL_PAGES) {
+        console.warn(`[MCP] ${this.name} 的工具列表翻了 ${MAX_TOOL_PAGES} 页还没完，后面的不要了（已拿到 ${tools.length} 个工具）`);
+        break;
+      }
+      cursor = next;
+    }
+    return tools;
+  }
+
+  /**
+   * signal 断了就发 notifications/cancelled 并立刻抛 stopped，不再等服务器的结果。
+   * root：图片/音频落在哪个工作区（目录或返回目录的函数），不给就落当前任务的工作区。
+   */
+  async callTool(toolName, args, timeoutMs = 60000, { signal, root } = {}) {
+    const res = (await this.transport.request("tools/call", { name: toolName, arguments: args }, timeoutMs, signal)) || {};
+    const { text, media } = renderContent(res.content, { server: this.name, root });
+    return { content: text || "(空结果)", isError: !!res.isError, ...(media.length ? { media } : {}) };
   }
 
   stop() {
@@ -315,9 +528,20 @@ class McpClient {
   }
 }
 
+/** 用户点了停止时 McpManager.call 回的那一条（调用中途停、第一次调用还在连的时候停，都是它） */
+const STOPPED_RESULT = () => ({ content: "用户已停止任务，没等这个 MCP 工具的结果。", isError: true, stopped: true });
+const STOPPED = Symbol("stopped");
+/** _wake 连的这会儿，这台被停掉或被同名的顶掉了：不算「连不上」，call 按表里现在那台重来 */
+const GONE = Symbol("gone");
+
 class McpManager {
-  constructor() {
-    this.clients = new Map(); // serverName -> McpClient
+  /**
+   * root：工具表缓存和图片落在哪个目录的 .openworkbuddy/ 底下（目录或返回目录的函数）。
+   * 不给就跟着工作区走（见 workspaceRoot）。测试给一个临时目录，别往用户真的工作区里写。
+   */
+  constructor({ root } = {}) {
+    this.root = root || null;
+    this.clients = new Map(); // serverName -> McpClient（lazy 的那几台也在里头：工具表是缓存的，还没真连）
     this.failures = []; // [{ name, plugin, error }] 起不来的服务器，界面要能看见为什么
     /**
      * 被用户手动关掉的服务器名。
@@ -339,38 +563,176 @@ class McpManager {
   }
 
   /**
-   * 启动所有配置的 MCP 服务器。一台起不来只记一笔继续下一台——
+   * 启动配置的 MCP 服务器。一台起不来只记一笔继续下一台——
    * Agent Plugins 规范也是这么要求的：单个服务器失败不许影响其他组件。
+   *
+   * 不再一开机就把每台都连一遍：以前开机并发拉起全部服务器，npx 那几台一台一个 node 进程，
+   * 用户这一趟可能一个连接器工具都不用。现在读上次连上时记下的工具表（.openworkbuddy/mcp-tools-cache.json），
+   * 配置没变的直接挂进工具表，等模型第一次调它的工具时再连（见 _wake）。
+   * 缓存里没有、或配置改过（指纹对不上）的当场连：新加的、改过的连接器要立刻知道通不通。
+   * 界面上保存、开关、更新插件之前都会先 stop()，stop 连缓存那条一起清，所以这几条路（测试连接）照旧当场连。
    */
   async startAll(serverConfigs = []) {
-    for (const cfg of serverConfigs) {
-      // 同名的先停掉再起，否则旧的子进程没人管，成了孤儿还占着端口/句柄
-      this.stop([cfg.name]);
-      // 用户在 ＋ 菜单里把这台关了。停在 stop 之后、new McpClient 之前：
+    const cache = this._readCache();
+    // 同一批里重名的，后面那条算数（跟以前「后起的顶掉先起的」一个结果）
+    const plan = new Map();
+    for (const cfg of serverConfigs) { plan.delete(cfg.name); plan.set(cfg.name, cfg); }
+    const now = [];
+    for (const cfg of plan.values()) {
+      // 同名的先停掉再起，否则旧的子进程没人管，成了孤儿还占着端口/句柄。
+      // 走 _drop 不走 stop：stop 会把缓存那条一起清，开机这一路就永远用不上缓存了
+      this._drop([cfg.name]);
+      // 用户在 ＋ 菜单里把这台关了。停在 _drop 之后、new McpClient 之前：
       // 先停是为了「开着的时候被关掉」这一路真的能把进程收掉，再 continue 才是不去连它。
       if (this.disabled.has(cfg.name)) continue;
       const client = new McpClient(cfg.name, cfg);
+      client.plugin = cfg.plugin || "";
+      const hit = cache[cfg.name];
+      if (hit && hit.fp === cfgFingerprint(cfg) && Array.isArray(hit.tools)) {
+        // 缓存文件谁都能改：混进一条 null，toolDefs 取 t.name 就抛，每一单任务开头都挂
+        client.tools = hit.tools.filter((t) => t && typeof t === "object" && t.name);
+        client.lazy = true;
+        this.clients.set(cfg.name, client);
+        console.log(`[MCP] ${cfg.plugin ? `插件 ${cfg.plugin} · ` : ""}${cfg.name}(${client.kind}) 先用上次记下的 ${hit.tools.length} 个工具，第一次调用时再连`);
+      } else now.push(client);
+    }
+    for (const client of now) {
+      const cfg = client.cfg;
       try {
         const tools = await client.start();
-        client.plugin = cfg.plugin || "";
         this.clients.set(cfg.name, client);
+        this._remember(client);
         const from = cfg.plugin ? `插件 ${cfg.plugin} · ` : "";
         console.log(`[MCP] ${from}${cfg.name}(${client.kind}) 已连接，提供 ${tools.length} 个工具: ${tools.map((t) => t.name).join(", ")}`);
       } catch (e) {
-        // 存翻译过的那句：界面上显示的就是这条，e.message 原文对用户没有信息量
-        const why = whyFailed(e, cfg);
-        console.warn(`[MCP] ${cfg.name} 连接失败: ${why}${why === e.message ? "" : `（原文 ${e.message}）`}`);
-        this.failures.push({ name: cfg.name, plugin: cfg.plugin || "", error: why, raw: e.message });
+        this._failed(cfg, e);
         client.stop();
       }
     }
   }
 
   /**
-   * 停掉指定的几台服务器，并把它们上一次的失败记录一并清掉。
+   * 连不上：记一笔失败（界面要看得见为什么），缓存里那条也删掉——
+   * 下次开机就当场连、当场报错，不再拿一份旧工具表哄模型去调一台连不上的服务器。返回翻译过的那句。
+   */
+  _failed(cfg, e) {
+    // 存翻译过的那句：界面上显示的就是这条，e.message 原文对用户没有信息量
+    const why = whyFailed(e, cfg);
+    console.warn(`[MCP] ${cfg.name} 连接失败: ${why}${why === e.message ? "" : `（原文 ${e.message}）`}`);
+    this.failures.push({ name: cfg.name, plugin: cfg.plugin || "", error: why, raw: e.message });
+    this._forget([cfg.name]);
+    return why;
+  }
+
+  /**
+   * 缓存来的那台，第一次调用时才真去连。同一台同时来几次调用只连一次。
+   * 返回 ""=连上了；STOPPED=用户在等的时候点了停止（连接照样在后台连完，下次直接用）；
+   * GONE=连的这会儿它被停掉或被同名的顶掉了（工具表里的已经不是它）；
+   * 别的字符串=没连上的原因——这时它已经从工具表里摘掉、记进了失败清单。
+   */
+  _wake(client, signal) {
+    if (!client._waking) {
+      client._waking = (async () => {
+        try {
+          const tools = await client.start();
+          client.lazy = false;
+          // 连的这会儿被停掉或被同名的顶掉了：这一个就别留了，免得成孤儿
+          if (this.clients.get(client.name) !== client) {
+            client.stop();
+            return GONE;
+          }
+          this._remember(client); // 服务器那边工具可能增减过，按刚拿到的这份重记
+          console.log(`[MCP] ${client.name}(${client.kind}) 第一次调用，已连上，提供 ${tools.length} 个工具`);
+          return "";
+        } catch (e) {
+          client.stop();
+          // 多半就是被停掉时进程被收了才连不上的：不记失败、不删缓存，那是停掉/顶掉它的那一路的事
+          if (this.clients.get(client.name) !== client) return GONE;
+          this.clients.delete(client.name);
+          return this._failed(client.cfg, e);
+        } finally {
+          client._waking = null;
+        }
+      })();
+    }
+    const waking = client._waking;
+    if (!signal) return waking;
+    if (signal.aborted) return Promise.resolve(STOPPED);
+    return new Promise((resolve) => {
+      const onAbort = () => resolve(STOPPED);
+      signal.addEventListener("abort", onAbort, { once: true });
+      waking.then((v) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(v);
+      });
+    });
+  }
+
+  /** 工具表缓存文件。拿不到工作区就是 ""——那就不用缓存，每次照旧当场连 */
+  _cacheFile() {
+    const r = typeof this.root === "function" ? this.root() : this.root;
+    const base = r || workspaceRoot("default");
+    return base ? path.join(base, ...TOOLS_CACHE_REL.split("/")) : "";
+  }
+
+  /** { 服务器名: { fp, transport, tools, at } }。没有、坏了都当空的：代价只是这次开机老老实实连一遍 */
+  _readCache() {
+    const f = this._cacheFile();
+    if (!f) return {};
+    try {
+      const j = JSON.parse(fs.readFileSync(f, "utf8"));
+      return j && j.version === 1 && j.servers && typeof j.servers === "object" ? j.servers : {};
+    } catch {
+      return {};
+    }
+  }
+
+  /** 读-改-写一遍缓存。mutate 返回 false 表示没改，不写盘。写不成只告警：缓存丢了不影响使用 */
+  _writeCache(mutate) {
+    const f = this._cacheFile();
+    if (!f) return;
+    try {
+      const servers = this._readCache();
+      if (mutate(servers) === false) return;
+      fs.mkdirSync(path.dirname(f), { recursive: true });
+      // 先写临时文件再改名：开机那一下读到的要么是旧的要么是新的，不会是半个
+      const tmp = `${f}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify({ version: 1, servers }));
+      fs.renameSync(tmp, f);
+    } catch (e) {
+      console.warn(`[MCP] 工具表缓存没写成（不影响使用，下次开机照常连）: ${e.message}`);
+    }
+  }
+
+  _remember(client) {
+    this._writeCache((s) => {
+      s[client.name] = { fp: cfgFingerprint(client.cfg), transport: client.kind, tools: client.tools, at: new Date().toISOString() };
+    });
+  }
+
+  _forget(names = []) {
+    if (!names.length) return;
+    this._writeCache((s) => {
+      const hit = names.filter((n) => Object.prototype.hasOwnProperty.call(s, n));
+      for (const n of hit) delete s[n];
+      return hit.length > 0;
+    });
+  }
+
+  /**
+   * 停掉指定的几台服务器，并把它们上一次的失败记录和缓存的工具表一并清掉。
    * 不清失败记录的话，重试成功了连接器页面还挂着那条旧的红字。
+   * 清缓存是因为走到这儿的都是用户动手（保存、关掉、更新/卸载插件）：接下来再起就该当场连一次，
+   * 而不是拿旧工具表糊过去。关应用走 stopAll，那条不清缓存，下次开机才用得上。
    */
   stop(names = []) {
+    const stopped = this._drop(names);
+    this._forget([...new Set(names)]);
+    return stopped;
+  }
+
+  /** 只停进程、清失败记录，不碰缓存 */
+  _drop(names = []) {
     const want = new Set(names);
     const stopped = [];
     for (const n of want) {
@@ -396,10 +758,13 @@ class McpManager {
     return stopped;
   }
 
-  /** 已连接的服务器概况（名字 / 传输 / 工具数 / 来源插件） */
+  /**
+   * 已连接的服务器概况（名字 / 传输 / 工具数 / 来源插件）。
+   * lazy=true：工具表是缓存的，还没真连过，第一次调用时才连。
+   */
   status() {
     return {
-      connected: [...this.clients.values()].map((c) => ({ name: c.name, transport: c.kind, tools: c.tools.length, plugin: c.plugin || "" })),
+      connected: [...this.clients.values()].map((c) => ({ name: c.name, transport: c.kind, tools: c.tools.length, plugin: c.plugin || "", lazy: !!c.lazy })),
       failures: this.failures,
     };
   }
@@ -423,21 +788,40 @@ class McpManager {
     return name.startsWith("mcp__");
   }
 
-  async call(fullName, input) {
+  async call(fullName, input, { signal } = {}) {
     const m = fullName.match(/^mcp__([^_]+(?:_[^_]+)*?)__(.+)$/);
     if (!m) return { content: `无效的 MCP 工具名: ${fullName}`, isError: true };
     const client = this.clients.get(m[1]);
     if (!client) return { content: `MCP 服务器未连接: ${m[1]}`, isError: true };
+    if (client.lazy) {
+      // 已经点了停止就别再去拉起它：npx 那种一拉就是一个进程，这一单又用不上
+      if (signal && signal.aborted) return STOPPED_RESULT();
+      const why = await this._wake(client, signal);
+      if (why === STOPPED) return STOPPED_RESULT();
+      if (why === GONE) {
+        // 被同名的顶掉了（比如刚保存过连接器）：交给表里现在那台；被停掉了就是没连。
+        // 别说成「连不上、别再调」——那台好好的，模型会就此绕开一个能用的连接器
+        const now = this.clients.get(m[1]);
+        return now && now !== client ? this.call(fullName, input, { signal }) : { content: `MCP 服务器未连接: ${m[1]}`, isError: true };
+      }
+      // 连不上的那台已经从工具表里摘掉了：明说别再调，不然模型会换着参数重试一台根本连不上的服务器
+      if (why) return { content: `MCP 服务器 ${m[1]} 第一次调用时去连，没连上：${why}。它的工具已从工具表里摘掉，别再调了`, isError: true };
+    }
     try {
-      return await client.callTool(m[2], input);
+      return await client.callTool(m[2], input, undefined, { signal, root: this.root || undefined });
     } catch (e) {
+      if (e.stopped) return STOPPED_RESULT();
       return { content: `MCP 调用失败: ${e.message}`, isError: true };
     }
   }
 
+  /** 关应用时收摊：只停进程，缓存留着，下次开机才用得上 */
   stopAll() {
-    return this.stop([...this.clients.keys()]);
+    return this._drop([...this.clients.keys()]);
   }
 }
 
-module.exports = { McpManager, McpClient, StdioTransport, HttpTransport, PROTOCOL_VERSION, whyFailed };
+module.exports = {
+  McpManager, McpClient, StdioTransport, HttpTransport, PROTOCOL_VERSION, whyFailed,
+  renderContent, cfgFingerprint, MAX_TOOL_PAGES, TOOLS_CACHE_REL, MEDIA_REL,
+};

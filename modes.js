@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 /**
  * 所有「模式」的唯一真源。
@@ -8,7 +9,7 @@
  * 于是同一个产品在两个入口长着不同的样子。
  *
  * 更糟的是那三个字符串被手抄在八个地方：cli.js 两处、cli-args.js、repl-commands.js、
- * server.js、public/index.html、app-02.js、app-07-canvas.js。抄八份的后果不是"可能会漂"，
+ * server.js、public/index.html、app-02.js、app-07-canvas.js（当时还没拆）。抄八份的后果不是"可能会漂"，
  * 是**已经漂了**——`/mode goal` 在终端里能敲进去，校验一个字都没有，然后
  * `["ask","plan","craft"].includes("goal")` 判 false，悄悄按 craft 跑，
  * 而状态行还理直气壮地印着「模式 goal」。用户看到的是一个不存在的模式在替他干活。

@@ -37,6 +37,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const ROOT = path.join(__dirname, "..");
+const { src } = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
 const store = require(path.join(ROOT, "store.js"));
 
 let pass = 0, fail = 0;
@@ -49,7 +50,7 @@ const ok = (msg, cond, detail) => {
 // 跟 e2e 里 testSessionCacheReload 同一个路子：这一整段是纯的，注入
 // fs/path/SESS_DIR/store/sessions/activeRuns/console 就能真读真写磁盘。
 // 切真源码而不是照抄一份：照抄的那份改了也不会红，等于没测。
-const SRC = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+const SRC = src("server");
 const A = SRC.indexOf("function sessFile(id) {");
 const B = SRC.indexOf("const sessMetaCache = new Map();", A);
 if (A < 0 || B <= A) throw new Error("server.js 里的会话读写找不到了（改名/挪走？），测试没法定位真源码");

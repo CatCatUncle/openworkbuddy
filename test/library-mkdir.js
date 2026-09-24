@@ -484,7 +484,7 @@ app.whenReady().then(async () => {
     ok(/AI/.test(r.第一段说了啥),
        "标题旁边一句人话把这段是干嘛的说了（不然「有啥用」还得有人在旁边解释）", r.第一段说了啥);
     const e = await run(OPENPAGE("", true) + `.then(() => (document.querySelector(".lib-none") || {}).innerHTML || "")`);
-    ok(/library_list/.test(e) && /只看得见那一块/.test(e),
+    ok(/library_list|自己查/.test(e) && /只看得见那一块|看不到别的/.test(e),
        "★空的时候说得出「往这儿放什么、放了会怎样」★ 原来只有一句「还没有参考资料」——正确的废话",
        e.slice(0, 120));
   }

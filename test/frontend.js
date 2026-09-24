@@ -22,6 +22,7 @@ process.on("uncaughtException", (e) => {
 });
 const path = require("path");
 const fs = require("fs");
+const srcLib = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
 // 这个文件得用 electron 跑，不是 node：`npx electron test/frontend.js`。
 // 用 node 跑的话下面 require("electron") 拿到的是个字符串（electron 包的 npm 入口导出的是
 // 二进制路径），一路往下走到最后才炸一个 "Cannot read properties of undefined"，
@@ -413,6 +414,30 @@ const SWEEP_CHECKS = `
 })()
 `;
 
+// 同名的全局函数声明。主页面那几个 app-*.js 是普通 <script>，共用一个全局作用域：
+// 两处都写 function dirOf(…)，后一个会把前一个整个顶掉（函数声明还会提升），一声不吭。
+// 名单从 index.html 的 <script> 和 loadScriptOnce 推出来，不手抄
+const dupGlobalFns = (srcByFile) => {
+  const seen = new Map();
+  for (const [f, src] of Object.entries(srcByFile))
+    src.split("\n").forEach((l, i) => {
+      const m = l.match(/^(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)\s*\(/);
+      if (m) (seen.get(m[1]) || seen.set(m[1], []).get(m[1])).push(f + ":" + (i + 1));
+    });
+  return [...seen].filter(([, at]) => at.length > 1).map(([n, at]) => n + " @ " + at.join(" / "));
+};
+const PAGE_SCRIPTS = (() => {
+  const dir = path.join(__dirname, "..", "public", "js");
+  const names = new Set([...INDEX_SRC.matchAll(/<script src="js\/(app-[\w-]+\.js)"/g)].map((m) => m[1]));
+  for (const f of [...names]) for (const m of fs.readFileSync(path.join(dir, f), "utf8").matchAll(/loadScriptOnce\("js\/(app-[\w-]+\.js)"\)/g)) names.add(m[1]);
+  const out = {};
+  for (const f of names) out[f] = fs.readFileSync(path.join(dir, f), "utf8");
+  return out;
+})();
+const DUP_FNS = dupGlobalFns(PAGE_SCRIPTS);
+// 反向对照：把 dirWithSlash 改回原来的 dirOf，这把尺子必须当场量出来
+const DUP_FNS_OLD = dupGlobalFns(Object.assign({}, PAGE_SCRIPTS, { "app-01.js": PAGE_SCRIPTS["app-01.js"].replace("function dirWithSlash(", "function dirOf(") }));
+
 const TURNOUT_CHECKS = `
 (async () => {
   const names = [];
@@ -420,6 +445,15 @@ const TURNOUT_CHECKS = `
   const F = (name, size) => ({ name, size: size || 100, mtime: "2026-09-05T00:00:00.000Z" });
   const fresh = () => { const d = document.createElement("div"); document.body.appendChild(d); return d; };
   const cards = (b) => [...b.querySelectorAll(".out-card")].map((c) => c.dataset.name);
+
+  // ---- 两个目录函数各管各的 ----
+  // 这一屏把路径助手和成果段放在同一个作用域里跑，跟真页面一样。以前两个都叫 dirOf：
+  // 成果段那个（带尾斜杠）是后声明的，函数提升后把路径助手那个整个顶掉，预览 markdown 拿到的目录多一截斜杠
+  ok("dirOf 不带尾斜杠，没被成果段顶掉", dirOf("x/y/z.md") === "x/y" && dirOf("z.md") === "", dirOf("x/y/z.md"));
+  ok("dirWithSlash 带尾斜杠（成果包的键就长这样）", dirWithSlash("x/y/z.md") === "x/y/" && dirWithSlash("z.md") === "", dirWithSlash("x/y/z.md"));
+  const PAGE_SCRIPT_N = ${Object.keys(PAGE_SCRIPTS).length}, DUP_FNS = ${JSON.stringify(DUP_FNS)}, DUP_FNS_OLD = ${JSON.stringify(DUP_FNS_OLD)};
+  ok("主页面的 app-*.js 之间没有同名的全局函数声明（" + PAGE_SCRIPT_N + " 个文件）", PAGE_SCRIPT_N >= 7 && DUP_FNS.length === 0, DUP_FNS.join("；"));
+  ok("反向对照：dirWithSlash 改回 dirOf，同名检查当场量得出来", DUP_FNS_OLD.some((d) => d.startsWith("dirOf @ app-01.js:")), DUP_FNS_OLD.join("；"));
 
   // 事故原样重演：8 个擦水印用的中间文件 + 1 张最终成品
   const mid = ["海报.png","_corner.png","_tab3.png","_tab2.png","_tab1.png","_bottom.png","海报v2.png","_wm2.png"].map((n) => F(n));
@@ -2230,8 +2264,8 @@ const CMP_CHECKS = `
   note.lastChild.textContent = compactRunText(20, 0);
   ok("压缩开跑就有一行字，不是一个不知道在干什么的转圈", rows().length === 1 && txt().length > 0, txt());
   ok("这行字说清在压什么（多少条）", /20 条/.test(txt()), txt());
-  ok("这行字说清压完还会接着跑，不是任务挂了", /压完这一轮才开跑/.test(txt()), txt());
-  ok("这行字说清原文不会丢（压缩只搬家不销毁）", /原文归档不删/.test(txt()), txt());
+  ok("这行字说清压完还会接着跑，不是任务挂了", /压完再跑/.test(txt()), txt());
+  ok("这行字说清原文不会丢（压缩只搬家不销毁）", /原文不删/.test(txt()), txt());
 
   // ② 走秒：没有真进度可报，能说的实话只有「已经等了多久」。这里量的是**文本真的变了**，
   //    不是「那个函数被调用过」——只验调用的话，把里头的秒数写死成 0 测试照样全绿
@@ -2244,7 +2278,7 @@ const CMP_CHECKS = `
   const same = compactNote(proc);
   ok("压完拿到的还是那一行（同一个节点，不是新建的）", same === note);
   same.classList.remove("running");
-  same.lastChild.textContent = "会话较长，已把早前 20 条消息压缩成一条摘要（要点保留，原文在 data/compact-archive 有归档）";
+  same.lastChild.textContent = "已把早前 20 条消息压成摘要（原文存 data/compact-archive）";
   ok("★压完只有一行★ 摞两行的话，历史里永远留着一句停在「正在压…」，看着像卡死", rows().length === 1, rows().length + " 行");
   ok("压完那行不再是「正在压」", !/正在把早前/.test(txt()) && !same.classList.contains("running"), txt());
   ok("压完报的是结果（压掉多少、原文在哪）", /20 条/.test(txt()) && /compact-archive/.test(txt()), txt());
@@ -2287,10 +2321,10 @@ function testCompactWiring() {
     try { return new RegExp("^" + m[1] + "$"); } catch { return null; }
   }).filter(Boolean);
   const built = [
-    "正在把早前 20 条消息压成一份摘要…已等 8 秒（压完这一轮才开跑，原文归档不删）",
-    "会话较长，已把早前 20 条消息压缩成一条摘要（要点保留，原文在 data/compact-archive 有归档）",
+    "正在把早前 20 条消息压成摘要…已等 8 秒（压完再跑，原文不删）",
+    "已把早前 20 条消息压成摘要（原文存 data/compact-archive）",
     "会话太长，早前 20 条压成了摘要（要点保留）",
-    "这一轮没压成：HTTP 429 太快了。早前的内容一条没动，接着跑（上下文更紧了，可在 设置→智能体设置 调大预算）",
+    "压缩失败：HTTP 429 太快了。原内容未动（可在 设置→智能体设置 调大预算）",
     "这一轮没压成：HTTP 429 太快了（早前的内容一条没动）",
     "压缩没跑完这一轮就断了（早前的内容一条没动，原文也没删）",
   ];
@@ -3079,7 +3113,7 @@ const DEAD_CHECKS = `
   await renderAutomPage();
   ok("自动化：403 没把整页炸空（以前 list.filter 直接 TypeError）", html().length > 0, html().slice(0, 80));
   ok("自动化：把服务端那句话原样摆出来", html().includes("归平台管理员管"), html().slice(0, 200));
-  ok("自动化：顺带说清为什么（跑在服务器上、花服务器的额度）", html().includes("你自己要跑的活"));
+  ok("自动化：顺带说清为什么（花服务器的额度）", html().includes("服务器额度") && html().includes("自己的活直接在对话里说"));
   ok("自动化：不再画那排点了就 403 的按钮", !page.querySelector("#at-new") && !page.querySelector("#at-tpl"));
 
   window.automState.tab = "runs";
@@ -3276,26 +3310,26 @@ const DEAD_CHECKS = `
 
   viewResp = { code: 404, body: "文件不存在" };
   let pv = await previewOf("任务_0916_周报/九月周报.md");
-  ok("预览·md：东西没了就直说「已经不在工作目录里」", pv.innerHTML.includes("已经不在工作目录里"), pv.innerHTML.slice(-300));
+  ok("预览·md：东西没了就直说「已不在工作目录里」", pv.innerHTML.includes("已不在工作目录里"), pv.innerHTML.slice(-300));
   ok("预览·md：不把服务端那句错误当正文渲染出来", !pv.innerHTML.includes("文件不存在"), pv.innerHTML.slice(-300));
   ok("预览·md：给得出下一步——回到那次对话让助理再做一份",
      pv.innerHTML.includes("出自任务") && pv.innerHTML.includes("再做一份"), pv.innerHTML.slice(-300));
 
   pv = await previewOf("任务_0916_周报/页面.html");
-  ok("预览·html：没了也说没了，不再画成一片空白", pv.innerHTML.includes("已经不在工作目录里") && !pv.querySelector("iframe"),
+  ok("预览·html：没了也说没了，不再画成一片空白", pv.innerHTML.includes("已不在工作目录里") && !pv.querySelector("iframe"),
      pv.innerHTML.slice(-260));
 
   pv = await previewOf("任务_0916_周报/场景图.png");
   const brokenImg = pv.querySelector("#lb-img");
   ok("预览·图片：先摆一个 <img>（能画就画，不该为了保险先问一趟）", !!brokenImg);
   await brokenImg.onerror(); // 真浏览器里 404 的 src 就是这么触发的，这里直接调，免得等网络
-  ok("预览·图片：裂图不再是个碎图标，而是说清「已经不在」", pv.innerHTML.includes("已经不在工作目录里"), pv.innerHTML.slice(-260));
+  ok("预览·图片：裂图不再是个碎图标，而是说清「已经不在」", pv.innerHTML.includes("已不在工作目录里"), pv.innerHTML.slice(-260));
 
   // 阴性对照：东西还在的时候，三种文件都得真画出来，一个都不许误报成「没了」
   viewResp = { code: 200, body: "# 九月周报\\n正文两行" };
   pv = await previewOf("任务_0916_周报/九月周报.md");
   ok("反向对照·md：文件在就渲染正文，不误报「已经不在」",
-     pv.innerHTML.includes("正文两行") && !pv.innerHTML.includes("已经不在工作目录里"), pv.innerHTML.slice(-260));
+     pv.innerHTML.includes("正文两行") && !pv.innerHTML.includes("已不在工作目录里"), pv.innerHTML.slice(-260));
 
   viewResp = { code: 200, body: "<!doctype html><h1>一张真网页</h1>" };
   pv = await previewOf("任务_0916_周报/页面.html");
@@ -3308,13 +3342,13 @@ const DEAD_CHECKS = `
   pv = await previewOf("任务_0916_周报/场景图.png");
   await pv.querySelector("#lb-img").onerror();
   ok("反向对照·图片：东西明明还在，那就是文件坏了，不能说成「已经不在」",
-     pv.innerHTML.includes("文件可能是坏的") && !pv.innerHTML.includes("已经不在工作目录里"), pv.innerHTML.slice(-260));
+     pv.innerHTML.includes("文件可能是坏的") && !pv.innerHTML.includes("已不在工作目录里"), pv.innerHTML.slice(-260));
 
   // 读不出来和没了是两回事，混为一谈会把人支去找一个其实还在的文件
   viewResp = { code: 500, body: "boom" };
   pv = await previewOf("任务_0916_周报/九月周报.md");
   ok("预览：服务端出错说的是「预览不了：HTTP 500」，不能说成「文件已经不在」",
-     pv.innerHTML.includes("HTTP 500") && !pv.innerHTML.includes("已经不在工作目录里"), pv.innerHTML.slice(-260));
+     pv.innerHTML.includes("HTTP 500") && !pv.innerHTML.includes("已不在工作目录里"), pv.innerHTML.slice(-260));
   viewResp = { code: 200, body: "# 九月周报" };
 
   // ⑤c-3 Office 三件套 + zip。
@@ -3373,11 +3407,11 @@ const DEAD_CHECKS = `
   // 出错的两种，一样不许混为一谈
   ovResp = { code: 404, body: { error: "文件不存在" } };
   pv = await libPreviewOf("周报/九月.docx");
-  ok("预览·docx：404 说的是「已经不在」，不是「预览不了」", pv.innerHTML.includes("已经不在"), pv.innerHTML.slice(-260));
+  ok("预览·docx：404 说的是「已经不在」，不是「预览不了」", pv.innerHTML.includes("已不在"), pv.innerHTML.slice(-260));
   ovResp = { code: 500, body: { error: "这个文件损坏了，解不开" } };
   pv = await libPreviewOf("周报/九月.docx");
   ok("预览·docx：拆不开就把服务端那句原话摆出来，别说成文件没了",
-     pv.innerHTML.includes("这个文件损坏了") && !pv.innerHTML.includes("已经不在"), pv.innerHTML.slice(-260));
+     pv.innerHTML.includes("这个文件损坏了") && !pv.innerHTML.includes("已不在"), pv.innerHTML.slice(-260));
   ovResp = { code: 200, body: {} };
 
   // Office 97-2003：是格式的事，不是文件坏了。以前它掉进兜底的 <pre>，
@@ -3431,12 +3465,12 @@ const DEAD_CHECKS = `
   pv = await previewOf("任务_0916_周报/旁白.mp3");
   await pv.querySelector("#lb-av").onerror();
   ok("预览·mp3：文件还在却放不动，说的是编码不支持，并指一条走得通的路",
-     pv.innerHTML.includes("编码不支持") && !pv.innerHTML.includes("已经不在工作目录里"), pv.innerHTML.slice(-300));
+     pv.innerHTML.includes("编码不支持") && !pv.innerHTML.includes("已不在工作目录里"), pv.innerHTML.slice(-300));
   viewResp = { code: 404, body: "文件不存在" };
   pv = await previewOf("任务_0916_周报/旁白.mp3");
   await pv.querySelector("#lb-av").onerror();
   ok("预览·mp3：东西真没了还是那句「已经不在」，不赖到编码头上",
-     pv.innerHTML.includes("已经不在工作目录里") && !pv.innerHTML.includes("编码不支持"), pv.innerHTML.slice(-300));
+     pv.innerHTML.includes("已不在工作目录里") && !pv.innerHTML.includes("编码不支持"), pv.innerHTML.slice(-300));
 
   // ⑤c-5 后缀就摆明不是文字的（.psd / .sqlite / .heic…）：别先花一趟把它当文本拉回来
   viewResp = { code: 200, body: "" };
@@ -3449,7 +3483,7 @@ const DEAD_CHECKS = `
   viewResp = { code: 404, body: "文件不存在" };
   pv = await previewOf("任务_0916_周报/主视觉.psd");
   ok("预览·psd：东西没了先说没了，「二进制」是次要的",
-     pv.innerHTML.includes("已经不在工作目录里"), pv.innerHTML.slice(-260));
+     pv.innerHTML.includes("已不在工作目录里"), pv.innerHTML.slice(-260));
 
   // 认不出的后缀只能读回来看内容：NUL 字节就是二进制，摆一屏乱码不如直说
   viewResp = { code: 200, body: "PK\u0003\u0004\u0000\u0000乱码" };
@@ -4114,13 +4148,13 @@ const GATE_CHECKS = `
   // 媒体那几路也收起来了：默认一路一行，说明和表单都在折叠里，点开才出来
   ok("看图 / 画图 / 视频 / 配音 / 转写 默认全折着，几段说明不再一起摊在屏上",
     !mpo.querySelector(".mm-new") && !mpo.querySelector(".mm-form")
-    && !/你粘贴（⌘V）或拖进来的截图/.test(mpo.textContent) && /还没配/.test(mpo.textContent),
+    && !/看你粘贴或拖进来的图/.test(mpo.textContent) && /还没配/.test(mpo.textContent),
     "添加钮 " + mpo.querySelectorAll(".mm-new").length + " · 表单 " + mpo.querySelectorAll(".mm-form").length);
   mpo.querySelector('.ch-head[data-cap="image"]').onclick();
   const mpo2 = mBody.querySelector("#settings-pane");
   ok("点开「画图」那一路：说明、已配模型、添加钮都出来了，其余几路还收着",
     mpo2.querySelectorAll(".mm-new").length === 1 && mpo2.querySelector(".mm-new").dataset.cap === "image"
-    && mpo2.textContent.includes("/images/generations") && !/你粘贴（⌘V）或拖进来的截图/.test(mpo2.textContent),
+    && mpo2.textContent.includes("说「画一张…」时用它") && !/看你粘贴或拖进来的图/.test(mpo2.textContent),
     "展开了 " + mpo2.querySelectorAll(".mm-new").length + " 路");
   // 媒体那一节的小标题不在 .card-item 里，字重得自己带；图标跟字之间也得留条缝，
   // 不然渲染出来是「⊠看图」，读着像乱码而不是图标。这里用的是全站统一那个 .hub-sec-title
@@ -4195,7 +4229,7 @@ const GATE_CHECKS = `
   ok("★主模型自己会看图：格子里写的就是主模型★，不是这儿挂的那个",
     eyeText().includes("主力") && eyeText().includes("主模型自己会看图") && !eyeText().includes("qwen-vl-max"), eyeText());
   ok("挂着的那个也没被吞掉：写明它是待命的备选", eyeText().includes("备选待命"), eyeText());
-  ok("这时候不该再冒「会拿主模型去看而它看不了图」那条警告", !paneText().includes("而它标了不会看图"), eyeText());
+  ok("这时候不该再冒「会拿主模型去看而它看不了图」那条警告", !paneText().includes("又不会看图"), eyeText());
 
   mods = [{ name: "主力", model: "deepseek-chat", api_key: "x", channel: "or", caps: ["tools"] }];
   await renderSettings("models");
@@ -4205,7 +4239,7 @@ const GATE_CHECKS = `
   medias = [];
   await renderSettings("models");
   ok("★反向对照★ 主模型看不了图、这一路又空着：格子写「跟随对话模型」并且把警告冒出来",
-    eyeText().includes("跟随对话模型") && paneText().includes("而它标了不会看图"), eyeText());
+    eyeText().includes("跟随对话模型") && paneText().includes("又不会看图"), eyeText());
 
   // 没勾过 caps 的老配置在这一屏一律按「不会看图」算：猜错了格子就会当着用户的面撒谎，
   // 真发请求那一步 tools.js 才按型号名兜底（同一个理由见 media-models.js 的 capOfModel）
@@ -4323,7 +4357,7 @@ const GATE_CHECKS = `
   mtip = await openMm();
   provModelsDown = false;
   ok("★请求根本没发出去时也得说一句★ 抹掉那行字的话，界面上和「问到了、就是没有」完全一样",
-    mtip.textContent.trim().length > 8 && /没发出去|没能问到/.test(mtip.textContent), JSON.stringify(mtip.textContent));
+    mtip.textContent.trim().length > 8 && /没发出去|没能问到|没连上/.test(mtip.textContent), JSON.stringify(mtip.textContent));
 
   provModels = { ok: false, why: "测试里不出网", models: [] };
 
@@ -5220,6 +5254,47 @@ const ONB_CHECKS = `
   ok("大图退完了，再按一下才轮到向导", !mask.classList.contains("show") && FIGCLOSED.length === 1);
   mm.classList.remove("show");
 
+  // ---- 验活中途抛错：finally 不许吞 ----
+  // 以前 finally 里写的是 if (!go.isConnected) return;——按钮已经不在文档里（向导被重画 / 关掉）的那一刻，
+  // 这句 return 会把 try 里抛出来的错整个吞掉：界面停在「正在验活…」，控制台也一个字没有
+  forget();
+  ST = { ...ST, seen: false, needs_setup: true, brain: { ok: false, via: "api", name: "", model: "" } };
+  await openOnboarding(); await tick();
+  q("#onb-model").value = "DeepSeek"; q("#onb-model").dispatchEvent(new Event("change"));
+  ONB_POST_OK = true;
+  q("#onb-key").value = "sk-fin";
+  const finGo = q("#onb-go");
+  const realRefresh = refreshSettingsCache;
+  refreshSettingsCache = () => { finGo.remove(); throw new Error("刷新设置缓存炸了"); };
+  let finErr = null;
+  try { await finGo.onclick(); } catch (e) { finErr = e; }
+  refreshSettingsCache = realRefresh;
+  ok("★验活中途抛错：错冒得出来，没被 finally 吞掉★", !!finErr && /刷新设置缓存炸了/.test(finErr.message), String(finErr));
+  ok("按钮已不在文档里：finally 照样放开禁用，只是不去改它的字",
+     !finGo.disabled && finGo.textContent.includes("正在验活"), finGo.disabled + " | " + finGo.textContent);
+  ok("反向对照：同一条路不抛错时照常翻到下一步（上面那个错不是被这条路本身弄出来的）",
+     await (async () => {
+       ST = { ...ST, seen: false, needs_setup: true, brain: { ok: false, via: "api", name: "", model: "" } };
+       forget(); await openOnboarding(); await tick();
+       q("#onb-model").value = "DeepSeek"; q("#onb-model").dispatchEvent(new Event("change"));
+       q("#onb-key").value = "sk-fin2";
+       let e2 = null;
+       try { await q("#onb-go").onclick(); } catch (e) { e2 = e; }
+       return !e2 && steps.querySelector(".onb-step.cur").textContent.includes("联网");
+     })(), steps.querySelector(".onb-step.cur") && steps.querySelector(".onb-step.cur").textContent);
+  closeOnboarding();
+  // 真源码里这块 finally 不许再出现 return（静态闸：上面那条只覆盖了验活这一颗按钮）
+  const finSrc = ${JSON.stringify(ONB_SRC)};
+  const finBlocks = [...finSrc.matchAll(/\\} finally \\{([\\s\\S]*?)\\n    \\}/g)].map((m) => m[1].replace(/\\/\\/.*$/gm, ""));
+  ok("向导段里的 finally 块都不带 return（注释不算）",
+     finBlocks.length > 0 && finBlocks.length === finSrc.split("} finally {").length - 1 && finBlocks.every((b) => !/\\breturn\\b/.test(b)),
+     finBlocks.length + " 块：" + finBlocks.join(" || "));
+  // 反向对照：把改之前那块原样喂给同一把尺子，得量得出来
+  const finOld = "    } finally {\\n      go.disabled = false;\\n      if (!go.isConnected) return;\\n      go.textContent = form.hidden ? \\"下一步\\" : \\"验活并继续\\";\\n    }\\n";
+  const finOldBlocks = [...finOld.matchAll(/\\} finally \\{([\\s\\S]*?)\\n    \\}/g)].map((m) => m[1].replace(/\\/\\/.*$/gm, ""));
+  ok("反向对照：改之前那块（finally 里 if (!go.isConnected) return;）这把尺子当场量得出来",
+     finOldBlocks.length === 1 && /\\breturn\\b/.test(finOldBlocks[0]), finOldBlocks);
+
   return names;
 })().catch((e) => { throw new Error("[向导] " + ((e && (e.stack || e.message)) || String(e)) + " | 已过 " + (window.__onbNames || 0)); })
 `;
@@ -6044,6 +6119,23 @@ const PET_CARD_SRC = (() => {
   if (p0 < 0 || p1 < 0) throw new Error("宠物卡切片锚点丢了");
   return APP05.slice(p0, p1);
 })();
+// 头像菜单「检查更新」→ checkUpdate → 设置·关于页那颗按钮 → /api/update?force=1 → drawUpdate。
+// 这条链上两段都切真源码：checkUpdate（app-02）和 renderAboutPane（app-06，只切到深链落地之前）
+const CHECK_UPD_SRC = (() => {
+  const c0 = APP02.indexOf("async function checkUpdate() {"), c1 = APP02.indexOf("const SRC_TXT", c0);
+  if (c0 < 0 || c1 < 0) throw new Error("checkUpdate 切片锚点丢了");
+  return APP02.slice(c0, c1);
+})();
+const ABOUT_PANE_SRC = (() => {
+  const b0 = APP06.indexOf("function renderAboutPane(pane) {"), b1 = APP06.indexOf("(function deepLink()", b0);
+  if (b0 < 0 || b1 < 0) throw new Error("关于页切片锚点丢了");
+  return APP06.slice(b0, b1);
+})();
+// 前端还有没有谁在打老的 git 更新接口（1.1 把服务端那条删了，谁还打谁就是 404）
+const UPD_OLD_RE = /fetch\(\s*["'`]\/api\/app\/update-check/;
+const UPD_OLD_CALLERS = fs.readdirSync(path.join(__dirname, "..", "public", "js"))
+  .filter((f) => f.endsWith(".js"))
+  .filter((f) => UPD_OLD_RE.test(fs.readFileSync(path.join(__dirname, "..", "public", "js", f), "utf8")));
 const MENU_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style><body>"
   + "<div class='hist-item active' id='hia'>当前</div>"
   + "<div id='user-row' style='position:relative;width:260px;margin-top:320px'><div class='user-menu' id='user-menu'></div></div></body>";
@@ -6052,8 +6144,30 @@ const MENU_STUBS = `
   function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
   function avatarBits(av, name) { return { cls: "", html: esc(String(name || "?").slice(0, 1).toUpperCase()) }; }
   function displayName(u) { return (u && (u.nickname || u.username)) || ""; }
-  const MODALS = []; function openModal(k, sub) { MODALS.push(k + ":" + (sub || "")); }
-  function renderProfile() {} function checkUpdate() { MODALS.push("update"); }
+  const MODALS = [];
+  // 「检查更新」这一行不再塞桩：checkUpdate 用真源码，拦的是它最后落到的那条请求。
+  // openModal 的替身照 renderSettings 的样子，把真的关于页（renderAboutPane）画进 #ab-host；
+  // fetch 只截 /api/update 和老的 /api/app/update-check（记下来），别的路原样放给真 fetch
+  const UPD_FETCHES = []; let OPEN_ABOUT = true;
+  let UPD_REPLY = () => ({ error: "夹具还没配这一问" });
+  const mask = { classList: { remove() {} } }; function openOnboarding() {}
+  function setMsg(el, icon, text) { el.textContent = String(text); }
+  async function openModal(k, sub) {
+    MODALS.push(k + ":" + (sub || ""));
+    if (k !== "settings" || sub !== "about" || !OPEN_ABOUT) return;
+    let host = document.getElementById("ab-host");
+    if (!host) { host = document.createElement("div"); host.id = "ab-host"; document.body.appendChild(host); }
+    host.innerHTML = ""; renderAboutPane(host);
+  }
+  const realFetch = window.fetch.bind(window);
+  function fetch(u, o) {
+    const url = String(u);
+    if (!/^\\/api\\/(update|app\\/update-check)\\b/.test(url)) return realFetch(u, o);
+    UPD_FETCHES.push(((o && o.method) || "GET") + " " + url);
+    const body = UPD_REPLY(/[?&]force=1\\b/.test(url));
+    return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
+  }
+  function renderProfile() {}
   // 这几格照着 account.js 的 publicUser 摆。少一格 can_admin，替身就跟真界面分了叉，
   // 分叉之后这一整块测的是一个线上不存在的界面
   let currentUser = { username: "demo", role: "admin", role_label: "管理员", can_admin: true, is_admin: true, avatar: "", credits: 0 }; const creditsOn = false;
@@ -6221,6 +6335,70 @@ const MENU_CHECKS = `
   ok("超管的头衔写的是「· 超级管理员」，不是「· 管理员」", /· 超级管理员/.test(menu.querySelector(".um-head").textContent));
   currentUser = { username: "demo", role: "admin", role_label: "管理员", can_admin: true, is_admin: true, avatar: "", credits: 0 };
   closeUserMenu();
+
+  // ── 「检查更新」：以前走 POST /api/app/update-check，那条拿 git 数提交——装包用户没有 .git，
+  // 永远报不出新版；1.1 又把服务端那条删了，再点就是 404。现在跟关于页同一条路：GET /api/update?force=1 ──
+  // 两份回答故意不一样：6 小时缓存那份说「已是最新」，force 那份说「有新版」。画出来是哪份，就知道走没走 force
+  UPD_REPLY = (force) => force
+    ? { current: "1.2.3", install: "packaged", latest: "1.3.0", has_update: true, url: "https://example.invalid/rel", how: "去下载页拿新版。" }
+    : { current: "1.2.3", install: "packaged", latest: "1.2.3", has_update: false, cached: true, how: "" };
+  const abQ = (s) => document.querySelector("#ab-host " + s);
+  MODALS.length = 0; TOASTS.length = 0; UPD_FETCHES.length = 0;
+  openUserMenu();
+  menu.querySelector('[data-act="update"]').click();
+  await tick(); await tick();
+  ok("点「检查更新」：菜单关了，打开的是 设置→关于", !menu.classList.contains("show") && MODALS.join() === "settings:about", MODALS.join());
+  ok("先说一声在查", TOASTS[0] === "正在检查更新…", TOASTS.join());
+  ok("★请求走 GET /api/update?force=1★", UPD_FETCHES.includes("GET /api/update?force=1"), UPD_FETCHES.join());
+  ok("★反向★ 一条都没打到老的 /api/app/update-check", !UPD_FETCHES.some((x) => /update-check/.test(x)), UPD_FETCHES.join());
+  ok("结果是关于页的 drawUpdate 画的：版本号 + 安装方式", !!abQ("#ab-ver") && abQ("#ab-ver").textContent === "当前 v1.2.3 · 安装包", abQ("#ab-ver") && abQ("#ab-ver").textContent);
+  ok("★画出来的是 force 那份★（有新版 v1.3.0 + 去下载页，链接换成服务端给的）",
+    /有新版 v1\\.3\\.0/.test(abQ("#ab-up-how").textContent) && abQ("#ab-up-link").style.display !== "none" && abQ("#ab-up-link").getAttribute("href") === "https://example.invalid/rel",
+    abQ("#ab-up-how").textContent);
+  ok("查完没留「查询中…」挂着", abQ("#ab-up-msg").textContent === "", abQ("#ab-up-msg").textContent);
+  ok("整个过程没弹红字", TOASTS.length === 1, TOASTS.join());
+
+  // 反向对照：光打开关于页、不按那颗按钮，画的就是缓存那份——证明上面那条「有新版」确实来自 force
+  UPD_FETCHES.length = 0;
+  await openModal("settings", "about"); await tick();
+  ok("反向对照：只开关于页只问缓存（不带 force）", UPD_FETCHES.join() === "GET /api/update", UPD_FETCHES.join());
+  ok("反向对照：画出来的是「已是最新」，不是「有新版」", /已是最新/.test(abQ("#ab-up-how").textContent) && !/有新版/.test(abQ("#ab-up-how").textContent), abQ("#ab-up-how").textContent);
+
+  // 强查还在路上、缓存那份先回来：「查询中…」得一直挂到强查落地。
+  // 关于页一打开就先问一次缓存；两问并发的话，缓存那份回来时顺手把「查询中…」抹了——
+  // 用户看到「已是最新」，以为已经强查完了。所以 checkUpdate 要等缓存那一问落了地再按按钮
+  const FORCE_BODY = UPD_REPLY(true), CACHE_BODY = UPD_REPLY(false);
+  let releaseForce = null;
+  UPD_REPLY = (force) => force ? new Promise((r) => { releaseForce = () => r(FORCE_BODY); }) : CACHE_BODY;
+  UPD_FETCHES.length = 0; TOASTS.length = 0;
+  const pendingCheck = checkUpdate();
+  await tick(); await tick();
+  ok("★强查还没回来：缓存那份先画出来，「查询中…」照样挂着★",
+    !!releaseForce && /已是最新/.test(abQ("#ab-up-how").textContent) && abQ("#ab-up-msg").textContent === "查询中…", [UPD_FETCHES.join(), abQ("#ab-up-msg").textContent]);
+  ok("先等缓存那一问落地，再发强查（两问不并发）", UPD_FETCHES.join() === "GET /api/update,GET /api/update?force=1", UPD_FETCHES.join());
+  releaseForce(); await pendingCheck; await tick();
+  ok("强查落地：换成 force 那份，「查询中…」撤掉", /有新版 v1\\.3\\.0/.test(abQ("#ab-up-how").textContent) && abQ("#ab-up-msg").textContent === "", abQ("#ab-up-msg").textContent);
+  // 反向对照：照改之前那样，关于页一开就按按钮（两问并发）——强查还没回来「查询中…」就没了，这把尺子得量得出来
+  releaseForce = null;
+  await openModal("settings", "about");
+  document.getElementById("ab-up-btn").click();
+  await tick(); await tick();
+  ok("反向对照：一开就按，强查还在路上「查询中…」就被缓存那份抹了", !!releaseForce && abQ("#ab-up-msg").textContent === "", abQ("#ab-up-msg").textContent);
+  releaseForce(); await tick();
+  UPD_REPLY = (force) => force ? FORCE_BODY : CACHE_BODY;
+
+  // 设置页没打开（关于页那颗按钮不在）：不许静默——说一声这次没查，也不许偷偷去打别的接口
+  document.getElementById("ab-host").remove();
+  OPEN_ABOUT = false; MODALS.length = 0; TOASTS.length = 0; UPD_FETCHES.length = 0;
+  await checkUpdate(); await tick();
+  ok("设置页没打开：说一声「这次没查」，不静默", TOASTS.includes("设置页没打开，这次没查更新"), TOASTS.join());
+  ok("设置页没打开：一条请求都没发", UPD_FETCHES.length === 0, UPD_FETCHES.join());
+  OPEN_ABOUT = true;
+
+  // 静态兜底：public/js 里谁都不许再 fetch 老接口
+  const oldCallers = ${JSON.stringify(UPD_OLD_CALLERS)};
+  ok("public/js 里没有谁还在 fetch /api/app/update-check", oldCallers.length === 0, oldCallers.join());
+  ok("反向对照：这把尺子认得出老写法", ${UPD_OLD_RE}.test('fetch("/api/app/update-check", { method: "POST" })'));
   return names;
 `;
 
@@ -6345,6 +6523,100 @@ const TRAIL_CHECKS = `
   u10b.handleEvent({ type: "status", text: "模型 40 秒没吐字，重试中…" });
   ok("负向控制：普通状态仍走会转的提示行，不许顶掉牌子", !!u10b.turn.querySelector(".thinking-hint .spinner") && u10b.turn.querySelectorAll(".run-eng").length === 1);
   u10b.finish();
+
+  // ---- 上游重试倒计时条：status 带 retry 字段（{ kind, attempt, total, delayMs }）----
+  // 以前重试只有底下一行转圈的字，说不清在等什么、还要等多久。带了 retry 就在回合顶上倒数，
+  // 正文一来就撤；不带 retry 的老后端一个像素都不变。
+  const RETRY_TXT = "上游出错，3 秒后自动重试（第 2/3 次）：LLM 接口错误 503";
+  const retryEv = (attempt, delayMs) => ({ type: "status", text: RETRY_TXT, retry: { kind: "retry", attempt, total: 3, delayMs } });
+  const rbOf = (u) => u.turn.querySelector(".retry-bar");
+  const rbText = (u) => rbOf(u).querySelector(".rb-txt").textContent;
+  const textNodes = (el) => { const out = []; const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT); while (w.nextNode()) out.push(w.currentNode.nodeValue); return out; };
+  const uR = createTurnUI("跑一趟", "craft", "s_t");
+  uR.handleEvent({ type: "step_start", step: 1 });
+  uR.handleEvent(retryEv(2, 3000));
+  const rb = rbOf(uR);
+  ok("带 retry：回合最上面出现倒计时条", !!rb && uR.body.firstElementChild === rb);
+  ok("条上一句话说清等几秒、第几次", rbText(uR) === "上游繁忙，3 秒后第 2/3 次重试", rbText(uR));
+  ok("后端原话（带真实报错）留在悬停里，不替人猜原因", rb.title === RETRY_TXT, rb.title);
+  ok("同一句不再往思考提示里塞一遍", !/上游出错/.test((uR.turn.querySelector(".thinking-hint") || {}).textContent || ""));
+  ok("有一颗关掉的按钮", !!rb.querySelector("button.rb-x"));
+  ok("真样式：钉在视口顶上，长回合滚到底也看得见", getComputedStyle(rb).position === "sticky" && getComputedStyle(rb).top === "0px", getComputedStyle(rb).position);
+  ok("折叠条那行「在干什么」换成重试图标", liveActivity(retryEv(2, 3000), "").icon === "refresh-cw" && liveActivity({ type: "status", text: "模型 40 秒没吐字" }, "").icon === "loader-circle");
+  window.__RB_NODES = { wait: textNodes(rb.querySelector(".rb-txt")) };
+  // 等得短的那一条：倒计时走完、正文还没来，改说「正在重试」，不能停在「0 秒后」
+  const uZ = createTurnUI("跑一趟", "craft", "s_t");
+  uZ.handleEvent(retryEv(3, 400));
+  ok("不足一秒按 1 秒说（不说 0 秒后）", rbText(uZ) === "上游繁忙，1 秒后第 3/3 次重试", rbText(uZ));
+  await new Promise((r) => setTimeout(r, 1300));
+  // 只钉「比 3 小」：机器忙的时候定时器会晚到，卡死在「正好是 2」会误报；不走表时它永远是 3，照样红
+  const secNow = rb.querySelector(".rb-sec");
+  ok("数字在往下走：3 → 2", !!secNow && +secNow.textContent >= 1 && +secNow.textContent < 3, rbText(uR));
+  ok("倒数完还没回话：改说正在重试", rbText(uZ) === "上游繁忙，正在第 3/3 次重试…", rbText(uZ));
+  window.__RB_NODES.going = textNodes(rbOf(uZ).querySelector(".rb-txt"));
+  uR.handleEvent({ type: "text", delta: "好了，接着来" });
+  ok("正文一来倒计时条就撤", !rbOf(uR));
+  uZ.handleEvent({ type: "tool_use", id: "z1", name: "read_file", title: "读 a.md" });
+  ok("重试成功直接调工具（没有正文）也撤", !rbOf(uZ));
+  uZ.finish();
+  // 关掉：同一段重试里后面几次都别再弹；上游回过话之后再重试是另一回事，照样弹
+  uR.handleEvent(retryEv(1, 5000));
+  rbOf(uR).querySelector(".rb-x").click();
+  ok("点 × 关掉", !rbOf(uR));
+  uR.handleEvent(retryEv(2, 5000));
+  ok("关掉之后同一段重试的下一次不再弹", !rbOf(uR));
+  uR.handleEvent({ type: "text", delta: "。" });
+  uR.handleEvent(retryEv(1, 5000));
+  ok("上游回过话后再重试，照样弹", !!rbOf(uR) && rbText(uR) === "上游繁忙，5 秒后第 1/3 次重试", rbText(uR));
+  ok("第二条会换掉第一条，不叠两条", (uR.handleEvent(retryEv(2, 5000)), uR.turn.querySelectorAll(".retry-bar").length === 1) && /第 2\\/3 次/.test(rbText(uR)));
+  // 回话是空的直接续跑 / 睡醒重跑本步：没有正文也没有工具调用，新的一步开了就得撤，不然一直挂着「正在重试」
+  uR.handleEvent({ type: "step_start", step: 2 });
+  ok("新的一步开了（上一次调用已收场）也撤", !rbOf(uR));
+  uR.handleEvent(retryEv(1, 5000));
+  ok("收尾前先确认条还挂着（下一条才不是空跑）", !!rbOf(uR));
+  uR.finish();
+  ok("收尾时还挂着的倒计时条跟着撤", !rbOf(uR));
+  // 负向控制：没带 retry 的 status 照旧走思考提示，不出条
+  const uN = createTurnUI("跑一趟", "craft", "s_t");
+  uN.handleEvent({ type: "status", text: RETRY_TXT });
+  ok("不带 retry：不出倒计时条，照旧是那行转圈的提示", !rbOf(uN) && /LLM 接口错误 503/.test(uN.turn.querySelector(".thinking-hint").textContent));
+  uN.finish();
+  // 后端真发的形状：agent.js 的 retryField 只转 attempt/total/delayMs，不带 kind——上面几条全带 kind，
+  // 把判断收紧成「kind 必须等于 retry」它们照样绿，真接上后端却一条都不出。这条钉住那半边
+  const uK = createTurnUI("跑一趟", "craft", "s_t");
+  uK.handleEvent({ type: "status", text: RETRY_TXT, depth: 0, retry: { attempt: 2, total: 3, delayMs: 3000 } });
+  ok("retry 不带 kind（agent.js 实际转发的形状）照样出条", !!rbOf(uK) && rbText(uK) === "上游繁忙，3 秒后第 2/3 次重试", rbOf(uK) ? rbText(uK) : "没出条");
+  uK.finish();
+  // 别的种类借 retry 这个字段：不能被当成倒计时，照旧走思考提示
+  const uO = createTurnUI("跑一趟", "craft", "s_t");
+  uO.handleEvent({ type: "status", text: RETRY_TXT, retry: { kind: "quota", attempt: 1, total: 3, delayMs: 3000 } });
+  ok("retry.kind 不是 retry：不出条，照旧是思考提示", !rbOf(uO) && /LLM 接口错误 503/.test(uO.turn.querySelector(".thinking-hint").textContent));
+  uO.finish();
+  // 回放（刷新后接回、终端任务从头播）：那几秒早过去了，再倒数一遍是假的
+  const uP = createTurnUI("跑一趟", "craft", "s_t");
+  isReplaying = true;
+  try { uP.handleEvent(retryEv(2, 3000)); } finally { isReplaying = false; }
+  ok("回放不挂倒计时条", !rbOf(uP));
+  uP.finish();
+  // 引擎小牌子在的时候，倒计时条排在它下面，不把「谁在跑」挤下去
+  const uE = createTurnUI("跑一趟", "craft", "s_t");
+  uE.handleEvent({ type: "status", text: "本机 Claude Code 已启动（模型 claude-opus-5，102 个工具），不消耗 API 额度", model: "claude-opus-5" });
+  uE.handleEvent(retryEv(2, 3000));
+  ok("有引擎牌子时排在牌子下面", uE.turn.querySelector(".run-eng").nextElementSibling === rbOf(uE));
+  uE.finish();
+
+  // ---- 回复底下那排按钮：窄窗口下「重新生成」不许一字一行竖着排 ----
+  const btns = [...uE.turn.querySelectorAll(".turn-actions .ta-btn")];
+  ok("每颗 .ta-btn 的真样式都是 nowrap", btns.length >= 5 && btns.every((b) => getComputedStyle(b).whiteSpace === "nowrap"), btns.map((b) => getComputedStyle(b).whiteSpace).join(","));
+  // 光看样式名不够：把这一轮挤到 180px 宽，量「重新生成」那几个字实际排成了几行
+  uE.turn.style.width = "180px";
+  const regen = uE.turn.querySelector('.ta-btn[data-a="regen"]');
+  const lineTops = (b) => { const t = [...b.childNodes].find((n) => n.nodeType === 3 && /重新生成/.test(n.nodeValue)); const rg = document.createRange(); rg.selectNodeContents(t); return new Set([...rg.getClientRects()].map((r) => Math.round(r.top))).size; };
+  ok("挤到 180px 宽，「重新生成」还是一行", lineTops(regen) === 1, String(lineTops(regen)));
+  regen.style.whiteSpace = "normal";
+  ok("反向对照：去掉 nowrap 同样宽度下就折成好几行（这把尺子量得出毛病）", lineTops(regen) > 1, String(lineTops(regen)));
+  regen.style.whiteSpace = "";
+  uE.turn.style.width = "";
 
   // ---- 每步耗时 + 收尾那笔时间账 ----
   // Langfuse 那条路要先去搭实例、填两把钥匙；而「这趟到底慢在哪」本地就该当场答得上来。
@@ -9445,6 +9717,156 @@ const SC_CHECKS = `
   return names;
 })()`;
 
+// ================= 默认快捷键用 Mod：mac 上是 ⌘，Windows/Linux 上是 Ctrl（真源码切片，按平台各开一扇窗） =================
+// 以前默认键写死 Meta+X。Windows/Linux 上 Meta 是 Win 键，默认快捷键在那边一条都按不出来。
+// 平台是源码加载那一刻读 navigator 定下来的，所以每个平台单开一扇新窗，源码进来之前先把 navigator 钉住。
+// 切进来的是整条链：引擎（解析/显示）+ 动作表 + keydown 分发 + 设置页那一屏
+const MOD_DISPATCH_SRC = (() => {
+  const d0 = APP02.indexOf('document.addEventListener("keydown", (e) => {\n  if (window.__scRebinding)');
+  const d1 = APP02.indexOf("// ================= 对话内搜索", d0);
+  if (d0 < 0 || d1 < 0) throw new Error("app-02.js 里找不到快捷键分发那一段");
+  return APP02.slice(d0, d1);
+})();
+const MOD_SRC = APP02.slice(SCE0, SCK1) + "\n" + SHORTCUT_SRC + "\n" + MOD_DISPATCH_SRC + "\n" + APP06.slice(SCP0, SCP1);
+/** 钉平台：uaPlatform 为 null 表示这台浏览器没有 userAgentData（Linux 上的老 Chromium、Firefox），只能退回 navigator.platform */
+const MOD_PIN = (platform, uaPlatform) => `
+  Object.defineProperty(navigator, "platform", { configurable: true, get: () => ${JSON.stringify(platform)} });
+  Object.defineProperty(navigator, "userAgentData", { configurable: true, get: () => (${uaPlatform === null ? "undefined" : JSON.stringify({ platform: uaPlatform, mobile: false, brands: [] })}) });
+`;
+const MOD_PLATFORMS = [
+  { tag: "mac", platform: "MacIntel", ua: "macOS", mac: true, metaName: "⌘" },
+  { tag: "Windows", platform: "Win32", ua: "Windows", mac: false, metaName: "Win" },
+  { tag: "Linux", platform: "Linux x86_64", ua: null, mac: false, metaName: "Super" },
+];
+const MOD_HTML = "<!doctype html><meta charset='utf-8'><style>" + INDEX_CSS + "</style><body>"
+  + "<div id='mask'></div><button id='new-task'></button><button id='toggle-files'></button><textarea id='ta'></textarea><div id='pane'></div></body>";
+const MOD_STUBS = `
+  ${IC_STUB}
+  const CALLED = [], SAVED = [];
+  function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+  function saveSettings(patch) { SAVED.push(JSON.parse(JSON.stringify(patch))); return Promise.resolve({ ok: true }); }
+  function askConfirm() { return Promise.resolve(false); }
+  let settingsCache = { shortcuts: {} };
+  let figZoom = null, pendingQuote = null; const inputEl = null;
+  const mask = document.getElementById("mask");
+  function openModal(k, sub) { CALLED.push("modal:" + k + (sub ? ":" + sub : "")); }
+  function openChatSearch() { CALLED.push("chat-search"); }
+  function closeChatSearch() {} function closeModal() {} function closeFigZoom() {} function clearQuote() {}
+  function curBusy() { return false; } function stopTask() { CALLED.push("stop"); }
+  function navTask(d) { CALLED.push("nav:" + d); }
+  function toggleSidebar() { CALLED.push("toggle-sidebar"); }
+  function toggleAppFullscreen() { CALLED.push("fullscreen"); }
+  function openHub(t) { CALLED.push("hub:" + t); }
+  function openPageView(v) { CALLED.push("view:" + v); }
+  function openAssistView() { CALLED.push("assist"); }
+  document.getElementById("new-task").onclick = () => CALLED.push("new-chat");
+  document.getElementById("toggle-files").onclick = () => CALLED.push("toggle-files");
+`;
+// 改之前那套默认键（写死 Meta）。mac 上换成 Mod 之后必须逐条解析成跟它一模一样的键——mac 用户不许察觉到任何变化
+const MOD_OLD_DEFAULTS = ["Meta+Comma", "Meta+F", "Enter", "Shift+Enter", "Meta+N", "Escape", "Meta+BracketLeft", "Meta+BracketRight", "Meta+B", "Shift+Meta+B",
+  "Ctrl+Meta+F", "Shift+Alt+W", "Shift+Meta+K", "Shift+Meta+E", "Shift+Meta+P", "Shift+Meta+L", "Shift+Meta+T", "Shift+Meta+A"];
+const MOD_CHECKS = (P) => `
+(async () => {
+  const names = [];
+  const TAG = ${JSON.stringify(P.tag)};
+  const ok = (n, c, extra) => { if (!c) throw new Error("[" + TAG + "] " + n + (extra !== undefined ? "：" + JSON.stringify(extra) : "")); names.push(TAG + "：" + n); };
+  const tick = () => new Promise((r) => setTimeout(r, 8));
+  const MAC = ${P.mac ? "true" : "false"};
+  const M = MAC ? "Meta" : "Ctrl";        // 这台的主修饰键
+  const OTHER = MAC ? "Ctrl" : "Meta";    // 另一个（反向对照用）
+  const flag = (m) => (m === "Meta" ? "metaKey" : "ctrlKey");
+  const press = (init, target) => {
+    const ev = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init });
+    (target || document.body).dispatchEvent(ev);
+    return ev;
+  };
+  const def = (id) => SHORTCUT_DEFS.find((d) => d[0] === id)[2];
+
+  ok("平台认对了（SC_MAC = " + MAC + "）", SC_MAC === MAC, SC_PLATFORM);
+
+  // ---- 解析：Mod 按平台落成具体的键 ----
+  ok("Mod+F 解析成 " + M + "+F", canonAccel("Mod+F") === M + "+F", canonAccel("Mod+F"));
+  ok("修饰键照老顺序排（Ctrl → Alt → Shift → Meta）", canonAccel("Shift+Mod+B") === (MAC ? "Shift+Meta+B" : "Ctrl+Shift+B"), canonAccel("Shift+Mod+B"));
+  ok("mod 小写也认", canonAccel("mod+F") === M + "+F", canonAccel("mod+F"));
+  ok("★老存档原样认★ Meta+J / Cmd+J 还是 Meta+J，不会被当成 Mod 改写", canonAccel("Meta+J") === "Meta+J" && canonAccel("Cmd+J") === "Meta+J" && canonAccel("Ctrl+J") === "Ctrl+J");
+  const resolved = SHORTCUT_DEFS.map(([id, , d]) => [id, canonAccel(d)]);
+  ok("默认键解析完不剩 Mod、不剩「|」", resolved.every(([, a]) => a && !/Mod|\\|/.test(a)), resolved);
+  const dup = resolved.map(([, a]) => a).filter((a, i, arr) => arr.indexOf(a) !== i);
+  ok("解析完的默认键之间没有撞车", dup.length === 0, dup);
+  if (MAC) {
+    const old = ${JSON.stringify(MOD_OLD_DEFAULTS)}.map(canonAccel);
+    ok("★mac：默认键逐条跟改之前那套 Meta 写法一模一样★", JSON.stringify(resolved.map(([, a]) => a)) === JSON.stringify(old), resolved);
+  } else {
+    ok("★" + TAG + "：默认键里一个 Meta（Win/Super 键）都没有★", resolved.every(([, a]) => !/Meta/.test(a)), resolved.filter(([, a]) => /Meta/.test(a)));
+  }
+  ok("全屏：" + (MAC ? "mac 上还是 ⌃⌘F" : "这边是 F11（Ctrl+F 已经给了对话内搜索）"), canonAccel(def("fullscreen")) === (MAC ? "Ctrl+Meta+F" : "F11"), canonAccel(def("fullscreen")));
+
+  // ---- 显示：非 mac 写成 Ctrl+Shift+B，不出 ⌘⌃⌥⇧ ----
+  const D = accelDisplay;
+  ok("打开设置显示成 " + (MAC ? "⌘," : "Ctrl+,"), D(def("open-settings")) === (MAC ? "⌘," : "Ctrl+,"), D(def("open-settings")));
+  ok("切右侧面板显示成 " + (MAC ? "⇧⌘B" : "Ctrl+Shift+B"), D(def("toggle-files")) === (MAC ? "⇧⌘B" : "Ctrl+Shift+B"), D(def("toggle-files")));
+  ok("唤起窗口显示成 " + (MAC ? "⌥⇧W" : "Alt+Shift+W"), D(def("toggle-window")) === (MAC ? "⌥⇧W" : "Alt+Shift+W"), D(def("toggle-window")));
+  ok("换行显示成 " + (MAC ? "⇧⏎" : "Shift+Enter"), D(def("newline")) === (MAC ? "⇧⏎" : "Shift+Enter"), D(def("newline")));
+  ok("全屏显示成 " + (MAC ? "⌃⌘F" : "F11"), D(def("fullscreen")) === (MAC ? "⌃⌘F" : "F11"), D(def("fullscreen")));
+  ok("Esc 两边都写 Esc", D("Escape") === "Esc");
+  ok("老存档 Meta+J 显示成 " + (MAC ? "⌘J" : ${JSON.stringify(P.metaName)} + "+J") + "（它按下去就是这个键）", D("Meta+J") === (MAC ? "⌘J" : ${JSON.stringify(P.metaName)} + "+J"), D("Meta+J"));
+  if (!MAC) ok("非 mac：所有默认键的显示里一个 ⌘⌃⌥⇧⏎ 符号都没有", SHORTCUT_DEFS.every(([, , d]) => !/[⌘⌃⌥⇧⏎]/.test(D(d))), SHORTCUT_DEFS.map(([, , d]) => D(d)));
+
+  // ---- 真按键：主修饰键能按出来，另一个按不出来 ----
+  CALLED.length = 0;
+  let ev = press({ key: "f", code: "KeyF", [flag(M)]: true });
+  ok("★真按 " + (MAC ? "⌘F" : "Ctrl+F") + "：对话内搜索开了，默认行为也拦住了★", CALLED.join() === "chat-search" && ev.defaultPrevented, CALLED);
+  CALLED.length = 0;
+  ev = press({ key: "f", code: "KeyF", [flag(OTHER)]: true });
+  ok("反向对照：" + OTHER + "+F 什么都不触发、也不拦", CALLED.length === 0 && !ev.defaultPrevented, CALLED);
+  CALLED.length = 0;
+  press({ key: "B", code: "KeyB", shiftKey: true, [flag(M)]: true });
+  ok("Shift+" + M + "+B 切右侧面板", CALLED.join() === "toggle-files", CALLED);
+  CALLED.length = 0;
+  press({ key: "K", code: "KeyK", shiftKey: true, [flag(M)]: true });
+  ok("Shift+" + M + "+K 开技能广场", CALLED.join() === "hub:skills", CALLED);
+  CALLED.length = 0;
+  press({ key: "[", code: "BracketLeft", [flag(M)]: true }, document.getElementById("ta"));
+  ok("光标在输入框里，" + M + "+[ 照样切上一个任务（带修饰键的组合在输入框里放行）", CALLED.join() === "nav:-1", CALLED);
+  CALLED.length = 0;
+  if (MAC) press({ key: "f", code: "KeyF", ctrlKey: true, metaKey: true }); else press({ key: "F11", code: "F11" });
+  ok("全屏键真按得出来", CALLED.join() === "fullscreen", CALLED);
+
+  // ---- 老存档：存着 Meta+J 的照样生效，默认那个键让出来 ----
+  settingsCache = { shortcuts: { "toggle-sidebar": "Meta+J" } };
+  CALLED.length = 0;
+  press({ key: "j", code: "KeyJ", metaKey: true });
+  ok("★老存档 toggle-sidebar = Meta+J：按 Meta+J 照样切左栏★", CALLED.join() === "toggle-sidebar", CALLED);
+  CALLED.length = 0;
+  press({ key: "b", code: "KeyB", [flag(M)]: true });
+  ok("改绑过之后，默认的 " + M + "+B 让出来了", CALLED.length === 0, CALLED);
+  settingsCache = { shortcuts: {} };
+  CALLED.length = 0;
+  press({ key: "b", code: "KeyB", [flag(M)]: true });
+  ok("反向对照：没改绑时 " + M + "+B 切左栏", CALLED.join() === "toggle-sidebar", CALLED);
+
+  // ---- 设置页那一屏 ----
+  const pane = document.getElementById("pane");
+  const kbd = (id) => pane.querySelector('.sc-edit[data-id="' + id + '"]');
+  renderShortcutsPane(pane, { shortcuts: {} });
+  ok("设置页按这台的写法显示", kbd("chat-search").textContent === (MAC ? "⌘F" : "Ctrl+F") && kbd("toggle-files").textContent === (MAC ? "⇧⌘B" : "Ctrl+Shift+B"), [kbd("chat-search").textContent, kbd("toggle-files").textContent]);
+  ok("没改过的行不挂「恢复默认」", !pane.querySelector("[data-restore]"));
+  renderShortcutsPane(pane, { shortcuts: { "new-chat": "Meta+N" } });
+  ok(MAC ? "mac 上老存档 Meta+N 跟默认 Mod+N 是同一个键：不算改过" : "这边老存档 Meta+N 是 " + ${JSON.stringify(P.metaName)} + "+N：算改过，挂「恢复默认」并照实显示",
+    !!pane.querySelector('[data-restore="new-chat"]') === !MAC && kbd("new-chat").textContent === (MAC ? "⌘N" : ${JSON.stringify(P.metaName)} + "+N"), kbd("new-chat").textContent);
+  renderShortcutsPane(pane, { shortcuts: {} });
+  kbd("new-chat").click();
+  press({ key: "j", code: "KeyJ", [flag(M)]: true });
+  await tick();
+  ok("录新键：存下来的是具体的 " + M + "+J，不是 Mod+J", window.__scRebinding === false && SAVED.length === 1 && SAVED[0].shortcuts["new-chat"] === M + "+J", SAVED);
+  kbd("toggle-sidebar").click();
+  press({ key: "f", code: "KeyF", [flag(M)]: true });
+  ok("录到 " + M + "+F：当场说跟「对话内搜索」冲突（冲突按解析后的键比）", window.__scRebinding === true && /对话内搜索/.test(kbd("toggle-sidebar").textContent), kbd("toggle-sidebar").textContent);
+  press({ key: "Escape", code: "Escape" });
+  ok("冲突之后 Esc 退得出来", window.__scRebinding === false);
+  return names;
+})()`;
+
 // 存盘链路（#91，真源是 app-02.js 的 postJson：
 // 老写法一个 catch 把四种完全不同的事故糊成同一句「接口无响应」。所以这一屏要验的不是
 // 「会不会报错」，而是「几种坏法说出几句**互不相同**的人话」——只测一种坏法，
@@ -9898,6 +10320,7 @@ const OVF_CHECKS = `
     ".at-row .st": "自动化那行右边的状态角标，固定词",
     "ch-count": "渠道条数", "mrow-meta": "模型行的条数与时间", "out-meta": "产出卡上的文件体积",
     "ev-lv": "评测等级，固定词", "ev-code": "评测错误码", "drama-scene-count": "分镜条数",
+    "owb-toast-act": "提示条上那颗按钮，文案是代码里写死的短词（「撤销」「重试失败的 N 条」），塞不进用户内容",
   };
   const stage = document.getElementById("stage");
   stage.style.cssText = "width:420px;padding:0;border:0";
@@ -10322,7 +10745,7 @@ const BUBBLE_CHECKS = `
   const hlTokens = (t) => esc(t);
   const stripSceneTag = (t) => t;
   const render = new Function("turn", "userText", "stripSceneTag", "ic", "hlTokens", "esc", "BUBBLE_ATT_ICON",
-    "turnSid", "attachRel", "attachThumb", "previewFile", "BUBBLE_PIC_RE", window.__BUBBLE_SRC);
+    "turnSid", "attachRel", "attachThumb", "previewFile", "BUBBLE_PIC_RE", "shown", window.__BUBBLE_SRC); // shown：画布那类入口的「人说的那句」，这一屏不传
   // 「这份素材躺在哪儿」那三档用真源码，不用测试自己编一份：编一份的话，线上拼错了这儿照样绿
   const attachPaths = new Map(), sessionDirs = new Map();
   const fpath = (n) => String(n == null ? "" : n).split("/").map(encodeURIComponent).join("/");
@@ -10584,7 +11007,7 @@ const JUMP_REDUCE_CHECKS = `
 // <body>——body 是 #assist-page 的祖先，keydown 压根不经过它。线上表现就是：框选框得出来、
 // 选中也高亮着，按 Delete 没反应、⌘A 没反应、Escape 退不出框选，看着像多选根本没做（0.6.4 的真实症状）。
 // 所以这一屏先盯「焦点收没收上来」，后面那几个键才有意义。
-const APP07 = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-07-canvas.js"), "utf8");
+const APP07 = srcLib.src("canvas");
 const CK0 = APP07.indexOf('page.setAttribute("tabindex", "-1");');
 const CK1 = APP07.indexOf('page.addEventListener("keyup", canvasState.keyUpHandler);');
 if (CK0 < 0 || CK1 <= CK0) throw new Error("app-07-canvas.js 里 canvasBindViewport 的键盘那一段找不到了，前端测试没法定位真源码");
@@ -11127,6 +11550,15 @@ app.whenReady().then(async () => {
     try {
       await win9.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(TRAIL_HTML));
       const names9 = await win9.webContents.executeJavaScript(IC_BOOT + TRAIL_STUBS + "\n" + TRAIL_SRC + "\n" + TRAIL_CHECKS, true);
+      // 倒计时条的英文：真 DOM 里切出来的每一截文本节点，过一遍真词典再拼回去，得是一句通顺、不剩中文的话。
+      // 数字各占一个 <b>，句子被切成几截——哪一截漏进词典，英文界面上就会冒出半句中文
+      const rbNodes = await win9.webContents.executeJavaScript("window.__RB_NODES", true);
+      const I18N_MOD = require(path.join(__dirname, "..", "public", "js", "i18n.js"));
+      const rbEn = (k) => ((rbNodes && rbNodes[k]) || []).map((s) => I18N_MOD.tr(s, "en")).join("");
+      for (const [k, want] of [["wait", "Upstream busy. In 3 s, retry 2/3 starts"], ["going", "Upstream busy. Retry 3/3 in progress…"]]) {
+        if (rbEn(k) !== want) throw new Error(`倒计时条（${k}）英文拼出来是「${rbEn(k)}」，应为「${want}」`);
+        names9.push(`倒计时条英文（${k}）：${want}`);
+      }
       for (const n of names9) console.log("  ✓ " + n);
       console.log(`✅ 前端：轨迹条（同名合并·出错标红·中止删除线·+N 上限·收起可见·点徽章直达）+ 结论出过程区 + 命中率封顶 + 收尾接线（正文文件名变可点链接·成品自动摊开·四种情形一律不弹）${names9.length} 项通过`);
     } finally {
@@ -11182,7 +11614,7 @@ app.whenReady().then(async () => {
     const win18 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await win18.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(MENU_HTML));
-      const names18 = await win18.webContents.executeJavaScript(IC_BOOT + I18N_SRC + "\n(async function(){\n" + MENU_STUBS + "\n" + LOOK_SRC + "\n" + MENU_SRC + "\n" + PET_CARD_SRC + "\n" + MENU_CHECKS + "\n})()", true)
+      const names18 = await win18.webContents.executeJavaScript(IC_BOOT + I18N_SRC + "\n(async function(){\n" + MENU_STUBS + "\n" + LOOK_SRC + "\n" + MENU_SRC + "\n" + CHECK_UPD_SRC + "\n" + ABOUT_PANE_SRC + "\n" + PET_CARD_SRC + "\n" + MENU_CHECKS + "\n})()", true)
         .catch(async (e) => { throw new Error("[头像菜单] " + ((e && (e.stack || e.message)) || String(e)) + " | 已过 " + (await win18.webContents.executeJavaScript("window.__menuNames||0").catch(() => "?"))); });
       for (const n of names18) console.log("  ✓ " + n);
       console.log(`✅ 前端：头像菜单（中/En 胶囊点即切·桌面宠物就地开关且默认关·存不下就翻回来·服务端模式整行不画）${names18.length} 项通过`);
@@ -11665,12 +12097,27 @@ app.whenReady().then(async () => {
     const winSC = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await winSC.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(SC_HTML));
-      const namesSC = await winSC.webContents.executeJavaScript(IC_BOOT + SC_STUBS + "\n" + SC_SRC + "\n" + SC_CHECKS, true);
+      // 这组断言按 ⌘ 写的（⌘J 存成 Meta+J、⌘F 撞对话内搜索）：钉成 mac，换到 Windows/Linux 机器上跑也是同一个结果
+      const namesSC = await winSC.webContents.executeJavaScript(MOD_PIN("MacIntel", "macOS") + IC_BOOT + SC_STUBS + "\n" + SC_SRC + "\n" + SC_CHECKS, true);
       for (const n of namesSC) console.log("  ✓ " + n);
       console.log(`✅ 前端：快捷键改绑不再扣着键盘不放（点别处/点取消/Esc/面板重画 四个出口·冲突照拦·正路照存）${namesSC.length} 项通过`);
     } finally {
       if (!winSC.isDestroyed()) winSC.destroy();
     }
+    let namesMODAll = 0;
+    for (const P of MOD_PLATFORMS) {
+      const winMOD = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+      try {
+        await winMOD.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(MOD_HTML));
+        const namesMOD = await winMOD.webContents.executeJavaScript(MOD_PIN(P.platform, P.ua) + IC_BOOT + MOD_STUBS + "\n" + MOD_SRC + "\n" + MOD_CHECKS(P), true)
+          .catch((e) => { throw new Error("[快捷键 Mod·" + P.tag + "] " + ((e && (e.stack || e.message)) || String(e))); });
+        for (const n of namesMOD) console.log("  ✓ " + n);
+        namesMODAll += namesMOD.length;
+      } finally {
+        if (!winMOD.isDestroyed()) winMOD.destroy();
+      }
+    }
+    console.log(`✅ 前端：默认快捷键用 Mod（mac=⌘、Windows/Linux=Ctrl·非 mac 显示 Ctrl+Shift+B·老存档 Meta+X 原样认·录新键存具体键）${namesMODAll} 项通过`);
 
     // ── 产出卡缩略图（thumb.js）──────────────────────────────────────────
     // 这一屏不开窗口：nativeImage 在主进程里就有，而 thumb.js 要验的恰恰是

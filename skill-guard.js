@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 /**
  * 技能安装前的体检。

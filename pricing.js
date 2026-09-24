@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 /**
  * 一次调用到底花了多少钱——模型价目表。
@@ -43,6 +44,35 @@
  * 内置这张表**一定会过期**——各家一年调好几次价。所以它不是权威，只是个能立刻开张的
  * 起点：日期写在 PRICES_AS_OF 上，后台那一页把它印出来，改过的条目标「已由管理员修改」。
  * 过期的价目比没有价目更危险，所以宁可把「这是哪天抄的」摆在脸上。
+ */
+
+/**
+ * 一行 token 价目，单位 元/百万 token。cached_in 不写 = 这家没有缓存价。
+ * @typedef {{ in: number, out: number, cached_in?: number, note?: string }} PriceRow
+ */
+/**
+ * 一行按量价目，单位看 UNITS[cap].unit。
+ * @typedef {{ price: number, note?: string }} UnitRow
+ */
+/**
+ * 四层合并后的表：table 是价目，from 记每个键是哪一层给的（builtin / admin / channel）。
+ * @template R
+ * @typedef {{ table: Record<string, R>, from: Record<string, string> }} Merged
+ */
+/**
+ * 查价 / 算钱共用的选项。config 就是 config.json，provider 是其中一条渠道。
+ * _merged 是调用方已经合并好的表，一次算一大批时省得每笔都重合并。
+ * @typedef {object} PriceOpts
+ * @property {any} [config]
+ * @property {any} [provider]
+ * @property {number|string} [discount] 组织折扣，(0,1] 之外按不打折算
+ * @property {boolean} [local] 明说走的是本地引擎，直接 0 元
+ * @property {Merged<any>} [_merged]
+ */
+/**
+ * 查到的那一行价。src 是哪一层给的，key 是最后命中的那个型号名（可能是退化后的）。
+ * @template R
+ * @typedef {{ row: R, key: string, src: string }} PriceHit
  */
 
 /** 内置价目是哪天抄的。后台会把这个日期印出来——「三个月前抄的」本身就是一条信息 */
@@ -162,6 +192,10 @@ const BUILTIN_UNIT = {
     "doubao-seedream-3-0-t2i": { price: 0.259 },                        // 方舟 0.259 元/张
     "black-forest-labs/flux.1-schnell": { price: 0.0037 },              // 硅基流动 0.0037 元/张
   },
+  // 视频的量是**实际出片的秒数**：tools.js unitsFor 按 media-models.js videoPlan 夹紧之后的秒数给，
+  // 不是人要的秒数（万相 2.x 固定 5 秒，要 10 秒也只出 5 秒、只收 5 秒的钱）。
+  // 海螺是按条收的（02 型号 6 秒 768P 一档价、10 秒 / 1080P 另一档），摊不成单一的元/秒，
+  // 没核实过的价不往表里写——查不到单价的走 costOfUnits 的 unknown 标记，不当免费。
   video: {
     "wanx2.1-t2v-turbo": { price: 0.24 },                               // 万相 turbo 0.24 元/秒
     "wanx2.1-t2v-plus":  { price: 0.70 },                               // 万相 plus 0.70 元/秒
@@ -183,9 +217,18 @@ const BUILTIN_UNIT = {
   },
 };
 
-/** 合并四层按量价目，形状跟 tableFor 一样：{ table, from } */
+/**
+ * 合并四层按量价目，形状跟 tableFor 一样：{ table, from }
+ * @param {string} cap search / image / video / tts / asr
+ * @param {PriceOpts} [opts] 只看 config 和 provider
+ * @returns {Merged<UnitRow>}
+ */
 function unitTableFor(cap, { config, provider } = {}) {
-  const table = Object.create(null), from = Object.create(null);
+  /** @type {Record<string, UnitRow>} */
+  const table = Object.create(null);
+  /** @type {Record<string, string>} */
+  const from = Object.create(null);
+  /** @param {string} src @param {Record<string, unknown>|undefined} rows */
   const put = (src, rows) => {
     for (const [k, v] of Object.entries(rows || {})) {
       const row = normalizeUnitRow(v);
@@ -204,11 +247,14 @@ function unitTableFor(cap, { config, provider } = {}) {
 /**
  * 一行按量价目拍干净。0 是合法的（免费兜底那两条），负数和 NaN 当没填过。
  * 允许直接写一个数字（后台表单里填的就是一个数），也允许写 { price, note }。
+ * @param {any} v
+ * @returns {UnitRow|null}
  */
 function normalizeUnitRow(v) {
   const raw = v && typeof v === "object" ? v.price : v;
   const n = typeof raw === "string" ? parseFloat(raw) : raw;
   if (!Number.isFinite(n) || n < 0) return null;
+  /** @type {UnitRow} */
   const row = { price: n };
   if (v && typeof v === "object" && v.note) row.note = String(v.note).slice(0, 80);
   return row;
@@ -217,6 +263,10 @@ function normalizeUnitRow(v) {
 /**
  * 查一路按量价。跟 priceOf 同一套退化匹配（去聚合商前缀、去日期后缀、最长前缀族），
  * 理由也一样：各家几乎每月发一个带日期的新 id，要求精确登记的结果是这张表天天在报警。
+ * @param {string} cap
+ * @param {unknown} model
+ * @param {PriceOpts} [opts]
+ * @returns {PriceHit<UnitRow>|null} null = 不知道，不是 0
  */
 function unitPriceOf(cap, model, opts = {}) {
   if (!UNITS[cap]) return null;
@@ -236,9 +286,11 @@ function unitPriceOf(cap, model, opts = {}) {
 /**
  * 按量算钱。
  *
- * @param call { cap, model, units }  units 的含义由 UNITS[cap].unit 定（张 / 秒 / 千字符 / 分钟 / 次）
- * @param opts { config, provider, discount }
- * @returns { yuan, unknown, cap, unit, per, units, model, key, src, discount }
+ * @param {{ cap?: string, model?: string, units?: number|string }} [call]
+ *   units 的含义由 UNITS[cap].unit 定（张 / 秒 / 千字符 / 分钟 / 次）
+ * @param {PriceOpts} [opts] 看 config / provider / discount
+ * @returns {{ yuan: number, unknown: boolean, cap: string, unit: string, per: number,
+ *   units: number, model: string, key: string, src: string, discount: number }}
  *
  * units 允许是小数：3.4 秒的视频、0.62 千字符的一段话，四舍五入到整数会系统性地多收或少收。
  */
@@ -277,11 +329,14 @@ const LOCAL_RE = /^(ollama|lmstudio|local|llama|qwen2?\.?5?-?coder|__local__)/i;
  * 要求精确登记的结果就是「每次上游发版，这边全变成不知道」——于是这张表天天在报警，
  * 报到没人看为止。退化匹配的代价是可能拿老型号的价算新型号，差个一两成；
  * 而报警疲劳的代价是整套计费没人信。两害相权。
+ * @param {unknown} model
+ * @returns {string[]}
  */
 function candidates(model) {
   const m = String(model || "").trim().toLowerCase();
   if (!m) return [];
   const out = [m];
+  /** @param {string} x */
   const push = (x) => { if (x && !out.includes(x)) out.push(x); };
   const slash = m.includes("/") ? m.slice(m.lastIndexOf("/") + 1) : "";
   push(slash);
@@ -293,9 +348,17 @@ function candidates(model) {
   return out;
 }
 
-/** 合并四层价目，返回 { table, from } —— from 记着每个型号的价是哪一层给的，后台要显示 */
+/**
+ * 合并四层价目，返回 { table, from } —— from 记着每个型号的价是哪一层给的，后台要显示
+ * @param {PriceOpts} [opts] 只看 config 和 provider
+ * @returns {Merged<PriceRow>}
+ */
 function tableFor({ config, provider } = {}) {
-  const table = Object.create(null), from = Object.create(null);
+  /** @type {Record<string, PriceRow>} */
+  const table = Object.create(null);
+  /** @type {Record<string, string>} */
+  const from = Object.create(null);
+  /** @param {string} src @param {Record<string, any>|undefined} rows */
   const put = (src, rows) => {
     for (const [k, v] of Object.entries(rows || {})) {
       if (!v || typeof v !== "object") continue;
@@ -311,14 +374,20 @@ function tableFor({ config, provider } = {}) {
   return { table, from };
 }
 
-/** 一行价目拍干净：三格都得是非负有限数，负价和 NaN 一律当没填过 */
+/**
+ * 一行价目拍干净：三格都得是非负有限数，负价和 NaN 一律当没填过
+ * @param {any} v
+ * @returns {PriceRow|null}
+ */
 function normalizeRow(v) {
+  /** @param {any} x @returns {number|null} */
   const num = (x) => {
     const n = typeof x === "string" ? parseFloat(x) : x;
     return Number.isFinite(n) && n >= 0 ? n : null;
   };
   const i = num(v.in), o = num(v.out);
   if (i === null && o === null) return null;
+  /** @type {PriceRow} */
   const row = { in: i === null ? 0 : i, out: o === null ? 0 : o };
   const c = num(v.cached_in);
   if (c !== null) row.cached_in = c;
@@ -328,6 +397,9 @@ function normalizeRow(v) {
 
 /**
  * 查一个型号的价。返回 { row, key, src } 或者 null（= 不知道，不是 0）。
+ * @param {unknown} model
+ * @param {PriceOpts} [opts]
+ * @returns {PriceHit<PriceRow>|null}
  */
 function priceOf(model, opts = {}) {
   const { table, from } = opts._merged || tableFor(opts);
@@ -350,9 +422,11 @@ function priceOf(model, opts = {}) {
 /**
  * 算钱。
  *
- * @param usage { model, prompt, cached, completion }   —— 跟 account.js 的 chargeRun 同一个形状
- * @param opts  { config, provider, discount, local }
- * @returns { yuan, unknown, model, key, src, detail:{ in_yuan, cached_yuan, out_yuan }, discount }
+ * @param {{ model?: string, prompt?: number, cached?: number, completion?: number }} [usage]
+ *   跟 account.js 的 chargeRun 同一个形状
+ * @param {PriceOpts} [opts] 看 config / provider / discount / local
+ * @returns {{ yuan: number, unknown: boolean, model: string, key: string, src: string,
+ *   detail: { in_yuan: number, cached_yuan: number, out_yuan: number }, discount: number }}
  *
  * yuan 保留 6 位小数：单次调用常常是几厘钱，四舍五入到分的话，一万次调用里
  * 每次丢掉的不到半分钱加起来就是一大笔——而且是系统性地少算，不是随机误差。
@@ -372,6 +446,7 @@ function costOf(usage = {}, opts = {}) {
   // 而对不上的方向是「我们以为便宜」，最坏的那个方向。
   const cin = typeof p.cached_in === "number" ? p.cached_in : p.in;
   const d = discountOf(opts.discount);
+  /** @param {number} tok @param {number} price */
   const per = (tok, price) => (tok / 1e6) * price;
   const detail = {
     in_yuan: r6(per(fresh, p.in) * d),
@@ -384,12 +459,17 @@ function costOf(usage = {}, opts = {}) {
   };
 }
 
-/** 折扣夹在 (0,1] 里。填 0 或者负数不是「全免」，是填错了——那种时候按不打折算，宁可多收 */
+/**
+ * 折扣夹在 (0,1] 里。填 0 或者负数不是「全免」，是填错了——那种时候按不打折算，宁可多收
+ * @param {any} x 数字或后台表单里填的字符串
+ * @returns {number}
+ */
 function discountOf(x) {
   const n = typeof x === "string" ? parseFloat(x) : x;
   return Number.isFinite(n) && n > 0 && n <= 1 ? n : 1;
 }
 
+/** 保留 6 位小数，单次调用常常只有几厘钱 @param {number} n @returns {number} */
 function r6(n) { return Math.round((n + Number.EPSILON) * 1e6) / 1e6; }
 
 /**
@@ -403,6 +483,9 @@ function r6(n) { return Math.round((n + Number.EPSILON) * 1e6) / 1e6; }
  *     摆在一起读起来却像已用比上限小。
  *   · 按最大的那个定位数 → 「上限 100.00 元，已用 99.99 元，这一趟还要 0.00 元」，
  *     那个 0.00 是把这句话唯一的重点四舍五入没了。
+ * @param {unknown} n
+ * @param {unknown} [ref]
+ * @returns {string}
  */
 function yuanText(n, ref) {
   const v = Math.abs(+n || 0);
@@ -421,6 +504,7 @@ function yuanText(n, ref) {
 /**
  * 后台那一页：把内置表 + 管理员改过的合成一张，标出每条是哪来的。
  * 再把「这个月真出现过、但查不到价」的型号列出来——这张单子就是待办事项。
+ * @param {{ config?: any, seen?: unknown[], seen_units?: Array<{ cap?: string, model?: string }|null> }} [opts]
  */
 function catalog({ config, seen = [], seen_units = [] } = {}) {
   const { table, from } = tableFor({ config });

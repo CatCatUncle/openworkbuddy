@@ -24,6 +24,7 @@ const path = require("path");
 const fs = require("fs");
 
 const ROOT = path.join(__dirname, "..");
+const srcLib = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
 const S = require(path.join(ROOT, "session-search"));
 
 let pass = 0, fail = 0;
@@ -192,7 +193,7 @@ console.log("\n⑪ 拿去算向量的那一小段");
 // 下面几节验的是「这一层真的被接上了」。纯函数写得再对，没人调也等于没做。
 console.log("\n⑫ 服务端：接口在、走归属过滤、摘要变了就作废旧向量");
 {
-  const src = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+  const src = srcLib.src("server");
   ok(/app\.get\("\/api\/sessions\/search"/.test(src), "★检索接口真的挂上去了★");
   const body = src.slice(src.indexOf('app.get("/api/sessions/search"'), src.indexOf('app.get("/api/sessions/search"') + 1800);
   ok(/ownSession\(req\.user/.test(body), "★搜索也过归属过滤★ 不过的话，搜索就成了绕过归属的后门");

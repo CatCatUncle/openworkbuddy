@@ -26,6 +26,7 @@ const fs = require("fs");
 const os = require("os");
 
 const ROOT = path.join(__dirname, "..");
+const { src } = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
 const cr = require(path.join(ROOT, "cmd-risk"));
 const systemone = require(path.join(ROOT, "systemone"));
 const security = require(path.join(ROOT, "security"));
@@ -398,7 +399,7 @@ const SEC = { ...security.DEFAULTS, gateway: true, cmd_risk_gate: true, permissi
     const i18n = fs.readFileSync(path.join(ROOT, "public", "js", "i18n.js"), "utf8");
     ok(i18n.includes('"名单外先判一句"'), "  └ 标题有英文（这个产品是双语的，漏一条就半中半英）");
 
-    const srv = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+    const srv = src("server");
     ok(/"gateway", "delete_protect", "cmd_risk_gate"/.test(srv), "  └ 后端收这个开关（前端存了后端不收＝存不下去）");
 
     const sec = fs.readFileSync(path.join(ROOT, "security.js"), "utf8");
@@ -409,7 +410,7 @@ const SEC = { ...security.DEFAULTS, gateway: true, cmd_risk_gate: true, permissi
       "★只把认路要用的两样递下去★ 不把整份 config（连着所有 Key）塞进工具层");
     ok(!/decideConfig: config\b/.test(ag), "  └ ★反向对照★ 没有图省事直接把整份递下去的写法");
 
-    const tl = fs.readFileSync(path.join(ROOT, "tools.js"), "utf8");
+    const tl = src("tools");
     ok(/judgeRisk\(security\.checkCommand/.test(tl) && /judgeRisk\(security\.checkCode/.test(tl),
       "★两扇门都接上了★ 只守 shell 那扇是守不住的");
     ok(/timeoutMs: 8000/.test(tl.slice(tl.indexOf("const judgeRisk"), tl.indexOf("const judgeRisk") + 2600)),

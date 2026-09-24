@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 /**
  * 运行期日志：一行一条 JSON，落 `logs/app-<年-月-日>.jsonl`。

@@ -696,7 +696,8 @@
   .out-acts { display: flex; gap: 2px; flex: none; margin-top: auto; padding: 3px 5px 5px 6px; }
   /* 回复底部操作条（复制/评价/重新生成 + 消耗/模型，仿官方） */
   .turn-actions { display: flex; align-items: center; gap: 2px; margin-top: 10px; }
-  .ta-btn { border: none; background: none; cursor: pointer; font-size: 14px; color: var(--owb-text-3); padding: 4px 7px; border-radius: var(--radius-sm); line-height: 1; }
+  /* nowrap：窄窗口下「重新生成」会被挤成一字一行竖着排；按钮宁可整颗不缩，让右边的消耗说明去省略 */
+  .ta-btn { border: none; background: none; cursor: pointer; font-size: 14px; color: var(--owb-text-3); padding: 4px 7px; border-radius: var(--radius-sm); line-height: 1; white-space: nowrap; }
   .ta-btn:hover { background: var(--owb-bg-hover); color: var(--owb-text); }
   .ta-btn.on { color: var(--owb-brand-text); }
   .ta-meta { margin-left: auto; font-size: 13px; color: var(--owb-text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -875,6 +876,14 @@
   .run-eng .re-free { padding: 0 6px; border-radius: var(--radius-full); background: color-mix(in srgb, var(--success) 14%, transparent); color: var(--owb-ok-text); }
   /* 冷启动那几秒：同一枚牌子，🖥 换成转圈。init 一到原地换回来，位置和尺寸都不动 */
   .run-eng.re-boot .re-ic { display: inline-flex; align-items: center; }
+  /* 上游重试倒计时条：挂在这一轮最上面，正文或工具调用一来就撤。
+     sticky + z-index 4：长回合滚到底也钉在视口顶上，盖住跑动中的折叠条（3）几秒——
+     那一行此刻播的也是这次重试，盖住不丢信息。背景必须不透明，不然底下的字会透上来 */
+  .retry-bar { position: sticky; top: 0; z-index: 4; display: flex; align-items: center; gap: 8px; margin: 0 0 8px; padding: 0 4px 0 12px; border: 1px solid var(--owb-border); border-left: 3px solid var(--owb-warn-text); border-radius: var(--radius-md); background: var(--owb-bg); font-size: 13px; color: var(--owb-text-2); }
+  .retry-bar > .i { flex: none; color: var(--owb-warn-text); }
+  .retry-bar .rb-txt { flex: 1; min-width: 0; padding: 4px 0; }
+  .retry-bar .rb-txt b { font-weight: 600; color: var(--owb-text); font-variant-numeric: tabular-nums; }
+  .retry-bar .rb-x { color: var(--owb-text-3); }
   #send { width: 32px; height: 32px; border: none; border-radius: 50%; background: var(--owb-brand-grad); color: #fff; font-size: 16px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
   #send:disabled { opacity: .45; cursor: not-allowed; }
   .quick-bar { display: flex; align-items: center; gap: 4px; padding: 8px 6px 0; }
@@ -2914,7 +2923,7 @@
     <!-- 二次验证的 6 位码。**密码对了才会出现**：一上来就摆着，等于告诉所有人这个账号开没开二次验证，
          而那是撞库的人最想先知道的一件事。恢复码（8 位、带横杠）也填这个框，后端一个口子认两种。 -->
     <input id="auth-code" class="pair-code" placeholder="6 位验证码" autocomplete="one-time-code" inputmode="numeric" spellcheck="false" maxlength="14" style="display:none">
-    <div class="hint" id="auth-code-hint" style="display:none">打开验证器 App 看这个账号的 6 位数字。手机不在手上？把当初存下来的<b>恢复码</b>填进来也行，一条只能用一次。</div>
+    <div class="hint" id="auth-code-hint" style="display:none">输入验证器 App 里的 6 位数字，或一条<b>恢复码</b>（每条限用一次）。</div>
     <input id="auth-invite" placeholder="邀请码（管理员给你的）" autocomplete="off" spellcheck="false" style="display:none">
     <div class="hint" id="auth-invite-hint" style="display:none">上面这串是链接里带来的邀请码</div>
     <!-- 配对码那条路：在电脑上生成，在这台设备上敲进来，换一条只属于这台设备的令牌。

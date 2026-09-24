@@ -13,25 +13,26 @@
  */
 const { execFileSync } = require("child_process");
 
-const git = (...a) => execFileSync("git", a, { encoding: "utf8" });
+const git = (cwd, ...a) => execFileSync("git", a, { cwd, encoding: "utf8" });
 const RE = /^\+(- \*\*\d\d-\d\d\*\* .+)$/;
 
-function prevTag(tag) {
+function prevTag(tag, { cwd } = {}) {
   // 同一天可能发好几个 patch，按版本号排序取紧挨着的上一个，别用时间
-  const tags = git("tag", "--sort=-v:refname").split("\n").filter(Boolean);
+  const tags = git(cwd, "tag", "--sort=-v:refname").split("\n").filter(Boolean);
   const i = tags.indexOf(tag);
   return i >= 0 && i + 1 < tags.length ? tags[i + 1] : null;
 }
 
-function main(tagArg) {
+// cwd 只给测试用：在临时仓库里造几个 tag 验抽取器，不去读真历史
+function main(tagArg, { cwd } = {}) {
   // 参数优先于命令行：被当模块调用时（测试里按 tag 逐个挖）只认传进来的那个。
   // 少了 tagArg 这一档，两次调用都会退回 argv/describe，挖出来的是同一版——
   // 而调用方拿到两份一模一样的东西，看着像「上一版的改动又印了一遍」
-  const tag = tagArg || process.argv[2] || git("describe", "--tags", "--abbrev=0").trim();
-  const prev = prevTag(tag);
+  const tag = tagArg || process.argv[2] || git(cwd, "describe", "--tags", "--abbrev=0").trim();
+  const prev = prevTag(tag, { cwd });
   if (!prev) return "";
   let diff;
-  try { diff = git("diff", `${prev}..${tag}`, "--unified=0", "--", "README.md"); }
+  try { diff = git(cwd, "diff", `${prev}..${tag}`, "--unified=0", "--", "README.md"); }
   catch { return ""; } // 浅克隆拿不到上一个 tag 的对象：不写，不猜
   const added = diff.split("\n").map((l) => RE.exec(l)).filter(Boolean).map((m) => m[1]);
   if (!added.length) return "";

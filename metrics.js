@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 /**
  * 指标聚合 + 阈值告警。

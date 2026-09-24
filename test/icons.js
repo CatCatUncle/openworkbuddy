@@ -21,6 +21,7 @@
 const fs = require("fs");
 const path = require("path");
 const ROOT = path.join(__dirname, "..");
+const srcLib = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
 const { iconNames, isIconName } = require(path.join(ROOT, "icons"));
 const callout = require(path.join(ROOT, "callout"));
 
@@ -399,7 +400,7 @@ ok(!accepts("https://a/b.png"), "外链照旧拦下");
 // 专家卡的头像不许被切半截：图标名最长十几个字符
 const longest = Array.from(names).reduce((a, b) => (b.length > a.length ? b : a), "");
 ok(longest.length > 8, "最长的图标名是 " + longest + "（" + longest.length + " 字），比早先 slice(0,8) 长", longest);
-const serverSrc = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+const serverSrc = srcLib.src("server");
 const mCap = serverSrc.match(/const cardAvatar = [^\n]*slice\(0, (\d+)\)/);
 ok(!!mCap, "server.js 里找得到专家头像的长度上限");
 if (mCap) ok(Number(mCap[1]) >= longest.length, "上限 " + mCap[1] + " 放得下最长的图标名", { cap: Number(mCap[1]), need: longest.length });

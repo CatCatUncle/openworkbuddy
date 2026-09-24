@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 /**
  * 图标名的唯一真源是 public/index.html 里那张 sprite。

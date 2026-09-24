@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 /**
  * 专家数据的纯函数（server.js 启动时用，测试直接 require）：

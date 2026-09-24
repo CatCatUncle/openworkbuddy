@@ -21,6 +21,7 @@ process.env.OPENWORKBUDDY_HOME = HOME;
 delete process.env.OPENWORKBUDDY_CLI_LIVE;
 
 const ROOT = path.join(__dirname, "..");
+const { src } = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
 const live = require(path.join(ROOT, "cli-live"));
 
 let pass = 0, fail = 0;
@@ -255,7 +256,7 @@ eq(live.announce({ id: "s_back" }).live, true, "（对照）打开就又能用�
  */
 console.log("\n⑪ 服务端六个口子（/api/lanes · /api/cli/live · stream · interject · pending · answer）");
 {
-  const srcAll = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+  const srcAll = src("server");
   // 从 canRemoteControl 那两行切起、而不是从第一个路由切起：那两行才是「主人 + 后台开关」
   // 合成一道闸的地方，跟着一起跑进来，测的就是真的判断，不是我在测试里重写一遍
   const a0 = srcAll.indexOf("const canRemoteControl = (req)");

@@ -23,6 +23,7 @@ const os = require("os");
 const path = require("path");
 
 const ROOT = path.join(__dirname, "..");
+const { src } = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
 const pg = require(path.join(ROOT, "push-gate"));
 const so = require(path.join(ROOT, "systemone"));
 const { createScheduler } = require(path.join(ROOT, "scheduler"));
@@ -378,7 +379,7 @@ const out = (...answers) => ({ ok: true, answers });
     ok(!/at-hint/.test(cell({ result: "今天没有更新" })), "  └ 正常推出去的那条干干净净，不挂空壳");
     ok(!/\$\{r\.push_skipped/.test(runs), "  └ 转义之后才印（判断模型写的字不许直接进 HTML）");
 
-    const srv = read("server.js");
+    const srv = src("server");
     ok(/if \(b\.agent\.push_gate !== undefined\) config\.agent\.push_gate = !!b\.agent\.push_gate;/.test(srv), "  └ 后端收得下这个开关");
     ok(/push_gate: !!config\.agent\.push_gate/.test(srv), "  └ 也读得出来（存了读不回等于没存）");
     ok(/if \(!\(config\.agent \|\| \{\}\)\.push_gate\) return null;/.test(srv), "★开关没开就不发请求★ 默认那条路一分钱不花");

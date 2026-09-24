@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 /**
  * Electron 隐藏窗口渲染服务 —— mermaid 渲染与 SVG→PNG 截图靠它。

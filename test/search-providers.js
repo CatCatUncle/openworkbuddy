@@ -28,6 +28,7 @@ const { SEARCH_PROVIDERS, searchProviderKey, searchProviderReady } = tools;
 const { searchBodyError, toItems, pickHits, SEARCH_HTTP_HINT } = tools._internals;
 const fs = require("fs");
 const path = require("path");
+const { src } = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
 
 let pass = 0, fail = 0;
 function ok(cond, name, extra) {
@@ -225,7 +226,7 @@ console.log("\n【一】八家各自：请求发得对不对、回来的形状�
     "每家的 Key 各认各的，不串台");
 
   console.log("\n【七】源码闸门：填了一半的 Key 不许因为别的字段不合法被一起丢掉");
-  const server = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+  const server = src("server");
   const blk = server.slice(server.indexOf("if (b.search) {"), server.indexOf("if (b.workspace_dir !== undefined"));
   ok(blk.length > 100, "找到了保存搜索设置那一段");
   const iKeys = blk.indexOf('"jina_key", "tavily_key"');

@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 /**
  * 短剧合成：把画布上的镜头，真的拼成一条能播的成片。
@@ -22,6 +23,20 @@
  * 这一层是纯函数：不碰 fs、不起进程。文件在不在、多长、什么画幅，都由调用方探好了传进来，
  * 这样它能被单测钉死——而「拼出来的命令对不对」正是最该钉死、最难靠肉眼看出来的东西。
  */
+
+/** @typedef {import("./types/drama").CanvasNode} CanvasNode */
+/** @typedef {import("./types/drama").CanvasPayload} CanvasPayload */
+/** @typedef {import("./types/drama").CanvasStateLike} CanvasStateLike */
+/** @typedef {import("./types/drama").AssetHit} AssetHit */
+/** @typedef {import("./types/drama").Locate} Locate */
+/** @typedef {import("./types/drama").MediaProbe} MediaProbe */
+/** @typedef {import("./types/drama").ComposeOptions} ComposeOptions */
+/** @typedef {import("./types/drama").PickedFile} PickedFile */
+/** @typedef {import("./types/drama").MusicCandidate} MusicCandidate */
+/** @typedef {import("./types/drama").ComposeRow} ComposeRow */
+/** @typedef {import("./types/drama").ComposeStep} ComposeStep */
+/** @typedef {import("./types/drama").ComposePlan} ComposePlan */
+/** @typedef {import("./types/drama").Blocker} Blocker */
 
 /** 这些后缀才算视频 / 音频。字段里写着 video 但指的是一张 png，是真会发生的事 */
 const VIDEO_EXT = /\.(mp4|mov|m4v|webm|mkv|avi)$/i;
@@ -58,11 +73,19 @@ const MUSIC_FADE_IN = 1.5, MUSIC_FADE_OUT = 2.5;
 const MUSIC_HINT = /(配乐|背景音|主题曲|片头曲|片尾曲|音乐|bgm|soundtrack|score|music)/i;
 const VOICE_HINT = /(对白|台词|旁白|配音|人声|voice|dialog|narrat)/i;
 
+/** @param {Partial<CanvasNode>|null|undefined} node @returns {CanvasPayload} */
 function payloadOf(node) { return (node && node.payload) || {}; }
+/** @param {unknown} p @returns {string} */
 function baseOf(p) { return String(p || "").split(/[\\/]/).pop() || ""; }
+/** @param {unknown} s @returns {boolean} */
 function isBlank(s) { const t = String(s == null ? "" : s).trim(); return !t || PLACEHOLDERS.includes(t); }
+/** @param {unknown} n @param {number} [d] @returns {number} */
 function round(n, d = 2) { const k = Math.pow(10, d); return Math.round(Number(n) * k) / k; }
-/** 文件名里不能出现的东西换成下划线。镜头 ID 是用户自己敲的，什么都可能有 */
+/**
+ * 文件名里不能出现的东西换成下划线。镜头 ID 是用户自己敲的，什么都可能有
+ * @param {unknown} s
+ * @returns {string}
+ */
 function safeName(s) { return String(s || "").replace(/[\\/:*?"<>|\s]+/g, "_").replace(/^_+|_+$/g, "") || "镜头"; }
 
 /**
@@ -74,6 +97,9 @@ function safeName(s) { return String(s || "").replace(/[\\/:*?"<>|\s]+/g, "_").r
  *   ② 认镜头 ID 里的「第几场-第几镜」（S1-02、场1-02、1_2 都认）；
  *   ③ 都认不出来就按画布上的阅读顺序（先上下后左右，200px 算同一排）；
  *   ④ 最后按原数组次序兜底，保证同一张画布每次排出来都一样。
+ * @param {Partial<CanvasNode>} node
+ * @param {number} index
+ * @returns {number[]}
  */
 function orderKeyOf(node, index) {
   const p = payloadOf(node);
@@ -88,6 +114,11 @@ function orderKeyOf(node, index) {
     index,
   ];
 }
+/**
+ * @template {Partial<CanvasNode>} T
+ * @param {T[]} nodes
+ * @returns {T[]}
+ */
 function sortShots(nodes) {
   return nodes
     .map((node, index) => ({ node, key: orderKeyOf(node, index) }))
@@ -99,20 +130,41 @@ function sortShots(nodes) {
  * 把字段里的路径换成**盘上真有的那个文件**。
  * 只认这一类该有的后缀：video 字段指着一张 png，那就是这一镜根本没有视频，
  * 不是「有视频只是格式怪」——后者会一路带到 ffmpeg 那儿去报一句没人看得懂的话。
+ *
+ * locate（drama-pipeline 的 assetLocator）给了就按它认：先按相对路径，再按文件名全区搜，
+ * 同名好几份时 rel 留空、带上 ambiguous——拼进片子的是哪一集的画面，不能靠目录遍历的先后。
+ * 不给就还是老办法：files 按文件名查。
+ * @param {Record<string, any>} payload
+ * @param {string[]} keys 按顺序认，第一个有值的字段说了算
+ * @param {RegExp} re 这一类该有的后缀
+ * @param {Map<string, string>|null|undefined} files basename → 工作区相对路径
+ * @param {Locate} [locate]
+ * @returns {PickedFile|null}
  */
-function pickFile(payload, keys, re, files) {
+function pickFile(payload, keys, re, files, locate) {
   for (const key of keys) {
     const v = payload[key];
     if (typeof v !== "string" || !v.trim()) continue;
     const base = baseOf(v);
     if (!re.test(base)) return { ref: v.trim(), base, rel: "", wrongKind: true };
+    if (typeof locate === "function") {
+      const hit = /** @type {Partial<AssetHit>} */ (locate(v.trim()) || {});
+      const amb = Array.isArray(hit.ambiguous) && hit.ambiguous.length > 1 ? hit.ambiguous : null;
+      return { ref: v.trim(), base, rel: amb ? "" : String(hit.rel || ""), wrongKind: false, ...(amb ? { ambiguous: amb } : {}) };
+    }
     const rel = files && typeof files.get === "function" ? files.get(base) : null;
     return { ref: v.trim(), base, rel: rel || "", wrongKind: false };
   }
   return null;
 }
 
-/** 已经有 成片.mp4 了就写成 成片_2.mp4。绝不覆盖上一条片子——那是用户可能已经发出去的东西 */
+/**
+ * 已经有 成片.mp4 了就写成 成片_2.mp4。绝不覆盖上一条片子——那是用户可能已经发出去的东西
+ * @param {string} stem
+ * @param {string} ext 带点，如 ".mp4"
+ * @param {Set<string>|null|undefined} onDisk
+ * @returns {string}
+ */
 function freeName(stem, ext, onDisk) {
   const has = (n) => onDisk && typeof onDisk.has === "function" && onDisk.has(n);
   if (!has(stem + ext)) return stem + ext;
@@ -120,6 +172,7 @@ function freeName(stem, ext, onDisk) {
   return `${stem}_${Date.now()}${ext}`;
 }
 
+/** @param {unknown} sec @returns {string} 00:00:01,500 这种 */
 function srtTime(sec) {
   const ms = Math.max(0, Math.round(Number(sec) * 1000));
   const h = Math.floor(ms / 3600000), m = Math.floor((ms % 3600000) / 60000), s = Math.floor((ms % 60000) / 1000);
@@ -131,6 +184,8 @@ function srtTime(sec) {
  * 那个 4 是下单时的期望值，生出来的视频是 4.2 还是 3.8 谁也说不准，
  * 拿它排字幕，到第十镜就能错出一秒多，整条字幕从此对不上嘴。
  * 所以探不到真实时长时这里返回空串，上层就不做字幕了，并且说明为什么。
+ * @param {Array<Pick<ComposeRow, "seconds" | "line">>} rows
+ * @returns {string}
  */
 function buildSrt(rows) {
   const lines = [];
@@ -157,27 +212,35 @@ function buildSrt(rows) {
  *
  * 返回的是**全部**候选（包括有毛病的），让上层能说清楚「为什么这次没配乐」，
  * 而不是安静地少做一步。
+ * @param {Array<Partial<CanvasNode>>} nodes
+ * @param {ComposeOptions} opts
+ * @param {Map<string, string>} files
+ * @param {Set<string>} voiceBases 已经被某一镜当配音用上的文件名
+ * @returns {MusicCandidate[]}
  */
 function musicPick(nodes, opts, files, voiceBases) {
+  /** @type {MusicCandidate[]} */
   const out = [];
+  const locate = typeof opts.locate === "function" ? opts.locate : undefined;
+  /** @param {PickedFile|null} f @param {unknown} title @param {string} from */
   const add = (f, title, from) => {
     if (!f) return;
     if (voiceBases.has(f.base)) return;                     // 这是某一镜的配音，不是配乐
     if (out.some((x) => x.base && x.base === f.base)) return;
-    out.push({ ref: f.ref, base: f.base, rel: f.rel, wrongKind: !!f.wrongKind, title: String(title || f.base), from });
+    out.push({ ref: f.ref, base: f.base, rel: f.rel, wrongKind: !!f.wrongKind, title: String(title || f.base), from, ...(f.ambiguous ? { ambiguous: f.ambiguous } : {}) });
   };
   if (typeof opts.musicFile === "string" && opts.musicFile.trim()) {
-    add(pickFile({ m: opts.musicFile }, ["m"], AUDIO_EXT, files), "", "指定的");
+    add(pickFile({ m: opts.musicFile }, ["m"], AUDIO_EXT, files, locate), "", "指定的");
   }
   for (const node of nodes.filter((n) => String((n && n.kind) || "") === "timeline")) {
     const p = payloadOf(node);
-    add(pickFile(p, ["bgm", "music", "bgm_file"], AUDIO_EXT, files), p.bgm_title, "剪辑节点");
+    add(pickFile(p, ["bgm", "music", "bgm_file"], AUDIO_EXT, files, locate), p.bgm_title, "剪辑节点");
   }
   for (const node of sortShots(nodes.filter((n) => String((n && n.kind) || "") === "audio"))) {
     const p = payloadOf(node);
     const text = [p.role, p.tags, p.title, p.text].map((x) => String(x || "")).join(" ");
     if (!MUSIC_HINT.test(text) || VOICE_HINT.test(text)) continue;
-    const f = pickFile(p, ["url", "path", "file", "audio"], AUDIO_EXT, files);
+    const f = pickFile(p, ["url", "path", "file", "audio"], AUDIO_EXT, files, locate);
     if (f) add(f, p.title, "声音节点");
     else out.push({ ref: "", base: "", rel: "", wrongKind: false, empty: true, title: String(p.title || "配乐"), from: "声音节点" });
   }
@@ -196,6 +259,12 @@ function musicPick(nodes, opts, files, voiceBases) {
  *      再靠 amix 的 duration=first 在画面结束的地方收住。
  * 有 sidechaincompress 就做「一说话音乐自动压下去」，没有就按固定音量垫着——
  * 这台机器有没有，调用方开跑前就探好了传进来（跟 libass 是同一套规矩）。
+ * @param {string} input 拼好、还没配乐的那一条
+ * @param {{rel: string, dur: number}} music
+ * @param {string} film 成片
+ * @param {ComposeOptions} opts 只看 duck / limiter
+ * @param {number} totalSeconds 成片总时长，探不到是 0
+ * @returns {string[]}
  */
 function musicArgv(input, music, film, opts, totalSeconds) {
   const loop = !music.dur || !totalSeconds || music.dur < totalSeconds - 0.5 ? ["-stream_loop", "-1"] : [];
@@ -228,11 +297,14 @@ function musicArgv(input, music, film, opts, totalSeconds) {
 }
 
 /**
- * @param {{nodes?:Array}} state 画布状态
- * @param {object} opts
+ * @param {CanvasStateLike} state 画布状态
+ * @param {ComposeOptions} [opts]
  *   files    Map<basename, 工作区相对路径>  真在盘上的文件（缺这个就等于「盘上什么都没有」）
+ *   locate   (ref)=>{rel, ambiguous?}      给了就不看 files：先按相对路径认，再按文件名全区搜，
+ *                                          同名好几份的那一镜当卡点（drama-pipeline 的 assetLocator）
  *   onDisk   Set<basename>                 用来给成片挑一个不撞名的名字
- *   probes   {[basename]: {dur,w,h,fps,vcodec,acodec}}  探到的规格；没探到就没这一项
+ *   probes   {[相对路径 或 basename]: {dur,w,h,fps,vcodec,acodec}}  探到的规格；没探到就没这一项。
+ *            先按相对路径查、再按文件名查：两集同名的镜头，时长不能串
  *   ffmpeg   string  ffmpeg 可执行路径，空 = 本机没有
  *   ffprobe  string
  *   install  string  没装时的装法（doctor.js 给）
@@ -244,14 +316,20 @@ function musicArgv(input, music, film, opts, totalSeconds) {
  *   duck     bool   本机 ffmpeg 有没有 sidechaincompress（说话时把音乐自动压低）
  *   limiter  bool   有没有 alimiter（混完之后限个幅，防削顶）
  *   dir      string  中间产物放哪个子目录，默认「成片素材」
+ * @returns {ComposePlan}
  */
 function composePlan(state, opts = {}) {
   const nodes = Array.isArray(state && state.nodes) ? state.nodes : [];
   const files = opts.files instanceof Map ? opts.files : new Map();
   const onDisk = opts.onDisk instanceof Set ? opts.onDisk : new Set(files.keys());
   const probes = opts.probes || {};
+  const locate = typeof opts.locate === "function" ? opts.locate : undefined;
+  /** @param {{rel?: string, base: string}|null} f @returns {MediaProbe|null} */
+  const probeOf = (f) => (f ? (f.rel && probes[f.rel]) || probes[f.base] || null : null);
   const dir = String(opts.dir || "成片素材").replace(/[\\/]+$/, "");
+  /** @type {Blocker[]} */
   const blockers = [];
+  /** @param {Blocker["level"]} level @param {string} text @param {string[]} [ids] */
   const push = (level, text, ids) => blockers.push({ level, text, ids: ids || [] });
 
   const shots = sortShots(nodes.filter((n) => String((n && n.kind) || "") === "shot"));
@@ -265,26 +343,33 @@ function composePlan(state, opts = {}) {
   }
 
   // ── 逐镜头体检：画面必须真在盘上；配音有就用，没有就补一段静音（不然 concat 会对不齐声轨）
+  /** @type {ComposeRow[]} */
   const rows = [];
-  const noVideo = [], lostVideo = [], wrongKind = [], noProbe = [], noVoice = [];
+  const noVideo = [], lostVideo = [], wrongKind = [], noProbe = [], noVoice = [], twins = [];
   for (const node of shots) {
     const p = payloadOf(node);
     const id = String(p.id || p.title || node.id);
-    const v = pickFile(p, ["video"], VIDEO_EXT, files);
-    const a = pickFile(p, ["audio", "voice_file"], AUDIO_EXT, files);
+    const v = pickFile(p, ["video"], VIDEO_EXT, files, locate);
+    const a = pickFile(p, ["audio", "voice_file"], AUDIO_EXT, files, locate);
+    /** @type {ComposeRow} */
     const row = {
       id, nodeId: String(node.id), title: String(p.title || p.id || "镜头"),
       line: isBlank(p.line) ? "" : String(p.line).trim(),
       video: v ? v.rel : "", videoRef: v ? v.ref : "", audio: a ? a.rel : "", audioRef: a ? a.ref : "",
       seconds: 0, vdur: 0, adur: 0, pad: 0, why: "",
     };
+    // 同名好几份：画面拼哪一集的、台词配谁的嗓子都是猜，这一镜整个当卡点，不替人挑
+    const amb = [...((v && v.ambiguous) || []), ...((a && a.ambiguous) || [])];
+    if (amb.length) { row.ambiguous = amb; twins.push(node.id); }
     if (!v) { row.why = "还没有视频"; noVideo.push(node.id); }
     else if (v.wrongKind) { row.why = `video 字段指的不是视频文件（${v.base}）`; wrongKind.push(node.id); }
+    else if (v.ambiguous) row.why = `视频同名的有 ${v.ambiguous.length} 份（${v.base}），分不清用哪份`;
     else if (!v.rel) { row.why = `视频文件不在盘上了（${v.base}）`; lostVideo.push(node.id); }
-    if (a && !a.wrongKind && !a.rel) row.why = row.why || `配音文件不在盘上了（${a.base}）`;
-    if (row.line && !row.audio) noVoice.push(node.id);
+    if (a && a.ambiguous) row.why = row.why || `配音同名的有 ${a.ambiguous.length} 份（${a.base}），分不清用哪份`;
+    else if (a && !a.wrongKind && !a.rel) row.why = row.why || `配音文件不在盘上了（${a.base}）`;
+    if (row.line && !row.audio && !(a && a.ambiguous)) noVoice.push(node.id);
 
-    const pv = probes[v && v.base] || null, pa = probes[a && a.base] || null;
+    const pv = probeOf(v), pa = probeOf(a);
     row.vdur = pv && Number(pv.dur) > 0 ? round(pv.dur, 3) : 0;
     row.adur = pa && Number(pa.dur) > 0 ? round(pa.dur, 3) : 0;
     if (row.video && !row.vdur) noProbe.push(id);
@@ -300,6 +385,7 @@ function composePlan(state, opts = {}) {
   if (noVideo.length) push("stop", `${noVideo.length} 个镜头还没有视频，这几镜先生成出来再合成`, noVideo);
   if (lostVideo.length) push("stop", `${lostVideo.length} 个镜头的视频文件已经不在盘上了，拼不进去`, lostVideo);
   if (wrongKind.length) push("stop", `${wrongKind.length} 个镜头的 video 字段指的不是视频文件`, wrongKind);
+  if (twins.length) push("stop", `${twins.length} 个镜头的素材有同名的好几份，分不清用哪份；把路径改成带目录的`, twins);
   if (noVoice.length) push("warn", `${noVoice.length} 个镜头有台词但没有配音，这几镜会是静音的`, noVoice);
 
   // ── 画幅一不一致：不一致就只能重新编码统一到一个尺寸，直拼出来的会是一条花屏
@@ -337,7 +423,7 @@ function composePlan(state, opts = {}) {
   const musicOk = musicAll.filter((m) => m.rel && !m.wrongKind);
   const musicBad = musicAll.filter((m) => !m.rel || m.wrongKind);
   const music = musicOk[0] ? { ...musicOk[0], dur: 0 } : null;
-  if (music) { const pm = probes[music.base]; music.dur = pm && Number(pm.dur) > 0 ? round(pm.dur, 3) : 0; }
+  if (music) { const pm = probeOf(music); music.dur = pm && Number(pm.dur) > 0 ? round(pm.dur, 3) : 0; }
   const musicOn = !!music && (opts.music == null ? true : !!opts.music);
   if (musicBad.length) {
     // 「标成了配乐但这次没用上」必须说出来。不说的话，用户看到的是一条没有音乐的片子，
@@ -347,7 +433,9 @@ function composePlan(state, opts = {}) {
       ? `画布上那段配乐（${one.title}）还没有文件，这次先不配乐`
       : one.wrongKind
         ? `标成配乐的那个文件不是音频（${one.base}），这次先不配乐`
-        : `配乐文件不在盘上了（${one.base}），这次先不配乐`, []);
+        : one.ambiguous
+          ? `配乐同名的有 ${one.ambiguous.length} 份（${one.base}），分不清用哪份，这次先不配乐`
+          : `配乐文件不在盘上了（${one.base}），这次先不配乐`, []);
   }
   if (musicOn && musicOk.length > 1) {
     push("warn", `画布上有 ${musicOk.length} 段音乐，这次用的是「${music.title}」。想换就把别的那几段的用途改掉，或者在剪辑节点上写死 bgm`, []);
@@ -383,6 +471,7 @@ function composePlan(state, opts = {}) {
     srt: wantSub ? freeName("字幕", ".srt", onDisk) : "",
     subtitled: canBurn ? `${stem}_带字幕.mp4` : "",
   };
+  /** @type {ComposeStep[]} */
   const steps = [];
   rows.forEach((r, i) => {
     const clip = `${dir}/片段_${String(i + 1).padStart(2, "0")}_${safeName(r.id)}.mp4`;

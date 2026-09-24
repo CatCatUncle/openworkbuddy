@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 /**
  * 极小的 Chrome DevTools Protocol 客户端。

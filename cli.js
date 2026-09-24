@@ -713,9 +713,9 @@ function printSummary(state) {
  * 不然这儿显示 40%、那边已经压过一次，这个读数就是在骗人。
  */
 function contextLine() {
-  const { historyChars } = require("./agent");
+  const { historyChars, contextBudgetChars } = require("./agent");
   const ag = config.agent || {};
-  const budget = ag.max_context_chars || 120000;
+  const budget = contextBudgetChars(llmImpl && llmImpl.contextWindow, ag.max_context_chars);
   const threshold = ag.compact_threshold_chars || Math.floor(budget * 0.6);
   const used = historyChars(sess.history || []);
   const pct = Math.round((used / budget) * 100);
@@ -2015,7 +2015,7 @@ function splitFiles(text) {
       // 不印这行的话，人只会在账单上发现
       prog(dim(contextLine() + "\n"));
       const last = (sess.transcript || []).filter((t) => t && t.type === "user").pop();
-      if (last && last.text) prog(dim(`上次问到：${String(last.text).replace(/\s+/g, " ").slice(0, 60)}\n`));
+      if (last && last.text) prog(dim(`上次问到：${String(last.shown || last.text).replace(/\s+/g, " ").slice(0, 60)}\n`));
       if (sess.goal && sess.goal.status === "active") printGoalCard(sess.goal);
       // 桌面那边可能正开着同一条。文件是原子改名写的，坏不了，但后写的那次会盖掉前一次——
       // 这事不说出来，人会以为两边自动同步

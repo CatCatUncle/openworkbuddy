@@ -394,8 +394,12 @@ const GOTO = (id) => `(async () => {
   ok("搜「claude」之后每一行都真的含 claude，且比全量少", claudeAll && (await A.js(rowN)) < allN, await A.js(rowN));
 
   await typeQ("");
-  await A.js(`(()=>{const e=document.querySelector("[data-user]"); e.value="xiaoyuan"; e.dispatchEvent(new Event("change"));})(); ` + wait(700));
-  ok("按成员筛之后只剩这个人的账", await A.js(`[...document.querySelectorAll("#ad-body tbody tr")].every(t=>/xiaoyuan/.test(t.textContent))`));
+  // 等到表真换成这个人的账再判（最多 5 秒）：固定等 700ms 在整套一起跑、机器吃满时会先读到上一屏。
+  // 行数 > 0 一起判——空表的 every 恒为 true，筛成空白页也会算过
+  const onlyXy = `(()=>{const r=[...document.querySelectorAll("#ad-body tbody tr")]; return r.length>0 && r.every(t=>/xiaoyuan/.test(t.textContent));})()`;
+  await A.js(`(()=>{const e=document.querySelector("[data-user]"); e.value="xiaoyuan"; e.dispatchEvent(new Event("change"));})(); `
+    + `(async()=>{for(let i=0;i<50&&!${onlyXy};i++) await new Promise(r=>setTimeout(r,100));})()`);
+  ok("按成员筛之后只剩这个人的账", await A.js(onlyXy), await A.js(rowN));
   ok("翻页条报的是条数不是页码（对账的人记的是条数）", /共 \d+ 条|第 \d+-\d+ 条/.test(await A.js(`(document.querySelector(".ad-pager-n")||{}).textContent||""`)),
      await A.js(`(document.querySelector(".ad-pager-n")||{}).textContent||""`));
 
@@ -719,7 +723,7 @@ const GOTO = (id) => `(async () => {
   ok("★存满了，副标题改口说「最近 N 条（已到保留上限，更早的已被挤掉）」★ 不再谎称「全部」",
      /已到保留上限/.test(after.sub) && !/全部 \d+ 条/.test(after.sub), after.sub);
   ok("★到顶了摆一条明确的警告，写清楚上限是多少、现存最早一条是哪天★",
-     new RegExp(String(CAP)).test(after.warn) && /现存最早/.test(after.warn) && /\d{4}/.test(after.warn),
+     new RegExp(String(CAP)).test(after.warn) && /最早一条/.test(after.warn) && /\d{4}/.test(after.warn),
      after.warn.replace(/\s+/g, " ").slice(0, 160));
   ok("警告里得告诉人下一步干什么（导出存档），不是光说一句「满了」", /导出存档/.test(after.warn), after.warn.slice(0, 80));
   ok("★导出按钮改口说「导出全部 N 条」，N 是筛选命中的总数不是屏幕上这 50 条★",

@@ -646,10 +646,190 @@ async function asrChecks() {
   }
 }
 
+/**
+ * 生视频的时长 / 画幅 / 分辨率（任务 2.3）。
+ *
+ * 三件一错就花冤枉钱的事：
+ *   1. 夹紧——型号出不了的时长不许原样发（整单 400 或上游按默认出、钱照扣），夹了必须在回执里说；
+ *   2. 计价——按夹完之后真出片的秒数记，要 10 秒只出 5 秒，账上就是 5 秒；
+ *   3. 映射——同一个 duration，五家字段各不相同，发错字段等于没发。
+ * 反向对照：一个参数都不传时，五家的请求体里一个新字段都不许多出来（老调用逐字节不变）。
+ */
+async function videoParamChecks() {
+  console.log("\n【5c】生视频参数：按型号表夹紧、按实际秒数计价、五家字段各自映射");
+  const tools = require(path.join(ROOT, "tools"));
+  const { generateVideo, unitsFor, videoPlan } = tools._internals;
+  const pricing = require(path.join(ROOT, "pricing"));
+
+  const ZP = "https://open.bigmodel.cn/api/paas/v4";
+  const MX = "https://api.minimax.chat/v1";
+  const SF = "https://api.siliconflow.cn/v1";
+  const cfgOf = (kind, base_url, model) => ({ kind, base_url, model, api_key: "k-" + kind });
+  const WAN = cfgOf("dashscope", DASH, "wan2.2-t2v-plus");
+  const WAN_I2V = cfgOf("dashscope", DASH, "wan2.2-i2v-plus");
+  const TURBO = cfgOf("dashscope", DASH, "wanx2.1-t2v-turbo");
+  const SEED = cfgOf("ark", ARK, "doubao-seedance-1-0-pro-250528");
+  const SEED_NEW = cfgOf("ark", ARK, "doubao-seedance-9-9-pro");      // 表里没有的新型号
+  const COG = cfgOf("zhipu", ZP, "cogvideox-3");
+  const HAILUO = cfgOf("minimax", MX, "MiniMax-Hailuo-02");
+  const SFWAN = cfgOf("siliconflow", SF, "Wan-AI/Wan2.2-T2V-A14B");
+
+  // ── ① 夹紧 ──────────────────────────────────────────────
+  let p = videoPlan(WAN, { duration: 10 });
+  eq(p.seconds, 5, "万相 2.2 要 10 秒 → 按 5 秒出（它只出得了 5 秒）");
+  eq(p.send.duration, undefined, "只有一档的型号不发 duration（那一档就是它的默认，多发只多一个被拒的机会）");
+  ok(p.notes.includes("该模型只支持 5 秒，已按 5 秒生成。"), "回执里明说「只支持 5 秒，已按 5 秒生成」——夹了不说就是静默降级", p.notes);
+
+  p = videoPlan(SEED, { duration: 7 });
+  eq(p.seconds, 5, "Seedance 要 7 秒 → 就近取 5 秒");
+  eq(p.send.duration, 5, "Seedance 有 5/10 两档，夹完的值要发出去");
+  ok(p.notes.some((n) => /只收 5\/10 秒，已按 5 秒生成/.test(n)), "多档型号夹了也要说，并列出它收哪几档", p.notes);
+  eq(videoPlan(SEED, { duration: 8 }).seconds, 10, "Seedance 要 8 秒 → 取离得近的 10 秒");
+  eq(videoPlan(SEED, { duration: "10秒" }).seconds, 10, "「10秒」「10s」这种写法也认");
+  p = videoPlan(SEED, { duration: 10 });
+  eq(p.notes.length, 0, "反向对照：要的正好是它收的那档，一句多余的话都没有", p.notes);
+  eq(p.send.duration, 10, "反向对照：原样发 10");
+
+  p = videoPlan(SEED, { duration: "五秒" });
+  ok(/正整数秒/.test(p.err), "「五秒」这种写坏的值在发之前就退回", p.err);
+
+  p = videoPlan(HAILUO, {});
+  eq(p.seconds, 6, "海螺不传时长 → 按它的默认 6 秒记（不是别家的 5 秒）");
+  p = videoPlan(HAILUO, { duration: 10, resolution: "1080p" });
+  eq(p.seconds, 10, "海螺 10 秒 + 1080p：时长保住（片长是分镜定死的）");
+  eq(p.send.resolution, 768, "……分辨率降到 768（它 1080P 只出 6 秒）");
+  ok(p.notes.some((n) => /出 10 秒时不收 1080p，已按 768p 生成/.test(n)), "降档的原因说清楚", p.notes);
+  ok(videoPlan(HAILUO, { aspect_ratio: "9:16" }).notes.some((n) => /没有画幅参数/.test(n)), "海螺没有画幅参数：不发，并说一声");
+
+  p = videoPlan(WAN, { aspect_ratio: "21:9" });
+  eq(p.send.size, "1920*1080", "万相文生不收 21:9 → 就近取 16:9，按默认 1080 档合成 size");
+  ok(p.notes.some((n) => /不收 21:9，已按 16:9 生成/.test(n)), "画幅夹了也说，而且说的是人写的「21:9」（不是约分后的 7:3）", p.notes);
+  p = videoPlan(SEED, { aspect_ratio: "21:9" });
+  eq(p.send.aspect, "21:9", "Seedance 收 21:9：原样发");
+  eq(p.notes.length, 0, "反向对照：收的画幅不加说明", p.notes);
+  eq(videoPlan(SEED, { aspect_ratio: "1920x1080" }).send.aspect, "16:9", "「1920x1080」这种写法约成 16:9");
+  p = videoPlan(WAN_I2V, { aspect_ratio: "9:16", resolution: "720p" }, { firstFrame: true });
+  eq(p.send.aspect, undefined, "图生视频：画幅跟着首帧走，aspect_ratio 不发");
+  eq(p.send.resolution, 480, "图生视频的分辨率照表夹紧（720 离 480 更近）");
+
+  p = videoPlan(SEED_NEW, { duration: 12 });
+  eq(p.send.duration, 12, "表里没有的型号：不拿老型号的表去夹，原样发");
+  ok(p.notes.some((n) => /不在内置参数表里/.test(n)), "……并在回执里写明「没校验」", p.notes);
+
+  p = videoPlan(SEED, { prompt: "猫 --duration 10", duration: 5 });
+  eq(p.seconds, 10, "方舟提示词里自己写了 --duration 10：上游认的是它，计价也跟它走");
+  ok(p.notes.some((n) => /提示词里写了 --duration 10/.test(n)), "跟 duration 参数打架时说一声", p.notes);
+
+  for (const c of [WAN, SEED, COG, HAILUO, SFWAN]) {
+    const q = videoPlan(c, {});
+    ok(Object.keys(q.send).length === 0 && q.notes.length === 0, `反向对照：${c.kind} 不传参数 → 什么都不多发、什么都不多说`, q);
+  }
+
+  // 精选目录上挂了可选值，界面按它出下拉
+  const seedCat = mm.CATALOG.video.find((m) => m.id === "doubao-seedance-1-0-pro-250528") || {};
+  ok(JSON.stringify(seedCat.durations) === "[5,10]" && (seedCat.resolutions || []).includes("1080p"),
+    "精选目录里 Seedance pro 带着能选的时长和档位", seedCat);
+
+  // ── ② 计价：按实际秒数 ─────────────────────────────────────
+  eq(unitsFor("video", { duration: 10 }, null, WAN), 5, "★计价：万相要 10 秒只出 5 秒 → 记 5 秒★");
+  eq(unitsFor("video", { duration: 10 }, null, SEED), 10, "计价：Seedance 要 10 秒出 10 秒 → 记 10 秒");
+  eq(unitsFor("video", { duration: 7 }, null, SEED), 5, "计价：Seedance 要 7 秒夹成 5 秒 → 记 5 秒");
+  eq(unitsFor("video", {}, null, HAILUO), 6, "计价：海螺不传时长 → 记它默认的 6 秒（以前一律按 5 秒，少记了）");
+  const hm = mm.resolve((() => {
+    const c = { providers: [{ id: "mx", name: "海螺", kind: "minimax", base_url: MX, api_key: "k" }],
+      media_models: [{ cap: "video", name: "海螺02", provider: "mx", model: "MiniMax-Hailuo-02" }] };
+    mm.normalize(c);
+    return c;
+  })());
+  eq(unitsFor("video", { duration: 7 }, null, hm), 6, "计价：传整份 media 也行（按默认那一路认型号），海螺 7 秒夹成 6 秒");
+  eq(unitsFor("video", { duration: 10 }), 10, "反向对照：认不出型号（没给配置）时只能按人要的秒数估");
+  eq(unitsFor("video", {}), 5, "反向对照：什么都没有 → 按 5 秒估");
+  const yuan = pricing.costOfUnits({ cap: "video", model: TURBO.model, units: unitsFor("video", { duration: 10 }, null, TURBO) });
+  eq(yuan.yuan, 1.2, "★账单：万相 turbo 要 10 秒，按实际 5 秒 × 0.24 = 1.2 元，不是 2.4 元★");
+
+  // ── ③ 请求体：五家各自的字段 ──────────────────────────────
+  const saveDir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-vparam-"));
+  const CDN = "https://cdn.example.test/v.mp4";
+  const js = (j) => ({ ok: true, status: 200, json: async () => j, text: async () => JSON.stringify(j) });
+  const submits = [];
+  const realFetch = global.fetch;
+  global.fetch = async (url, init) => {
+    const u = String(url);
+    const body = () => { const b = JSON.parse((init || {}).body || "{}"); submits.push({ u, b }); return b; };
+    if (/\/video-synthesis$/.test(u)) { body(); return js({ output: { task_id: "w1" } }); }
+    if (/\/tasks\/w1$/.test(u)) return js({ output: { task_status: "SUCCEEDED", video_url: CDN } });
+    if (/\/contents\/generations\/tasks$/.test(u)) { body(); return js({ id: "a1" }); }
+    if (/\/contents\/generations\/tasks\/a1$/.test(u)) return js({ status: "succeeded", content: { video_url: CDN } });
+    if (/\/videos\/generations$/.test(u)) { body(); return js({ id: "z1" }); }
+    if (/\/async-result\/z1$/.test(u)) return js({ task_status: "SUCCESS", video_result: [{ url: CDN }] });
+    if (/\/video_generation$/.test(u)) { body(); return js({ task_id: "m1", base_resp: { status_code: 0 } }); }
+    if (/\/query\/video_generation\?task_id=m1$/.test(u)) return js({ status: "Success", file_id: "f1" });
+    if (/\/files\/retrieve\?file_id=f1$/.test(u)) return js({ file: { download_url: CDN } });
+    if (/\/video\/submit$/.test(u)) { body(); return js({ requestId: "s1" }); }
+    if (/\/video\/status$/.test(u)) return js({ status: "Succeed", results: { videos: [{ url: CDN }] } });
+    if (u === CDN) return { ok: true, status: 200, arrayBuffer: async () => Buffer.alloc(64, 9), json: async () => ({}), text: async () => "" };
+    throw new Error("测试里没准备这个地址：" + u);
+  };
+  const run = async (cfg, input) => {
+    submits.length = 0;
+    const r = await generateVideo({ video: cfg, list: [] }, { prompt: "一只猫跑过草地", ...input }, { saveDir });
+    return { r, b: (submits[0] || {}).b || {} };
+  };
+
+  try {
+    let { r, b } = await run(WAN, { duration: 10, aspect_ratio: "9:16", resolution: "480p", filename: "w.mp4" });
+    eq(r.isError, false, "万相：带参数也能出片", r.content);
+    eq(b.parameters.size, "480*832", "万相文生：9:16 + 480p → parameters.size 是「480*832」");
+    eq(b.parameters.duration, undefined, "万相 2.2 只出 5 秒：duration 不发");
+    ok(/该模型只支持 5 秒，已按 5 秒生成/.test(r.content), "★回执里写着「该模型只支持 5 秒，已按 5 秒生成」★", r.content.slice(-120));
+    ({ r, b } = await run(WAN, { filename: "w0.mp4" }));
+    ok(b.parameters && !("size" in b.parameters) && !("duration" in b.parameters) && !("resolution" in b.parameters),
+      "反向对照：万相不传参数 → parameters 里一个新字段都没有", b.parameters);
+    ok(!/该模型|没发|没校验/.test(r.content), "反向对照：没夹、没丢参数就一句参数说明都不加", r.content.slice(-80));
+
+    ({ r, b } = await run(SEED, { duration: 7, aspect_ratio: "9:16", resolution: "1080p", filename: "a.mp4" }));
+    const text = ((b.content || [])[0] || {}).text || "";
+    ok(/ --duration 5 --ratio 9:16 --resolution 1080p$/.test(text), "方舟：三个参数写成提示词里的文本指令，时长是夹过的 5", text);
+    ok(text.indexOf("--watermark false") > 0, "方舟：去水印那条指令还在", text);
+    eq(unitsFor("video", { duration: 7 }, null, SEED), +((text.match(/--duration (\d+)/) || [])[1]), "★同一趟：发出去的秒数 = 计价的秒数★");
+    ({ b } = await run(SEED, { filename: "a0.mp4" }));
+    eq(((b.content || [])[0] || {}).text, "一只猫跑过草地 --watermark false", "反向对照：方舟不传参数 → 提示词跟以前逐字一样");
+
+    ({ r, b } = await run(COG, { duration: 10, aspect_ratio: "16:9", filename: "z.mp4" }));
+    eq(b.size, "1920x1080", "智谱：size 写成「宽x高」");
+    eq(b.duration, 10, "智谱 3 代：duration 10 原样发");
+    ({ b } = await run(COG, { filename: "z0.mp4" }));
+    ok(!("size" in b) && !("duration" in b), "反向对照：智谱不传参数 → 请求体里没有 size / duration", b);
+
+    ({ r, b } = await run(HAILUO, { duration: 10, resolution: "1080p", filename: "m.mp4" }));
+    eq(b.duration, 10, "海螺：duration 10");
+    eq(b.resolution, "768P", "海螺：分辨率写成「768P」，而且是降过档的");
+    ok(/已按 768p 生成/.test(r.content), "海螺降档写进回执", r.content.slice(-120));
+    ({ b } = await run(HAILUO, { filename: "m0.mp4" }));
+    ok(!("duration" in b) && !("resolution" in b), "反向对照：海螺不传参数 → 请求体里没有 duration / resolution", b);
+
+    ({ r, b } = await run(SFWAN, { duration: 10, aspect_ratio: "9:16", filename: "s.mp4" }));
+    eq(b.image_size, "720x1280", "硅基流动：尺寸走 image_size");
+    ok(!("duration" in b), "硅基流动接口里没有时长字段：不发", b);
+    ok(/只支持 5 秒/.test(r.content), "……并在回执里说只出 5 秒", r.content.slice(-120));
+    ({ b } = await run(SFWAN, { filename: "s0.mp4" }));
+    ok(!("image_size" in b), "反向对照：硅基流动不传参数 → 没有 image_size", b);
+
+    submits.length = 0;
+    r = await generateVideo({ video: SEED, list: [] }, { prompt: "猫", duration: "五秒", filename: "bad.mp4" }, { saveDir });
+    eq(r.isError, true, "duration 写坏 → 工具直接报错");
+    eq(submits.length, 0, "……一个请求都没发（不花钱）");
+    eq(fs.existsSync(path.join(saveDir, "bad.mp4")), false, "……也没落盘");
+  } finally {
+    global.fetch = realFetch;
+    try { fs.rmSync(saveDir, { recursive: true, force: true }); } catch {}
+  }
+}
+
 function done() {
-  asrChecks().then(rest, (e) => {
+  asrChecks().then(videoParamChecks).then(rest, (e) => {
     fail++;
-    console.log("  ✗ 转写那组炸了：" + ((e && e.stack) || e));
+    console.log("  ✗ 转写 / 生视频参数那组炸了：" + ((e && e.stack) || e));
     rest();
   });
 }

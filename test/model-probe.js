@@ -29,7 +29,8 @@ const fs = require("fs");
 const path = require("path");
 
 const ROOT = path.join(__dirname, "..");
-const server = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+const srcLib = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
+const server = srcLib.src("server");
 const app05 = fs.readFileSync(path.join(ROOT, "public", "js", "app-05.js"), "utf8");
 
 let pass = 0, fail = 0;

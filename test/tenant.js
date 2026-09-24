@@ -29,6 +29,7 @@ fs.mkdirSync(process.env.OPENWORKBUDDY_DATA_DIR, { recursive: true });
 
 const express = require("express");
 const ROOT = path.join(__dirname, "..");
+const srcLib = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
 const account = require(path.join(ROOT, "account"));
 const org = require(path.join(ROOT, "org"));
 const admin = require(path.join(ROOT, "admin"));
@@ -55,7 +56,7 @@ const eq = (got, want, msg) => ok(got === want, msg, { got, want });
  * 不拄一份。这一段正是「资料库怎么数据还是通用的吗」那条反馈的修法本体，
  * 拄过来的副本只会在 server.js 改了之后继续给绿灯。按函数名切源码，切不到就当场报错。
  */
-const SERVER_SRC = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+const SERVER_SRC = srcLib.src("server");
 const prefs = require(path.join(ROOT, "prefs"));
 const { dataPath } = require(path.join(ROOT, "paths"));
 const libraryRootOf = (() => {
@@ -287,7 +288,7 @@ async function login(username, password) {
   // 这一节把 server.js 里的 tenantRootOf + rootedPath 原样切出来跑。外部依赖里
   // safePath / safePathIn / withWorkspace 用 tools.js 的真货（跟线上同一套越界判定），
   // 只有 knownRoots 这张「整台机器的根」和两条线索（?root= 指纹、?sid= 会话）摆成最坏情况。
-  const SRC5 = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+  const SRC5 = srcLib.src("server");
   const cutA = SRC5.indexOf("/**\n * 租户的成果根");
   const cutB = SRC5.indexOf('\napp.get("/api/files/download/*"');
   ok(cutA > 0 && cutB > cutA, "从 server.js 里切得出这两个函数（切不出来 = 改名了 = 这一节在空转，别让它悄悄变绿）", { cutA, cutB });
@@ -678,7 +679,7 @@ async function login(username, password) {
   console.log("\n【19】长期记忆：记的是他的事，他就得看得见、加得了、删得掉自己那几条");
   // 上面那四条是替身（server.js 起不了独立进程，这套测试从第一天起就是照抄形状）。
   // 替身跟真源码走散了，这一整段就变成「测我自己写的假路由」——所以先钉住真源码里那几句。
-  const SERVER_SRC = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+  const SERVER_SRC = srcLib.src("server");
   for (const [frag, why] of [
     ["memory.remove(req.params.id, memScope(req))", "删的时候真把作用域传下去了"],
     ["shared: wantShared && !downgraded", "勾了共享但没这权限时，真的没往共享区写"],
@@ -747,7 +748,7 @@ async function login(username, password) {
   // 前端不可能自己猜谁是平台管理员——
   // 得后端在每个能力位上回一个布尔。这三处（/api/settings 的 platform_owner、
   // /api/security/modes 的 can_switch）就是界面挑控件的唯一依据。
-  const SRC20 = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+  const SRC20 = srcLib.src("server");
   for (const [frag, why] of [
     ["const isPlatformOwner = (req) =>", "真源码里有这个能力位助手"],
     ["platform_owner: isPlatformOwner(req)", "/api/settings 回了 platform_owner"],
@@ -843,7 +844,7 @@ async function login(username, password) {
   // 光改表不改根就是把库直接敞开了。这两条钉住「根确实按人分」这件事本身
   ok(/app\.use\(admin\.tenantScope\(\{[\s\S]{0,400}?withLibraryBase/.test(SERVER_SRC),
      "server.js 真把资料库根接进了 tenantScope（不接就是所有人共用一个根，而写闸刚被拿掉）");
-  const TL = fs.readFileSync(path.join(ROOT, "tools.js"), "utf8");
+  const TL = srcLib.src("tools");
   ok(/function libBase\(\)/.test(TL) && /libBaseStore\.getStore\(\) \|\| LIB_DIR/.test(TL),
      "tools.js 里的库根走 ALS，没 run 过才退回 LIB_DIR（命令行、定时任务那一支行为不变）");
   ok(/name: "library_read"/.test(TL) && /name: "library_list"/.test(TL),
@@ -923,7 +924,7 @@ async function login(username, password) {
   ok(!readTbl.includes("/api/files"), "读表里没有 /api/files（看自己的文件不该拦）");
 
   console.log("\n【26】服务器那边的几处，钉住别退回去");
-  const SRV = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+  const SRV = srcLib.src("server");
   ok(/app\.set\("case sensitive routing", true\)/.test(SRV),
      "server.js 开了 case sensitive routing（门禁小写化之外的第二道，两道都得在）");
   const owFn = (SRV.match(/function openWithSystem\([\s\S]*?\n\}/) || [""])[0];
@@ -983,7 +984,9 @@ async function login(username, password) {
       return { finalText: "跑完了" };
     },
   };
-  app.use(createImRouter({ config: { im: {} }, runtime: fakeRuntime, sessions: imSessions, outputFiles: () => [], saveConfig: () => {} }).router);
+  // 配置单拎出来：下面 /im/task 那段要往里填群机器人地址
+  const imConfig = { im: {} };
+  app.use(createImRouter({ config: imConfig, runtime: fakeRuntime, sessions: imSessions, outputFiles: () => [], saveConfig: () => {} }).router);
 
   r = await call("POST", "/im/local", { cookie: yuan, body: { message: "成员说的话" } });
   eq(r.status, 200, "成员在助理页发得出消息（这页本来就该人人能用）");
@@ -1040,7 +1043,60 @@ async function login(username, password) {
   eq(r.json.cleared, 1, "反向对照：平台管理员清的是全部");
   eq(imSessions.keys().length, 0, "清完一段不剩");
 
+  // 通用 Webhook：POST /im/task。以前任务跑完调的是一个根本不存在的 pushWecom，
+  // 每次都 ReferenceError 掉进 catch 回 500——任务明明做成了，调用方拿到的是失败，回复也丢了。
+  // 群机器人用一个本机的假接收端顶替（不出网、不花钱），先验推送真到了，再把推送弄炸，验它炸不到回复
+  console.log("\n【28b】通用 Webhook /im/task：跑完回 200 带回复，群机器人推送挂了也不连累");
+  const http = require("http");
+  const hookGot = [];
+  let hookArrived;
+  const hookP = new Promise((res2) => (hookArrived = res2));
+  const hookSrv = http.createServer((req, res2) => {
+    let buf = "";
+    req.on("data", (d) => (buf += d));
+    req.on("end", () => { hookGot.push(buf); res2.end("{}"); hookArrived(buf); });
+  });
+  await new Promise((res2) => hookSrv.listen(0, "127.0.0.1", res2));
+  imConfig.im.wecom_bot_webhook = `http://127.0.0.1:${hookSrv.address().port}/hook`;
+  // 回复发出去之后推送再抛，就会在 catch 里二次写响应头——那是一条没人接的 rejection，这里把它数出来
+  const unhandled = [];
+  const onUnhandled = (e) => unhandled.push(String((e && e.message) || e));
+  process.on("unhandledRejection", onUnhandled);
+  const waitFor = (p, ms) => Promise.race([p, new Promise((res2) => setTimeout(() => res2(null), ms))]);
+
+  r = await call("POST", "/im/task", { body: { message: "帮我查个数" } });
+  eq(r.status, 200, "webhook 发来的任务跑完回 200（以前这里一律 500）");
+  eq(r.json && r.json.reply, "跑完了", "回复原样带回去了");
+  ok(r.json && Array.isArray(r.json.files), "files 字段也在（调用方按这个形状解析）", r.json);
+  const pushed = await waitFor(hookP, 3000);
+  ok(pushed && /任务完成/.test(pushed) && /跑完了/.test(pushed),
+     "群机器人真收到了「任务完成」和回复——推送这条路是通的，不是被吞成了空操作", pushed);
+
+  const notifyMod = require(path.join(ROOT, "notify"));
+  const realPushBots = notifyMod.pushBots;
+  notifyMod.pushBots = async () => { throw new Error("推送桩炸了"); };
+  try {
+    r = await call("POST", "/im/task", { body: { message: "再查一个", session: "s2" } });
+    eq(r.status, 200, "推送炸了，任务照样回 200——做成的任务不许说成失败");
+    eq(r.json && r.json.reply, "跑完了", "回复照样带回去");
+    let errLine = null;
+    for (let i = 0; i < 20 && !errLine; i++) {
+      await new Promise((res2) => setTimeout(res2, 25));
+      const lr = await call("GET", "/im/log", { cookie: boss });
+      errLine = (lr.json || []).find((e) => e.channel === "webhook" && e.dir === "error" && /推送桩炸了/.test(e.text || ""));
+    }
+    ok(!!errLine, "推送失败记进了 IM 日志（挂了要留痕，不是悄悄吞掉）");
+  } finally {
+    notifyMod.pushBots = realPushBots;
+  }
+  await new Promise((res2) => setTimeout(res2, 50));
+  process.removeListener("unhandledRejection", onUnhandled);
+  eq(unhandled.length, 0, "全程没有漏出去的 rejection（回复之后再抛会二次写响应头）", unhandled);
+  delete imConfig.im.wecom_bot_webhook;
+  await new Promise((res2) => hookSrv.close(res2));
+
   const IMSRC = fs.readFileSync(path.join(ROOT, "im.js"), "utf8");
+  ok(!/(^|[^.\w])pushWecom\(/m.test(IMSRC), "im.js 里不再调那个不存在的 pushWecom（要推送走同文件的 pushBots）");
   ok(/const sessionKey = localKeyOf\(req\.user\);/.test(IMSRC), "im.js 的 /im/local 真按人算会话键");
   ok(!/const sessionKey = "local_assist"/.test(IMSRC), "那行写死的 local_assist 已经不在了");
   ok(/router\.get\("\/im\/log", \(req, res\)/.test(IMSRC), "/im/log 真收下了 req（那个 _req 下划线就是病根）");

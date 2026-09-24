@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 /**
  * 找到本机那个 CLI 到底在哪。

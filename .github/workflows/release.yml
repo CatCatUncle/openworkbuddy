@@ -98,9 +98,11 @@ jobs:
           fetch-depth: 0
       - id: notes
         run: |
+          md="$(node scripts/release-notes.js "${GITHUB_REF_NAME}")"
+          [ -n "$md" ] || echo "::warning::README「最新动态」这一版没有新条目，Release 页不会有「这一版改了什么」"
           {
             echo 'md<<OWB_NOTES_EOF'
-            node scripts/release-notes.js "${GITHUB_REF_NAME}"
+            printf '%s\n' "$md"
             echo OWB_NOTES_EOF
           } >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v5

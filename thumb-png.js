@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 /** 纯 Node 的 PNG 缩图 —— 不用任何原生依赖。
  *

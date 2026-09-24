@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 /**
  * 缩图线程。thumb.js 起一小撮，专门跑 thumb-png.js 那段纯 JS 的解码+缩放。

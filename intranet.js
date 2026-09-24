@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 /**
  * 内网 / 私有化模式。

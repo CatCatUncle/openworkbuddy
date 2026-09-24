@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 /**
  * 静态资源压缩。

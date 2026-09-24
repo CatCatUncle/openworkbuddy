@@ -69,14 +69,14 @@ async function renderHubMcp(box) {
   // 而它从不删改任何已经配好的东西——判断错了关掉就全恢复，所以不用弹二次确认。
   const intranetSec = !po ? "" : `
     <div class="hub-sec-title" style="margin-top:22px">网络环境
-      <span class="sub">这台机器能不能连上境外服务。据实说就行——它只改提示，不动你已经配好的任何东西</span></div>
+      <span class="sub">能否连境外服务？只改提示，不动已有配置</span></div>
     <label class="hub-desc" style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;margin-top:8px">
       <input type="checkbox" id="mcp-intranet" style="margin:2px 0 0"${cat.intranet ? " checked" : ""}>
-      <span>内网模式：连不上的境外连接器给标出来、排到最后（<b>不删</b>，有代理照样接得上）；从 GitHub 装技能当场说清楚，不再白等 30 秒超时</span>
+      <span>内网模式：境外连接器标出并排到最后（不删），GitHub 装技能直接提示，不干等超时</span>
     </label>`;
   const presetSec = !po || !presets.length ? "" : `
     <div class="hub-sec-title" style="margin-top:22px">推荐连接器
-      <span class="sub">点「接入」我会把启动命令填好，要 Key 的填上就能连；都是官方或社区现成的 MCP 服务器</span></div>
+      <span class="sub">点「接入」自动填好命令，需要 Key 的补上即可</span></div>
     ${!tools.uvx && presets.some(it => it.needs === "uvx") ? '<div class="hub-desc">本机没找到 uvx：标着 uvx 的连接器要先装 uv（macOS 装法：brew install uv）</div>' : ""}
     ${!tools.npx && presets.some(it => it.needs && it.needs !== "uvx") ? '<div class="hub-desc">本机没找到 npx：先装 Node.js（自带 npx）再来接本地连接器</div>' : ""}
     ${(cat.notes || []).map(n => `<div class="hub-desc">${esc(n)}</div>`).join("")}
@@ -90,14 +90,14 @@ async function renderHubMcp(box) {
   hubState.mcpAdvice = null;
   const adviceBox = !adv || !po ? "" : `
     <div class="hub-desc" style="margin-top:14px;border-left:3px solid var(--owb-warn, #d97706);padding-left:10px">
-      <b>存下了，另外有 ${adv.findings.length + (adv.more || 0)} 处想让你看一眼</b>（外挂的 toolward 扫出来的，只是提醒，没拦任何东西）：
+      <b>存下了，另外有 ${adv.findings.length + (adv.more || 0)} 处想让你看一眼</b>（toolward 扫描提醒，未拦截）：
       ${adv.findings.map(f => `<div style="margin-top:4px">· ${esc(f.file)}${f.line ? ":" + f.line : ""} — ${esc(f.why)}</div>`).join("")}
       ${adv.more ? `<div style="margin-top:4px">· …另外 ${adv.more} 处</div>` : ""}
-      <div style="margin-top:6px;opacity:.75">你填的 Key 和令牌没有交给它：只把变量名递过去，值全换成了 ***。</div>
+      <div style="margin-top:6px;opacity:.75">Key 和令牌已打码，没交给它。</div>
     </div>`;
   box.innerHTML = `${adviceBox}
     <div class="hub-sec-title" style="margin-top:14px">已接入的外部工具
-      <span class="sub">通过 MCP（本地 stdio / 远程 Streamable HTTP）给智能体接外部能力，当前 ${data.servers.length} 个服务器 · <b>${data.total_tools}</b> 个工具已注入，任务里可直接调用</span></div>
+      <span class="sub">MCP 外部能力，当前 ${data.servers.length} 个服务器 · <b>${data.total_tools}</b> 个工具已注入，任务里可直接调用</span></div>
     <div class="card-grid">
       ${po ? `<div class="ex-card add" id="mcp-open-add">${ic("plus")}添加连接器</div>` : ""}
       ${list.map(({ sv, i }) => `
@@ -481,15 +481,15 @@ async function saveSettings(patch, msgEl) {
  */
 const MEDIA_CAPS = [
   { cap: "vision", icon: "eye", title: "看图", tool: "look_at_image",
-    hint: "你粘贴（⌘V）或拖进来的截图，它带着问题去看，拿回文字。多数人这一路不用配：主模型自己会看图（多模态模型）就直接用主模型，省一把 Key、省一份限流额度。这儿配的是后备，只在主模型看不了图时顶上——主模型是纯文本的（如 deepseek-chat），才需要在这儿加一个能看图的。" },
+    hint: "看你粘贴或拖进来的图。主模型能看图就不用配；主模型是纯文本（如 deepseek-chat）时才需要加。" },
   { cap: "image", icon: "image", title: "画图", tool: "generate_image",
-    hint: "对话里说「画一张…」就会用它，成图存进工作空间。支持 OpenAI 兼容 /images/generations；地址含 dashscope 时自动走通义原生协议。" },
+    hint: "说「画一张…」时用它，成图存进工作空间。OpenAI 兼容接口；dashscope 自动走通义协议。" },
   { cap: "video", icon: "clapperboard", title: "视频", tool: "generate_video",
-    hint: "生成一段通常要 1~5 分钟。五家协议各说各的话，按渠道认：通义万相（dashscope）、火山方舟 Seedance（ark / volces）、智谱 CogVideoX（bigmodel）、MiniMax 海螺（minimax）、硅基流动（siliconflow）。走中转或自建网关时地址里看不出上游，把渠道的「渠道类型」选成实际那一家即可。" },
+    hint: "一段约 1~5 分钟。支持通义万相、火山 Seedance、智谱、MiniMax、硅基流动；走中转时把「渠道类型」选成实际那家。" },
   { cap: "tts", icon: "mic", title: "配音", tool: "text_to_speech",
-    hint: "把文字念成音频，视频配音、播客旁白用它。支持 OpenAI 兼容 /audio/speech；地址含 dashscope 时自动走通义 qwen-tts 原生协议。" },
+    hint: "文字转语音，用于配音、旁白。OpenAI 兼容接口；dashscope 自动走通义 qwen-tts。" },
   { cap: "asr", icon: "file-audio", title: "转写", tool: "transcribe_audio",
-    hint: "把会议录音、采访、口播素材里的话转成文字，需要字幕还能出一份 .srt。走 OpenAI 兼容 /audio/transcriptions，单个文件 25MB 以内（一小时的会议先用 ffmpeg 压成 16k 单声道再传）。通义百炼的转写是异步任务接口，还没接，别配在这一路。" },
+    hint: "录音转文字，可出 .srt 字幕。OpenAI 兼容接口，单文件 ≤25MB；暂不支持通义百炼转写。" },
 ];
 let mediaCatalog = null; // 精选目录，一次会话拉一次
 const liveModels = new Map(); // 渠道 id → 那边 /models 现拉回来的清单
@@ -551,7 +551,7 @@ function renderMediaPane(box, s) {
     box.innerHTML = `
       <div class="card-item">
         <div class="t">${ic("image")}看图 / 画图 / 视频 / 配音用的模型</div>
-        <div class="d">这几路配在服务器上，归平台管理员。你直接在对话里用就行（粘张图问它、说「画一张…」），不用在这儿配。</div>
+        <div class="d">归平台管理员配置，你在对话里直接用即可。</div>
         <div class="d" style="margin-top:6px">${MEDIA_CAPS.map((c) => {
           const n = s.media_models.filter((m) => m.cap === c.cap).length;
           return `${esc(c.title)}：${n ? n + " 个模型可用" : "还没配"}`;
@@ -672,7 +672,7 @@ function capCard(c, s, provName) {
           const meta = [m.default ? "主用" : "备用", provName(m.provider), m.voice ? `音色 ${m.voice}` : ""].filter(Boolean).map(esc).join(" · ");
           const bad = mmMismatch((s.providers.find((x) => x.id === m.provider) || {}).kind, m.model);
           return `
-          ${bad ? `<div class="ch-note mrow-bad">${ic("triangle-alert")}「${esc(m.model)}」是${esc(kindLabel(bad))}家的型号，挂在这条渠道上调不通（会报「型号不存在」）。加一条${esc(kindLabel(bad))}渠道，或者把这条删了换一个。</div>` : ""}
+          ${bad ? `<div class="ch-note mrow-bad">${ic("triangle-alert")}「${esc(m.model)}」是${esc(kindLabel(bad))}的型号，这条渠道调不通。请加一条${esc(kindLabel(bad))}渠道或换型号。</div>` : ""}
           <div class="mrow${m.default ? " is-on" : ""}">
             <input type="radio" name="def-${c.cap}" ${m.default ? "checked" : ""} data-def="${i}" title="设为这一路的主用模型">
             <span class="mrow-name">${esc(m.name)}</span>
@@ -756,9 +756,9 @@ function bindMedia(box, s) {
       if (want) {
         const alt = s.providers.filter((x) => x.kind === want);
         const fix = alt.find((x) => String(x.api_key || "").trim()) || alt[0];
-        if (!fix) return toast(`「${model}」是${kindLabel(want)}家的型号，这条渠道上没有它。先去上面加一条${kindLabel(want)}渠道，或者换一个这条渠道有的型号`);
+        if (!fix) return toast(`「${model}」是${kindLabel(want)}的型号，这条渠道没有。请先加一条${kindLabel(want)}渠道或换型号`);
         use = fix.id;
-        toast(`「${model}」是${kindLabel(want)}家的型号，已经帮你挂到「${fix.name}」那条渠道上`);
+        toast(`「${model}」是${kindLabel(want)}的型号，已自动挂到「${fix.name}」渠道`);
       }
       s.media_models.push({ id: "", cap, name, provider: use, model, voice, default: !s.media_models.some((m) => m.cap === cap) });
       if (await saveMediaTables(s, msg)) repaintMedia(box, s);
@@ -786,14 +786,14 @@ function mmLocalProv(p) {
  *  以前这儿是一句空字符串：上一秒还写着「正在问渠道有哪些模型…」，下一秒那行字直接没了，
  *  问出什么结果一个字都不说。对本机 Ollama 尤其要命——他要做的事（ollama pull）没人告诉他 */
 function mmEmptyTip(d, local) {
-  if (d && d.why) return `这个渠道没给模型列表（${d.why}），上面的精选和「自己填…」照用。`;
+  if (d && d.why) return `这个渠道没给模型列表（${d.why}），可用精选或「自己填…」。`;
   return local
-    ? "连上了，但这台机器上一个模型都还没装。终端里跑 ollama pull qwen3:8b 拉一个（约 5GB），回来重新点开这个下拉框会再问一次。"
-    : "这个渠道没回模型列表（不少国产渠道没有这个接口），上面的精选和「自己填…」照用。";
+    ? "已连上，但本机还没装模型。终端运行 ollama pull qwen3:8b（约 5GB）后重开下拉框。"
+    : "这个渠道没返回模型列表，可用精选或「自己填…」。";
 }
 /** 连问都没问出去（服务端没起来 / 网断了 / 这一版的接口不在）。
  *  它跟「问到了但是空的」是两回事，但结局以前一模一样：那行字直接抹掉，什么都不说 */
-const MM_FAIL_TIP = "没能问到这个渠道（请求没发出去），先用上面的精选或者「自己填…」，稍后重开这个下拉框会再问一次。";
+const MM_FAIL_TIP = "没连上这个渠道，先用精选或「自己填…」，重开下拉框会重试。";
 function mmBrand(id) {
   const v = String(id || "").trim();
   if (!v || v.includes(":")) return "";
@@ -980,22 +980,22 @@ function paintModels(pane, s) {
   const blindVision = !s.media_models.some((m) => m.cap === "vision")
     && active && Array.isArray(active.caps) && !active.caps.includes("vision");
   const warns = [
-    noTools ? `主模型「${active.name}」标了不会调用工具，任务跑起来会卡在第一步。换一个，或者去它那行的 ⋯ → 编辑 把「能调工具」勾回来。` : "",
-    blindVision ? `「看图」这一路没单配模型，会拿主模型「${active.name}」去看，而它标了不会看图。往「看图」里加一个能看图的模型。` : "",
+    noTools ? `主模型「${active.name}」不能调工具，任务会卡在第一步。请换模型，或在 ⋯ → 编辑 勾上「能调工具」。` : "",
+    blindVision ? `「看图」没单配模型，主模型「${active.name}」又不会看图。请往「看图」加一个模型。` : "",
   ].filter(Boolean);
 
   pane.innerHTML = `
     <div class="model-route-head">
-      <div><b>现在在用谁</b><span>对话、看图、画图、视频、配音、转写分开走，互不串用。点一格就跳到那一路的配置</span></div>
+      <div><b>现在在用谁</b><span>六路各走各的，点一格跳到它的配置</span></div>
       <span>${ready.length} 个渠道可用</span>
     </div>
     <div class="model-route-grid">${tiles.join("")}</div>
     ${warns.map((w) => `<div class="model-route-warn">${ic("triangle-alert")}<span>${esc(w)}</span></div>`).join("")}
     <div class="model-route-note">${po
-      ? "先在下面「渠道与 Key」里填好一家的 Key，再回到「按能力配置」把模型挂到用得上的那一路。一个渠道的 Key 只填一次，六路共用；画布节点仍可临时指定具体的图片或视频模型。"
-      : "这是服务器当前生效的模型路由。你可在输入框临时切换对话模型，其余几路由平台管理员统一维护。"}</div>
+      ? "先在「渠道与 Key」填好 Key，再到「按能力配置」挂模型。一个 Key 六路共用。"
+      : "服务器当前的模型路由。对话模型可在输入框临时切换，其余由平台管理员维护。"}</div>
 
-    <div class="hub-sec-title" style="margin:20px 0 8px">${ic("sliders-horizontal")}按能力配置 <span class="sub">一路可以挂多个渠道的多个模型：平时走「主用」，在对话里点名就能临时换别的</span></div>
+    <div class="hub-sec-title" style="margin:20px 0 8px">${ic("sliders-horizontal")}按能力配置 <span class="sub">每路可挂多个模型，平时走「主用」，对话里点名可临时换</span></div>
     <div id="chat-overview">${chatOverview(s, po, kindLabel)}</div>
     <div id="media-pane"></div>
 
@@ -1065,7 +1065,7 @@ function chatOverview(s, po, kindLabel) {
         <span class="ch-count${s.models.length ? "" : " is-empty"}">${sum}</span>
       </div>
       ${!open ? "" : `<div class="ch-body">
-        <div class="ch-note">整台服务器的默认对话模型。每个人还能在输入框右下角临时换一个，那是各人自己的偏好，不影响这里。</div>
+        <div class="ch-note">服务器默认对话模型。每人可在输入框右下角临时切换，不影响这里。</div>
         ${s.models.length ? s.models.map((m) => modelRow(m, s, po, true)).join("")
           : `<div class="ch-note">一个都还没有。去下面的渠道卡里加一个，或者点这儿的「添加对话模型」。</div>`}
         ${!po ? "" : `
@@ -1075,7 +1075,7 @@ function chatOverview(s, po, kindLabel) {
             <option value="">不换道（默认）</option>
             ${s.models.map((m) => `<option value="${esc(m.name)}"${fb === m.name ? " selected" : ""}>${esc(m.name)}（${esc(m.model)}）${modelKeyed(m, s) ? "" : "（这条还没 Key）"}</option>`).join("")}
           </select>
-          <span>主模型连续卡壳或持续报错时，自动切到这条接着跑当前任务，并在任务流里醒目播报。不选就绝不悄悄换模型，宁可如实报错；每个任务最多换一次道。</span>
+          <span>主模型卡住或持续报错时自动切到这条并提示，每个任务最多切一次。不选则如实报错。</span>
         </div>`}
         ${!po ? "" : `
         <div class="ca-form" data-chan="__all__" style="display:none">
@@ -1748,7 +1748,7 @@ function renderSearchPane(pane, s) {
   pane.innerHTML = `
     <div class="card-item">
       <div class="t">搜索服务商</div>
-      <div class="d" style="margin-bottom:8px">web_search 用哪家。这家没配 Key 或调不通，会自动顺延到你填过的下一家，最后退到不要 Key 的免费通道。</div>
+      <div class="d" style="margin-bottom:8px">web_search 用哪家。没配 Key 或不通会顺延下一家，最后用免费通道。</div>
       <select id="sr-provider">
         <option value="">自动 · 按配好的顺延（国内优先）</option>
         <optgroup label="国内服务商">${ids.filter((i) => SEARCH_VENDORS[i][2] === "国内").map((i) => `<option value="${i}">${esc(SEARCH_VENDORS[i][0])}</option>`).join("")}</optgroup>
@@ -2101,13 +2101,13 @@ function renderOpsPane(pane) {
   pane.innerHTML = `
     <div class="card-item">
       <div class="t">最近的运行指标</div>
-      <div class="d" style="margin-bottom:8px">每分钟滚一份快照，存在 <code>data/metrics/&lt;年-月&gt;.jsonl</code>，留最近 6 个月。<b>计数是「这一分钟内」的增量</b>，不是累计值——重启不会在图上留一个假的断崖。</div>
+      <div class="d" style="margin-bottom:8px">每分钟存一份快照到 <code>data/metrics/&lt;年-月&gt;.jsonl</code>，保留 6 个月，计数为每分钟增量。</div>
       <div id="ops-cards" style="display:flex;flex-wrap:wrap;gap:10px;margin:10px 0"></div>
       <div id="ops-chart"></div>
     </div>
     <div class="card-item">
       <div class="t">正在报的警</div>
-      <div class="d" style="margin-bottom:8px">命中阈值就推到企业微信 / 钉钉（在「助理设置」里配机器人地址）。<b>同一条 30 分钟内只报一次</b>，恢复了也会说一声——只报警不报恢复的系统，两周后就没人看了。</div>
+      <div class="d" style="margin-bottom:8px">命中阈值推送到企业微信 / 钉钉（在「助理设置」配机器人）。同一条 30 分钟只报一次，恢复也通知。</div>
       <div id="ops-alerts"></div>
     </div>
     <div class="card-item">
@@ -2167,7 +2167,7 @@ function renderOpsPane(pane) {
     const alerts = Object.entries(d.alerts || {});
     al.innerHTML = alerts.length
       ? alerts.map(([id, v]) => `<div style="padding:6px 0;border-bottom:1px solid var(--owb-line)"><b>${esc(id)}</b> <span class="d">正在报，已持续约 ${Math.max(1, Math.round((Date.now() - (v.since || Date.now())) / 60000))} 分钟</span></div>`).join("")
-      : `<div class="d">现在没有正在报的警。（这不代表没配通道——想验一下的话，可以把阈值调低再跑几趟任务。）</div>`;
+      : `<div class="d">当前没有告警。</div>`;
   };
 
   const loadLogs = async () => {
@@ -2201,12 +2201,12 @@ function renderTracePane(pane, s) {
   pane.innerHTML = `
     <div class="card-item">
       <div class="t">记录去哪看</div>
-      <div class="d" style="margin-bottom:8px">每趟任务调了哪些工具、动了哪些文件、花了多久、烧了多少 Token，都默认记在当前工作区里（<code>.openworkbuddy/traces.jsonl</code>），不依赖 Langfuse、也不往外发。这一页只管「要不要同时抄一份到 Langfuse」；<b>看记录在侧栏「更多 → 执行追踪」</b>——那儿是整页的，一眼扫得完。</div>
+      <div class="d" style="margin-bottom:8px">执行记录默认只存本地（<code>.openworkbuddy/traces.jsonl</code>），在「更多 → 执行追踪」查看。这里只管是否同步到 Langfuse。</div>
       <button class="btn-plain" id="lf-goto-page">${ic("activity")} 打开执行追踪</button>
     </div>
     <div class="card-item">
       <div class="t">执行追踪</div>
-      <div class="d" style="margin-bottom:6px">开了之后，每趟任务的每次模型调用、每个工具、每笔 token 都会发到 Langfuse，在那边一层层展开看。默认关着——<b>打开等于把提示词原文、模型回复、工具参数发到下面填的那台机器</b>。自己用 Docker 搭一个就全在自己机器里；填官方 cloud.langfuse.com 就是发给别人。</div>
+      <div class="d" style="margin-bottom:6px">默认关。<b>打开会把提示词原文、模型回复、工具参数发到下面的地址</b>，填官方云即发给第三方。</div>
       <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--owb-text-2);cursor:pointer"><input type="checkbox" id="lf-on" style="margin:0"${lf.enabled ? " checked" : ""}> 打开执行追踪</label>
       <div class="f">Langfuse 地址</div>
       <input id="lf-host" placeholder="https://cloud.langfuse.com 或 http://你的内网地址:3000" value="${esc(lf.host || "")}">
@@ -2227,11 +2227,11 @@ function renderTracePane(pane, s) {
   // 上报账本。0 在这儿是「一条都没发过」，不是「一条都没失败」——两种意思写成两句话，
   // 不然用户看到一排 0 会以为一切正常（其实可能是地址填错了，压根没发出去过）
   const statBox = pane.querySelector("#lf-stat");
-  if (!lf.enabled) statBox.textContent = "还没打开。打开并填好钥匙后，这里会显示实际发出去多少条。";
+  if (!lf.enabled) statBox.textContent = "未开启。";
   // 地址填错和钥匙没填全得分开说。设置页保存时会拦住不像网址的地址，但手改 config.json
   // 的人（自建、Docker 部署）绕得过去，那种情况下写成「钥匙没填全」会让人去翻错的地方
-  else if (st.bad_host) statBox.textContent = "开着，但 config.json 里的地址不像个网址（得是 http:// 或 https:// 开头）——现在一条都不会发，也不会替你退回官方云，免得把提示词发错地方。";
-  else if (!st.ready) statBox.textContent = "开着，但钥匙没填全——现在一条都不会发。";
+  else if (st.bad_host) statBox.textContent = "已开启，但地址不是 http(s):// 开头，不会发送。";
+  else if (!st.ready) statBox.textContent = "已开启，但 Key 没填全，不会发送。";
   else {
     const bits = [`已发出 ${st.sent || 0} 条`];
     if (st.queued) bits.push(`排队中 ${st.queued} 条`);
@@ -2240,7 +2240,7 @@ function renderTracePane(pane, s) {
     if (st.dropped) bits.push(`积压丢弃 ${st.dropped} 条`);
     statBox.textContent = (st.sent || st.failed || st.queued)
       ? bits.join(" · ") + (st.last_error ? `。最后一次出错：${st.last_error}` : "")
-      : "开着，但这台服务器重启之后还没跑过任务，所以一条都还没发。跑一趟任务再回来看。";
+      : "已开启，重启后还没跑过任务，暂无记录。";
   }
 
   const msg = pane.querySelector("#lf-msg");
@@ -2274,15 +2274,16 @@ function renderTracePane(pane, s) {
   pane.querySelector("#lf-goto-page").onclick = () => { closeModal(); openPageView("trace"); };
 }
 async function renderAgentPane(pane, s) {
+  const judgeWarn = s.agent.judge_ready ? "" : " <b>没配判断模型，勾了不生效</b>（设置 → 模型）";
   pane.innerHTML = `
     <div class="card-item">
       <div class="t">底层引擎</div>
-      <div class="d" style="margin-bottom:10px">谁来跑任务。电脑里已经装了 Claude Code 或 Codex 的话，点一下就能直接用你已经付过钱的那份订阅——不再消耗这里配的 API Key 额度。切完立刻生效，下一个任务就走新引擎。</div>
+      <div class="d" style="margin-bottom:10px">谁来跑任务。本机装了 Claude Code / Codex 可直接用你的订阅，不耗这里的 API 额度，切换即生效。</div>
       <div id="ag-engines" class="eng-list"><div class="eng-msg">正在看本机装了哪些…</div></div>
     </div>
     <div class="card-item">
       <div class="t">思考模式</div>
-      <div class="d" style="margin-bottom:8px">带思考/推理的模型可以在这里关掉或者调强度。关掉更快更省钱，开高更适合难题。默认「跟随模型默认」= 一个参数都不发，和以前完全一样。</div>
+      <div class="d" style="margin-bottom:8px">关掉更快更省，调高适合难题。默认不发任何参数。</div>
       <select id="ag-thinking"><option value="auto">跟随模型默认</option></select>
       <div class="d" id="ag-thinking-note" style="margin-top:6px">正在看这一档对当前模型是怎么生效的…</div>
       <div class="ok-msg" id="ag-thinking-msg"></div>
@@ -2294,74 +2295,74 @@ async function renderAgentPane(pane, s) {
     ${s.platform_owner ? `    <div class="card-item">
       <div class="t">执行上限</div>
       <div class="f">最大执行步数</div>
-      <div class="d" style="margin-bottom:6px">单个任务 Agent 循环上限，防止失控（默认 25）</div>
+      <div class="d" style="margin-bottom:6px">单个任务的循环上限（默认 25）</div>
       <input id="ag-steps" type="number" min="1" max="100" value="${s.agent.max_steps}">
       <div class="f">单工具超时（秒）</div>
       <input id="ag-timeout" type="number" min="5" value="${Math.round(s.agent.tool_timeout_ms / 1000)}">
       <div class="f">任务最大运行时间（分钟）</div>
-      <div class="d" style="margin-bottom:6px">整个任务（含专家子代理）的墙上时间预算，超时强制收尾（默认 30）</div>
+      <div class="d" style="margin-bottom:6px">含子代理，超时强制收尾（默认 30）</div>
       <input id="ag-runtime" type="number" min="1" value="${Math.round((s.agent.max_runtime_ms || 1800000) / 60000)}">
       <div class="f">自动续跑轮数</div>
-      <div class="d" style="margin-bottom:6px">任务撞到步数/时间上限但还没做完时，自动重置预算接着跑的最大轮数。0 = 关闭（默认）。开启后长任务会按 PROGRESS.md 的进度接着做，直到完成或轮数用完；手动停止不会续跑。注意：每一轮都是真实计费</div>
+      <div class="d" style="margin-bottom:6px">撞上限还没做完时，按 PROGRESS.md 自动接着跑几轮。每轮都计费，0 = 关（默认）</div>
       <input id="ag-rounds" type="number" min="0" max="20" value="${s.agent.auto_continue_rounds || 0}">
       <div class="f">续跑之前先判一句</div>
-      <div class="d" style="margin-bottom:6px">续不续，现在只看这一轮是怎么停的：撞了步数或时间上限，就当活儿还没干完，重置预算再来一整轮。可撞上限不等于没干完——收尾对账也能把步数用光，这时候续的那一轮，是拿一整份时间预算买一句「我又确认了一遍，都做完了」。打开之后，续之前先问判断模型一道是非题：交代的事还有没有剩的。<b>它只负责少续一轮，不动这一轮已经做出来的东西</b>；它说不准、答不上、问不成，一律照旧续跑。PROGRESS.md 里还有没打勾的条目时不问，那本来就是确定的答案。要上面那个轮数大于 0 才用得上，每次约两万分之一美金。默认关${s.agent.judge_ready ? "" : "。<b>现在还没配判断模型，勾上也不会生效</b>——去 设置 → 模型 填一条 OpenRouter 或 TypeSafe 的 Key"}</div>
+      <div class="d" style="margin-bottom:6px">续跑前先问一句「干完没」，干完就不续，拿不准照续。续跑轮数 > 0 才用得上，每次约两万分之一美金。默认关${judgeWarn}</div>
       <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--owb-text-2);cursor:pointer;margin-bottom:10px">
         <input type="checkbox" id="ag-cgate" style="margin:0" ${s.agent.continue_gate ? "checked" : ""}>
-        续下一轮之前，先花一道题问问是不是已经干完了
+        续跑前先确认没干完
       </label>
       <div class="f">记之前先判一句</div>
-      <div class="d" style="margin-bottom:6px">agent 自己调 remember 记下的每一条，都会跟着<b>往后每一趟任务</b>进系统提示词，你为它付一遍 token、模型照着它走一次路。现在拦它的只有两条正则：像凭据的不收、「某功能已修复」这类断言不收——正则认的是措辞，换一种说法就拦不住，而「这次把第 3 行改成了 8081」这种过程细节压根没固定措辞。打开之后，写之前先问一道是非题：这句话下个月还用得上吗。说用不上、而且确定度到 80%，这一条就不收，并告诉 agent 该改成怎么记。<b>你在这个页面里亲手敲的那份记忆不归它管</b>，你说记就是记；说不准、答不上、问不成，一律照旧记下。每条约两万分之一美金，本来就会被拒的那几类不花这个钱。默认关${s.agent.judge_ready ? "" : "。<b>现在还没配判断模型，勾上也不会生效</b>——去 设置 → 模型 填一条 OpenRouter 或 TypeSafe 的 Key"}</div>
+      <div class="d" style="margin-bottom:6px">agent 存长期记忆前先问「下个月还用得上吗」，用不上就不存；你手写的不受影响。每条约两万分之一美金。默认关${judgeWarn}</div>
       <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--owb-text-2);cursor:pointer;margin-bottom:10px">
         <input type="checkbox" id="ag-mgate" style="margin:0" ${s.agent.memory_gate ? "checked" : ""}>
-        agent 想记一条之前，先花一道题问问它下个月还用不用得上
+        只存以后还用得上的
       </label>
       <div class="f">打断你之前先判一句</div>
-      <div class="d" style="margin-bottom:6px">ask_user 是整套工具里唯一会把你拽回电脑前的那个，也是唯一一个不受转圈守卫管的——同一个工具连调四次的硬停不算它，循环侦测也不算它（问你的每次答案都不一样，算进去会误伤）。豁免是对的，可豁免完，拦连环追问的就只剩系统提示词里那一句「不许连环追问」了。提示词是建议不是闸：第一步好好的，跑到第十几步、上下文压过两轮之后就开始漏——「我已经写完前三节了，要继续吗」（这是汇报不是问题）、「抓数据用 axios 还是 node-fetch」（技术路线，它自己该定）、「封面还是按你选的排版截图吧？」（换个说法又问一遍）。每一次你都得停下手里的活。打开之后，<b>一轮里的头一问永远放行、一分钱不花</b>（开工前问一题本来就是对的），往后每一问才花一道是非题：非得你本人答不可吗。说「不必」并且确定度到 80% 才不弹，回执里让它自己挑个最合理的默认往下做、在汇报里注明替你做了什么假设。<b>选错了整件事白做的岔路不拦，拿不准也不拦</b>——它只会少问，绝不会多问。每问约两万分之一美金。默认关${s.agent.judge_ready ? "" : "。<b>现在还没配判断模型，勾上也不会生效</b>——去 设置 → 模型 填一条 OpenRouter 或 TypeSafe 的 Key"}</div>
+      <div class="d" style="margin-bottom:6px">每轮第一问直接放行；之后每问先判是否非你答不可，不必就让它自己定、在汇报里注明。每问约两万分之一美金。默认关${judgeWarn}</div>
       <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--owb-text-2);cursor:pointer;margin-bottom:10px">
         <input type="checkbox" id="ag-agate" style="margin:0" ${s.agent.ask_gate ? "checked" : ""}>
-        第二问起，弹给你之前先花一道题问问是不是非问你不可
+        少问不必问的问题
       </label>
       <div class="f">开工之前先挑技能</div>
-      <div class="d" style="margin-bottom:6px">你装的技能在提示词里只是一份「名字 + 80 字简介」的清单，用不用全看模型那一步想不想得起来——写公众号推文明明装着公众号技能，它直接就写了，写完你才发现没按你那套规矩来。你在消息里<b>点了名</b>的（「/wechat-article」或直接写技能名），不用开这个开关也会直接加载，一分钱不花。打开之后，没点名的活先花一道单选题问判断模型：这活儿该先照哪个技能做。它挑了一个并且确定度到 70%，就把那份技能全文挂进系统提示词，模型动手前就看见了；挑「都不对口」或拿不准，照旧交给模型自己想。一轮里只问一次，已经加载过技能的不问。每问约两万分之一美金。默认关${s.agent.judge_ready ? "" : "。<b>现在还没配判断模型，勾上也不会生效</b>——去 设置 → 模型 填一条 OpenRouter 或 TypeSafe 的 Key"}</div>
+      <div class="d" style="margin-bottom:6px">没点名技能时，先让判断模型挑一个最对口的提前加载；点了名的本来就直接加载。每问约两万分之一美金。默认关${judgeWarn}</div>
       <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--owb-text-2);cursor:pointer;margin-bottom:10px">
         <input type="checkbox" id="ag-sgate" style="margin:0" ${s.agent.skill_gate ? "checked" : ""}>
-        没点名的活，动手前先花一道题挑该照哪个技能做
+        自动挑技能
       </label>
       <div class="f">模型卡壳超时（秒）</div>
-      <div class="d" style="margin-bottom:6px">连续这么久收不到模型的任何输出（正文/思考/写文件的参数流都算）才判定连接挂死、强制收尾；只要还在逐字输出就不会掐断（默认 300）</div>
+      <div class="d" style="margin-bottom:6px">模型这么久没任何输出才判挂死，还在输出不会掐（默认 300）</div>
       <input id="ag-llm-timeout" type="number" min="30" value="${Math.round((s.agent.llm_timeout_ms || 300000) / 1000)}">
       <div class="f">token 预算（万 tokens）</div>
-      <div class="d" style="margin-bottom:6px">单个任务（含专家子代理和自动续跑）的 token 总量上限，超过后强制收尾且不再自动续跑，防止长任务烧钱失控。0 = 不限（默认）。用到 80% 会先提醒</div>
+      <div class="d" style="margin-bottom:6px">单任务 token 上限（含子代理和续跑），80% 时提醒，超了强制收尾。0 = 不限（默认）</div>
       <input id="ag-tokbudget" type="number" min="0" step="1" value="${Math.round((s.agent.max_tokens_budget || 0) / 10000)}">
       <div class="f">备用渠道（主模型挂起自动换道）</div>
       <div class="d" style="margin-bottom:6px">${(s.agent.failover_model || "")
-        ? `现在选的是「<b>${esc(s.agent.failover_model)}</b>」。`
-        : "现在是关闭的：主模型挂了就如实报错，绝不悄悄换成别的模型。"}
-        这个下拉已经挪到 <b>设置 → 模型 → 对话</b>，跟它要替的那些模型摆在一起——选的是模型，却排在步数和超时中间，原来那个位置没人找得到</div>
-      <div class="f">上下文预算（千字符）</div>
-      <div class="d" style="margin-bottom:6px">超出后自动截短较早的工具输出（最近 3 步始终保留原文），避免长任务撞模型上下文上限整个失败。上下文大的模型可以调高（默认 120）</div>
-      <input id="ag-ctx" type="number" min="20" max="2000" value="${Math.round((s.agent.max_context_chars || 120000) / 1000)}">
+        ? `当前：<b>${esc(s.agent.failover_model)}</b>。`
+        : "已关：主模型挂了直接报错，不换模型。"}
+        在「设置 → 模型 → 对话」里改</div>
+      <div class="f">上下文上限（千字符）</div>
+      <div class="d" style="margin-bottom:6px">留空＝按模型窗口自动算；填了就不超过它，超出先截短较早的工具输出</div>
+      <input id="ag-ctx" type="number" min="20" max="2000" placeholder="自动" value="${s.agent.max_context_chars ? Math.round(s.agent.max_context_chars / 1000) : ""}">
       <div class="f">生成类并发条数</div>
-      <div class="d" style="margin-bottom:6px">出图 / 出片 / 配音这三类，一轮里最多同时跑几条（1-4，默认 2）。一集短剧十几个镜头，一条条排队最坏要等一两个小时；但这类每条都真花钱（视频按条计费），所以给得比只读工具保守。填 1 就是全部排队，回到老样子</div>
+      <div class="d" style="margin-bottom:6px">出图 / 出片 / 配音同时跑几条（1-4，默认 2）。每条都花钱，填 1 = 全部排队</div>
       <input id="ag-genpar" type="number" min="1" max="4" value="${s.agent.gen_parallel_max || 2}">
       <div class="f">定时任务跑绿之后再看一眼</div>
-      <div class="d" style="margin-bottom:6px">定时任务判成功，只说明它没有明显失败：正文一长，裁定那几条判据就主动让路了——agent 洋洋洒洒写两千字解释它没办成，运行记录照样一个勾。打开之后，这一类绿会多问判断模型一道是非题：这一轮到底办完没有。<b>它只挂疑问、不改判——绿还是绿</b>，通知末尾多一句「这条你自己看一眼」；它自己拿不准就不出声。每条约两万分之一美金。默认关${s.agent.judge_ready ? "" : "。<b>现在还没配判断模型，勾上也不会生效</b>——去 设置 → 模型 填一条 OpenRouter 或 TypeSafe 的 Key"}</div>
+      <div class="d" style="margin-bottom:6px">定时任务判绿但汇报很长时，再问一句「真办完没」；存疑只在通知末尾提醒，不改判。每条约两万分之一美金。默认关${judgeWarn}</div>
       <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--owb-text-2);cursor:pointer">
         <input type="checkbox" id="ag-second" style="margin:0" ${s.agent.second_opinion ? "checked" : ""}>
-        跑绿的长汇报，多花一道题确认它真办完了
+        长汇报再确认一次
       </label>
       <div class="f">定时任务没变化就不推</div>
-      <div class="d" style="margin-bottom:6px">一条每天跑的任务一年推 365 条，其中 350 条是「今天没有更新」——第三天起就没人看了，第十天群机器人被静音，然后在真有更新的那天，通知照样发出去、照样没人看。去重这件事正则做不了：两条「今天没有更新」中间夹着日期和耗时，字节上永远不一样；而「12.3 涨到 12.4」只差一个字符，却正是该响的那种。打开之后，推之前先花一道题问：跟上一次推给你的那条比，有没有新东西。说没有、而且拿得准，这一条就不响铃——<b>运行记录里一个字不少</b>，点进去看得到全文，旁边写明它为什么没推。红的、出错的、挂了疑问的一律照推，这道闸碰都不碰。比的是<b>上一次真推出去的那条</b>，不是上一次跑的那条：万一判错了，攒下的变化下一次会一起推给你。每条约两万分之一美金，跟上次一字不差的那种不花这个钱。默认关${s.agent.judge_ready ? "" : "。<b>现在还没配判断模型，勾上也不会生效</b>——去 设置 → 模型 填一条 OpenRouter 或 TypeSafe 的 Key"}</div>
+      <div class="d" style="margin-bottom:6px">推送前跟上一次推出的那条比，没新内容就不响铃（记录照留）；失败或存疑照推。每条约两万分之一美金。默认关${judgeWarn}</div>
       <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--owb-text-2);cursor:pointer">
         <input type="checkbox" id="ag-pgate" style="margin:0" ${s.agent.push_gate ? "checked" : ""}>
-        推之前先花一道题问：这一条跟上次比有没有新东西
+        没新内容不推送
       </label>
     </div>
     <button class="btn-brand" id="ag-save">保存</button><span class="ok-msg" id="ag-msg"></span>` : `
     <div class="card-item">
       <div class="t">执行上限（步数 / 超时 / token 预算）</div>
-      <div class="d">这几项配的是<b>整台服务器</b>——一个人调高步数和超时，所有人的任务和账单都跟着变，所以归平台管理员。上面的底层引擎、思考模式是你自己的，随时能改。</div>
+      <div class="d">这几项作用于整台服务器，归管理员管。引擎和思考模式你可以自己改。</div>
     </div>`}`;
   const agSave = pane.querySelector("#ag-save");
   // 思考档特地不跟这堆一起存：它是个人偏好，那几项是服务器级的。捆在同一个「保存」上，
@@ -2373,7 +2374,8 @@ async function renderAgentPane(pane, s) {
       max_runtime_ms: +pane.querySelector("#ag-runtime").value * 60000,
       auto_continue_rounds: +pane.querySelector("#ag-rounds").value,
       llm_timeout_ms: +pane.querySelector("#ag-llm-timeout").value * 1000,
-      max_context_chars: +pane.querySelector("#ag-ctx").value * 1000,
+      // 留空 = 0 = 不设上限、按模型窗口算。以前空着也存 12 万，200k 窗口的模型被悄悄卡在 12 万
+      max_context_chars: Math.round(+pane.querySelector("#ag-ctx").value * 1000) || 0,
       gen_parallel_max: +pane.querySelector("#ag-genpar").value,
       max_tokens_budget: Math.round(+pane.querySelector("#ag-tokbudget").value * 10000) || 0,
       second_opinion: pane.querySelector("#ag-second").checked,
@@ -2554,12 +2556,12 @@ function engineExtraHtml(e) {
   const listId = "eng-models-" + e.id;
   const models = Array.isArray(e.models) ? e.models : [];
   const modelHint = e.modelSource === "codex_config"
-    ? "下拉只展示当前 Codex 配置中真实出现的模型；留空会用它当前默认值，也可直接输入 Codex 支持的其他名字。"
+    ? "只列 Codex 配置里有的模型；留空用默认，也可手填。"
     : e.id === "codex"
-      ? "Codex CLI 没有可查询的模型目录；这里不会伪造候选。留空用 Codex 默认模型，或直接输入你已开通的模型名。"
+      ? "Codex 无模型目录可查。留空用默认，或手填模型名。"
       : "留空 = 用 CLI 自己的默认模型；也可以直接输入它支持的模型名。";
   return `<div class="eng-x" onclick="event.stopPropagation()">
-    <label>可执行文件路径<span style="color:var(--owb-text-3)">（留空 = 自动找。装在 nvm/homebrew 里也能找到；只有自动找不到时才需要填绝对路径）</span>
+    <label>可执行文件路径<span style="color:var(--owb-text-3)">（留空自动查找，找不到时再填绝对路径）</span>
       <input type="text" data-k="bin" placeholder="${esc(e.path || e.id)}" value="${esc(o.bin || "")}"></label>
     <label>模型<span style="color:var(--owb-text-3)">（${esc(modelHint)}）</span>
       <input type="text" data-k="model" list="${listId}" placeholder="默认" value="${esc(o.model || "")}" autocomplete="off">
@@ -2636,18 +2638,18 @@ function renderPersonaPane(pane, s) {
     ${!po ? `
     <div class="card-item">
       <div class="t">助理的名字和个性化偏好</div>
-      <div class="d">这台服务器上大家共用同一个助理身份和同一份偏好，改了所有人都跟着变，所以归平台管理员设。你想让它对<b>你</b>怎么干活，直接在对话里说，或者写进「记忆」页——那一份只有你自己的任务带着。</div>
+      <div class="d">身份和偏好全服务器共用，由平台管理员设置。你个人的要求在对话里说，或写进「记忆」。</div>
     </div>` : `
     <div class="card-item">
       <div class="t">助理的名字和头像</div>
-      <div class="d" style="margin-bottom:10px">给它起个自己顺口的名字。名字会同时改掉界面标题、侧栏和系统提示词——你喊它这个名字它就认。</div>
+      <div class="d" style="margin-bottom:10px">名字会同步到界面标题、侧栏和系统提示词。</div>
       ${avatarEditorHtml("as", a.avatar, a.name)}
       <input id="as-name" maxlength="24" placeholder="OpenWorkBuddy" value="${esc(a.name)}" style="margin-top:10px">
       <div style="margin-top:8px"><button class="btn-brand" id="as-save">保存身份</button><span class="ok-msg" id="as-msg"></span></div>
     </div>
     <div class="card-item">
       <div class="t">个性化偏好</div>
-      <div class="d" style="margin-bottom:8px">希望它遵循的风格与偏好，会注入每次任务。例如：回复简洁；PPT 用深色科技风；周报署名"张三"。</div>
+      <div class="d" style="margin-bottom:8px">每次任务都会带上的风格偏好。</div>
       <textarea id="ps-text" rows="8" placeholder="例如：所有文档默认用简体中文；数据分析结论放最前面…">${esc(s.persona)}</textarea>
     </div>`}
     ${petCardHtml(s.pet || {})}
@@ -2673,13 +2675,13 @@ function petCardHtml(p) {
   return `
     <div class="card-item">
       <div class="t">${ic("cat")} 桌面宠物</div>
-      <div class="d" style="margin-bottom:10px"><b>默认没有宠物</b>——直接在对话里说「把这张图做成桌面宠物」并传一张照片，它就现场给你做一只；这里是手动开关和微调。<br>做出来之后，它会在桌面角落实时显示 agent 在干什么：干活时敲键盘、<b>要问你问题时跳起来并弹系统通知</b>（这条最有用——主窗口被盖住时，它提的问题很容易被漏掉，超时就按默认继续了）。点它开关主窗口，拖动换位置，右键有菜单（含免打扰）。空白处不吃鼠标，不会挡住底下的应用。${p.available === false ? '<br><span style="color:var(--owb-warn,#c60)">当前是纯服务端模式（npm start），宠物只在桌面版 <code>npm run app</code> 下出现。</span>' : ""}</div>
+      <div class="d" style="margin-bottom:10px"><b>默认没有宠物</b>。在对话里说「把这张图做成桌面宠物」并传照片即可生成。它会显示 agent 状态，<b>要问你问题时跳起来并弹通知</b>。点击开关主窗口，拖动换位置，右键有菜单。${p.available === false ? '<br><span style="color:var(--owb-warn,#c60)">纯服务端模式（npm start）不显示宠物，需桌面版 <code>npm run app</code>。</span>' : ""}</div>
       <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--owb-text-2);cursor:pointer"><input type="checkbox" id="pet-on" style="margin:0"${on ? " checked" : ""}> 显示桌面宠物</label>
       <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--owb-text-2);cursor:pointer"><input type="checkbox" id="pet-notify" style="margin:0"${p.notify !== false ? " checked" : ""}> 要提问时弹系统通知 + 图标跳动</label>
       <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--owb-text-2);cursor:pointer"><input type="checkbox" id="pet-notify-done" style="margin:0"${p.notify_done !== false ? " checked" : ""}> 任务干完 / 出错时也提醒我一声</label>
       <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--owb-text-2);cursor:pointer"><input type="checkbox" id="pet-wander" style="margin:0"${p.wander ? " checked" : ""}> 闲着时让它在桌面上随便走走（默认关）</label>
       <div class="f">形象</div>
-      <div class="d" style="margin-bottom:6px">可以换成你自己或朋友的照片——上传后自动裁成圆形，配上呼吸、摇摆、跳跃的动效"活"起来。图片只存在本机 <code>data/</code> 目录，不上传任何服务器。</div>
+      <div class="d" style="margin-bottom:6px">可换成自己的照片，自动裁圆加动效。图片只存本机 <code>data/</code>，不上传。</div>
       ${petSpriteHint(p)}
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <select id="pet-char" style="max-width:240px">
@@ -2794,10 +2796,10 @@ async function renderMemoryPane(pane) {
   const vs = m.vectors || {};
   const vecOk = !vs.enabled || !vs.total || vs.have >= vs.total;
   const vecLine = !vs.enabled
-    ? "语义召回没开：没接嵌入模型，现在按关键词召回。设置 → 模型 里配一条支持 embeddings 的渠道就能开。"
+    ? "语义召回未开，现按关键词召回。在 设置 → 模型 配一条 embeddings 渠道即可开启。"
     : !vs.total ? `语义召回已接上（${vs.model}），记了东西就会自动算向量。`
     : vs.have >= vs.total ? `语义召回开着：${vs.total} 条都算好了向量（${vs.model}）。`
-    : `语义召回：${vs.total} 条里只有 ${vs.have} 条算出了向量——嵌入渠道大概率没通，现在按关键词召回。服务器日志里搜「[记忆向量]」能看到原因。`;
+    : `语义召回：${vs.have}/${vs.total} 条有向量，嵌入渠道可能不通，现按关键词召回。日志搜「[记忆向量]」查原因。`;
   // 会 403 的按钮不该摆在那儿：共享区那几条进的是所有人的提示词，不是平台管理员就删不动，
   // 以前照样画一颗「删」——点下去后端拒了、前端还把返回值扔了，看起来就是「点了没反应」。
   const canDel = (it) => m.can_share || it.scope !== m.shared_tag;
@@ -2814,7 +2816,7 @@ async function renderMemoryPane(pane) {
   pane.innerHTML = `
     <div class="card-item">
       <div class="t">${ic("pin")} 记住的事（AI 自己记的 + 你手动加的）</div>
-      <div class="d" style="margin-bottom:8px">一条一句话，跨任务保留。标「共享」的所有账号都看得到，标账号名的只跟着那个人走。每人最多 ${esc(String((m.limits || {}).max_items || 120))} 条。</div>
+      <div class="d" style="margin-bottom:8px">一条一句话，跨任务保留。「共享」全员可见，其余只属本人。每人最多 ${esc(String((m.limits || {}).max_items || 120))} 条。</div>
       <div class="d" id="mem-vec" style="margin-bottom:8px">${ic(vecOk ? "search" : "triangle-alert")} ${esc(vecLine)}</div>
       <div id="mem-items">${rows}</div>
       <div class="form-row" style="margin-top:8px">
@@ -2825,17 +2827,17 @@ async function renderMemoryPane(pane) {
       <label style="display:flex;align-items:center;gap:6px;font-size: 13px;color:var(--owb-text-3);margin-top:6px;cursor:pointer">
         <input type="checkbox" id="mem-shared" style="margin:0"> 这条给这台机器上所有账号共用
       </label>` : `
-      <div class="d" style="margin-top:6px">加进去的只有你自己看得到。要让这台机器上所有账号都共用某条，得平台管理员来加。</div>`}
+      <div class="d" style="margin-top:6px">只有你自己可见。全员共享的条目需平台管理员添加。</div>`}
     </div>
     <div class="card-item">
       <div class="t">${ic("file-pen-line")} 背景说明（全局共享，原样进提示词）</div>
-      <div class="d" style="margin-bottom:8px">适合放团队/业务背景、常用数据口径、固定模板要求这种成段的东西。所有账号共用一份。${m.can_edit_manual ? "" : "这份归平台管理员维护，你这边只读。"}</div>
+      <div class="d" style="margin-bottom:8px">放团队背景、数据口径、固定模板等成段内容，全员共用。${m.can_edit_manual ? "" : "由平台管理员维护，你只能查看。"}</div>
       <textarea id="mem-text" rows="8" ${m.can_edit_manual ? "" : "readonly"} placeholder="例如：我们公司是做跨境电商的，主营美妆品类；周报收件人是运营部…">${esc(m.content)}</textarea>
     </div>
     ${!m.can_edit_manual ? "" : `
     <div class="card-item">
       <div class="t">${ic("truck")} 记忆搬家（导出 / 从其它 agent 导入）</div>
-      <div class="d" style="margin-bottom:8px">导出成一份 Markdown 到哪都能用。导入自动扫描本机 Claude Code / Codex / Claude Cowork 的记忆文件；记忆不落在固定文件里的工具，从它界面里把记忆复制出来粘到下面即可。「导入为条目」逐行进上面的条目区（自动去重），「并入背景说明」整段接到背景说明后面。</div>
+      <div class="d" style="margin-bottom:8px">导出为 Markdown。导入会扫描本机 Claude Code / Codex / Cowork 的记忆，也可手动粘贴。</div>
       <div style="margin-bottom:8px"><button class="btn-plain" id="mem-export">${ic("upload")} 导出全部记忆（.md）</button></div>
       <div id="mem-scan" style="font-size: 13px;color:var(--owb-text-2)">扫描中…</div>
       <textarea id="mem-paste" rows="4" placeholder="或把其它 agent 的记忆文本粘到这里…" style="margin-top:8px"></textarea>
@@ -2933,7 +2935,7 @@ function renderDataPane(pane, s) {
     </div>
     <div class="card-item">
       <div class="t">${ic("save")} 数据备份与恢复</div>
-      <div class="d" style="margin-bottom:8px">一键把会话记录、记忆、账号、个人偏好、用量、定时任务、自己写的技能和全部配置（含 API Key）打包成 tar.gz 存到本机 backups/ 文件夹。换电脑就「下载」带走，在新机器上「导入备份文件」再点「恢复」，人和数据一起搬过去。<b>不含工作空间成果文件</b>（那些你自己看得见），也不含出厂自带的技能（新机器上本来就有）。恢复会先自动备份当前现状，恢复后需重启应用生效。</div>
+      <div class="d" style="margin-bottom:8px">会话、记忆、账号、定时任务、自建技能和配置（<b>含 API Key</b>）打包存到 backups/，不含工作空间文件。恢复前自动备份现状，恢复后需重启。</div>
       <div style="margin-bottom:8px">
         <button class="btn-brand" id="bk-create">立即备份</button>
         <button class="btn-plain" id="bk-import">${ic("upload")} 导入备份文件</button>
@@ -2944,8 +2946,8 @@ function renderDataPane(pane, s) {
     </div>
     <div class="card-item">
       <div class="t">数据说明</div>
-      <div class="d">会话记录持久化在 data/sessions/ · 定时任务在 schedules.json · 配置在 config.json（含 API Key，默认不入 git）· 记忆在 data/memory.md 与 data/memories.json · 技能在 skills/ · 成果文件在 workspace/ · 备份在 backups/</div>
-      <div class="d" style="margin-top:6px">手机、网页、终端连的都是这一台，所以它们看到的是同一份数据，不用同步。只有主题、字号这类「这台屏幕看着舒服」的设置存在各自的浏览器里，换设备不跟着走。</div>
+      <div class="d">会话 data/sessions/ · 定时任务 schedules.json · 配置 config.json（含 API Key）· 记忆 data/memory.md、memories.json · 技能 skills/ · 成果 workspace/ · 备份 backups/</div>
+      <div class="d" style="margin-top:6px">手机、网页、终端连的是同一台，数据无需同步；主题、字号只存在各自浏览器。</div>
     </div>`;
   pane.querySelector("#ws-pick").onclick = async () => {
     const r = await fetch("/api/pick-folder", { method: "POST" }).then(r => r.json()).catch(() => ({}));
@@ -2960,9 +2962,9 @@ function renderDataPane(pane, s) {
     const g = c.gen || {};
     // 生成结果缓存单独说一句：它不是磁盘垃圾，是「这一格已经买过了」的账。
     // 省下的次数要摆出来——看不见的省钱，用户只会当它不存在
-    const saved = g.hits ? `已经替你省下 ${g.hits} 次生成调用` : "还没派上用场（同一格再跑一次就会命中）";
-    cacheDesc.textContent = `界面缓存 ${fmtSize(c.ui)} · 临时脚本 ${fmtSize(c.tmp)}，共 ${fmtSize(c.total)}。只清可再生的缓存，不动会话记录、工作区文件和登录态。`
-      + `\n另有生成结果缓存 ${g.entries || 0} 条（生图/生视频/配音），${saved}。这份不在清理范围里——清掉只会让下次重新花钱。`;
+    const saved = g.hits ? `已省下 ${g.hits} 次生成调用` : "暂未命中";
+    cacheDesc.textContent = `界面缓存 ${fmtSize(c.ui)} · 临时脚本 ${fmtSize(c.tmp)}，共 ${fmtSize(c.total)}。只清可再生缓存，不动会话、工作区文件和登录态。`
+      + `\n另有生成结果缓存 ${g.entries || 0} 条（${saved}），不清理，清了下次要重新花钱。`;
   }).catch(() => { cacheDesc.textContent = "统计失败"; });
   loadCache();
   pane.querySelector("#cache-clear").onclick = async (e) => {
@@ -2999,7 +3001,7 @@ function renderDataPane(pane, s) {
       e.preventDefault();
       if (!(await askConfirm({
         title: `恢复到备份「${a.dataset.bkRestore}」？`,
-        hint: "现在这份数据会先自动备份一次，所以后悔了还能再翻回来。恢复完要重启应用才完全生效。",
+        hint: "恢复前会自动备份现状，可撤回。恢复后需重启应用。",
         ok: "恢复", danger: true,
       }))) return;
       bkMsg.textContent = "恢复中…";
@@ -3185,7 +3187,7 @@ const IM_CHANNELS = [
     fields: [["app_id", "App ID"], ["app_secret", "App Secret", "password"], ["verification_token", "Verification Token（可选，仅旧回调模式）", "", "opt"]],
     groupPolicy: true,
     test: { url: "/im/feishu/test", ok: (d) => `凭证有效${d.bot_name ? `，机器人「${d.bot_name}」` : ""}，长连接：${WS_STATE_TXT[(d.ws || {}).state] || (d.ws || {}).state || "启动中"}` },
-    help: ["飞书开放平台创建自建应用，添加「机器人」能力", "权限开通 im:message 与 im:message:send_as_bot", "事件订阅方式选「使用长连接接收事件」，添加 im.message.receive_v1；把机器人拉进群后，成员 @ 它即可下任务", "要在云文档评论里 @ 机器人：再添加 drive.notice.comment_add_v1 事件，并开 docs:document.comment:read；文档需要已授予应用可读权限。机器人只处理被 @ 的评论，并在原评论下回复", "发布一个版本，回来填 App ID / App Secret（或把那一页整段复制，用卡片里的「粘一段过来自动识别」）", "嫌麻烦就点上面的「扫码新建应用」——本机装了 lark-cli 的话，应用直接替你建好，App ID 自动填；App Secret 被系统钥匙串锁着的话，会给你一条直达凭证页的链接，复制回来粘一下"],
+    help: ["飞书开放平台建自建应用，加「机器人」能力", "开通权限 im:message、im:message:send_as_bot", "事件订阅选「长连接」，加 im.message.receive_v1；拉进群后 @ 它下任务", "要在文档评论里 @ 它：再加 drive.notice.comment_add_v1 事件和 docs:document.comment:read 权限", "发布版本，回来填 App ID / App Secret（可整页粘贴自动识别）", "或点「扫码新建应用」：本机有 lark-cli 时自动建好并填入 App ID"],
     // 缺哪一半就写哪一半：以前只写「未连接」，用户看不出是没填、填错、还是没联网
     status: (st) => { const f = st.feishu || {}; const m = f.missing || [];
       if (m.length === 1) return ["warn", "还差 " + m[0]];
@@ -3193,10 +3195,10 @@ const IM_CHANNELS = [
   { key: "qq", grp: "chat", icon: "message-circle", name: "QQ", sub: "长连接 · 无需公网", path: "qq", src: "qq",
     fields: [["app_id", "AppID"], ["app_secret", "AppSecret", "password"]],
     test: { url: "/im/qq/test", ok: (d) => `凭证有效，长连接：${WS_STATE_TXT[(d.ws || {}).state] || (d.ws || {}).state || "启动中"}` },
-    help: ["QQ 开放平台 q.qq.com 创建「机器人」，开发设置里拿 AppID / AppSecret", "功能配置 → 消息列表：开启私聊消息和群聊 @机器人 消息", "沙箱只对白名单群/好友生效，正式使用需提交审核发布"],
+    help: ["QQ 开放平台 q.qq.com 创建「机器人」，开发设置里拿 AppID / AppSecret", "功能配置 → 消息列表：开启私聊消息和群聊 @机器人 消息", "沙箱只对白名单生效，正式使用需审核发布"],
     status: (st) => wsChip(st.qq, "未连接") },
   { key: "wechat_ilink", grp: "chat", icon: "message-square", name: "微信", sub: "扫码登录 · 无需公网", qr: true,
-    help: ["点「连接」出二维码，用要当机器人的那个微信号扫码并在手机上确认", "之后本机主动长轮询收发消息，别人给这个微信号发消息 = 下任务", "登录态由微信控制，失效后重新扫码；发来的图片/文件/语音会自动存进工作目录，AI 直接按文件名打开"],
+    help: ["点「连接」，用做机器人的微信号扫码确认", "别人给这个号发消息即下任务", "登录失效需重新扫码；收到的图片/文件/语音自动存进工作目录"],
     status: (st) => wsChip(st.wechat_ilink, "未扫码") },
   { key: "wecom_app", grp: "chat", icon: "building-2", name: "企业微信应用", sub: "双向对话 · 需公网 HTTPS", path: "wecom_app", src: "wecom_app",
     fields: [["corp_id", "CorpID"], ["agent_id", "AgentId（纯数字）"], ["secret", "应用 Secret", "password"], ["token", "Token"], ["aes_key", "EncodingAESKey（43 位）", "password"]],
@@ -3206,7 +3208,7 @@ const IM_CHANNELS = [
   { key: "wechat_mp", grp: "chat", icon: "megaphone", name: "微信公众号", sub: "需公网 HTTPS + 认证服务号", path: "wechat_mp", src: "wechat_mp",
     fields: [["app_id", "AppID"], ["app_secret", "AppSecret", "password"], ["token", "Token"], ["aes_key", "EncodingAESKey（43 位）", "password"]],
     test: { url: "/im/wechat/test", body: { which: "mp" }, ok: () => "凭证有效。回调地址还需你暴露公网 HTTPS 并在公众平台点「提交」验证" },
-    help: ["公众平台 → 开发 → 基本配置：拿 AppID / AppSecret", "服务器配置 URL 填 https://你的域名/im/mp/events，加解密选「安全模式」，Token 与 EncodingAESKey 回填这里", "结果走「客服消息」异步推送，需要已认证的服务号（未认证会返回 48001，这里如实报错）"],
+    help: ["公众平台 → 开发 → 基本配置：拿 AppID / AppSecret", "服务器配置 URL 填 https://你的域名/im/mp/events，加解密选「安全模式」，Token 与 EncodingAESKey 回填这里", "结果走客服消息推送，需已认证服务号（否则报 48001）"],
     status: (st) => wxStatus(st.wechat_mp) },
   { key: "wecom_bot", grp: "push", icon: "briefcase", name: "企业微信群", sub: "只出不进 · 推送结果",
     fields: [["wecom_bot_webhook", "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..."]],
@@ -3218,7 +3220,7 @@ const IM_CHANNELS = [
     status: (st) => ((st.dingtalk || {}).configured ? ["ok", "已配置"] : ["off", "未配置"]) },
   { key: "webhook", grp: "push", icon: "link", name: "通用 Webhook", sub: "外部工具桥接进来",
     fields: [["webhook_secret", "自定义一个密钥", "password"]],
-    help: ["外部工具（微信框架 / 钉钉 outgoing / 快捷指令）POST /im/task 时带这个密钥校验", "微信客服号、小程序、企微「智能助理」等依赖腾讯定向资质，本版不做假连接，用这里桥接"],
+    help: ["外部工具 POST /im/task 时用这个密钥校验", "微信客服、小程序等需腾讯资质的渠道，可用这里桥接"],
     status: (st) => ((st.webhook || {}).secret_set ? ["ok", "已设密钥"] : ["off", "未设密钥"]) },
   { key: "smtp", grp: "mail", icon: "mail", name: "邮件（SMTP）", sub: "AI 把做好的东西发出去 · 每封都要你点头", path: "smtp",
     fields: [["host", "SMTP 服务器，如 smtp.qq.com"], ["port", "端口（留空 = 465）", "", "opt"], ["user", "登录账号（完整邮箱地址）"],
@@ -3227,9 +3229,9 @@ const IM_CHANNELS = [
     test: { url: "/im/smtp/test", ok: (d) => `连上了，以后用 ${d.from} 发信（${d.host}:${d.port}）` },
     help: ["QQ / 163 / Gmail 这类邮箱要先在网页版开「SMTP 服务」，拿到的是一串授权码，不是你登录用的密码",
       "端口留空就是 465（一上来就加密）；服务商只给 587 的话填 587，会自动走 STARTTLS",
-      "白名单建议填上：AI 会上网、会读网页，万一被网页里的内容带偏，白名单是最后一道硬闸——不在名单里的地址一个字都发不出去",
+      "建议填白名单：不在名单里的地址一律发不出去，防 AI 被网页内容带偏",
       "白名单写法：a@b.com 只放行这一个人；@公司域名.com 或 公司域名.com 放行整个域（含子域）",
-      "不管填没填白名单，每封信发出去之前都会把收件人、主题、正文原样弹给你确认，你不点头就不发"],
+      "每封信发出前都会弹出收件人、主题、正文让你确认"],
     status: (st, get) => {
       if (!(st.smtp || {}).configured) return ["off", "未配置"];
       const n = (get("smtp", "allow_to") || "").split(/[,;\s\n]+/).filter(Boolean).length;
@@ -3304,7 +3306,7 @@ function renderImPane(pane, s) {
       </div>
       <div class="im-card im-card-static packed">
         <div class="im-card-h" role="button" tabindex="0" aria-expanded="false" data-activate="1" title="点一下展开 / 收起"><span class="ic">${ic("eraser")} </span><div class="tt"><b>清空 IM 会话记忆</b><span id="im-sess-n">正在数…</span></div><button class="btn-plain im-conn" id="im-sess-clear">清空全部</button><i class="im-ar" aria-hidden="true"></i></div>
-        <div class="im-card-b"><div class="d" style="font-size:12px">只清 IM 通道里的对话上下文（飞书 / QQ / 微信各自一段），网页对话和长期记忆不受影响。上下文预算（多长开始截）在 <a class="link" id="im-goto-agent" href="#">智能体设置</a> 里调。</div><div class="im-r ok-msg" id="im-sess-r"></div></div>
+        <div class="im-card-b"><div class="d" style="font-size:12px">只清 IM 通道（飞书 / QQ / 微信）的上下文，不影响网页对话和记忆。截断长度在 <a class="link" id="im-goto-agent" href="#">智能体设置</a> 里调。</div><div class="im-r ok-msg" id="im-sess-r"></div></div>
       </div>`)}
     <div style="display:flex;align-items:center;gap:10px;margin-top:4px"><button class="btn-brand" id="im-save">保存全部</button><span class="ok-msg" id="im-msg"></span><span class="d" style="font-size:12px;margin-left:auto">其他助理通道：钉钉机器人双向 / Telegram / Slack 都走「通用 Webhook」桥接</span></div>`;
 

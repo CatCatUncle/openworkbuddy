@@ -24,6 +24,7 @@ const fs = require("fs");
 const os = require("os");
 
 const ROOT = path.join(__dirname, "..");
+const srcLib = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
 const tv = require(path.join(ROOT, "task-verdict"));
 const systemone = require(path.join(ROOT, "systemone"));
 const { createScheduler } = require(path.join(ROOT, "scheduler"));
@@ -294,7 +295,7 @@ const padTo = (base, n) => base + "。".repeat(Math.max(0, n - base.length));
     ok(cell({ result: "晨报已推送", doubt: "X" }).startsWith("晨报已推送"), "  └ 正文还在前面，疑问是加注");
     ok(!/\$\{r\.doubt/.test(list), "  └ 疑问是转义之后才印的（模型写的字不许直接进 HTML）");
 
-    const srv = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+    const srv = srcLib.src("server");
     ok(/second_opinion/.test(srv), "server 里有这个开关");
     ok(/if \(!\(config\.agent \|\| \{\}\)\.second_opinion\) return null;/.test(srv), "★默认关★ 没打开就一分钱不花（它花的是后台的钱，没人点确认）");
     ok(/jev\.status\(config\)\.ready/.test(srv), "  └ 没配判断模型也不发请求");

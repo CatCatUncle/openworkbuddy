@@ -13,6 +13,8 @@
     "test": "node test/all.js",
     "stats": "node scripts/stats.js",
     "test:e2e": "node test/e2e.js",
+    "lint": "node test/lint.js",
+    "typecheck": "node test/typecheck.js",
     "cli": "node cli.js",
     "eval": "node eval/run.js",
     "demo:record": "electron scripts/record-demo.js",
@@ -37,8 +39,11 @@
     "qrcode": "^1.5.4"
   },
   "devDependencies": {
+    "@types/node": "^22.20.4",
     "electron": "^43.2.0",
-    "electron-builder": "^26.15.3"
+    "electron-builder": "^26.15.3",
+    "eslint": "^10.11.0",
+    "typescript": "^5.9.3"
   },
   "bin": {
     "openworkbuddy": "./cli.js"

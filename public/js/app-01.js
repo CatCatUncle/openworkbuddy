@@ -108,7 +108,7 @@ function procNote(icon, text, cls) {
  * 「已经等了多久」和「在压什么」，所以这行报秒数。秒数由过程区那根 1 秒的总计时器带着走，
  * 不另开一个 setInterval：那根本来就在，也在这一轮收尾时被停掉，不会留下一个转到天荒地老的定时器。
  */
-const compactRunText = (n, ms) => `正在把早前 ${n} 条消息压成一份摘要…已等 ${Math.round(ms / 1000)} 秒（压完这一轮才开跑，原文归档不删）`;
+const compactRunText = (n, ms) => `正在把早前 ${n} 条消息压成摘要…已等 ${Math.round(ms / 1000)} 秒（压完再跑，原文不删）`;
 
 /** 「正在压」和「压完了」共用同一行：压完把这行的字换掉，而不是再摞一行。
  *  摞两行的话，历史里会永远留着一句停在「正在压…」的话，看着像卡死在那儿 */
@@ -1044,7 +1044,9 @@ document.addEventListener("selectionchange", () => {
 // 按钮是 position:fixed 的：对话一滚，选中的字走了它还钉在原地，指着一句不相干的话
 (document.getElementById("chat-col") || document).addEventListener("scroll", hideSelQuote, { passive: true });
 // ================= 回合渲染（实时流式与历史回放共用） =================
-function createTurnUI(userText, turnMode, forSid) {
+// shown：气泡里该显示的「人说的那句」。画布发起的任务，发给模型的 userText 前面拼着一大段操作说明，
+// 气泡、复制都用 shown；重新生成、反馈仍用完整的 userText，模型那边一个字不能少
+function createTurnUI(userText, turnMode, forSid, shown) {
   const turnSid = forSid !== undefined ? forSid : sessionId; // 本回合归属的会话：后台任务的事件不许影响用户已切走的界面
   const turn = document.createElement("div");
   turn.className = "turn";
@@ -1067,7 +1069,7 @@ function createTurnUI(userText, turnMode, forSid) {
     if (had) { if (label && !had.label) had.label = label; return; }
     attList.push({ name: n, label: label || "" });
   };
-  let bodyText = stripSceneTag(userText)
+  let bodyText = stripSceneTag(shown || userText)
     .replace(/（已上传文件：([^）]+)）/g, (_, names) => {
       for (const n of String(names).split("、")) addAtt(n);
       return "";
@@ -1133,7 +1135,7 @@ function createTurnUI(userText, turnMode, forSid) {
     bq.onclick = () => bq.classList.toggle("open");
   }
   turn.querySelector(".u-copy").onclick = (e) => {
-    navigator.clipboard?.writeText(userText).then(() => {
+    navigator.clipboard?.writeText(shown || userText).then(() => {
       e.target.innerHTML = ic("check"); setTimeout(() => { e.target.innerHTML = ic("copy"); }, 1200);
     }).catch(() => toast("复制失败", "circle-x"));
   };
@@ -1146,6 +1148,7 @@ function createTurnUI(userText, turnMode, forSid) {
   chatCol.querySelectorAll(".turn-actions [data-a=regen]").forEach(b => { if (!turn.contains(b)) b.remove(); });
   const body = turn.querySelector(".body");
   turn._userText = userText;
+  turn._shown = shown || "";
   turn._mode = turnMode;
   let currentText = null;
 
@@ -1364,12 +1367,65 @@ function createTurnUI(userText, turnMode, forSid) {
     if (sealStream(el) && turnSid === sessionId) scrollBottom();
   };
 
+  // ---- 上游重试倒计时条 ----
+  // 上游 429/5xx 时后端会等几秒自动重试。以前界面上只有底下那行转圈的字，
+  // 说不清「在等什么、还要等多久」，看着像卡死。status 事件带了 retry 字段
+  // （{ attempt, total, delayMs }，attempt 从 1 数；agent.js 的 retryField 不转 kind，带了 kind 也只认 "retry"）
+  // 就在这一轮顶上挂一条倒计时。
+  // 没带 retry 的老后端照旧只走思考提示那一行，所以前后端谁先合入都不坏。
+  // 数字各占一个 <b>：词典按文本节点整句匹配，数字拼进句子中间就翻不了了。
+  let retryTimer = null;
+  let retryMuted = false; // 用户点了 ×：同一段重试里后面几次也不再弹，等上游回话才作废
+  const dropRetryBar = () => {
+    if (retryTimer) { clearInterval(retryTimer); retryTimer = null; }
+    body.querySelector(":scope > .retry-bar")?.remove();
+  };
+  /** 上游回话了（正文 / 工具调用）或这一轮收尾：倒计时条撤掉，「关掉」也就此作废——下回再重试是另一件事 */
+  const endRetry = () => { dropRetryBar(); retryMuted = false; };
+  const showRetryBar = (ev) => {
+    const r = ev.retry;
+    const nth = Math.max(1, Math.round(Number(r.attempt) || 1));
+    const total = Math.max(nth, Math.round(Number(r.total) || nth));
+    const end = Date.now() + Math.max(0, Number(r.delayMs) || 0);
+    dropRetryBar();
+    if (retryMuted) return;
+    const bar = document.createElement("div");
+    bar.className = "retry-bar";
+    bar.setAttribute("role", "status");
+    bar.title = ev.text || ""; // 后端那句原话带着真实报错，悬停看得到；条上只说在等什么、等多久
+    bar.innerHTML = ic("refresh-cw") + `<span class="rb-txt"></span>`
+      + `<button type="button" class="icon-btn rb-x" title="关闭">${ic("x")}</button>`;
+    const txt = bar.querySelector(".rb-txt");
+    const n = `<b class="rb-n">${nth}/${total}</b>`;
+    let shown = null;
+    const paint = () => {
+      const left = Math.ceil((end - Date.now()) / 1000);
+      if (left > 0) {
+        if (shown === null) txt.innerHTML = `上游繁忙，<b class="rb-sec"></b> 秒后第 ${n} 次重试`;
+        if (left !== shown) { shown = left; txt.querySelector(".rb-sec").textContent = String(left); }
+        return;
+      }
+      // 倒计时走完、正文还没来：这一次已经发出去了，在等回话
+      txt.innerHTML = `上游繁忙，正在第 ${n} 次重试…`;
+      if (retryTimer) { clearInterval(retryTimer); retryTimer = null; }
+    };
+    bar.querySelector(".rb-x").onclick = () => { retryMuted = true; dropRetryBar(); };
+    // 钉在这一轮最上面（引擎小牌子之下）；样式里是 sticky，长回合滚到底也看得见
+    const eng = body.querySelector(":scope > .run-eng");
+    body.insertBefore(bar, eng ? eng.nextSibling : body.firstChild);
+    paint();
+    if (Date.now() < end) retryTimer = setInterval(paint, 250); // 250ms 一跳：整秒 setInterval 会漂，数字会卡在同一个数上两秒
+  };
+
   function handleEvent(ev) {
     // 折叠条上那行「此刻在干什么」：每条事件都先过一遍它，再走各自的渲染分支
     const act = liveActivity(ev, actNarr);
     actNarr = act.narr;
     if (act.line) setAct(act.line, act.icon, ev.type === "text");
     if (ev.type === "step_start") {
+      // 重试都在同一步的那次模型调用里；新的一步开了，上一次调用已经收场。
+      // 回话为空直接续跑、睡醒后重跑本步这两条路上既没有正文也没有工具调用，不在这撤就会一直挂着「正在重试」
+      endRetry();
       if (ev.depth > 0) return;
       liveStep = ev.step || liveStep;
       body.querySelector(".thinking-hint")?.remove();
@@ -1405,6 +1461,13 @@ function createTurnUI(userText, turnMode, forSid) {
         chip.title = ev.text || "";
         return;
       }
+      // 带 retry 的重试播报换成顶上那条倒计时，不再往思考提示里塞同一句话（原话在倒计时条的悬停里）。
+      // 回放不挂：那几秒早过去了，再倒数一遍是假的
+      // kind 只认 retry（没写也当 retry）：以后别的种类借这个字段，不能被当成倒计时
+      if (ev.retry && typeof ev.retry === "object" && (ev.retry.kind == null || ev.retry.kind === "retry")) {
+        if (!isReplaying) showRetryBar(ev);
+        return;
+      }
       // 运行状态直播（重试中/模型长时间没输出）：复用思考提示那一行，别让界面看起来像卡死
       let hint = body.querySelector(".thinking-hint");
       if (!hint) {
@@ -1415,6 +1478,7 @@ function createTurnUI(userText, turnMode, forSid) {
       }
       hint.innerHTML = `<span class="spinner"></span> ${esc(ev.text || "")}`;
     } else if (ev.type === "text") {
+      endRetry(); // 上游开口了就不用再等：专家内层的正文也算
       if (ev.depth > 0) return;
       body.querySelector(".thinking-hint")?.remove();
       appendText(ev.delta);
@@ -1432,6 +1496,7 @@ function createTurnUI(userText, turnMode, forSid) {
         ? `${ev.count} 条生成任务一起跑（各写各的文件，互不影响）`
         : `${ev.count} 个只读工具并发执行（搜索/抓页面互不影响，一起跑更快）`));
     } else if (ev.type === "tool_use") {
+      endRetry(); // 重试成功、模型直接调工具不说话：没有正文来撤它，这里撤
       body.querySelector(".thinking-hint")?.remove();
       endText();
       const card = document.createElement("div");
@@ -1521,6 +1586,7 @@ function createTurnUI(userText, turnMode, forSid) {
       ensureProc().appendChild(procNote("moon", ev.note || "检测到本机睡眠，任务时限已顺延"));
     } else if (ev.type === "failover") {
       // 主模型挂起/持续报错、自动切到备用渠道——必须大声播报，绝不静默换模型
+      endRetry(); // 主渠道那几次重试已经翻篇了，倒计时条别再挂着
       endText();
       ensureProc().appendChild(procNote("shuffle", ev.note || "已切换到备用渠道", "err"));
       procWrap?.classList.add("open");
@@ -1529,7 +1595,7 @@ function createTurnUI(userText, turnMode, forSid) {
       const proc = ensureProc();
       let note = proc.querySelector(".trim-note");
       if (!note) { note = procNote("scissors", "", "trim-note"); proc.appendChild(note); }
-      note.lastChild.textContent = `历史过长，已截短较早的工具输出（约 ${Math.round((ev.chars || 0) / 1000)} 千字符），最近几步保留原文。可在 设置→智能体设置 调大上下文预算`;
+      note.lastChild.textContent = `历史过长，已截短较早的工具输出（约 ${Math.round((ev.chars || 0) / 1000)} 千字符），最近几步保留原文。可在 设置→智能体设置 调上下文上限`;
     } else if (ev.type === "compact_start") {
       // 压缩要跟模型说一次话，长会话十几秒是常事，而它正卡在「他按下发送」和「第一个字」中间。
       // 只转圈不说话，他只能猜是模型卡了还是网断了——先把「在压什么、压多少、等了多久」摆出来
@@ -1544,8 +1610,8 @@ function createTurnUI(userText, turnMode, forSid) {
       const note = compactNote(ensureProc());
       note.classList.remove("running");
       note.lastChild.textContent = ev.failed
-        ? `这一轮没压成：${ev.failed}。早前的内容一条没动，接着跑（上下文更紧了，可在 设置→智能体设置 调大预算）`
-        : `会话较长，已把早前 ${ev.removed || 0} 条消息压缩成一条摘要（要点保留，原文在 data/compact-archive 有归档）`;
+        ? `压缩失败：${ev.failed}。原内容未动（可在 设置→智能体设置 调大预算）`
+        : `已把早前 ${ev.removed || 0} 条消息压成摘要（原文存 data/compact-archive）`;
       if (ev.failed) note.classList.add("err");
     } else if (ev.type === "context") {
       // 后台并行会话的余量不许画到当前这条对话头上：这根条全界面就一根
@@ -1669,6 +1735,7 @@ function createTurnUI(userText, turnMode, forSid) {
         live.hidden = false;
       }
     } else if (ev.type === "error") {
+      endRetry();
       endText();
       const t = document.createElement("div");
       t.className = "a-text";
@@ -1684,6 +1751,7 @@ function createTurnUI(userText, turnMode, forSid) {
   // 不给它一个终点的话，历史记录里这一轮会永远转着「运行中…」，而那时早就没有东西可停了
   function finish(opts) {
     endText(); // 收尾前先把最后一段合回整块，下面挪 DOM、复制、存历史都按整块来读——这行必须留在最前面
+    endRetry(); // 收尾了还在倒数「3 秒后重试」就是骗人，计时器也得停
     const 断了 = !!(opts && opts.interrupted);
     body.querySelector(".thinking-hint")?.remove();
     // 回合结束后不允许再有任何转圈（含未收到结果的工具卡，统一标记中止）
@@ -1799,7 +1867,7 @@ function createTurnUI(userText, turnMode, forSid) {
       a.target = "_blank";
       a.rel = "noopener";
       a.style.marginLeft = "8px";
-      a.title = "在 Langfuse 里一步步看这趟任务：每次模型调用的输入输出、每个工具的参数和结果、各花了多少 token";
+      a.title = "在 Langfuse 查看这次任务每一步的调用和 token";
       a.textContent = "看执行过程";
       bar.appendChild(a);
     }
@@ -1888,9 +1956,9 @@ function createTurnUI(userText, turnMode, forSid) {
     };
     bar.querySelector("[data-a=regen]").onclick = () => {
       if (curBusy()) return;
-      const text = turn._userText, mode = turn._mode;
+      const text = turn._userText, mode = turn._mode, shown = turn._shown;
       turn.remove();
-      doSend(text, mode, true);
+      doSend(text, mode, true, shown);
     };
     body.appendChild(bar);
   }
@@ -1991,7 +2059,8 @@ function liveActivity(ev, narr) {
       : `另有任务在改这个仓库，这趟进了分身 ${cut(ev.branch, 28)}`);
     case "sleep": return say("moon", "本机睡过一觉，任务时限已顺延");
     case "ask_user": return say("circle-help", "有事要问你，在等你回答");
-    case "status": return cut(ev.text) ? say(ev.starting ? "monitor" : "loader-circle", cut(ev.text)) : keep;
+    // 带 retry 的是「等几秒自动重试」：换成重试图标，跟回合顶上那条倒计时对得上
+    case "status": return cut(ev.text) ? say(ev.starting ? "monitor" : ev.retry && (ev.retry.kind == null || ev.retry.kind === "retry") ? "refresh-cw" : "loader-circle", cut(ev.text)) : keep;
     default: return keep;
   }
 }
@@ -2894,7 +2963,7 @@ function renderFiles(files) {
       // 逐字节相同的副本才给清理入口。这类是当年"找不到产物就 cp 一份到根目录"留下的，
       // 原件还在成果文件夹里躺着，所以清掉零信息损失；名字像但内容不同的一个都不碰
       const dupes = rootFiles.filter(f => f.dup_of);
-      if (dupes.length) html += `<div class="dup-tidy">这里有 <b>${dupes.length}</b> 个文件跟成果文件夹里的完全相同（同一份东西显示两遍）<button id="btn-tidy">清掉重复的</button></div>`;
+      if (dupes.length) html += `<div class="dup-tidy"><b>${dupes.length}</b> 个文件与成果文件夹里的重复<button id="btn-tidy">清掉重复的</button></div>`;
       html += rootFiles.slice().sort(resFirst()).map(f => fileRow(f, true)).join("");
     }
   }
@@ -2920,7 +2989,7 @@ function renderFiles(files) {
     // 按钮做了什么就写什么，别让用户点完发现还动了别的东西
     if (!(await askConfirm({
       title: `整理这 ${dupes.length} 个重复文件？`,
-      hint: "它们跟成果文件夹里的那份逐字节相同。原件不动，副本移到 .trash，随时捞得回来；一个文件都没有的空成果文件夹也一起移过去。",
+      hint: "副本移到 .trash，可随时恢复；空的成果文件夹也一并移走。",
       items: dupes.slice(0, 10).map((f) => f.name),
       note: dupes.length > 10 ? `…共 ${dupes.length} 个` : "",
       ok: "整理",
@@ -3118,7 +3187,7 @@ const pvTrunc = (total, shown) => {
     + (rest
       ? ` · <button class="pv-more" data-at="${at}">再往后看 ${fmtSize(Math.min(PV_TEXT_MAX, rest))}</button>`
       : "")
-    + `<div class="pv-more-tip" style="margin-top:6px">接下来的内容按纯文本显示（按字节切开的地方可能正好在一行中间）。要看全的也可以下载或用系统程序打开。</div>`
+    + `<div class="pv-more-tip" style="margin-top:6px">以下按纯文本显示，看全请下载。</div>`
     + `<pre class="pv-more-text" style="white-space:pre-wrap;overflow-wrap:anywhere;tab-size:4;margin:8px 0 0"></pre>`
     + `</div>`;
 };
@@ -3558,25 +3627,35 @@ function bindPvCode(body, truncHtml) {
  * 做法是量出这一页自己有多宽，再整体 scale 下去；高度按它真实的文档高度给足，
  * 让外面那层滚动，而不是 iframe 里再套一根滚动条（套两层的结果是两根都只能滚一半）。
  *
- * 量尺寸有两条路，因为两个预览位的安全约束不一样：
- *   - 工作区预览同源，直接读 contentDocument。
- *   - 资料库预览跑在 sandbox 里（外来文件不许碰应用本身，所以不给 allow-same-origin），
- *     读 contentDocument 会抛。那边改成页面自己 postMessage 把尺寸报出来，见 selfReport。
+ * 尺寸只能靠页面自己 postMessage 报上来（{__wbFit:1,w,h,v}，v 是量的时候视口多宽）。两个预览位都跑在 sandbox 里、
+ * 都不给 allow-same-origin：工作区的网页是模型写的或网上下的，资料库的是外来的，
+ * 同源的话页面能以应用的身份调 /api/*（跑工具、花钱）。于是外面读 contentDocument 会抛，量不了。
+ * 报尺寸的脚本谁来挂：资料库那边是前端往 blob 尾巴上接 PV_FIT_REPORTER；
+ * 工作区这边是服务端在 ?fit=1 的响应里挂同一段（server.js 的 PV_FIT_HTML）。
  *
- * 三处容易踩空：
- *   - **量之前必须先把宽度放回可用宽度、并撤掉缩放**。不然第二次量到的是上次设的那个值，
- *     响应式页面会被一路越缩越小。
- *   - 量不到就什么都不做，保持原样，别把画面弄成一片空白。
- *   - 页面里的图片是后到的，图一到高度就变。load 之后再补量几次，比一次量完靠谱。
+ * 四处容易踩空：
+ *   - **量之前必须先把宽度放回可用宽度、并撤掉缩放**。不然页面按上次设的宽度排版、报回来的还是那个值，
+ *     响应式页面会被一路越缩越小。归位一改宽度，页面收到 resize 会自己重报。
+ *   - 报不上来就别让它缩在 150px 高的默认框里还滚不动（页面自带 CSP 挡了内联脚本、
+ *     在框里点链接跳到了一个没挂脚本的页……）：等一会儿没动静，退回「占满面板、框里自己滚」。
+ *   - 只认这个框自己发来的消息。别的窗口冒充报一个尺寸，不许把框撑成那样。
+ *   - 页面里的图片是后到的，图一到高度就变。报尺寸那段脚本在 load 之后还会补报两次。
  */
-function fitPreviewFrame(host, opts) {
-  opts = opts || {};
+function fitPreviewFrame(host) {
   const wrap = host.querySelector(".pv-fit");
   const fr = wrap && wrap.querySelector("iframe");
   const zoomBtn = wrap && wrap.querySelector(".pv-zoom");
   if (!fr) return;
+  // 页面加载完多久还没报尺寸就算报不上来。报尺寸的脚本在 load 时一定会报一次，1.5 秒是给慢机器留的余量
+  const WAIT_MS = 1500;
   let real = false; // false = 适应宽度（默认），true = 实际大小
-  let last = null;  // 上一次量到的 {w,h}，切换缩放比时直接复用，不用重新量
+  let last = null;  // 上一次报上来的 {w,h}，切换缩放比时直接复用，不用重新量
+  let lastReportAt = 0;
+  let loads = 0;
+  let fell = false;  // true = 报不上来，已退回「占满面板、框里自己滚」
+  let laidAt = -1;   // 上一次按多宽的可用宽度排的。宽度没变的 resize（只是高度变了）不用重排
+  let baseW = 0;     // 上一次归位给的宽度，也就是页面量自己时的视口宽
+  let grows = 0;     // 归位之后，框已经放宽过、页面又报得更宽的次数（封顶用，见 onMsg）
 
   const availOf = () => wrap.clientWidth || host.clientWidth || 0;
 
@@ -3584,6 +3663,8 @@ function fitPreviewFrame(host, opts) {
     const avail = availOf();
     if (!avail || !w || !h) return;
     last = { w, h };
+    laidAt = avail;
+    if (fell) { fell = false; fr.setAttribute("scrolling", "no"); }
     const scale = real ? 1 : Math.min(1, avail / w);
     fr.style.width = w + "px";
     fr.style.height = h + "px";
@@ -3599,60 +3680,84 @@ function fitPreviewFrame(host, opts) {
     }
   };
 
-  // 归位：把 iframe 放回"可用宽度、不缩放"，页面按这个视口重新排一次，才量得到它真实要多宽
+  // 归位：把 iframe 放回"可用宽度、不缩放"，页面按这个视口重新排一次，报上来的才是它真实要多宽
   const reset = () => {
+    if (!fr.isConnected) return;
     const avail = availOf();
-    if (!avail) return 0;
+    if (!avail) return;
+    laidAt = avail;
+    baseW = avail;
+    grows = 0;
     fr.style.transform = "none";
     fr.style.width = avail + "px";
-    return avail;
   };
 
-  const apply = () => {
-    if (!fr.isConnected) return;
-    if (opts.selfReport) { reset(); return; } // 跨源：量不了，等页面自己报
-    let doc = null;
-    try { doc = fr.contentDocument; } catch { doc = null; }
-    if (!doc || !doc.documentElement) return; // 还没加载出来：保持原样
-    const avail = reset();
-    if (!avail) return;
-    const de = doc.documentElement;
-    const bd = doc.body;
-    layout(
-      Math.max(de.scrollWidth || 0, bd ? bd.scrollWidth || 0 : 0, avail),
-      Math.max(de.scrollHeight || 0, bd ? bd.scrollHeight || 0 : 0, 1),
-    );
+  // 报不上来：占满面板，滚动交还给框自己
+  const fallback = () => {
+    fell = true;
+    last = null;
+    fr.removeAttribute("scrolling");
+    reset();
+    const h = host.clientHeight || 0;
+    if (h) { fr.style.height = h + "px"; wrap.style.height = h + "px"; }
+    if (zoomBtn) zoomBtn.hidden = true;
   };
 
-  if (opts.selfReport) {
-    const onMsg = (e) => {
-      if (!fr.isConnected) { window.removeEventListener("message", onMsg); return; }
-      // 认 source 不认 origin：sandbox 页面的 origin 是 "null"，对不上任何白名单
-      if (e.source !== fr.contentWindow || !e.data || e.data.__wbFit !== 1) return;
-      layout(Number(e.data.w) || 0, Number(e.data.h) || 0);
-    };
-    window.addEventListener("message", onMsg);
-  }
+  const onMsg = (e) => {
+    if (!fr.isConnected) { window.removeEventListener("message", onMsg); return; }
+    // 认 source 不认 origin：sandbox 页面的 origin 是 "null"，对不上任何白名单
+    if (e.source !== fr.contentWindow || !e.data || e.data.__wbFit !== 1) return;
+    lastReportAt = Date.now();
+    // v 是页面量的时候视口多宽。外面刚改了框宽（出了滚动条、归位），页面还没按新宽度重排，
+    // 路上那几条还是旧宽度量的：照它排会把框撑回旧宽度，页面收不到 resize 就不再重报，
+    // 卡在「适应宽度 · 98%」这种半缩放里。旧的不认，页面按新宽度重排后自己会再报
+    const v = Number(e.data.v) || 0;
+    const w = Number(e.data.w) || 0;
+    const cur = parseFloat(fr.style.width) || 0;
+    if (v && cur && Math.abs(v - cur) > 1) return;
+    // 页面在归位宽度下量出来没比那个宽度宽（跟着视口排的那种），可用宽度却已经变了——
+    // 多半是上一条报数把面板撑出了滚动条，窄了十来像素。照它排也是半缩放，归位让它按现在的宽度重排重报。
+    // 比的是归位宽度 baseW，不是 v：按报数把框设成页面宽之后页面会再报一次，那次 v 就等于 w，
+    // 拿 v 比会把写死 1200 宽的卡片也当成跟着视口排的，归位、放宽、再归位，来回打转
+    if (v && baseW && w <= baseW + 1 && Math.abs(availOf() - baseW) > 1) { reset(); return; }
+    const h = Number(e.data.h) || 0;
+    // 框已经按报数放宽过（v 不是归位宽度），页面却报得比框还宽：多半是 body 带外边距又写了 width:100vw 的通栏，
+    // 视口多宽它就比视口宽一截。照单放宽→页面再报更宽→再放宽，框会一路宽到几千像素、消息来回刷个不停。
+    // 这种报数只许再放宽两次（真有后到的宽内容也够用），之后宽度不动、只认高度
+    if (v && baseW && Math.abs(v - baseW) > 1 && w > cur + 1 && ++grows > 2) { layout(cur, h); return; }
+    layout(w, h);
+  };
+  window.addEventListener("message", onMsg);
 
-  if (zoomBtn) zoomBtn.onclick = () => { real = !real; if (last) layout(last.w, last.h); else apply(); };
+  if (zoomBtn) zoomBtn.onclick = () => { real = !real; if (last) layout(last.w, last.h); };
   fr.addEventListener("load", () => {
-    apply();
-    // 图片是后到的，图一到高度就变；补量两次比一次量完靠谱
-    setTimeout(apply, 120);
-    setTimeout(apply, 600);
+    // 第一次 load 之前宽度已经是归位的，不用再动（动了就是白闪一下）。
+    // 之后的 load 是框里点链接换了一页：新页面得按可用宽度重新排、重新报
+    if (loads++) reset();
+    const at = Date.now();
+    // 报尺寸的脚本在 load 前后各报一次；load 之前一小会儿报过的也算这一页的
+    setTimeout(() => { if (fr.isConnected && lastReportAt < at - 800) fallback(); }, WAIT_MS);
   });
   // 预览栏本身可以拖宽，宽度一变就得重新算
   if (window.ResizeObserver) {
-    const ro = new ResizeObserver(() => { if (fr.isConnected) apply(); else ro.disconnect(); });
+    const ro = new ResizeObserver(() => {
+      if (!fr.isConnected) return ro.disconnect();
+      if (fell) fallback();
+      else if (availOf() !== laidAt) reset();
+    });
     ro.observe(host);
   }
-  apply();
+  reset();
 }
 
-/** sandbox 里的页面自己报尺寸用的那段脚本（跨源读不到，只能让它主动说）。 */
-const PV_FIT_REPORTER = `<script>(function(){function s(){try{var d=document.documentElement,b=document.body;\
-parent.postMessage({__wbFit:1,w:Math.max(d.scrollWidth||0,b?b.scrollWidth||0:0),h:Math.max(d.scrollHeight||0,b?b.scrollHeight||0:0)},"*");}catch(e){}}\
-addEventListener("load",s);addEventListener("resize",s);setTimeout(s,0);setTimeout(s,150);setTimeout(s,700);})()<\/script>`;
+/**
+ * sandbox 里的页面自己报尺寸用的那段脚本（跨源读不到，只能让它主动说）。
+ * 跟 server.js 的 PV_FIT_HTML 一字不差（test/preview-layout.js 钉着）；为什么 resize 只认宽度变化，理由写在那边。
+ */
+const PV_FIT_REPORTER = '<script>(function(){var w0=-1;function s(){try{var d=document.documentElement,b=document.body,w=Math.max(d.scrollWidth||0,b?b.scrollWidth||0:0),h=Math.max(d.scrollHeight||0,b?b.scrollHeight||0:0);w0=innerWidth;'
+  + 'if(!b&&d.width&&d.width.baseVal){var W=d.width.baseVal,H=d.height.baseVal,v=d.viewBox&&d.viewBox.baseVal;if(W.unitType!==2)w=W.value;if(H.unitType!==2)h=H.value;else if(v&&v.width&&v.height)h=Math.ceil(w*v.height/v.width);}'
+  + 'parent.postMessage({__wbFit:1,w:w,h:h,v:innerWidth},"*");}catch(e){}}'
+  + 'addEventListener("load",s);addEventListener("resize",function(){if(innerWidth!==w0)s();});setTimeout(s,0);setTimeout(s,150);setTimeout(s,700);})()<\/script>';
 
 async function previewFile(name, root) {
   if (OFFICE_RE.test(name)) {
@@ -3692,7 +3797,11 @@ async function previewFile(name, root) {
     // SVG 也走 iframe：mermaid 老文件的文字在 <foreignObject> 里，<img> 按安全静态模式渲染会丢字。
     // pv-fit-mid 只给 SVG：图装得下就摆正中间，装不下（长流程图）自动退回贴顶接着滚。
     // 网页不给——文章必须从第一行读起。
-    body.innerHTML = `<div class="pv-fit${kind === "svg" ? " pv-fit-mid" : ""}"><iframe src="${url}" scrolling="no"></iframe><button type="button" class="pv-zoom" hidden></button></div>`;
+    // sandbox 不给 allow-same-origin：工作区网页是模型写的或网上下的，同源就能以应用的身份调 /api/*。
+    // 服务端对这类响应另回一条 CSP sandbox，直接在新标签页打开也一样隔离。
+    // 页面里的 localStorage / Cookie 因此用不了，这是故意的。
+    // fit=1 让服务端在页面尾巴挂上报尺寸的脚本（外面读不到 contentDocument 了，只能等它自己报）
+    body.innerHTML = `<div class="pv-fit${kind === "svg" ? " pv-fit-mid" : ""}"><iframe src="${url}&fit=1" sandbox="allow-scripts allow-popups" scrolling="no"></iframe><button type="button" class="pv-zoom" hidden></button></div>`;
     fitPreviewFrame(body);
   } else if (kind === "image") {
     // title 写出来是因为这事儿不写没人知道：双击复制、Ctrl/Cmd+C 也复制
@@ -3813,9 +3922,9 @@ async function copyImageFromUrl(url) {
     const why = String((e && e.message) || e);
     if (why === "no-api" || why.includes("secure")) {
       // http:// 访问（局域网直连没套 HTTPS）时剪贴板 API 整个不存在，这不是权限问题，劝也没用
-      toast("这个浏览器不让网页写剪贴板（多半是没走 HTTPS）。右键图片选「复制图片」，或者点下载", "circle-x");
+      toast("浏览器不允许写剪贴板（需 HTTPS），请右键「复制图片」或下载", "circle-x");
     } else if (why === "decode" || why === "encode") {
-      toast("这张图浏览器解不开，复制不了。可以点下载，或用系统默认程序打开再复制", "circle-x");
+      toast("这张图无法复制，请下载后再复制", "circle-x");
     } else if (why === "fetch") {
       toast("图片没取到，可能已经被移走或删掉了", "circle-x");
     } else {
@@ -3847,7 +3956,7 @@ async function renderDeployBar() {
   if (!pvCurrent || !/\.html?$/i.test(pvCurrent)) { bar.style.display = "none"; return; }
   bar.style.display = "";
   if (!previewSrv.running) {
-    bar.innerHTML = `<span>这是个网页，要不要本地部署预览？（起一个本机服务，相对路径和 fetch 才正常）</span>
+    bar.innerHTML = `<span>这是网页，要本地起服务预览吗？（相对路径和 fetch 才正常）</span>
       <button class="primary" id="pv-serve">本地部署预览</button>`;
     bar.querySelector("#pv-serve").onclick = async (e) => {
       e.target.disabled = true; e.target.textContent = "启动中…";
@@ -4082,7 +4191,7 @@ function renderTurnOutputs(body, changed, live, ev) {
     // 网页/图有缩略图；PPT/Word/Excel/PDF 这些要交到用户手上的成果出图标卡。
     // 以前它们只在收起的「查看所有变更」里躺着一行，做完一个 PPT，用户在对话里压根看不见它，
     // 只能自己去右侧面板翻。途中的脚手架（脚本、日志、PROGRESS.md）仍然只进清单，别把对话挡成一屏方框
-    if (!bundles.has(dirOf(f.name)) && (isHtml || isImg || isDeliverable(f.name))) {
+    if (!bundles.has(dirWithSlash(f.name)) && (isHtml || isImg || isDeliverable(f.name))) {
       const base = f.name.split("/").pop();
       let same = grid.querySelector(`.out-card[data-name="${cssEsc(f.name)}"]`);
       // 同一个文件在这一回合里被改写了第二次（先出 v1、看不顺眼又原地重画成 v2）：
@@ -4207,7 +4316,9 @@ function pathDepth(n) { return String(n || "").split("/").length; }
 const OUT_BUNDLE_MIN = 8;
 const OUT_HTML_RE = /\.html?$/i;
 const OUT_IMG_RE = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i;
-function dirOf(n) { const i = String(n || "").lastIndexOf("/"); return i < 0 ? "" : String(n).slice(0, i + 1); }
+// 带尾斜杠的目录（"a/b/c.png" → "a/b/"）：成果包的键和卡片的 data-bundle 前缀都长这样。
+// 以前它也叫 dirOf，跟路径助手里那个不带尾斜杠的同名——函数声明会提升，后写的这个把前一个整个顶掉了
+function dirWithSlash(n) { const i = String(n || "").lastIndexOf("/"); return i < 0 ? "" : String(n).slice(0, i + 1); }
 function cardWorthy(n) { return OUT_HTML_RE.test(n) || OUT_IMG_RE.test(n) || isDeliverable(n); }
 
 /** @returns {Map<string, number>} 目录（带尾斜杠）→ 这一回合它收了几个文件 */
@@ -4219,7 +4330,7 @@ function bundleDirs(block, changed) {
   for (const f of changed || []) names.add(f.name);
   const all = new Map(), worthy = new Map();
   for (const n of names) {
-    const d = dirOf(n);
+    const d = dirWithSlash(n);
     if (!d) continue;                                   // 工作目录根下的散件不算一包
     all.set(d, (all.get(d) || 0) + 1);
     if (cardWorthy(n)) worthy.set(d, (worthy.get(d) || 0) + 1);
@@ -4240,7 +4351,7 @@ function foldBundleCards(grid, bundles, root) {
   if (!bundles || !bundles.size) return n;
   for (const [dir, count] of bundles) {
     const members = [...grid.querySelectorAll(".out-card")]
-      .filter((c) => !c.dataset.bundle && dirOf(c.dataset.name) === dir);
+      .filter((c) => !c.dataset.bundle && dirWithSlash(c.dataset.name) === dir);
     let card = grid.querySelector(`.out-card[data-bundle="${cssEsc(dir)}"]`);
     if (!card) {
       card = makeBundleCard(dir, count, root);

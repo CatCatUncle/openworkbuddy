@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 /**
  * lark-cli（@larksuite/cli，MIT）的输出解析 —— 纯函数，不碰进程也不碰 config，方便测。

@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 /**
  * 连不通的那条渠道，别让 agent 一轮一轮去撞。

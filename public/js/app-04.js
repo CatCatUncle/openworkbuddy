@@ -26,12 +26,12 @@ async function updateEvalView() {
   const hist = Array.isArray(hj) ? hj : (hj && hj.runs) || [];
   const baseline = (hj && !Array.isArray(hj) && hj.baseline) || null;
   if (!hist.length) {
-    histBox.innerHTML = `<div class="ev-empty">还没跑过。上面选个模型点「开始评测」，或者命令行 <code>npm run eval</code>。<br>第一轮跑完记得点开成绩设为基线——之后每轮才有得比。</div>`;
+    histBox.innerHTML = `<div class="ev-empty">还没跑过。选个模型点「开始评测」，或命令行 <code>npm run eval</code>。<br>跑完把第一轮设为基线，之后才能对比。</div>`;
     return;
   }
   const blBanner = baseline
     ? `<div class="ev-bl">${ic("pin")}当前基线：${esc(baseline.model || "")} · ${esc(String(baseline.at || "").slice(0, 16).replace("T", " "))} · <code>${esc(baseline.commit || "—")}</code> · 每次跑批自动逐题对比</div>`
-    : `<div class="ev-bl">${ic("pin")}还没钉基线——点开一次成绩，点「设为基线」，之后每轮自动对比退步和进步</div>`;
+    : `<div class="ev-bl">${ic("pin")}还没设基线：点开一次成绩 →「设为基线」</div>`;
   const th = (t, tip) => `<th${tip ? ` title="${esc(tip)}"` : ""}>${t}</th>`;
   histBox.innerHTML = blBanner + `<div class="ev-tab-wrap"><table class="ev-tab">
       <thead><tr>${th("时间")}${th("模型")}${th("次数", "每题重复几次")}${th("pass@1", "各题通过率的平均：能不能做对")}${th("稳定全过", "k 次全过的题数：稳不稳；时过时不过的题会单独标出来")}${th("对比基线", "与钉住的基线逐题对比")}${th("AI 评委", "逐条质量维度二元判定的达标率（旧格式为 1-5 均分）")}${th("人工", "人工打星的均分")}${th("tokens")}${th("版本", "跑分时的代码 commit")}</tr></thead>
@@ -340,9 +340,9 @@ function libEmptyWhy() {
   // 每一截都是一句完整的话，各占一个文本节点：<b> 夹在句子中间的话，英文那边是按节点翻的，
   // 词序接不上，屏幕上就会出现半句中文半句英文（见 public/js/i18n.js 里资料库那一段）
   return "还没有参考资料。<br><br>"
-      + "往这儿放每次任务都可能要翻的东西：合同模板、报价单、公司简介。<br>"
-      + "做任务的时候 AI 会自己来查（library_list / library_read），你不用每次都粘一遍。<br><br>"
-      + "<b>分成文件夹之后还多一件事：项目设置里可以只挂其中一个，让这个项目的 AI 只看得见那一块，不会翻到隔壁客户的材料。</b>";
+      + "放每次任务可能要翻的东西：合同模板、报价单、公司简介。<br>"
+      + "AI 做任务时会自己查，不用每次粘贴。<br><br>"
+      + "<b>分文件夹后，项目可以只挂其中一个，AI 看不到别的客户的材料。</b>";
 }
 /**
  * 一行摆得下几个（给 ← → ↑ ↓ 翻文件用）。不写死格子数：直接量 offsetTop，
@@ -373,9 +373,9 @@ function showLibPrev(page) {
  * 那句话是拿路径的口吻讲的，用户看了也不知道该改哪个字。
  */
 function libNameWhy(v) {
-  if (/[/\\]/.test(v)) return "名字里不能带斜杠——斜杠是用来分层的。想建到下一层，先点进去再新建。";
-  if (v.startsWith(".")) return "点开头的文件夹会被当成隐藏目录，建出来在资料库里反而看不见。";
-  if (/[\u0000-\u001f]/.test(v)) return "名字里混进了看不见的控制字符，多半是从别处粘过来的，重新打一遍就好。";
+  if (/[/\\]/.test(v)) return "名字不能带斜杠。要建子文件夹，先点进去再新建。";
+  if (v.startsWith(".")) return "不能以点开头（会变成隐藏目录）。";
+  if (/[\u0000-\u001f]/.test(v)) return "名字里有不可见字符，请重新输入。";
   const bad = v.match(/[<>:"|?*]/);
   if (bad) return `名字里不能有 ${bad[0]} 这个字符（< > : " | ? * 都不行，带上之后 Windows 那边打不开）。`;
   return "";
@@ -718,13 +718,13 @@ function libTasksHtml(data) {
   };
   // 没了的那些不声不响地滤掉是不行的——用户会以为是这一页漏了。说清有多少、一点就能看
   const goneTip = !nGone ? "" : `<div class="lib-note-tip">${libState.gone
-    ? `上面灰着的 ${nGone} 个已经不在工作目录里了，点开只会告诉你文件不存在。<a href="#" data-gone-toggle>收起来不看</a>`
-    : `另有 ${nGone} 个产出已经不在工作目录里了（多半是任务跑完自己清掉的中间产物），默认不摆出来。<a href="#" data-gone-toggle>还是显示</a>`}</div>`;
+    ? `灰色的 ${nGone} 个已不在工作目录里。<a href="#" data-gone-toggle>收起来不看</a>`
+    : `另有 ${nGone} 个产出已不在工作目录里，默认隐藏。<a href="#" data-gone-toggle>还是显示</a>`}</div>`;
   return `<div class="sec">按任务看产出 <span style="font-weight:400;color:var(--owb-text-3)">${tasks.length} 个任务</span></div>
     ${tasks.map(group).join("") || `<div class="lib-none">${nGone ? "这些任务产出的文件都已经不在工作目录里了。" : "还没有任务产出过文件。跑一个任务，它写出来的东西会自动归到这儿。"}</div>`}
     ${goneTip}
     ${orphans.length ? `<div class="sec">未归属 <span style="font-weight:400;color:var(--owb-text-3)">${data.orphan_total || orphans.length} 个</span></div>
-      <div class="lib-note-tip">这些文件在工作目录里，但没有哪次任务认领过——多半是手动拷进来的，或者是更早的版本留下的。</div>
+      <div class="lib-note-tip">这些文件不来自任何任务，多半是手动拷进来的。</div>
       <div class="lib-fs">${orphans.slice(0, 80).map((f) => libRowHtml("ws", f)).join("")}</div>` : ""}`;
 }
 
@@ -776,14 +776,14 @@ async function renderLibPreview(prev, lib) {
   if (src === "notes") {
     prev.innerHTML = `
       <div style="font-weight:600;margin-bottom:4px">${ic("lightbulb")} 灵感笔记</div>
-      <div style="font-size:12px;color:var(--owb-text-3);margin-bottom:10px;line-height:1.6">不是文件，是几句话。助理每次任务查资料库（library_list）时都会连着读到，所以适合放「我们公司简称叫 X」「配色一律用主色 #0F62FE」这种长期成立的事。</div>
+      <div style="font-size:12px;color:var(--owb-text-3);margin-bottom:10px;line-height:1.6">几句长期成立的话，助理每次查资料库都会读到，如「公司简称叫 X」。</div>
       <div style="display:flex;gap:6px;margin-bottom:10px">
         <input id="lb-note" placeholder="随手记一条灵感/偏好，回车保存" style="flex:1">
         <button class="btn-brand" id="lb-note-save" style="flex:none">保存</button>
       </div>
       <div>${(lib.notes || []).map(n =>
         `<div class="lib-note">${esc(n.text)}<div class="lm"><span>${esc((n.at || "").slice(0, 16).replace("T", " "))}</span><a href="#" class="link danger" data-nid="${esc(n.id)}">删除</a></div></div>`).join("")
-        || '<div class="ph">还没有灵感笔记。<br>比如：「周报只要三段」「对外材料一律叫全称」——记一条，之后每次任务助理都会看到。</div>'}</div>`;
+        || '<div class="ph">还没有灵感笔记。<br>记一条，如「周报只要三段」，之后每次任务助理都会看到。</div>'}</div>`;
     const save = async () => {
       const el = prev.querySelector("#lb-note");
       const text = el.value.trim();
@@ -843,8 +843,8 @@ async function renderLibPreview(prev, lib) {
   // 以前这件事有三种长相，没有一种说得出到底怎么了——图裂成一个碎图标（<img> 出错浏览器不吭声）、
   // HTML 把服务端那句「文件不存在」当网页渲染成一片空白（fetch 没看 r.ok）、
   // 文本弹一句「预览失败：读取失败」。三种都没说清「文件已经不在了」。
-  const gonePh = `<div class="ph">这个文件已经不在工作目录里了。<br>资料库记的是这次任务产出过什么——名字来自对话记录，东西本身可能后来被挪走、被删，或者留在了另一个工作目录。<br>${
-    from ? "上面那条「出自任务」能回到当时的对话，让助理照着再做一份。" : "让助理照着再做一份，或者去访达里找找它被挪到哪儿了。"
+  const gonePh = `<div class="ph">这个文件已不在工作目录里，可能被移动、删除或在别的目录。<br>${
+    from ? "可点「出自任务」回到对话，让助理再做一份。" : "可让助理再做一份，或去访达里找找。"
   }</div>`;
   const failPh = (why) => `<div class="ph">预览不了：${esc(why)}</div>`;
   // 只在出错时才问一句「是没了，还是读不出来」——顺利的那条路上一个多余的请求都不发
@@ -896,13 +896,13 @@ async function renderLibPreview(prev, lib) {
       // 明说是格式的事、并给出一条能走通的路，比让它掉进「这个文件不是文本」强得多
       const ext = name.split(".").pop().toLowerCase();
       body.outerHTML = (await alive())
-        ? `<div class="ph">这是 Office 97-2003 的老格式（.${esc(ext)}），里面是一包二进制记录，不是 .${esc(ext)}x 那样的压缩包，拆不出内容来。<br><br>用 Word / Excel / PowerPoint 或 WPS 打开，另存为 .${esc(ext)}x 再放回来，就能在这儿直接看。</div>`
+        ? `<div class="ph">Office 97-2003 老格式（.${esc(ext)}）无法预览。<br><br>用 Office 或 WPS 另存为 .${esc(ext)}x 后即可查看。</div>`
         : gonePh;
     } else if (PV_BINARY_RE.test(name)) {
       // 后缀就摆明是二进制（.psd / .heic / .sqlite / .exe…）：别先花一趟把它当文本拉回来。
       // 跟对话页用的是同一张 PV_BINARY_RE，两边不会各认各的
       body.outerHTML = (await alive())
-        ? `<div class="ph">这是一份二进制文件，里面不是文字，没法在这儿展开。<br>点上面的「下载」用对应的程序打开。</div>`
+        ? `<div class="ph">二进制文件，无法预览。<br>请下载后用对应程序打开。</div>`
         : gonePh;
     } else {
       const r = await fetch(url);
@@ -923,7 +923,7 @@ async function renderLibPreview(prev, lib) {
         // 不认得的后缀里有一半是二进制（.psd、.sketch、.db、没后缀的导出件）。
         // 当成文本读完整屏乱码，还不如直说它不是文本。判据是 NUL 字节和替换字符占比：
         // UTF-8 解不开的字节会变成 \uFFFD，真文本里几乎不会成片出现
-        else if (looksBinary(text)) body.outerHTML = `<div class="ph">这是一份二进制文件，里面不是文字，没法在这儿展开。<br>点上面的「下载」用对应的程序打开。</div>`;
+        else if (looksBinary(text)) body.outerHTML = `<div class="ph">二进制文件，无法预览。<br>请下载后用对应程序打开。</div>`;
         else if (text.length > 400000) body.outerHTML = '<div class="ph">文件太大，预览不动，请下载后本地打开</div>';
         // CSV/TSV 走跟对话页同一个 csvHtml：它按 RFC4180 认引号，还会自己判分隔符是逗号、
         // 分号还是制表符（欧洲导出的表用分号，.tsv 用制表符，按逗号拆会拆成一整列）
@@ -1156,10 +1156,10 @@ function renderHubEditor() {
           <div style="flex:1 1 180px"><label>能力标签 <span class="lh">逗号分隔，只用于展示和搜索</span></label>
             <input id="ef-tags" value="${esc((x.tags || []).join("，"))}" placeholder="行业调研，信息核实"></div>
         </div>
-        <div class="row"><div style="flex:1"><label>绑定技能 <span class="lh">干活前会提示它先加载这些技能包，别全勾——勾多了等于没重点</span></label>
+        <div class="row"><div style="flex:1"><label>绑定技能 <span class="lh">干活前先加载，少勾几个</span></label>
           <div class="sk-pick" id="ef-skills">${skills.map(s =>
             `<label class="${(x.skills || []).includes(s.name) ? "on" : ""}" title="${esc(s.description || "")}"><input type="checkbox" value="${esc(s.name)}" ${(x.skills || []).includes(s.name) ? "checked" : ""}>${esc(s.name)}</label>`).join("") || '<span class="ab-empty">还没有技能，去「技能」页装一个</span>'}</div></div></div>
-        <div class="row"><div style="flex:1"><label>默认提示词 <span class="lh">真正喂给这个智能体的角色设定：角色一句话 + 工作方式清单 + 红线</span></label>
+        <div class="row"><div style="flex:1"><label>默认提示词 <span class="lh">角色设定：一句话角色 + 工作方式 + 红线</span></label>
           <textarea id="ef-sys" rows="8" placeholder="你是一名…&#10;&#10;工作方式：&#10;1) …&#10;&#10;红线：不编造数据和来源。">${esc(x.system || "")}</textarea></div></div>
         <div style="display:flex;gap:8px"><button class="btn-brand" id="ef-save">保存</button>
           <button id="ef-cancel" style="padding:6px 14px">取消</button>
@@ -1215,7 +1215,7 @@ function renderHubEditor() {
     const picked = t.members || [];
     box.innerHTML = `
       <div class="ex-editor">
-        <div class="hub-sec-title">${t.name ? `编辑专家团「${esc(t.name)}」` : "组建专家团"} <span class="sub">一支按顺序接力的智能体团队：后一位能看到前一位的汇报和产出文件</span></div>
+        <div class="hub-sec-title">${t.name ? `编辑专家团「${esc(t.name)}」` : "组建专家团"} <span class="sub">按顺序接力，后一位能看到前一位的产出</span></div>
         <div class="row">
           <div style="flex:0 0 90px"><label>头像</label><div class="ava-prev" id="tf-ava-prev">${ava(t.avatar, "users")}</div><input type="hidden" id="tf-avatar" value="${esc(t.avatar || "users")}"></div>
           <div style="flex:1"><label>团队名称</label><input id="tf-name" value="${esc(t.name || "")}" placeholder="如 汇报三件套"></div>
@@ -1361,7 +1361,7 @@ async function renderHubSkills(box) {
     </div>
     ${defs.length ? `
     <div class="hub-sec-title" style="margin-top:14px">${ic("sparkles")} 推荐技能
-      <span class="sub">不随本项目打包，点一下从上游仓库现取（只下这一个子目录，不拖整仓）。协议与作者都写在卡片上，装谁的东西自己心里有数</span>
+      <span class="sub">点击从上游仓库下载，协议与作者见卡片</span>
       ${missing.length ? `<button class="btn-brand" id="sk-def-all" style="float:right;padding:4px 12px;font-size: 13px">一键装齐缺的 ${missing.length} 个</button>` : ""}</div>
     <div class="card-grid">
       ${defs.map((s, i) => `
@@ -1555,13 +1555,13 @@ function showScanGate(msgEl, d, retry) {
     <div class="sk-scan ${isBlock ? "is-block" : ""}">
       <div class="sk-scan-head">${ic(isBlock ? "shield" : "triangle-alert")} ${isBlock
         ? "这份技能里有不该出现在办公技能里的写法，默认没装。"
-        : "装之前有几处要你看一眼——不是说它一定有问题，是这几处只有你能判断。"}</div>
+        : "装之前请确认以下几处。"}</div>
       ${rows}${more}${hosts}
       <div class="sk-scan-foot">
         <button class="btn-brand sk-scan-go">${isBlock ? "仍然安装（会留档）" : "我看过了，装"}</button>
         <button class="sk-scan-no">算了</button>
         <span class="sk-scan-note">${isBlock
-          ? "强装这一下会记进系统日志和技能目录里的 .install.json。只有平台管理员能点。"
+          ? "强装会记入日志，仅平台管理员可操作。"
           : "静态检查只能认出已知的那些写法，点过去不等于它是安全的。"}</span>
       </div>
     </div>`;
@@ -1585,7 +1585,7 @@ async function renderHubPlugins(box) {
   box.innerHTML = `
     ${po ? `<div class="ex-editor" style="margin-top:14px">
       <div class="hub-sec-title">${ic("download")} 安装插件
-        <span class="sub">遵循 <a href="https://agent-plugins.org" target="_blank" rel="noreferrer">Agent Plugins ${esc(data.spec || "1.0.0")}</a> 的开放标准（Vercel 等厂商共同制定）：仓库根或子目录下有 <code>plugin.json</code> 即可，装一次技能和 MCP 一起进来</span></div>
+        <span class="sub">遵循 <a href="https://agent-plugins.org" target="_blank" rel="noreferrer">Agent Plugins ${esc(data.spec || "1.0.0")}</a> 标准：有 <code>plugin.json</code> 即可，技能和 MCP 一起装</span></div>
       <div class="row"><input id="pl-url" placeholder="https://github.com/owner/repo 或 https://github.com/owner/repo/tree/main/plugins/xxx" style="flex:1">
         <button class="btn-brand" id="pl-install" style="flex:none">安装</button></div>
       <div id="pl-msg" class="ab-empty" style="margin-top:6px"></div>
@@ -1612,7 +1612,7 @@ async function renderHubPlugins(box) {
         </div>`).join("")}
       ${list.length ? "" : `<div class="hub-empty">${hubState.q ? `没有找到与「${esc(hubState.q)}」匹配的插件` : (po
         ? "还没装插件。上面填一个带 plugin.json 的 GitHub 地址就能装"
-        : "这台服务器还没装插件。装插件归平台管理员，需要什么跟他说一声")}</div>`}
+        : "还没装插件，需要请找平台管理员")}</div>`}
     </div>`;
   const plInstall = box.querySelector("#pl-install");
   if (plInstall) plInstall.onclick = async () => {

@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 /**
  * 配置体检 —— 手改 config.json 时写错了，当场说出来。

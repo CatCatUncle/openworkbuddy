@@ -18,6 +18,7 @@ const path = require("path");
 const fs = require("fs");
 const os = require("os");
 const ROOT = path.join(__dirname, "..");
+const srcLib = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
 const boot = require(path.join(ROOT, "boot-check"));
 const doctor = require(path.join(ROOT, "doctor"));
 
@@ -255,7 +256,7 @@ ok(doctor.render([doctor.verdictNode("v16.0.0", 18)]).includes("怎么修："),
 
 // ── ⑨ /api/ping 得是免登录的，而且排在登录闸前面 ────────────────────────
 console.log("\n⑨ /api/ping 免登录");
-const srv = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+const srv = srcLib.src("server");
 const ping = srv.indexOf('app.get("/api/ping"');
 const guard = srv.indexOf("app.use(account.authGuard)");
 ok(ping > 0, "server.js 里有 /api/ping");

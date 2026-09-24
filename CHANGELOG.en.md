@@ -9,6 +9,12 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 ## 2026
 
+- **Sep 24** Canvas video: if a job fails after the provider already accepted it (result timed out, download dropped), it is no longer retried automatically, so you are not charged twice; the message gives the job ID
+- **Sep 24** Canvas video now sends the length, aspect ratio and resolution shown on the card; a shot with no length uses the seconds per shot set for the drama; placeholder text on new shot cards no longer leaks into prompts
+- **Sep 24** Leaving the context cap empty in Settings now sizes it from the model window, instead of every save locking it at 120k
+- **Sep 24** Chatting on the canvas now shows up in task history right away: marked running, moved to the top, replies streaming in; history shows only what you typed, not the long instruction block; a dropped stream keeps following until the task really ends
+- **Sep 24** The input box hints `@` to reference files and `/` for skills and commands
+- **Sep 24** The Jev decision model is now off by default: an OpenRouter chat channel no longer turns it on; add a "TypeSafe Jev" channel to use it
 - **Sep 23** CLI `/cost` (same as `/status`): tokens, calls and an approximate cost for this session; if any round's model has no price, only tokens are shown; local engines count as free
 - **Sep 23** Commands that wait for input (`read`, `input()`, `npm init`) no longer sit until the timeout: `run_shell` / `run_node` get no stdin and hit end-of-input at once — 120 s before, 0.07 s now. `read_file` accepts `offset`/`limit` (they used to be dropped silently and the file read from the top) and says so on binary files instead of returning garbage; `search_files` accepts `pattern`/`path` and searches just that file when given one; an empty command is an error, not a fake exit 0
 - **Sep 23** Editing a Windows (CRLF) file no longer leaves half `\n`, half `\r\n`: `edit_file` / `multi_edit` / `write_file` (append too) keep the file's line endings; when the file uses tabs and the edit uses spaces (or the reverse), the edit is written back in the file's style instead of leaving mixed indentation Python rejects. Files already mixed are left as they are

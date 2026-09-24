@@ -26,6 +26,7 @@ const DATA_TMP = fs.mkdtempSync(path.join(os.tmpdir(), "owb-memgate-data-"));
 process.env.OPENWORKBUDDY_DATA_DIR = DATA_TMP;
 
 const ROOT = path.join(__dirname, "..");
+const { src } = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
 const mg = require(path.join(ROOT, "memory-gate"));
 const systemone = require(path.join(ROOT, "systemone"));
 const jev = require(path.join(ROOT, "jev"));
@@ -267,7 +268,7 @@ const out = (...answers) => ({ ok: true, answers });
     const i18n = fs.readFileSync(path.join(ROOT, "public", "js", "i18n.js"), "utf8");
     ok(label && i18n.includes(`"${label}"`), "  └ 标题有英文（这个产品是双语的，漏一条就半中半英）", label);
 
-    const srv = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+    const srv = src("server");
     ok(/b\.agent\.memory_gate !== undefined/.test(srv), "  └ 后端收得下这个开关");
     ok(/memory_gate: !!config\.agent\.memory_gate/.test(srv), "  └ 也读得出来（存了读不回等于没存）");
 

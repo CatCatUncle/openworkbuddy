@@ -1631,8 +1631,18 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
       const files = outputFiles().filter((f) => changedNames.has(f.name)); // 本次任务的产出（以前是把根目录整个抖出去）
       const reply = callout.strip(finalText || ""); // webhook 那头不渲染 markdown，记号得先换成文字
       logIm("webhook", "out", reply || "(空回复)", { session: session || "default" });
-      await pushWecom(`【OpenWorkBuddy·任务完成】\n任务：${message.slice(0, 80)}\n${reply.slice(0, 500)}`);
       res.json({ reply, files });
+      // 群机器人推送排在回复之后，而且自己兜住。以前这儿调的是一个根本不存在的 pushWecom：
+      // 任务明明跑成了，每次都抛 ReferenceError 掉进下面的 catch 回 500，回复本身也跟着丢了。
+      // 推送只是顺带的通知——挂了记一笔就行，不许把做成的任务说成失败，也不让调用方干等它（单通道最长 15 秒）。
+      // 回复已经发出去了，这里再抛就会掉进下面那个 catch 二次写响应头，所以必须就地接住
+      try {
+        await pushBots(`【OpenWorkBuddy·任务完成】\n任务：${String(message).slice(0, 80)}\n${reply.slice(0, 500)}`);
+      } catch (pe) {
+        const why = String((pe && pe.message) || pe).slice(0, 300);
+        console.warn("[webhook] 任务完成推送失败:", why);
+        logIm("webhook", "error", `任务完成推送失败: ${why}`, { session: session || "default" });
+      }
     } catch (e) {
       res.status(500).json({ error: e.message });
     }

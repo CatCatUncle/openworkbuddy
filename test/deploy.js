@@ -25,6 +25,7 @@ const path = require("path");
 const { execFileSync, spawnSync } = require("child_process");
 
 const ROOT = path.join(__dirname, "..");
+const { src } = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
 const BUILD = process.argv.includes("--build");
 
 let pass = 0, fail = 0;
@@ -119,7 +120,7 @@ ok(dockerMisses(read(".gitignore"), "").length > 20,
 
 // 反向对照：server.js 真正 require 的本地模块，一个都不许被排除掉。
 // v0.1.1 的装机包就是被白名单漏掉 engines/ 才「装完打不开」的，同一个坑不踩第二次。
-const serverSrc = read("server.js");
+const serverSrc = src("server");
 const localReqs = [...new Set([...serverSrc.matchAll(/require\("\.\/([^"]+)"\)/g)].map((m) => m[1]))]
   .filter((n) => n !== "package.json");
 const missed = localReqs.filter((n) => {
@@ -303,7 +304,7 @@ console.log("\n【5】用到的 npm 包，package.json 里有没有声明");
     "真跑时把 base_url 传给了 SDK（以前没传，填了中转的人验活过、一发消息打的还是官方）"
   );
   ok(
-    /anthropicBase\(m\.base_url\)\.messagesUrl/.test(read("server.js")),
+    /anthropicBase\(m\.base_url\)\.messagesUrl/.test(src("server")),
     "向导验活和真跑用同一个地址算法（两套算法 = 绿勾骗人）"
   );
 }
@@ -368,6 +369,43 @@ console.log("\n【6】装机包瘦身：既不能虚胖，也不能删过头");
     ok(threw && /index\.js\.map/.test(threw), "  └ 报错里点得出是哪个文件（不然只能一个个翻）");
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
+  }
+
+  // —— 按目录核的那一半：require 图只认字面量路径，按目录 readdirSync 挂路由/工具的写法它爬不到。
+  // 第 7 批要把 server.js / tools.js 拆进 routes/ lib/ src/tools/，白名单和闸门得先等在那儿
+  const cfgFiles = require(path.join(ROOT, "electron-builder.config.js")).files;
+  const noGlob = gate.SOURCE_DIRS.filter((d) => !cfgFiles.includes(d + "/**/*"));
+  ok(noGlob.length === 0, "按目录核的每个目录，files 白名单里都有 dir/**/*（\"*.js\" 只匹配顶层）", noGlob.join("、"));
+  ok(["engines", "routes", "src", "lib"].every((d) => gate.SOURCE_DIRS.includes(d)),
+     "  └ routes/、src/、lib/ 和栽过一次的 engines/ 都在按目录核的名单里", gate.SOURCE_DIRS.join(","));
+  const fake = fs.mkdtempSync(path.join(os.tmpdir(), "owb-srcdir-"));
+  try {
+    const repo = path.join(fake, "repo");
+    const app = path.join(fake, "app");
+    const put = (base, rel) => {
+      fs.mkdirSync(path.dirname(path.join(base, rel)), { recursive: true });
+      fs.writeFileSync(path.join(base, rel), "");
+    };
+    for (const f of ["routes/chat.js", "lib/deep/x.json", "src/tools/a.cjs", "routes/README.md", "lib/.DS_Store", "src/tools/a.js.map"]) put(repo, f);
+    fs.mkdirSync(app);
+    const listed = gate.sourceDirFiles(repo);
+    ok(listed.join(",") === "lib/deep/x.json,routes/chat.js,src/tools/a.cjs",
+       "按目录列的只有运行时文件（.md、隐藏文件、.map 不算，瘦身本来就该删 .map）", listed.join(","));
+    const miss = gate.missingSourceDirFiles(app, repo);
+    ok(miss.length === 3, "反向对照：包里没带 routes/ lib/ src/，三个文件全被点名", miss.join(","));
+    // assertPackComplete 用的是 missingFrom，得真把按目录核的并进去。拿本仓库验等于没验：
+    // engines/ 下那几个 require 图本来就都爬得到，不并也一样在清单里。这三个 require 图一个都爬不到
+    const merged = gate.missingFrom(app, repo).map((r) => r.split(path.sep).join("/"));
+    ok(listed.every((f) => merged.includes(f)), "反向对照：require 图爬不到的，打包闸门的缺件清单照样点名",
+       listed.filter((f) => !merged.includes(f)).join(","));
+    for (const f of listed) put(app, f);
+    ok(gate.missingSourceDirFiles(app, repo).length === 0, "  └ 都带上了就不报（不是恒红）");
+    // 本仓库的 engines/ 两边都爬得到：并进去之后不许同一个文件报两遍
+    const all = gate.missingFrom(app).map((r) => r.split(path.sep).join("/"));
+    ok(gate.sourceDirFiles().every((f) => all.includes(f)) && new Set(all).size === all.length,
+       "打包闸门的缺件清单并上了按目录核的那份，没有重复", `${all.length} 条`);
+  } finally {
+    fs.rmSync(fake, { recursive: true, force: true });
   }
 
   // —— assertDepsRequirable 真跑：本仓库的生产依赖必须全都 require 得起来。
@@ -444,7 +482,7 @@ console.log("\n【7】反代模板 —— 流式输出能不能活下来，全�
 {
   console.log("\n【8】企业加装包的挂载点 + 开源版不许被阉割");
 
-  const srv = read("server.js");
+  const srv = src("server");
 
   // ---- 口子本身 ----
   ok(/require\.resolve\("@openworkbuddy\/enterprise"\)/.test(srv),

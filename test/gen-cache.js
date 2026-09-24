@@ -78,6 +78,18 @@ console.log("\n【1】key 的口径：改了什么，就必须换一个 key");
   ok(K({ ...base, prompt: "一只狗" }) !== k0, "换了描述 → 换 key");
   ok(K({ ...base, filename: "狗.png" }) !== k0, "换了落点文件名 → 换 key");
   ok(K({ ...base, size: "512x512" }) !== k0, "换了尺寸 → 换 key");
+  {
+    // 视频的三个参数（2.3 新加的）。key 按人传的原值逐字比，没走夹紧那一层：
+    // 宁可「7 秒和 5 秒夹完一样」也多花一次，也不拿别的参数出的片冒充
+    const VC = { model: "seedance-1-0-pro", base_url: "https://ark.example.test/api/v3", api_key: KEY };
+    const V = (input) => cache.key("generate_video", input, VC, DIR, resolveFile, WS);
+    const v0 = V({ prompt: "猫跑过", filename: "镜1.mp4" });
+    ok(V({ prompt: "猫跑过", filename: "镜1.mp4", duration: 10 }) !== v0, "视频：加了 duration → 换 key");
+    ok(V({ prompt: "猫跑过", filename: "镜1.mp4", duration: 10 }) !== V({ prompt: "猫跑过", filename: "镜1.mp4", duration: 5 }), "视频：10 秒和 5 秒 → 两个 key");
+    ok(V({ prompt: "猫跑过", filename: "镜1.mp4", aspect_ratio: "9:16" }) !== v0, "视频：换了画幅 → 换 key");
+    ok(V({ prompt: "猫跑过", filename: "镜1.mp4", resolution: "480p" }) !== v0, "视频：换了分辨率 → 换 key");
+    eq(V({ prompt: "猫跑过", filename: "镜1.mp4", duration: 10 }), V({ duration: 10, filename: "镜1.mp4", prompt: "猫跑过" }), "反向对照：同样三个值、字段顺序不同 → 同一个 key");
+  }
   ok(K(base, { ...CFG, model: "seedream-3" }) !== k0, "换了型号 → 换 key（同一句描述，换个模型出来的是另一张图）");
   ok(K(base, { ...CFG, base_url: "https://another.example.test/v1" }) !== k0, "换了渠道地址 → 换 key");
   ok(K(base, null, path.join(WS, "任务_2")) !== k0, "换了落点目录 → 换 key（两个对话各要各的那一份）");
@@ -202,9 +214,13 @@ async function e2e() {
 
   // 数的是「上游被打了几次」。拿回执当证据等于自证——那句「这次没花钱」本来就是缓存自己写的
   const up = { image: 0, tts: 0, video: 0 };
+  let videoText = "";   // 最近一次视频提交的提示词：方舟的时长 / 画幅 / 分辨率都写在这里面
   const realFetch = global.fetch;
-  global.fetch = async (url) => {
+  global.fetch = async (url, init) => {
     const u = String(url);
+    if (/\/contents\/generations\/tasks$/.test(u)) {
+      try { videoText = (JSON.parse((init || {}).body || "{}").content || [])[0].text || ""; } catch { videoText = ""; }
+    }
     if (/\/images\/generations$/.test(u)) { up.image++; return json({ data: [{ b64_json: Buffer.from("fake-png-bytes").toString("base64") }] }); }
     if (/\/audio\/speech$/.test(u)) { up.tts++; return bin(Buffer.alloc(400, 7)); }
     if (/\/contents\/generations\/tasks$/.test(u)) { up.video++; return json({ id: "task-1" }); }
@@ -266,6 +282,25 @@ async function e2e() {
       ok(r.content.endsWith(cache.HIT_NOTE), "视频命中的回执也带那句说明", r.content.slice(-60));
       await call("generate_video", { prompt: "狗跑过草地", filename: "第二镜.mp4" });
       eq(up.video, 2, "反向对照：换了镜头 → 真的重出");
+
+      // 同一格、同一句描述，只改时长 / 画幅 / 分辨率：出来的是另一条片子，绝不能拿旧的冒充。
+      // 以前工具根本不收这几个参数，缓存 key 里也就没有它们——改了时长照样命中 5 秒的旧片
+      r = await call("generate_video", { prompt: "猫跑过草地", filename: "第一镜.mp4", duration: 10 });
+      eq(r.isError, false, "改成 10 秒：出片成功", r.content);
+      eq(up.video, 3, "★改了时长 → 不命中旧缓存，上游真的又出了一条★");
+      ok(!r.content.endsWith(cache.HIT_NOTE), "改了时长的回执里不能有「复用」那句", r.content.slice(-60));
+      ok(/ --duration 10$/.test(videoText), "这一趟真按 10 秒下的单（不是只换了个缓存 key）", videoText);
+      r = await call("generate_video", { prompt: "猫跑过草地", filename: "第一镜.mp4", duration: 10 });
+      eq(up.video, 3, "反向对照：10 秒原样再来一次 → 命中，不再花钱");
+      ok(r.content.endsWith(cache.HIT_NOTE), "反向对照：命中的回执带那句说明", r.content.slice(-60));
+      await call("generate_video", { prompt: "猫跑过草地", filename: "第一镜.mp4", duration: 10, aspect_ratio: "9:16" });
+      eq(up.video, 4, "改了画幅 → 不命中");
+      ok(/--ratio 9:16/.test(videoText), "……并且真按 9:16 下的单", videoText);
+      await call("generate_video", { prompt: "猫跑过草地", filename: "第一镜.mp4", duration: 10, aspect_ratio: "9:16", resolution: "480p" });
+      eq(up.video, 5, "改了分辨率 → 不命中");
+      ok(/--resolution 480p/.test(videoText), "……并且真按 480p 下的单", videoText);
+      await call("generate_video", { prompt: "猫跑过草地", filename: "第一镜.mp4", duration: 10, aspect_ratio: "9:16", resolution: "480p" });
+      eq(up.video, 5, "反向对照：三个参数都一样 → 命中");
     });
   } finally {
     global.fetch = realFetch;

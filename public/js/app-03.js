@@ -23,7 +23,7 @@ function cacheTxt(x) {
 function renderPassword() {
   mTitle.textContent = "修改密码";
   mBody.innerHTML = `<div class="card-item"><div class="t">修改密码</div>
-    <div class="d" style="margin-bottom:8px">改完这台机器还留着登录状态，其它设备上的登录会被踢下线，得重新登一次。</div>
+    <div class="d" style="margin-bottom:8px">改完后其他设备需重新登录。</div>
     <input id="pw-old" type="password" placeholder="原密码" autocomplete="current-password">
     <input id="pw-new" type="password" placeholder="新密码" autocomplete="new-password">
     <div style="margin-top:8px"><button class="btn-brand" id="pw-go">确认修改</button> <button id="pw-back" style="padding:6px 14px">返回账号</button> <span class="ok-msg" id="pw-msg"></span></div></div>`;
@@ -64,8 +64,8 @@ async function renderAccount() {
         <button id="acc-profile" style="float:right;padding:2px 10px;font-size: 13px;margin-right:6px">改名字 / 头像</button>
       </div>
       <div class="d">${creditsOn
-        ? `积分余额 <b style="color: var(--owb-brand-text);font-size:16px">${ic("sparkles")} ${(+d.user.credits).toLocaleString()}</b> · 计费规则：每 1000 tokens 扣 1 积分，命中缓存的部分按 1/10 折算（上游就是这么收的），每次任务至少 1 积分（网页/CLI/IM/定时任务同一本账）`
-        : `<b style="color: var(--owb-brand-text)">不限额</b> · 任务想跑多少跑多少，下面的用量只是给你看花了多少 tokens，不会拦人`}</div>
+        ? `积分余额 <b style="color: var(--owb-brand-text);font-size:16px">${ic("sparkles")} ${(+d.user.credits).toLocaleString()}</b> · 每 1000 tokens 扣 1 积分，缓存命中按 1/10，每次任务至少 1 积分`
+        : `<b style="color: var(--owb-brand-text)">不限额</b> · 用量只统计，不拦任务`}</div>
       ${isAdmin ? `${creditsOn ? `<div style="margin-top:8px;display:flex;gap:8px;align-items:center">
         <input id="topup-user" placeholder="给谁充（留空=自己）" style="max-width:150px">
         <input id="topup-amt" type="number" placeholder="积分数" style="max-width:110px">
@@ -73,13 +73,12 @@ async function renderAccount() {
       </div>` : ""}
       <div class="d" style="margin-top:8px">
         <label style="cursor:pointer"><input type="checkbox" id="credits-on" ${creditsOn ? "checked" : ""} style="vertical-align:-2px"> 开启积分限额</label>
-        · 自己一个人用就别开，它拦不住任何真实开销（key 是你的，账单在服务商那边），只会在你干到一半时把任务掐了。
-        多人共用一个 key、要给成员定额度时才有用
+        · 多人共用 key、要给成员定额度时才开；额度用完会中断任务
         <span class="ok-msg" id="credits-on-msg"></span>
       </div>
       <div class="d" style="margin-top:8px">
         <label style="cursor:pointer"><input type="checkbox" id="open-reg" ${authState.open_register ? "checked" : ""} style="vertical-align:-2px"> 允许别人自己注册账号</label>
-        · 关着的时候登录页不给注册入口。挂到公网上又开着的话，谁进来都能拿你的 key 跑任务
+        · 公网部署时开着，任何人都能注册并用你的 key
         <span class="ok-msg" id="open-reg-msg"></span>
       </div>` : ""}
     </div>
@@ -207,7 +206,7 @@ function applyAuthMode(setup) {
   // 上面标题却还在说「创建管理员账号」，副标题教人怎么开管理员号。两句话互相打架。
   document.getElementById("auth-title").textContent = pair ? "用配对码连接" : setup ? "创建管理员账号" : reg ? "注册" : "登录";
   document.getElementById("auth-sub").textContent = pair
-    ? "在那台已经登录的电脑上打开 设置 → 安全 → 远程访问，生成一个配对码填到这儿。密码不用敲进这台设备。"
+    ? "在已登录的电脑上打开 设置 → 安全 → 远程访问，生成配对码填这里。"
     : setup
     ? "首次使用：第一个注册的账号就是管理员（能开号、能改全局设置）"
     : reg
@@ -289,8 +288,8 @@ function forgotHintHtml() {
   // 不会出现「半句中文半句英文」——i18n 换的是文本节点，句子被标签劈开就会劈着翻。
   return `<div>在跑着这个服务的那台电脑上开个终端，敲一句：</div>
     <code>openworkbuddy passwd your-username</code>
-    <div>屏幕上会出现一串新密码，拿它登进来，再到「设置 → 账号」里改成自己记得住的。</div>
-    <div>用的是别人的服务器？那就找管理员——他在管理后台的「成员」里能给你重置。</div>
+    <div>会显示一个新密码，登录后到「设置 → 账号」改掉。</div>
+    <div>用别人的服务器？请管理员在后台「成员」里重置。</div>
     <div>手机也丢了、二次验证进不去？在同一台机器上再敲一句这个：</div>
     <code>openworkbuddy 2fa your-username --off</code>`;
 }
@@ -444,10 +443,10 @@ function showTwoFactorGate(user) {
   card.classList.add("auth-2fa");
   card.innerHTML = `
     <h2>先绑一下二次验证</h2>
-    <div class="sub"><span>你的组织要求所有人都开二次验证。</span><b>${esc(displayName(user) || "")}</b><span> 还没绑，绑完就能正常用了——这一步之后，光有密码登不进你的账号。</span></div>
+    <div class="sub"><span>你的组织要求所有人都开二次验证。</span><b>${esc(displayName(user) || "")}</b><span> 还没绑，绑完即可使用。</span></div>
     <div id="tfa-box" style="font-size:13px">读取中…</div>
     <div class="alt" style="text-align:left;margin-top:14px">
-      <span>绑不了？</span><a id="tfa-gate-out">退出登录</a><span>换个账号，或者找管理员到 企业管理后台 → 客户端安全 里把「强制二次验证」关掉。</span>
+      <span>绑不了？</span><a id="tfa-gate-out">退出登录</a><span>换账号，或请管理员关闭「强制二次验证」。</span>
     </div>`;
   document.getElementById("auth-mask").classList.add("show");
   document.getElementById("tfa-gate-out").onclick = async () => {
@@ -759,7 +758,7 @@ function renderOnbBrain(body) {
         ${installed.length
           ? installed.map((e, i) => `<label class="onb-radio"><input type="radio" name="onb-eng" value="${esc(e.id)}" ${i === 0 ? "checked" : ""}><b>${esc(e.label)}</b><span>${esc(e.version || "已安装")}</span></label>`).join("")
           : `<div class="onb-tip">${engs.length ? engs.map(e => `${esc(e.label)}：未安装${e.install ? `，${esc(e.install)}` : ""}`).join("<br>") : "没检测到本机 CLI"}</div>`}
-        <div class="onb-tip">走本机 CLI 不需要 API Key，用的是它自己的登录；我会真发一句话过去确认它能答。</div>
+        <div class="onb-tip">本机 CLI 用它自己的登录，无需 API Key；会发一句测试确认可用。</div>
       </div>
       <div class="err" id="onb-err"></div>
     </div>
@@ -906,8 +905,8 @@ function renderOnbBrain(body) {
       onbGo(1);
     } finally {
       go.disabled = false;
-      if (!go.isConnected) return;
-      go.textContent = form.hidden ? "下一步" : "验活并继续";
+      // 别在 finally 里 return：它会把 try 里抛出来的错一起吞掉，验活中途出错时界面静默无反应
+      if (go.isConnected) go.textContent = form.hidden ? "下一步" : "验活并继续";
     }
   };
   const skip = body.querySelector("#onb-skip-step");
@@ -1112,6 +1111,8 @@ function loadScriptOnce(src) {
   if (scriptCache.has(src)) return scriptCache.get(src);
   const p = new Promise((resolve, reject) => {
     const el = document.createElement("script");
+    // 动态插进去的脚本默认谁先下完谁先跑。关掉 async 就按插入的先后跑：画布那几片一起下载、照数组顺序执行
+    el.async = false;
     el.src = src;
     el.onload = () => resolve();
     // 失败了要把这条从缓存里删掉，否则第一次没网、之后有网了也永远重试不了
@@ -1121,10 +1122,26 @@ function loadScriptOnce(src) {
   scriptCache.set(src, p);
   return p;
 }
-/** 画布那三件套。有先后：joint 和 dagre 都得先在，画布本体才认得出它们 */
+/**
+ * 画布本体按原先的先后切成了几片（各片管什么见 app-07-canvas.js 开头），入口 app-07-canvas.js 排最后。
+ * 每一项都写成完整的调用、地址写死在引号里，不收成一串路径再循环拼：
+ * repo-hygiene 查「谁都不加载的死文件」、测试按加载顺序把几片拼回去，认的都是这种字面写法。
+ */
+const CANVAS_SCRIPTS = [
+  () => loadScriptOnce("js/app-07-canvas-state.js"),
+  () => loadScriptOnce("js/app-07-canvas-viewport.js"),
+  () => loadScriptOnce("js/app-07-canvas-nodes.js"),
+  () => loadScriptOnce("js/app-07-canvas-board.js"),
+  () => loadScriptOnce("js/app-07-canvas-generate.js"),
+  () => loadScriptOnce("js/app-07-canvas-inspector.js"),
+  () => loadScriptOnce("js/app-07-canvas-compose.js"),
+  () => loadScriptOnce("js/app-07-canvas-timeline.js"),
+  () => loadScriptOnce("js/app-07-canvas.js"),
+];
+/** 画布那几件。有先后：joint 和 dagre 都得先在，画布本体才认得出它们；本体几片一起下、按数组顺序跑 */
 async function loadCanvasDeps() {
   await Promise.all([loadScriptOnce("/vendor/joint/joint.min.js"), loadScriptOnce("/vendor/dagre/dagre.min.js")]);
-  await loadScriptOnce("js/app-07-canvas.js");
+  await Promise.all(CANVAS_SCRIPTS.map((load) => load()));
 }
 async function renderCanvasLazy() {
   const page = document.getElementById("assist-page");
@@ -1246,7 +1263,7 @@ async function renderAssistPage() {
       <button class="btn-plain" id="im-cfg">${ic("settings")} 设置</button>
     </div>
     <div class="im-feed" id="im-feed"></div>
-    <div style="text-align:center;color:var(--owb-text-3);font-size: 13px;margin-top:8px">下方输入框直接对话，和在飞书/QQ/微信里 @机器人 一样，任务在这台电脑上执行。微信走扫码登录；企微应用与公众号得有公网 HTTPS 回调地址才能收消息。</div>`;
+    <div style="text-align:center;color:var(--owb-text-3);font-size: 13px;margin-top:8px">下方输入框直接对话，任务在本机执行。微信扫码登录；企微应用和公众号需公网 HTTPS 回调。</div>`;
   setupPicker("im-model-btn", "im-model-menu");
   updateModelLabel(); // 顶栏每次重画都是新元素，标签和菜单当场填上
   page.querySelector("#im-cfg").onclick = () => openModal("settings", "im");
@@ -1360,7 +1377,7 @@ async function renderProjPage() {
     return !a.length ? "（还没设目录）" : a.length > 2 ? "…/" + a.slice(-2).join("/") : String(d);
   };
   page.innerHTML = `
-    <div class="pg-hero"><h1>项目</h1><div class="sub">每个项目 = 一个工作空间目录（任务产出落在这儿）+ 可选挂载资料库的一块（AI 只看得到这块）</div></div>
+    <div class="pg-hero"><h1>项目</h1><div class="sub">项目 = 工作目录 + 可选的资料库文件夹（AI 只看得到它）</div></div>
     <div class="hub-head">
       <button class="btn-brand" id="pj-new" style="padding:8px 16px">${ic("plus")}新建项目</button>
       <div class="hub-search" style="margin-left:auto">${ic("search")}<input id="pj-q" placeholder="搜索项目" value="${esc(page._q || "")}"></div>
@@ -1398,7 +1415,7 @@ async function renderProjPage() {
     const proj = projects.find(p => p.name === name);
     if (act === "edit") return openProjEditor(proj);
     if (act === "del") {
-      if (!(await askConfirm({ title: `把项目「${name}」从列表移除？`, hint: "只是从这个列表里拿掉，硬盘上的目录和文件一个都不动。", ok: "移除" }))) return;
+      if (!(await askConfirm({ title: `把项目「${name}」从列表移除？`, hint: "只从列表移除，不删硬盘上的文件。", ok: "移除" }))) return;
       await fetch("/api/projects/" + encodeURIComponent(name), { method: "DELETE" });
       refreshProjects().then(refreshSettingsCache);
       renderProjPage();
@@ -1564,7 +1581,7 @@ async function renderAutomPage() {
   // 服务端说了不给（多人服务器上定时任务归平台管理员），就把这句话摆出来。
   // 以前这儿直接 list.filter，403 的那个对象一进来整页就断在半空，白屏。
   if (error) {
-    page.innerHTML = `<div class="hub-empty">${ic("clock")} 自动化<br><br>${esc(error)}<br><br><span style="font-size: 13px">定时任务跑在这台服务器上、花的是服务器的额度，所以归平台管理员统一排。<br>你自己要跑的活，直接在对话里说就行。</span></div>`;
+    page.innerHTML = `<div class="hub-empty">${ic("clock")} 自动化<br><br>${esc(error)}<br><br><span style="font-size: 13px">定时任务用服务器额度，由平台管理员管理。<br>自己的活直接在对话里说。</span></div>`;
     return;
   }
   const q = st.q.toLowerCase();
@@ -1576,7 +1593,7 @@ async function renderAutomPage() {
     : !t.enabled ? { key: "off", text: "已暂停" }
     : t.last_result ? (/^出错/.test(t.last_result) ? { key: "err", text: "上次失败" } : { key: "ok", text: "上次成功" })
       : { key: "idle", text: "待首跑" };
-  const compactResult = (t) => String(t.last_result || "还没有运行结果。首次执行后，这里会保留一段可快速判断是否需要处理的摘要。").replace(/\s+/g, " ").slice(0, 160);
+  const compactResult = (t) => String(t.last_result || "还没有运行结果。").replace(/\s+/g, " ").slice(0, 160);
   const row = (t) => {
     const status = statusOf(t);
     return `
@@ -1819,7 +1836,7 @@ async function renderAutomRuns(page) {
           ? `<a href="#" class="at-open" data-sid="${esc(r.session_id)}">${ic("activity")} 看执行过程</a>`
           : '<span class="at-nosid" title="这一次跑在旧版本上，当时还没有留过程记录。之后每次执行都会有。">—</span>'}</td>
       </tr>`).join("")}
-    </table>` : '<div class="hub-empty">还没有运行记录。任务跑过之后（定时触发或手动执行）这里会留下每一次的流水。</div>'}`;
+    </table>` : '<div class="hub-empty">还没有运行记录。</div>'}`;
   page.querySelector('[data-tab="tasks"]').onclick = () => { automState.tab = "tasks"; automState.runTaskId = ""; renderAutomPage(); };
   page.querySelector("#at-runs-all")?.addEventListener("click", () => { automState.runTaskId = ""; renderAutomRuns(page); });
   // 点进去就是那一趟的完整回放：每一步调了什么工具、返回了什么、最后为什么是这个结论。
@@ -1863,7 +1880,7 @@ async function renderFeedbackSummary(days = 30) {
   const d = await fetch(`/api/feedback/summary?days=${days}`).then((r) => r.json()).catch(() => null);
   if (!d) { box.textContent = "反馈汇总读取失败"; return; }
   if (!d.total) {
-    box.innerHTML = `<div class="ev-fb-empty">近 ${days} 天还没有人点过${ic("thumbs-up")}${ic("thumbs-down")}。每条回复下面都有，点一下就进这里——这是最准的效果信号，比机器判分还准。</div>`;
+    box.innerHTML = `<div class="ev-fb-empty">近 ${days} 天还没有人点过${ic("thumbs-up")}${ic("thumbs-down")}。每条回复下面都能点。</div>`;
     return;
   }
   const pct = (n, of) => (of ? Math.round((n / of) * 100) + "%" : "—");
@@ -1903,15 +1920,15 @@ async function renderEvalPage() {
       <label class="ev-f"><span>AI 评委</span><select id="ev-judge"><option value="">不用（只机器判分）</option>${opts("")}</select></label>
       <button class="btn-brand" id="ev-start">${ic("play")} 开始评测</button>
       <span class="ev-state" id="ev-state"></span>
-      <div class="ev-run-note">15 道分层任务（L1 基础 / L2 进阶 / L3 高难）把整个智能体当黑盒考：写代码、算表格、修 bug、跨文件重构、日志管线。<b>会真实调用所选模型、真实计费</b>，费用随次数翻倍（DeepSeek 单轮约几毛钱）。命令行同款：<code>npm run eval -- --repeat 3</code></div>
+      <div class="ev-run-note">15 道分层任务（L1–L3）黑盒考整个智能体。<b>真实调用模型、真实计费</b>，费用随次数翻倍。命令行：<code>npm run eval -- --repeat 3</code></div>
     </div>
     <div class="ev-lines">
-      <div class="ev-line"><b>${ic("terminal")}机器判分</b><p>跑代码、对数字、验结构，<em>只认硬证据</em>。没过的题自动归一个败因码：崩溃、超时、步数用尽、没交产物。</p></div>
-      <div class="ev-line"><b>${ic("repeat")}稳定性</b><p>同一题重复 k 次。<em>pass@1 均值</em>看能不能做对，<em>k 次全过</em>看稳不稳；时过时不过的题单独标出来。</p></div>
-      <div class="ev-line"><b>${ic("scale")}AI 评委</b><p>逐条质量维度<em>只判是或否</em>，不打印象分。选了评委才跑，评委本身也要花钱。</p></div>
+      <div class="ev-line"><b>${ic("terminal")}机器判分</b><p>跑代码、对数字、验结构，<em>只认硬证据</em>；失败自动归因。</p></div>
+      <div class="ev-line"><b>${ic("repeat")}稳定性</b><p>同题跑 k 次：<em>pass@1</em> 看对不对，<em>k 次全过</em>看稳不稳。</p></div>
+      <div class="ev-line"><b>${ic("scale")}AI 评委</b><p>按维度<em>只判是或否</em>。选了才跑，另计费。</p></div>
     </div>
     <div>
-      <div class="ev-sec">用户反馈<span>近 30 天在对话里点的 ${ic("thumbs-up")}${ic("thumbs-down")}，比机器判分更接近真实体感</span></div>
+      <div class="ev-sec">用户反馈<span>近 30 天对话里的 ${ic("thumbs-up")}${ic("thumbs-down")}</span></div>
       <div id="ev-fb">加载中…</div>
     </div>
     <pre class="ev-log" id="ev-log" hidden></pre>

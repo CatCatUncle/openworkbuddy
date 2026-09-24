@@ -100,7 +100,13 @@ module.exports = {
     "*.js",
     "!market.js",
     "!electron-builder.config.js",
+    "!eslint.config.js", // 开发期的 lint 配置，运行时一个字节都不读，"*.js" 会把它顺手带进包
     "engines/**/*",
+    // 第 7 批把 server.js 拆进 routes/ + lib/、tools.js 拆进 src/tools/。目录还没建时这三条什么都不匹配；
+    // 建了却漏写，afterPack 按 check-package-files.js 的 SOURCE_DIRS 逐个文件核，当场拦下
+    "routes/**/*",
+    "src/**/*",
+    "lib/**/*",
     "public/**/*",
     "eval/run.js",
     "eval/tasks.js",
@@ -148,6 +154,14 @@ module.exports = {
       NSDesktopFolderUsageDescription: "OpenWorkBuddy 需要访问桌面来读写你交给它的文件",
       NSDocumentsFolderUsageDescription: "OpenWorkBuddy 需要访问文稿来读写你交给它的文件",
       NSDownloadsFolderUsageDescription: "OpenWorkBuddy 需要访问下载文件夹来读写你交给它的文件",
+      // 任务里会用 osascript 操作别的应用（安全模块也靠 System Events 数进程）。没有这条说明，
+      // macOS 要么不弹授权框直接拒，要么弹一个空白理由的框，用户不知道该不该点允许
+      NSAppleEventsUsageDescription: "OpenWorkBuddy 执行你交代的任务时，需要操作访达等其他应用",
+      // 下面两条 Electron 自带英文默认值（This app needs access to …），中文用户看到的是一句没头没尾的英文。
+      // 现在界面上没有用到麦克风/摄像头的地方，只有 agent 做出来的网页之类真要用时才会问；说清楚拒了也不碍事。
+      // 开发壳（scripts/make-mac-app.sh）直接读这三条写进 Info.plist，改这里一处就够
+      NSMicrophoneUsageDescription: "OpenWorkBuddy 只在你用到录音功能时才用麦克风，不同意也不影响其他功能",
+      NSCameraUsageDescription: "OpenWorkBuddy 只在你用到拍照或录像功能时才用摄像头，不同意也不影响其他功能",
     },
   },
   dmg: {
