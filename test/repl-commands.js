@@ -787,7 +787,7 @@ console.log("\n⑲之三 两个键位");
   ok(/!inbox\.busy/.test(esc), "★活儿跑着的时候不弹★ 正文一冲下来选择器就成了残渣");
 
   const re = (src.split("async function reEditLast")[1] || "").slice(0, 1200);
-  ok(/rl\.write\(picked\.text\)/.test(re), "★挑中的原样放回输入行★ 放不回去的话这个键只是个只读的历史");
+  ok(/loadComposer\(picked\.text\)/.test(re), "★挑中的原样放回输入行★ 放不回去的话这个键只是个只读的历史；多行的走 loadComposer 还是原来那几行");
   ok(!/sess\.history\.(splice|length =)/.test(re) && !/sess\.transcript\.(splice|length =)/.test(re),
      "★只放回去，不回卷历史★ 真删掉跑过的那几轮，等于把模型做过的事悄悄抹了，而人看不见抹了什么");
   ok(/没问过什么|没得改/.test(re), "★一句都没问过时说人话★ 弹个空框比说一句糟");
@@ -968,7 +968,7 @@ console.log("\n⑳之四 Plan 出完计划");
   const src = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
   const at = src.indexOf("repl.planNextMode(");
   const blk = src.slice(at, at + 1200);
-  ok(at > 0 && /mode: 这趟模式/.test(blk) && /result: last/.test(blk) && /typed: rl\.line/.test(blk), "★cli.js 主循环真的问了★ 按这一趟的模式和结果问", blk.slice(0, 200));
+  ok(at > 0 && /mode: 这趟模式/.test(blk) && /result: last/.test(blk) && /typed: repl\.composeText\(multi, rl\.line\)/.test(blk), "★cli.js 主循环真的问了★ 按这一趟的模式和结果问；攒着几行没发也算已经在打字", blk.slice(0, 200));
   ok(/opts\.mode = "craft"/.test(blk) && /runOnce\(runtime, repl\.PLAN_GO_TEXT, "craft", true\)/.test(blk), "★选开干：切到 Craft 并且马上照计划跑★", blk);
 }
 
@@ -986,6 +986,132 @@ console.log("\n㉑ 文档里的命令表");
   ok(said === CN[R.COMMANDS.length], `文档说的条数对得上（现在 ${R.COMMANDS.length} 条）`, { said, want: CN[R.COMMANDS.length] });
   // 反向对照：这条不是永远绿
   ok(!/\|\s*`\/nosuchcmd[ `]/.test(doc), "★（反向对照）文档里当然找不到一条不存在的命令★");
+}
+
+// ── ⑲之四 多行输入 ─────────────────────────────────────────────────────
+// 回车 = 发出去；粘进来的多行不自己发；行尾 \、Ctrl+J、Option+回车 换行；Ctrl+G 编辑器；Ctrl+R 搜历史。
+// 真终端里走一遍的在 cli-pty ⑧，这儿钉纯函数和接线
+console.log("\n⑲之四 多行输入");
+{
+  eq(R.continuedLine("第一行\\", 4), "第一行", "★行尾一个 \\ 且光标在行尾 = 没完★ 去掉那个 \\");
+  eq(R.continuedLine("a\\", undefined), "a", "不给光标就只看行尾");
+  eq(R.continuedLine("C:\\dir\\\\", 8), null, "★偶数个 \\ 是转义过的，照原样发★ 路径结尾的 \\\\ 不该把人卡在续行里");
+  eq(R.continuedLine("C:\\dir\\\\", undefined), null, "偶数个 \\ 不看光标也照原样发");
+  eq(R.continuedLine("x\\\\\\", 4), "x\\\\", "三个 = 转义的一对 + 续行的一个");
+  eq(R.continuedLine("abc\\", 2), null, "★光标不在行尾不算★ 人在行中间按回车就是要发");
+  eq(R.continuedLine("abc", 3), null, "没有 \\ 就是发");
+  eq(R.continuedLine("\\", 1), "", "只打了一个 \\：攒一行空的");
+  eq(R.continuedLine(null, 0), null, "空的不崩");
+
+  eq(R.newlineKey({ name: "return", meta: true, sequence: "\x1b\r" }, 9999), "newline", "★Option+回车★（终端把 Option 当 Meta）");
+  eq(R.newlineKey({ name: "undefined", sequence: "\x1b[13;2u" }, 9999), "newline", "★Shift+回车 的 CSI-u 写法★ Node 25 认不出名字，只能看 sequence");
+  eq(R.newlineKey({ sequence: "\x1b[27;2;13~" }, 9999), "newline", "Shift+回车 的 modifyOtherKeys 写法");
+  eq(R.newlineKey({ name: "enter", sequence: "\n" }, 5000), "newline", "★Ctrl+J 换行★");
+  eq(R.newlineKey({ name: "enter", sequence: "\n" }, 20), "crlf-tail", "★回车后紧跟的 \\n 是 \\r\\n 的尾巴★ 当成 Ctrl+J 会多出一行空的");
+  eq(R.newlineKey({ name: "enter", sequence: "\n" }, 20, 10), "newline", "crlfDelay 可调：超了窗口就是真的 Ctrl+J");
+  eq(R.newlineKey({ name: "return", sequence: "\r" }, 0), "", "★（反向对照）光回车不是换行★ 不然回车永远发不出去");
+  eq(R.newlineKey({ name: "a", sequence: "a" }, 0), "", "普通字不是换行");
+  eq(R.newlineKey(null, 0), "", "空的不崩");
+
+  eq(R.composeText(["第一行", "第二行"], "第三行"), "第一行\n第二行\n第三行", "攒着的几行 + 输入行 = 整段");
+  eq(R.composeText([], "单行"), "单行", "没攒 = 就是那一行");
+  eq(R.composeText(null, null), "", "空的不崩");
+  const sp = R.splitComposed("甲\r\n乙\r丙");
+  ok(sp.above.length === 2 && sp.above[0] === "甲" && sp.above[1] === "乙" && sp.line === "丙", "★\\r\\n、单个 \\r 都算换行★ 最后一行进输入行", sp);
+  eq(R.splitComposed("一行").above.length, 0, "一行的不攒");
+  for (const t of ["a\n\nb", "x\n", "\tindent\n  y", ""]) {
+    const q = R.splitComposed(t);
+    eq(R.composeText(q.above, q.line), t, "★拆开再合回去一字不差★ " + JSON.stringify(t));
+  }
+
+  const eight = Array.from({ length: 8 }, (_, i) => "r" + i);
+  eq(R.echoRows(eight, 8).length, 8, "八行以内全印");
+  const many = R.echoRows(Array.from({ length: 200 }, (_, i) => "r" + i), 8);
+  ok(many.length === 8 && many[6] === "r6" && /还有 193 行，都收下了/.test(many[7]), "★粘两百行只印头几行 + 一句还有多少★ 行数对得上（7 + 193 = 200）", many.slice(-2));
+  eq(R.echoRows(Array.from({ length: 9 }, () => "x")).length, 8, "不给上限默认 8");
+
+  eq(R.historyLine("第一行\n  第二行\r\n第三行 "), "第一行 第二行 第三行", "★进历史压成一行★ 历史文件一行一条，不压的话 ↑ 翻回来只剩第一行");
+  const hr = R.historyRows(["甲 乙", "丙", "甲 乙", "/exit", "", "  "], { full: ["甲\n乙"] });
+  ok(hr.length === 2 && hr[0].text === "甲\n乙" && hr[1].text === "丙", "★同一句只留一条；这个会话里的多行原话换回带换行的原样★ /exit 和空的不进单子", hr);
+  ok(hr[0].label === "甲 乙" && hr[0].hay === "甲 乙", "单子上显示的、拿来筛的都是压成一行的", hr[0]);
+  eq(R.historyRows(["a", "b", "c"], { max: 2 }).length, 2, "有上限");
+  const long = R.historyRows(["字".repeat(80)])[0];
+  ok(long.label.length === 57 && long.label.endsWith("…") && long.text.length === 80, "长的单子上截短，放回去的是全文", long.label.length);
+  eq(R.historyRows(null).length, 0, "空的不崩");
+
+  eq(R.kCount(0), "0", "0");
+  eq(R.kCount(999), "999", "不到一千原样");
+  eq(R.kCount(1000), "1k", "★整千不带 .0★");
+  eq(R.kCount(8400), "8.4k", "8.4k");
+  eq(R.kCount(12345), "12.3k", "12.3k");
+  eq(R.kCount(99949), "99.9k", "99.9k");
+  eq(R.kCount(123456), "123k", "★十万往上不要小数★");
+  eq(R.kCount(-5), "0", "负数当 0");
+  eq(R.kCount("abc"), "0", "不是数当 0");
+
+  eq(R.tickSuffix({ secs: 12, tokens: 8400, stop: "Esc" }), " · 12s · 8.4k tokens · Esc 停", "★跑着的那一行：用了多久 · 花了多少 · 怎么停★");
+  eq(R.tickSuffix({ secs: 75, stop: "Ctrl+C" }), " · 1m15s · Ctrl+C 停", "过一分钟写成 1m15s");
+  eq(R.tickSuffix({ secs: 3, tokens: 0 }), " · 3s", "★token 没报上来就不写★ 不是 0，是还没记过；stop 空 = 收尾定格");
+  eq(R.tickSuffix({}), " · 0s", "空的不崩");
+
+  const help = R.helpText();
+  ok(/Ctrl\+J/.test(help) && /Option\+回车/.test(help) && /行尾 \\ 再回车/.test(help), "★/help 写着三种换行★ 不写 = 人只会以为回车就是发", help);
+  ok(/Ctrl\+G/.test(help) && /Ctrl\+R/.test(help), "/help 写着编辑器和搜历史");
+  ok(/粘进来的多行不会自己发出去/.test(help), "★/help 说清楚粘进来的不自己发★");
+  ok(/Esc 或 Ctrl\+C 停这趟活儿/.test(help), "/help 写着 Esc 能停");
+
+  const src = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
+  const tty = src.split("rl._ttyWrite = (ch, key) =>")[1] || "";
+  const hook = tty.slice(0, tty.indexOf("\n    };\n"));
+  const at = (needle) => hook.indexOf(needle);
+  const iPaste = at('k.name === "paste-start"'), iTab = at('k.name === "tab" && k.shift'), i菜 = at("menuState.items.length");
+  ok(hook.length > 1000 && iPaste >= 0 && iPaste < iTab && iPaste < i菜, "★括号粘贴排在 Shift+Tab 和菜单前面★ 粘进来的 Tab、回车不能被当成按键", { iPaste, iTab, i菜 });
+  ok(at("keyGrab") >= 0 && at("keyGrab") < iPaste && at("picker.on") < iPaste, "审批单子、选择器开着的时候整场归它们，粘贴也不抢");
+  const pb = hook.slice(iPaste, iTab);
+  ok(/if \(pasting\) \{[\s\S]*?paste-end[\s\S]*?takePaste\(pbuf\)[\s\S]*?pbuf \+=[\s\S]*?return;/.test(pb), "★粘的时候按键都进 pbuf，不进 readline★ 里头的回车不是「发出去」", pb.slice(0, 400));
+  ok(/k\.ctrl && k\.name === "c"/.test(pb) && /takePaste\(""\)/.test(pb), "粘到一半按 Ctrl+C：那块不要了，Ctrl+C 照常往下走");
+
+  const escBusy = (hook.match(/if \(k\.name === "escape" && inbox\.busy[^\n]*/) || [""])[0];
+  ok(/!pendingAsk/.test(escBusy) && /!rl\.line/.test(escBusy) && /!multi\.length/.test(escBusy), "★跑着按 Esc 停这趟，但在等回答、在打字、攒着几行时不抢★", escBusy);
+  ok(/stopSoft\(\)/.test(escBusy) && !/stopCurrent|process\.exit/.test(escBusy), "★Esc 走软停，不退出★", escBusy);
+  ok(at(escBusy) > i菜, "Esc 排在菜单后面：菜单开着时第一下 Esc 是收菜单");
+  const soft = (src.split("stopSoft = () =>")[1] || "").slice(0, 400);
+  ok(/ctrl\.abort\(\)/.test(soft) && /按了 Esc/.test(soft) && /Ctrl\+C 强退/.test(soft), "stopSoft 真停这一趟，并告诉人卡住了怎么强退", soft);
+
+  const iNl = at("repl.newlineKey(k"), iRet = at('k.name === "return" && !k.meta'), iLast = hook.lastIndexOf("ttyWriteOrig(ch, key);");
+  ok(iNl > i菜 && iRet > iNl && iLast > iRet, "换行键、回车续行都在菜单之后、交给 readline 之前", { iNl, iRet, iLast });
+  ok(/nk === "crlf-tail"\) \{ if \(!lastReturn\.ours\) ttyWriteOrig/.test(hook), "★\\r\\n 的尾巴：回车是这边接的就吞掉★ 不吞的话续行/发完会多出一行空的");
+  const ret = hook.slice(iRet, iRet + 600);
+  ok(/repl\.continuedLine\(rl\.line, rl\.cursor\)/.test(ret) && /holdRow\(cont, cont\)/.test(ret), "行尾 \\ 回车：去掉 \\ 攒起来");
+  ok(/if \(multi\.length\) \{ lastReturn\.ours = true; submitComposed\(\); return; \}/.test(ret), "★攒着几行时回车 = 整段发出去★");
+  const iD = at('k.ctrl && k.name === "d" && !rl.line && multi.length');
+  ok(iD > 0 && iD < iLast && /dropComposed\(\)/.test(hook.slice(iD, iD + 120)), "★攒着几行时 Ctrl+D 只扔这段★ 交给 readline 会当成关掉整个程序");
+  ok(/k\.ctrl && k\.name === "r" && !inbox\.busy && !multi\.length\) \{ void searchHistory\(\)/.test(hook), "Ctrl+R 搜历史：跑着、攒着几行时不弹");
+  ok(/k\.ctrl && k\.name === "g" && !inbox\.busy\) \{ openEditor\(\)/.test(hook), "Ctrl+G 开编辑器：跑着时不开");
+
+  ok(/const pasteMode = !!ttyWriteOrig && !!process\.stdin\.isTTY && !!process\.stdout\.isTTY;/.test(src), "★装不上按键钩子就不开括号粘贴★ 开了没人拆包，200~ 会原样进输入行");
+  ok(/process\.on\("exit", \(\) => \{ try \{ process\.stdout\.write\(PASTE_OFF\); \} catch \{\} \}\)/.test(src), "★退出时关掉括号粘贴★ 不关的话回到 shell 里粘贴会多出 200~");
+
+  const ed = (src.split("function openEditor()")[1] || "").slice(0, 3200);
+  ok(/finally \{[\s\S]*?setRawMode\(true\)[\s\S]*?rl\.resume\(\)[\s\S]*?rmSync\(/.test(ed), "★编辑器怎么退出都把终端还回原样、删掉临时文件★", ed.slice(0, 200));
+  ok(/mode: 0o600/.test(ed), "临时文件只有自己能读：里头可能是没发出去的需求");
+  ok(/loadComposer\(got === null \? cur : got\)/.test(ed), "★编辑器没用上（非零退出、打不开）原来打的字还在★");
+  ok(/process\.on\("SIGINT", hush\)/.test(ed), "编辑器里按 Ctrl+C 不会连带把 openworkbuddy 关掉");
+
+  const sig = (src.split('rl.on("SIGINT", () => {')[1] || "").slice(0, 600);
+  const iBusy = sig.indexOf("inbox.busy"), iMulti = sig.indexOf("if (multi.length) { dropComposed();"), iLine = sig.indexOf("if (rl.line)");
+  ok(iBusy >= 0 && iMulti > iBusy && iLine > iMulti, "★Ctrl+C：跑着先停活儿，攒着几行就扔这段，都不退出★", { iBusy, iMulti, iLine });
+
+  const sub = (src.split("function submitComposed()")[1] || "").slice(0, 700);
+  ok(/repl\.historyLine\(text\)/.test(sub) && /inbox\.line\(text\)/.test(sub), "整段进历史压成一行，发出去的是带换行的原样");
+  ok(/if \(multi\.length\) reshowHeld\(\);/.test(src), "★跑完回来还攒着几行（跑着时打的）就重印一遍★ 不印的话人看不见自己打过什么");
+  ok(/typed: repl\.composeText\(multi, rl\.line\)/.test(src), "Shift+Tab 进计划模式时看的是整段，不只是输入行那一截");
+
+  const mk = (src.split("function makeEmit(")[1] || "").slice(0, 1800);
+  ok(/if \(ev\.type === "step_usage"\) return;/.test(mk), "★--json 不多出 step_usage★ 那是终端走字用的，接 json 的脚本不认识");
+  ok(/const prog = \(s\) => \{ if \(!opts\.quiet && !opts\.json\) \{ tickSettle\(\);/.test(src) && /const answer = \(s\) => \{ if \(!opts\.json\) \{ tickSettle\(\);/.test(src), "★往终端写东西之前先把走字那行定格★ 不定格的话下一次重画会把正文盖掉");
+  const agentSrc = fs.readFileSync(path.join(ROOT, "agent.js"), "utf8");
+  ok(/if \(depth === 0\) emit\(\{ type: "step_usage"/.test(agentSrc), "只报主线的用量：子任务的另算，混进来数字会跳");
 }
 
 console.log("\n【会话花了多少：/status /cost】");

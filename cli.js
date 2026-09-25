@@ -69,6 +69,8 @@ const cliApprove = require("./cli-approve"); // 危险操作求批准时，终�
 const security = require("./security"); // 审批是它发起的；命令行订它的钩子才知道有人正等着点头
 const cliLive = require("./cli-live"); // 把这趟活儿播给网页/手机：看得见、插得上话
 const termImage = require("./term-image"); // 终端里直接把产出的图画出来 + /open 交给系统程序
+const replKit = require("./repl-commands"); // 输入行那几样纯逻辑：多行、搜历史、跑着时那一行的尾巴
+const { cols } = require("./text-width"); // 中文占两列：原地重画那一行要算得出它多宽
 const account = require("./account");
 const store = require("./store");
 
@@ -98,9 +100,57 @@ const bold = (s) => (ttyErr ? `\x1b[1m${s}\x1b[0m` : s);
 /** 进度/诊断：一律 stderr，且 --quiet / --json 下彻底闭嘴 */
 // 往终端印过几回。「● 工具」那行跟它的「└ 结果」之间只要插进过别的东西（审批单、提示、正文），结果前就得把调用行再印一遍
 let inkSeq = 0;
-const prog = (s) => { if (!opts.quiet && !opts.json) { inkSeq++; process.stderr.write(s); } };
+const prog = (s) => { if (!opts.quiet && !opts.json) { tickSettle(); inkSeq++; process.stderr.write(s); } };
 /** 模型的回答：stdout，--json 下改走事件流 */
-const answer = (s) => { if (!opts.json) { inkSeq++; process.stdout.write(s); } };
+const answer = (s) => { if (!opts.json) { tickSettle(); inkSeq++; process.stdout.write(s); } };
+/** 不走 prog 的那几处（-q / --json 下也得说的话、审批单、提问单）：照样先把走字那行定格、照样记一笔 */
+const inkRaw = (s) => { tickSettle(); inkSeq++; process.stderr.write(s); };
+
+// ---------- 跑着的时候那一行 ----------
+// 「· 第 3 步 思考中… · 12s · 8.4k tokens · Esc 停」：最后印的那行（想、或者一个工具）后面挂一截，每秒原地重画。
+// 模型想半分钟、npm test 跑两分钟，屏幕上一动不动，人分不清是在干活还是挂了，也不知道怎么停。
+// 原地重画靠的是「光标还在那一行上」：所以只认最后印的那一行（inkSeq 没动过），它自己重画不算印过；
+// 别的东西一来（prog / answer / inkRaw）先把这行定格成「· 12s」再让路。整行放不下、窗口改过宽、
+// 人在输入行上打着字、审批单摆着，一律不画——宁可不走字，也不能把别的行擦了
+const tick = { render: null, t0: 0, seq: -1, cols: 0, tokens: 0, stop: "Ctrl+C", drawn: false };
+/** 输入行上有没有人在打字（交互模式装上）。有的话那行就是他的字，别往上画 */
+let typingNow = () => false;
+/** 刚印完一行，从这会儿开始计时。render(可用列数) 给画好的那行，放不下给 null */
+function tickArm(render, fits) {
+  tick.render = fits ? render : null;
+  tick.t0 = Date.now();
+  tick.seq = inkSeq;
+  tick.cols = process.stderr.columns || 80;
+  tick.drawn = false;
+}
+function tickPaint(opt) {
+  if (!tick.render || tick.seq !== inkSeq || (process.stderr.columns || 80) !== tick.cols) return false;
+  const suffix = replKit.tickSuffix(opt);
+  const head = tick.render(termWidth() - cols(suffix) - 1); // 再留一列：● 在有的终端里占两格
+  if (!head) return false;
+  process.stderr.write("\r\x1b[2K" + head + dim(suffix));
+  return true;
+}
+function tickDraw() {
+  if (!tick.render || tick.seq !== inkSeq || keyGrab || typingNow()) return;
+  const secs = (Date.now() - tick.t0) / 1000;
+  if (secs < 2) return; // 一眨眼就完的步骤不挂尾巴，屏幕上少一半噪音
+  // 放不下就先丢 token、再丢「Esc 停」，最后只剩秒数
+  for (const o of [{ secs, tokens: tick.tokens, stop: tick.stop }, { secs, stop: tick.stop }, { secs }]) {
+    if (tickPaint(o)) { tick.drawn = true; return; }
+  }
+}
+/** 定格：「Esc 停」那截只在跑着的时候有意义，留在翻上去的记录里就是句过期的话 */
+function tickSettle() {
+  if (!tick.drawn) return;
+  tick.drawn = false;
+  if (!typingNow()) tickPaint({ secs: (Date.now() - tick.t0) / 1000 });
+}
+/** 人开始在那一行上打字了：定格、这一行不再走字（下一步 / 下一个工具重新起） */
+function tickPause() {
+  tickSettle();
+  tick.render = null;
+}
 /** 机器可读事件流 */
 const emitJson = (o) => { if (opts.json) process.stdout.write(JSON.stringify(o) + "\n"); };
 /**
@@ -686,6 +736,8 @@ function makeEmit(state) {
     // 先播给网页/手机，再管终端怎么显示：这两件事互不相干，哪边坏了都不该拖累另一边
     if (state.live) state.live.event(ev);
     if (opts.json) {
+      // step_usage 只是给终端那行走字用的，整趟的用量照旧在收尾那条 usage 里——--json 的事件表不多出一种
+      if (ev.type === "step_usage") return;
       // 事件原样出去，只把 files 这类大字段留给调用方自己挑
       emitJson(ev);
       if (ev.type === "text" && ev.depth === 0) state.finalParts.push(ev.delta);
@@ -704,8 +756,14 @@ function makeEmit(state) {
       state.finalParts.push(text); // 记的是**原文**：会话存盘、收尾判断都按原文来，渲染只是给眼睛看的一层
       answer(state.md ? state.md.write(text) : text);
     } else if (ev.type === "step_start") {
-      if (ev.depth === 0) prog(dim(`\n· 第 ${ev.step} 步 思考中…`));
+      if (ev.depth === 0) {
+        const head = `· 第 ${ev.step} 步 思考中…`;
+        prog(dim("\n" + head));
+        tickArm((room) => (cols(head) <= room ? dim(head) : null), cols(head) <= termWidth());
+      }
       state.streamed = false;
+    } else if (ev.type === "step_usage") {
+      tick.tokens = (Number(ev.prompt) || 0) + (Number(ev.completion) || 0);
     } else if (ev.type === "parallel") {
       // 子智能体里的那一批也带上是谁：几个探索并发时，光一句「3 个只读工具并发」分不清是哪个的
       const who = ev.depth > 0 && ev.expert ? `${ev.expert} · ` : "";
@@ -721,6 +779,11 @@ function makeEmit(state) {
       prog("\n" + toolView.callLine(ev, { width: termWidth(), paint: toolPaint }));
       state.lastTool = { id: ev.id, seq: inkSeq };
       state.streamed = false;
+      // 主线上的工具才走字：专家那几行交错着来，挂在谁后面都说不清
+      if (!ev.depth) {
+        const fit = (w) => cols(toolView.callLine(ev, { width: w })) <= w;
+        tickArm((room) => (fit(room) ? toolView.callLine(ev, { width: room, paint: toolPaint }) : null), fit(termWidth()));
+      }
     } else if (ev.type === "ask_user") {
       // 单子马上要画了：记下是哪一次调用，它的结果回来时就不再印一遍。几个专家同时问的话按题目认
       const q = String(ev.question || "");
@@ -920,7 +983,7 @@ async function drawOutputs(files) {
     if (!png || !png.length) continue;
     // 宽度按终端宽来，留两列边距；终端宽度读不到就按 80 算
     const cols = Math.max(20, Math.min(60, ((process.stderr.columns || 80) - 2)));
-    process.stderr.write(dim(`▪ ${name}\n`) + termImage.encode(cap.proto, png, { name, cols }));
+    inkRaw(dim(`▪ ${name}\n`) + termImage.encode(cap.proto, png, { name, cols }));
     drawn.push(name);
   }
   return drawn;
@@ -951,6 +1014,11 @@ function hintOutputs(made, drawn, interactive) {
 // ---------- 执行一轮任务（Ctrl+C 停止当前任务而不是直接退出） ----------
 /** 任务跑着的时候 = 停它的那个函数，空闲时 = null。交互模式的 Ctrl+C 从这儿调进去 */
 let stopCurrent = null;
+/**
+ * 交互模式按 Esc：只停这一趟，按几下都不会变成「直接退出」。
+ * 不能拿 stopCurrent 顶：那是 Ctrl+C 的把手，第二下就是硬退——Esc Esc 连按一下子就把整个程序关了
+ */
+let stopSoft = null;
 /** 终端里打的插话，下一步交给 agent。跟网页/手机上补的那句合并成一份 */
 const termInterject = [];
 /**
@@ -975,6 +1043,8 @@ let replRl = null;
 const promptKeep = (rl) => { rl.cursor = rl.line.length; rl.prompt(true); };
 /** 手机上先答了的时候，把终端这边那个还挂着的提示符撤掉 @type {null | (() => void)} */
 let cancelAsk = null;
+/** 交互模式装上：攒着没发的那几行（多行输入、粘到一半的）一并扔掉。别处答了题的时候用 */
+let composerClear = () => {};
 /** 此刻占着终端那个提示符的是哪道题。撤提示符之前得认一下，别把正等着的另一道题连坐撤掉 */
 let askOwner = null;
 /** 当前这趟活儿的现场：Ctrl+C 信号、交互还是单发。等回答的几处都要用 @type {null|{ctrl: AbortController, onSigint: () => void, interactive: boolean}} */
@@ -1096,9 +1166,10 @@ function termReadLine(promptText, timeoutMs) {
     cancelAsk = () => {
       // 别处（手机、网页上的审批卡）已经答了：终端里打了一半的那句是这道题的答案，不是下一条任务。
       // 留在 rl.line 里的话，任务一跑完它就跟着提示符回来，人再敲一个字、回车，就当新任务发出去了
-      if (!settled && ctx && ctx.interactive && replRl && replRl.line) {
+      if (!settled && ctx && ctx.interactive && replRl && (replRl.line || typingNow())) {
         replRl.line = "";
         replRl.cursor = 0;
+        composerClear(); // 攒着的那几行也是这道题的答案，一样不能留到下一条任务里
         prog(dim("\n  （终端里打了一半的那句没发出去）\n"));
       }
       finish(null);
@@ -1254,8 +1325,7 @@ async function handleApproval(entry) {
     const flag = security.allowFlagArg(entry.ruleKey);
     const what = [entry.rule, entry.seg].filter(Boolean).join("：");
     // 不走 prog：-q、--json 下这句也得有人看见——活儿少干了一步，不能一声不吭
-    inkSeq++;
-    process.stderr.write(yellow(`  ✗ 这一步要人批准，终端前没人，直接拒了（${what.slice(0, 120)}）\n`) +
+    inkRaw(yellow(`  ✗ 这一步要人批准，终端前没人，直接拒了（${what.slice(0, 120)}）\n`) +
       dim(`    ${flag ? `预先放行这类：--allow ${flag}；` : ""}从手机上批：加 --ask-remote\n`));
     return;
   }
@@ -1266,7 +1336,7 @@ async function handleApproval(entry) {
   let v = null;
   try {
     v = await cliApprove.run(entry, {
-      write: (x) => { inkSeq++; process.stderr.write(x); },
+      write: inkRaw,
       readLine: (promptText, ms) => raceRemote(entry.id, () => termReadLine(promptText, ms), fromPhone),
       pick: canPickByKey() ? (p, ms) => raceRemote(entry.id, () => termPick(p, ms), fromPhone) : undefined,
       timeoutMs,
@@ -1311,7 +1381,7 @@ function makeAskUser(readLine, pick) {
   // 两处都 pend 的话，同一道题会在手机上并排出现两张卡、各带一个 id，
   // 而 agent 只认 askUserBoth 那个 id——点另一张的人会发现点了没反应。
   return async (ask) => cliAsk.run(ask, {
-    write: (x) => { inkSeq++; process.stderr.write(x); },
+    write: inkRaw,
     readLine: (promptText, deadline) => readLine(promptText, deadline),
     pick,
     width: (process.stderr.columns || 80) - 2,
@@ -1394,6 +1464,11 @@ async function runOnceIn(runtime, text, mode, interactive, shown) {
   // 心跳：模型想得久的时候一个事件都不出，光靠事件盖时间戳会被判成「这进程死了」
   const beatTimer = live.live ? setInterval(() => live.beat(), cliLive.BEAT_MS) : null;
   if (beatTimer && beatTimer.unref) beatTimer.unref();
+  // 那一行的走字：stderr 是终端才有；-q / --json 下没有进度行可挂
+  tick.tokens = 0;
+  tick.stop = interactive && replKeyHook ? "Esc" : "Ctrl+C";
+  const tickTimer = process.stderr.isTTY && !opts.quiet && !opts.json ? setInterval(tickDraw, 1000) : null;
+  if (tickTimer && tickTimer.unref) tickTimer.unref();
   const ctrl = new AbortController();
   let aborted = false;
   // 硬退出：第二次 Ctrl+C、关终端窗口（SIGHUP）、被 kill（SIGTERM）。进程下一刻就没了，等不到各自的 close 回调。
@@ -1422,7 +1497,7 @@ async function runOnceIn(runtime, text, mode, interactive, shown) {
     if (aborted) {
       // 第二次：不等了。收尾还是要做——MCP 那几个子进程是 spawn 出来的，
       // 不收就留在系统里，下次启动还会再起一批
-      process.stderr.write(yellow("\n（不等了，直接退出）\n"));
+      inkRaw(yellow("\n（不等了，直接退出）\n"));
       hardExit(130);
       return;
     }
@@ -1436,6 +1511,12 @@ async function runOnceIn(runtime, text, mode, interactive, shown) {
   process.on("SIGHUP", onHup);
   process.on("SIGTERM", onTerm);
   stopCurrent = onSigint;
+  stopSoft = () => {
+    if (aborted) return; // 已经在停了：再按 Esc 什么也不多做
+    aborted = true;
+    prog(yellow("\n（按了 Esc，这一趟正在停下…卡住了按 Ctrl+C 强退）\n"));
+    ctrl.abort();
+  };
   // 等回答的那几处（提问、审批）要用到这一趟的 Ctrl+C 信号和实时句柄
   askCtx = { ctrl, onSigint, interactive: !!interactive };
   liveNow = live;
@@ -1539,16 +1620,20 @@ async function runOnceIn(runtime, text, mode, interactive, shown) {
    }
   } catch (e) {
     state.error = e.message;
-    process.stderr.write(red(`\n出错了：${e.message}\n`));
+    inkRaw(red(`\n出错了：${e.message}\n`));
   }
   process.removeListener("SIGINT", onSigint);
   process.removeListener("SIGHUP", onHup);
   process.removeListener("SIGTERM", onTerm);
   stopCurrent = null;
+  stopSoft = null;
   offApproval();
   askCtx = null;
   liveNow = null;
   if (beatTimer) clearInterval(beatTimer);
+  if (tickTimer) clearInterval(tickTimer);
+  tickSettle();
+  tick.render = null;
   live.finish({ error: state.error, title: sess.title });
   // --json 下正文没走 stdout，最终文本从事件里攒回来，落盘的内容两种模式必须一样
   if (!finalText && state.finalParts.length) finalText = state.finalParts.join("");
@@ -1947,7 +2032,7 @@ function splitFiles(text) {
     const all = Array.isArray(rows) ? rows : [];
     if (!all.length) return Promise.resolve(null);
     return new Promise((done) => {
-      let q = "";
+      let q = typeof opt.q === "string" ? opt.q : ""; // Ctrl+R：输入行上已经打的字直接当搜索词
       let sel = 0;
       const paint = () => {
         pickerErase();
@@ -2091,13 +2176,16 @@ function splitFiles(text) {
   // 而人看不见抹了什么。要重来就开 /new，要接回去就 /resume，两条路都在明面上。
   let escArmed = 0;
   async function reEditLast() {
+    // shown 优先：拼了 !命令 输出的那几条，text 是给模型看的全文，放回来的该是人自己打的那句
     const msgs = (sess.transcript || [])
-      .filter((t) => t && t.type === "user" && String(t.text || "").trim());
+      .map((t) => (t && t.type === "user" ? String(t.shown || t.text || "").replace(/\s+$/, "") : ""))
+      .filter((x) => x.trim());
     if (!msgs.length) { sayAbove(dim("这个会话还没问过什么，没得改\n")); return; }
-    if (!pickerUsable()) { sayAbove(dim(`上次问的是：${String(msgs[msgs.length - 1].text).replace(/\s+/g, " ").slice(0, 60)}\n`)); return; }
-    const rows = msgs.slice(-40).reverse().map((t, i) => {
-      const text = String(t.text).replace(/\s+/g, " ").trim();
-      return { id: String(i), label: text.length > 56 ? text.slice(0, 56) + "…" : text, meta: "", hay: text, text };
+    if (!pickerUsable()) { sayAbove(dim(`上次问的是：${msgs[msgs.length - 1].replace(/\s+/g, " ").slice(0, 60)}\n`)); return; }
+    const rows = msgs.slice(-40).reverse().map((full, i) => {
+      const text = full.replace(/\s+/g, " ").trim();
+      // 单子上压成一行好认，放回去的是原样——多行的还是原来那几行
+      return { id: String(i), label: text.length > 56 ? text.slice(0, 56) + "…" : text, meta: "", hay: text, text: full };
     });
     try {
       readline.cursorTo(process.stdout, 0);
@@ -2105,7 +2193,188 @@ function splitFiles(text) {
     } catch { menuState.dead = true; }
     const picked = await chooseFrom(rows, { title: "openworkbuddy> 把哪一句放回去改？", verb: "放回输入行", hint: "打字就筛你问过的话" });
     try { rl.prompt(true); } catch { menuState.dead = true; }
-    if (picked) rl.write(picked.text);
+    if (picked) loadComposer(picked.text);
+    menuDraw();
+  }
+
+  // ---- 多行输入 ----
+  // 回车 = 发出去。想先换行：行尾 \ 再回车、Ctrl+J、Option+回车、Shift+回车（终端分得出来时）。
+  // 粘进来的多行（终端支持括号粘贴时）整块收下、不自己发：看一眼、改两个字再回车——Codex / Claude Code 都是这样。
+  // 换过去的行留在屏幕上、存在 multi 里，readline 只管最后正在打的那一行：
+  // 往 readline 那一行里塞 "\n" 的话，Node 25 交出来的是倒过来、拿 \r 连起来的两行
+  const CONT = ttyErr ? "\x1b[2m  ... \x1b[0m" : "  ... ";
+  const ECHO_MAX = 8;
+  const PASTE_ON = "\x1b[?2004h";
+  const PASTE_OFF = "\x1b[?2004l";
+  // 终端把「粘贴结束」那个标记弄丢了（少见，可丢了的话之后打的每个字都被当成粘贴吞掉）：停手这么久就当粘完了
+  const PASTE_IDLE_MS = 1500;
+  const multi = [];
+  let composeFrom = PROMPT; // 开始攒行之前的提示符：发出去 / 不要了就换回它（跑着时是空的，等回答时是「答>」）
+  let pasting = false, pbuf = "", pasteAt = 0, pasteGuard = null;
+  const lastReturn = { at: 0, ours: false };
+  typingNow = () => !!rl.line || multi.length > 0 || pasting;
+  composerClear = () => { multi.length = 0; pasting = false; pbuf = ""; if (rl.getPrompt() === CONT) rl.setPrompt(composeFrom); };
+  /** 进输入行的那一行：Tab 换成两个空格（readline 算光标不认 Tab），控制字符去掉 */
+  const inlineSafe = (x) => String(x).replace(/\t/g, "  ").replace(/[\x00-\x08\x0a-\x1f\x7f]/g, "");
+  /** 攒着、印出来的行：Tab 留着（代码的缩进要原样带给模型），别的控制字符去掉 */
+  const showSafe = (x) => String(x).replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
+
+  /** 把输入行这一行（换成 shown 的样子）定在屏幕上，光标落到下一行，接着在「  ... 」后面打 */
+  function holdRow(shown, kept) {
+    menuClose();
+    if (!multi.length) composeFrom = rl.getPrompt();
+    rl.line = shown;
+    rl.cursor = shown.length;
+    try { rl.prompt(true); rl.clearLine(); } catch { menuState.dead = true; }
+    multi.push(kept);
+    rl.setPrompt(CONT);
+  }
+  /** 印几行攒着的（粘进来的中间那些）：一次粘两百行不全印，头几行 + 一句还有多少 */
+  function echoHeld(rows, lead) {
+    const shown = repl.echoRows(rows.map(showSafe), ECHO_MAX);
+    if (shown.length) process.stdout.write(shown.map((r, i) => (i === 0 && lead ? lead : CONT) + r).join("\n") + "\n");
+  }
+  function endCompose() {
+    multi.length = 0;
+    if (rl.getPrompt() === CONT) rl.setPrompt(composeFrom);
+  }
+  /** 攒着的几行 + 输入行这一行，整段发出去 */
+  function submitComposed() {
+    const text = repl.composeText(multi, rl.line).replace(/\s+$/, "");
+    menuClose();
+    try { rl.clearLine(); } catch { menuState.dead = true; }
+    endCompose();
+    // readline 自己只记单行；整段压成一行进历史，↑ 翻回来是整段话而不是最后那一行
+    const h = repl.historyLine(text);
+    if (h && h.length <= 2000 && Array.isArray(rl.history)) {
+      const at = rl.history.indexOf(h);
+      if (at >= 0) rl.history.splice(at, 1);
+      rl.history.unshift(h);
+      if (rl.history.length > repl.HISTORY_MAX) rl.history.length = repl.HISTORY_MAX;
+    }
+    rl.historyIndex = -1;
+    inbox.line(text);
+  }
+  /** Ctrl+C / 空行上 Ctrl+D：攒着的这段不要了。屏幕上印过的擦不回去，说一句 */
+  function dropComposed() {
+    rl.line = "";
+    rl.cursor = 0;
+    try { rl.prompt(true); } catch { menuState.dead = true; }
+    endCompose();
+    sayAbove(dim("（上面那几行没发，不要了）\n"));
+  }
+  /** 在光标这儿断开：前半截定在屏幕上，后半截带到下一行接着打 */
+  function splitHere() {
+    const before = rl.line.slice(0, rl.cursor);
+    const after = rl.line.slice(rl.cursor);
+    holdRow(before, before);
+    rl.line = after;
+    rl.cursor = 0;
+    try { rl.prompt(true); } catch { menuState.dead = true; }
+  }
+  /** 一整块粘完了：一行的插在光标处；多行的前面几行攒着，最后一行留在输入行上，光标停在粘进来的末尾 */
+  function takePaste(raw) {
+    pasting = false;
+    pbuf = "";
+    if (pasteGuard) { clearTimeout(pasteGuard); pasteGuard = null; }
+    const t = String(raw || "").replace(/\r\n?/g, "\n").replace(/\n+$/, "");
+    if (!t) return;
+    if (!t.includes("\n")) { rl.write(inlineSafe(t)); return; }
+    const before = rl.line.slice(0, rl.cursor);
+    const after = rl.line.slice(rl.cursor);
+    const rows = t.split("\n").map(showSafe);
+    const tail = rows.pop();
+    const head = rows.shift();
+    holdRow(before + inlineSafe(head), before + head);
+    if (rows.length) { echoHeld(rows); multi.push(...rows); }
+    rl.line = inlineSafe(tail) + after;
+    rl.cursor = inlineSafe(tail).length;
+    try { rl.prompt(true); } catch { menuState.dead = true; }
+  }
+  function pasteWatch(ms) {
+    pasteGuard = setTimeout(() => {
+      const idle = Date.now() - pasteAt;
+      if (idle < PASTE_IDLE_MS) { pasteWatch(PASTE_IDLE_MS - idle); return; }
+      pasteGuard = null;
+      takePaste(pbuf);
+      menuDraw();
+    }, ms);
+    if (pasteGuard.unref) pasteGuard.unref();
+  }
+  /** 一段（可能多行的）字摆回输入框：前面几行攒着，最后一行进输入行，光标在末尾 */
+  function loadComposer(text) {
+    const { above, line } = repl.splitComposed(text);
+    const kept = above.map(showSafe);
+    if (kept.length) {
+      holdRow(inlineSafe(kept[0]), kept[0]);
+      if (kept.length > 1) { echoHeld(kept.slice(1)); multi.push(...kept.slice(1)); }
+    }
+    rl.line = inlineSafe(line);
+    rl.cursor = rl.line.length;
+    try { rl.prompt(true); } catch { menuState.dead = true; }
+  }
+  /** 跑着的时候攒了几行没发，正文把它们冲上去了：活儿跑完在新提示符上重摆一遍 */
+  function reshowHeld() {
+    try { readline.cursorTo(process.stdout, 0); readline.clearLine(process.stdout, 0); } catch { menuState.dead = true; }
+    echoHeld(multi, PROMPT);
+  }
+
+  // Ctrl+R：搜以前问过的话（跨会话存着的那份历史）。挑中了摆回输入框，多行的还是原来那几行
+  async function searchHistory() {
+    const full = (sess.transcript || []).filter((t) => t && t.type === "user").map((t) => String(t.shown || t.text || "").replace(/\s+$/, ""));
+    const rows = repl.historyRows(rl.history, { full });
+    if (!rows.length) { sayAbove(dim("还没有问过的话可搜\n")); return; }
+    if (!pickerUsable()) { sayAbove(dim("这台终端摆不了单子；↑↓ 一条条翻也一样\n")); return; }
+    const typed = rl.line;
+    rl.line = "";
+    rl.cursor = 0;
+    try { rl.prompt(true); readline.cursorTo(process.stdout, 0); readline.clearLine(process.stdout, 0); } catch { menuState.dead = true; }
+    const picked = await chooseFrom(rows, { title: "openworkbuddy> 搜以前问过的话", verb: "放回输入行", hint: "打几个字就筛", q: typed });
+    try { rl.prompt(true); } catch { menuState.dead = true; }
+    if (picked) loadComposer(picked.text);
+    else if (typed) { rl.line = typed; rl.cursor = typed.length; try { rl.prompt(true); } catch { menuState.dead = true; } }
+    menuDraw();
+  }
+
+  // Ctrl+G：拿 $VISUAL / $EDITOR 写这段话。长需求、要贴代码、要来回改的时候，终端这一行太窄了。
+  // 编辑器没正常退出（:cq、被杀、打不开）就不用它的：原来那段原样摆回来，照实说是怎么没的
+  function openEditor() {
+    const cur = repl.composeText(multi, rl.line);
+    const hadRows = multi.length > 0;
+    menuClose();
+    rl.line = "";
+    rl.cursor = 0;
+    try { rl.prompt(true); } catch { menuState.dead = true; }
+    endCompose();
+    const ed = process.env.VISUAL || process.env.EDITOR || (process.platform === "win32" ? "notepad" : "vi");
+    const hush = () => {}; // 编辑器在前台时 Ctrl+C 归它；万一信号打到这边，别把整个程序带走
+    let dir = "", got = null, why = "";
+    try {
+      dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-edit-"));
+      const file = path.join(dir, "prompt.md");
+      fs.writeFileSync(file, cur, { mode: 0o600 });
+      const q = process.platform === "win32" ? `"${file}"` : `'${file.replace(/'/g, "'\\''")}'`;
+      rl.pause();
+      process.on("SIGINT", hush);
+      try { process.stdin.setRawMode(false); } catch {}
+      process.stdout.write(PASTE_OFF);
+      const r = spawnSync(`${ed} ${q}`, { stdio: "inherit", shell: true });
+      if (r.error) why = `编辑器没打开（${ed}）：${r.error.message}`;
+      else if (r.signal) why = `编辑器被 ${r.signal} 停了（${ed}），没用它的`;
+      else if (r.status) why = `编辑器退出码 ${r.status}（${ed}），没用它的`;
+      else got = fs.readFileSync(file, "utf8").replace(/\r?\n$/, "");
+    } catch (e) {
+      why = `编辑器没用上：${e.message}`;
+    } finally {
+      try { process.stdin.setRawMode(true); } catch {}
+      if (pasteMode) process.stdout.write(PASTE_ON);
+      rl.resume();
+      setImmediate(() => process.removeListener("SIGINT", hush));
+      if (dir) { try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} }
+    }
+    if (why) sayAbove(yellow(why + "\n"));
+    else if (hadRows) sayAbove(dim("（上面那段拿去编辑器改了，改好的在下面）\n"));
+    loadComposer(got === null ? cur : got);
     menuDraw();
   }
 
@@ -2119,7 +2388,19 @@ function splitFiles(text) {
       const k = key || {};
       if (keyGrab) { keyGrab(ch, k); return; } // 审批单子摆着：按键全归它
       if (picker.on) { picker.key(ch, k); return; } // 选择器开着就整场归它，readline 一个键都收不到
+      // 跑着的时候一按键就把走字那行定格：人要在这一行上打字了，秒数再跳会把他的字冲掉
+      if (inbox.busy && tick.drawn) tickPause();
+      // 括号粘贴：整块先收着，粘完一次摆进输入框——里头的回车不是「发出去」
+      if (k.name === "paste-start") { pasting = true; pbuf = ""; pasteAt = Date.now(); if (!pasteGuard) pasteWatch(PASTE_IDLE_MS); return; }
+      if (pasting) {
+        if (k.name === "paste-end") { takePaste(pbuf); menuDraw(); return; }
+        if (!(k.ctrl && k.name === "c")) { pbuf += typeof ch === "string" ? ch : ""; pasteAt = Date.now(); return; }
+        takePaste(""); // 粘到一半按了 Ctrl+C：这块不要了，Ctrl+C 照常往下走
+      }
+      if (k.name === "paste-end") return; // 没头的结尾（等不及已经收过了）：丢掉
       if (k.name === "tab" && k.shift) { cyclePerm(); return; } // 得排在菜单之前，不然被当成补全的 Tab 吃掉
+      if (k.ctrl && k.name === "r" && !inbox.busy && !multi.length) { void searchHistory(); return; }
+      if (k.ctrl && k.name === "g" && !inbox.busy) { openEditor(); return; }
       if (menuState.items.length && !k.ctrl && !k.meta) {
         if (k.name === "up" || k.name === "down") {
           const n = menuState.items.length;
@@ -2139,25 +2420,47 @@ function splitFiles(text) {
           return;
         }
       }
+      const nk = repl.newlineKey(k, Date.now() - lastReturn.at);
+      // \r\n 那个 \n 尾巴：回车是这边接的（发出去 / 续行）就吞掉，不然交回 readline 让它自己按 crlfDelay 认
+      if (nk === "crlf-tail") { if (!lastReturn.ours) ttyWriteOrig(ch, key); return; }
+      if (nk === "newline") { splitHere(); menuDraw(); return; }
+      if (k.name === "return" && !k.meta) {
+        lastReturn.at = Date.now();
+        lastReturn.ours = false;
+        const cont = repl.continuedLine(rl.line, rl.cursor);
+        if (cont !== null) { lastReturn.ours = true; holdRow(cont, cont); try { rl.prompt(true); } catch { menuState.dead = true; } return; }
+        if (multi.length) { lastReturn.ours = true; submitComposed(); return; }
+      }
+      // 跑着的时候按 Esc：停这一趟，不退出。在等回答、在打字、攒着几行的时候不抢——那时候的 Esc 不是这个意思
+      if (k.name === "escape" && inbox.busy && !pendingAsk && !rl.line && !multi.length) { if (stopSoft) stopSoft(); return; }
       // Esc Esc 得认 sequence，不能靠掐表：Node 的 keypress 解码器会把连按的两下 ESC
       // 合成一个事件（sequence 是两个 \x1b），掐表那套永远等不到第二下。
       // 计时那条留着兜底——万一哪天 Node 改了实现，真发两个事件，这边照样认。
-      if (k.name === "escape" && !rl.line && !inbox.busy) {
+      if (k.name === "escape" && !rl.line && !multi.length && !inbox.busy) {
         const t = Date.now();
         if (k.sequence === "\x1b\x1b" || t - escArmed < 900) { escArmed = 0; void reEditLast(); return; }
         escArmed = t;
         return;
       }
+      if (k.ctrl && k.name === "d" && !rl.line && multi.length) { dropComposed(); return; } // 不然 readline 当成关掉整个程序
       if (k.name === "return" || k.name === "enter") menuClose(); // 回车前先擦干净，不然菜单会留在正文里
       ttyWriteOrig(ch, key);
       menuDraw();
     };
+  }
+  // 开括号粘贴：终端把粘进来的那块用 ESC[200~ … ESC[201~ 包起来，才分得出「粘的回车」和「按的回车」。
+  // 拦不住按键（没装上钩子）的时候不开：开了没人拆包，那两个标记会原样进输入行
+  const pasteMode = !!ttyWriteOrig && !!process.stdin.isTTY && !!process.stdout.isTTY;
+  if (pasteMode) {
+    process.stdout.write(PASTE_ON);
+    process.on("exit", () => { try { process.stdout.write(PASTE_OFF); } catch {} }); // 不关的话回到 shell 里粘贴会多出 200~
   }
 
   rl.on("SIGINT", () => {
     menuClose();
     if (shellKid) { stopShell(); return; } // !命令 跑着：停的是它
     if (inbox.busy) { if (stopCurrent) stopCurrent(); return; } // 停这趟活儿，不退出
+    if (multi.length) { dropComposed(); quitArmed = 0; return; } // 攒着几行没发：扔掉这段，别退出
     if (rl.line) { // 打了一半不想要了：清掉这行就行，别退出
       rl.write(null, { ctrl: true, name: "e" });
       rl.write(null, { ctrl: true, name: "u" });
@@ -2540,7 +2843,7 @@ function splitFiles(text) {
       if (r.kind === "empty") { prog(dim("剪贴板里没有能带进来的东西（复制的文件、截图、或者一大段文字）\n")); return; }
       if (r.kind === "text") {
         // 短的直接填进输入行让人接着改；几千字塞进一行，光标一动整个屏幕就乱了，所以长的存成文件
-        if (r.text.length <= attach.BIG_TEXT_CHARS) { rl.write(r.text.replace(/\r?\n/g, " ").trim()); return; }
+        if (r.text.length <= attach.BIG_TEXT_CHARS) { loadComposer(r.text.replace(/\r\n?/g, "\n").trim()); return; }
         const name = attach.freeName(dir, attach.stampName("粘贴文本", "txt"), new Set(), fs);
         try { fs.writeFileSync(path.join(dir, name), r.text); }
         catch (e) { prog(red(`存不下来：${e.message}\n`)); return; }
@@ -2566,7 +2869,7 @@ function splitFiles(text) {
     }
   };
 
-  prog(bold("OpenWorkBuddy CLI 交互模式") + dim("　/help 看命令 · 文件拖进来就带上 · 多行需求直接粘 · Ctrl+C 停当前这趟\n"));
+  prog(bold("OpenWorkBuddy CLI 交互模式") + dim("　/help 看命令 · 文件拖进来就带上 · 粘进来的多行回车才发 · Esc 停当前这趟\n"));
   let last = "ok";
   rl.prompt();
   for (;;) {
@@ -2607,7 +2910,7 @@ function splitFiles(text) {
       let 交出来的 = await runReplCommand(v);
       // 命令可以连模式一起交出来：/review 必须按只看不动跑，不管当前是哪个模式
       if (交出来的 && typeof 交出来的 === "object") { 这趟模式 = 交出来的.mode || opts.mode; 交出来的 = 交出来的.prompt; }
-      if (typeof 交出来的 !== "string" || !交出来的.trim()) { rl.prompt(); continue; }
+      if (typeof 交出来的 !== "string" || !交出来的.trim()) { promptKeep(rl); continue; } // /paste 摆回来的字，光标得在末尾
       现成的 = 交出来的;
       v = { kind: "task", text: 现成的 };
     }
@@ -2632,7 +2935,7 @@ function splitFiles(text) {
     inbox.setBusy(false);
     quitArmed = 0;
     // Plan 出完计划：摆「开干 / 接着改」让人挑，别让他自己去想下一步该敲什么
-    const 下一步 = repl.planNextMode({ mode: 这趟模式, result: last, usable: pickerUsable(), typed: rl.line });
+    const 下一步 = repl.planNextMode({ mode: 这趟模式, result: last, usable: pickerUsable(), typed: repl.composeText(multi, rl.line) });
     if (下一步 === "hint") prog(dim(repl.PLAN_NEXT_HINT));
     if (下一步 === "pick") {
       const picked = await chooseFrom(repl.planNextRows(), {
@@ -2648,7 +2951,9 @@ function splitFiles(text) {
         quitArmed = 0;
       } else if (picked) prog(dim("还在 Plan：下一句说哪儿要改\n"));
     }
-    rl.setPrompt(PROMPT);
+    composeFrom = PROMPT;
+    if (multi.length) reshowHeld(); // 跑着的时候攒了几行：正文把它们冲远了，摆回提示符上面
+    rl.setPrompt(multi.length ? CONT : PROMPT);
     promptKeep(rl); // 跑着的时候敲了没回车的字还在这一行上，接着打得接在后面
   }
   saveHistory();

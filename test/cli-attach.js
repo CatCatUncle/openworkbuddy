@@ -407,8 +407,14 @@ console.log("\n⑨ cli.js 接线：顺序和边界");
   has(/runOnce\(runtime, attach\.withNote\(oneShot, attachNames\), opts\.mode\)/, "单发那趟真把标记挂上去了");
   // 尾巴留成 [,)]：runOnce 后面还会加参数（比如「这趟是不是交互模式」），
   // 钉死右括号的话，加一个无关参数就会把这条假红一次
-  has(/runOnce\(runtime, attach\.withNote\(body, pending\.splice\(0\)\), (?:opts\.mode|这趟模式)[,)]/,
-    "★交互模式发出去时把攒着的文件一次性挂上并清空★ 不清空的话下一句话会再挂一遍同样的文件");
+  // 挂文件那一步可以先落到一个变量里（后面还要拼 !命令 的输出），但得是同一句、而且真进了 runOnce
+  {
+    const m = /const (\S+) = attach\.withNote\(body, pending\.splice\(0\)\);/.exec(CLI_SRC);
+    const direct = /runOnce\(runtime, attach\.withNote\(body, pending\.splice\(0\)\), (?:opts\.mode|这趟模式)[,)]/.test(CLI_SRC);
+    const viaVar = !!m && new RegExp("runOnce\\(runtime, (?:repl\\.withShellNotes\\()?" + m[1] + "[,)][^;]*, (?:opts\\.mode|这趟模式)[,)]").test(CLI_SRC);
+    ok(direct || viaVar,
+      "★交互模式发出去时把攒着的文件一次性挂上并清空★ 不清空的话下一句话会再挂一遍同样的文件", { var: m && m[1] });
+  }
 
   has(/const pending = \[\];/, "交互模式有个「带上了还没发出去」的清单");
   has(/if \(!pending\.includes\(n\)\) pending\.push\(n\)/, "同一个文件不许在清单里排两遍");

@@ -3359,8 +3359,9 @@ async function executeToolCore(name, input, opts = {}) {
     });
     security.audit(label + "审批", text, ok ? "已批准" : "已拒绝");
     if (ok) return null;
+    // 别说「已在界面弹出」：命令行前面没人时是当场拒的，根本没摆过——模型照着这句会跟人说「你拒了」
     return {
-      content: `${label}未获批准（${verdict.rule}）。已在界面弹出审批请求但被拒绝或超时。可以换一种不需要它的做法，或让用户在 设置 → 安全中心 调整名单。`,
+      content: `${label}未获批准（${verdict.rule}）：被拒、等超时，或者当时没人能批。可以换一种不需要它的做法，或请用户预先放行这类（设置 → 安全中心 的名单；命令行加 --allow）。`,
       isError: true,
     };
   };

@@ -31,6 +31,7 @@ const { src } = require("./lib/src");
 const security = require(path.join(ROOT, "security"));
 const tools = require(path.join(ROOT, "tools"));
 const cliApprove = require(path.join(ROOT, "cli-approve"));
+const { BRIDGE, havePty } = require("./lib/pty");
 
 let pass = 0, fail = 0, finished = false;
 process.on("exit", (code) => {
@@ -69,8 +70,11 @@ const SKILLS = path.join(HOME, "skills");
 const seedSkill = (dir, body) => { fs.mkdirSync(path.join(SKILLS, dir), { recursive: true }); fs.writeFileSync(path.join(SKILLS, dir, "skill.md"), body); };
 const skillMd = (name, text) => `---\nname: ${name}\ndescription: 测试用技能\n---\n\n${text}\n`;
 
-/** 真起一趟命令行，模型是本地假的：第一轮调 calls 里那条工具，第二轮收工。见到 stopAt 就掐掉（非终端下审批会干等） */
-async function cliRun(args, call, { stopAt } = {}) {
+/**
+ * 真起一趟命令行，模型是本地假的：第一轮调 calls 里那条工具，第二轮收工。见到 stopAt 就掐掉。
+ * pty：放进终端里跑——命令行看 stdin 是不是终端来判「前面有没有人」，没人的话审批当场拒、不摆卡
+ */
+async function cliRun(args, call, { stopAt, pty } = {}) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-permgate-cli-"));
   const ws = path.join(home, "ws");
   fs.mkdirSync(ws);
@@ -101,9 +105,11 @@ async function cliRun(args, call, { stopAt } = {}) {
   const before = fs.readFileSync(path.join(home, "config.json"), "utf8");
   try {
     const out = await new Promise((resolve, reject) => {
-      const kid = spawn(process.execPath, [path.join(ROOT, "cli.js"), "干活", "-C", ws, "--no-mcp", ...args], {
-        env: { ...process.env, OPENWORKBUDDY_HOME: home, NO_COLOR: "1" }, stdio: ["ignore", "pipe", "pipe"],
-      });
+      const argv = [path.join(ROOT, "cli.js"), "干活", "-C", ws, "--no-mcp", ...args];
+      const env = { ...process.env, OPENWORKBUDDY_HOME: home, NO_COLOR: "1" };
+      const kid = pty
+        ? spawn("python3", ["-c", BRIDGE, process.execPath, ...argv], { env: { ...env, TERM: "xterm-256color" }, stdio: ["pipe", "pipe", "pipe"] })
+        : spawn(process.execPath, argv, { env, stdio: ["ignore", "pipe", "pipe"] });
       let all = "", stopped = false;
       const feed = (d) => {
         all += d;
@@ -133,20 +139,30 @@ async function cliRun(args, call, { stopAt } = {}) {
     ok(/Shell\(rm a\.txt\)[\s\S]*命令被安全中心拦截/.test(plan.all), "  └ 工具那行说了是被拦下的", plan.all.slice(-300));
     ok(plan.configUntouched, "  └ config.json 一个字节没动（--perm 只管这一趟）");
 
-    const auto = await cliRun(["--perm", "auto"], ["run_shell", { command: "rm a.txt" }], { stopAt: /按不允许算/ });
-    ok(auto.stopped && /删除保护/.test(auto.all), "★--perm auto 下删文件照样弹审批★（删除保护是默认开着的）", auto.all.slice(-300));
+    // stdin 不是终端 = 前面没人：照样要批（删除保护默认开着），只是当场拒掉、说清怎么放行，不白等两分钟
+    const auto = await cliRun(["--perm", "auto"], ["run_shell", { command: "rm a.txt" }]);
+    ok(/直接拒了（删除保护/.test(auto.all), "★--perm auto 下删文件照样要批★（删除保护是默认开着的；前面没人就当场拒）", auto.all.slice(-300));
+    ok(/--allow "rm"/.test(auto.all), "  └ 说了怎么预先放行", auto.all.slice(-300));
+    // 模型那头收到的话也得是真的：没摆过卡就不能说「已在界面弹出」，不然它回头跟人说「你拒了」
+    ok(/未获批准/.test(auto.all) && !/已在界面弹出/.test(auto.all), "  └ 回给模型的不说「已在界面弹出审批」", auto.all.slice(-300));
     ok(auto.aStill, "  └ 没人点头，文件还在");
     ok(auto.configUntouched, "  └ config.json 一个字节没动");
 
-    // 同一条长命令不带 --perm 跑：审批卡上看得见藏在第 500 字以后的那句 rm
+    // 同一条长命令不带 --perm 跑：藏在第 500 字以后的那句 rm 得让人看得见
     const long = "echo " + "填充".repeat(300) + " && rm a.txt";
-    const card = await cliRun([], ["run_shell", { command: long }], { stopAt: /按不允许算/ });
-    // 终端按列宽折行，折点落在哪不归这里管：去掉折行再找
-    const flat = card.all.replace(/\n +/g, "");
-    ok(card.stopped, "长命令弹了审批卡", card.all.slice(-300));
-    ok(/&& rm a\.txt/.test(flat), "★终端卡上印着整条命令，尾巴上的 rm 没被截掉★", card.all.slice(-300));
-    ok(/触发的片段：rm a\.txt/.test(card.all), "  └ 还单独点出了是哪一段触发的", card.all.slice(-300));
-    ok(card.aStill, "  └ 没人点头，文件还在");
+    const nobody = await cliRun([], ["run_shell", { command: long }]);
+    ok(/直接拒了（[^）]*）：rm a\.txt）/.test(nobody.all), "★前面没人时，拒的那句点出了是哪一段触发的★ 不是前 120 个「填充」", nobody.all.slice(-300));
+    ok(nobody.aStill, "  └ 文件还在");
+    if (!havePty()) console.log("  - 没有 pty（python3 pty 模块），跳过终端里摆卡这段");
+    else {
+      const card = await cliRun([], ["run_shell", { command: long }], { pty: true, stopAt: /触发的片段：rm a\.txt/ });
+      // 终端按列宽折行，折点落在哪不归这里管：去掉控制序列和折行再找
+      const flat = card.all.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\r/g, "").replace(/\n +/g, "");
+      ok(card.stopped, "★终端前有人：长命令摆了审批卡★", card.all.slice(-300));
+      ok(/&& rm a\.txt/.test(flat), "★终端卡上印着整条命令，尾巴上的 rm 没被截掉★", flat.slice(-300));
+      ok(!/直接拒了/.test(card.all), "  └ 有人在就不替人拒", card.all.slice(-300));
+      ok(card.aStill, "  └ 没人点头，文件还在");
+    }
   });
 
   await section("② 安全闸门总开关关着：只看不动 / 每步都问照样管跑命令、跑代码", async () => {

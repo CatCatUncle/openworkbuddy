@@ -126,7 +126,8 @@ const src = fs.readFileSync(path.join(__dirname, "..", "cli.js"), "utf8");
 const rvBranch = (src.split('if (v.name === "review") {')[1] || "").split("\n    }")[0];
 ok(/mode: "ask"/.test(rvBranch), "/review 交出来的活儿按 ask 跑（手里没 shell，改不了文件）");
 const loop = src.split("const line = await nextInput();")[1] || "";
-ok(/, 这趟模式, true\)/.test(loop), "主循环真按命令交出来的模式跑，不是一律 opts.mode");
+// 尾巴留成 [,)]：runOnce 后面还会加参数（比如拼了 !命令 输出时会话里显示哪句），钉死右括号就会假红
+ok(/runOnce\(runtime, [^;\n]*, 这趟模式, true[,)]/.test(loop), "主循环真按命令交出来的模式跑，不是一律 opts.mode");
 ok(/repl\.parse\(line, \{ custom:/.test(src), "主循环 parse 时带上了自定义命令");
 ok(/customCmds\.expand\(c\.body, v\.arg\)/.test(loop), "自定义命令展开后才发");
 const sub = src.split('if (sub === "review") {')[1] || "";

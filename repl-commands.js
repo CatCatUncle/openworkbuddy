@@ -712,10 +712,11 @@ function helpText(opt) {
     ...(own.length
       ? ["  自己写的：", ...own.map(fmt), ""]
       : ["  想要自己的命令：把一段提示词存成 .openworkbuddy/commands/<名字>.md（或放 ~/ 下同名目录），", "  里面用 $ARGUMENTS 或 $1 $2 接参数，重开之后就能敲 /<名字>。", ""]),
-    "  别的都当任务发给 agent。多行需求直接粘进来，会合成一条，不会被拆成好几条。",
+    "  别的都当任务发给 agent。粘进来的多行不会自己发出去，看一眼再回车；",
+    "  自己打多行：行尾 \\ 再回车、Ctrl+J 或 Option+回车 换行；Ctrl+G 用编辑器（$EDITOR）写。Ctrl+R 搜以前问过的话。",
     "  想发一句本来就以 / 或 ! 开头的话：行首加个空格，或者双写成 // 、!!。",
     "  !命令 自己在工作目录里跑一条 shell（!git status），不经过模型；输出会跟着下一句话带给它，/drop 可以不带。",
-    "  任务跑着的时候打字回车 = 插话，下一步会带给它；Ctrl+C 停这趟活儿，不退出。",
+    "  任务跑着的时候打字回车 = 插话，下一步会带给它；Esc 或 Ctrl+C 停这趟活儿，不退出。",
     "",
   ].join("\n") + "\n";
 }
@@ -851,6 +852,110 @@ function withShellNotes(text, notes) {
     }).join("\n") + `\n\n${text}`;
 }
 
+// ── 多行输入 ─────────────────────────────────────────────────────────────────
+// 回车 = 发出去。想换行先不发：行尾打 \ 再回车、Ctrl+J、Option+回车（终端把 Option 当 Meta 用时）、
+// Shift+回车（终端开了 CSI-u / modifyOtherKeys 时才分得出来）。攒着的那几行放在 readline 外面——
+// 往 readline 自己那一行里塞 "\n"，Node 25 交出来的是倒过来、拿 \r 连起来的两行。
+
+/** 行尾是奇数个 \ 且光标在行尾 = 这行没完：给去掉最后那个 \ 的字；不是就 null。偶数个是转义过的 \，照原样发 */
+function continuedLine(line, cursor) {
+  const s = String(line == null ? "" : line);
+  if (typeof cursor === "number" && cursor !== s.length) return null;
+  const m = /\\+$/.exec(s);
+  if (!m || m[0].length % 2 === 0) return null;
+  return s.slice(0, -1);
+}
+
+// Option+回车（ESC CR）、Shift/Option+回车的 CSI-u 和 modifyOtherKeys 两种写法
+const NEWLINE_SEQS = new Set(["\x1b\r", "\x1b[13;2u", "\x1b[13;3u", "\x1b[27;2;13~", "\x1b[27;3;13~"]);
+/**
+ * 这一下是不是「换行，先别发」。
+ * Ctrl+J 到这儿是 name=enter、sequence=\n。可 Windows 换行（\r\n）拆开也是一个回车紧跟一个 \n——
+ * 紧跟着（crlfDelay 之内）的那个 \n 是上一下回车的尾巴，不是 Ctrl+J，当成换行就多出一行空的。
+ * @returns {"newline" | "crlf-tail" | ""}
+ */
+function newlineKey(k, sinceReturnMs, crlfDelay) {
+  const key = k || {};
+  if (NEWLINE_SEQS.has(key.sequence)) return "newline";
+  if (key.name === "return" && key.meta) return "newline";
+  if (key.name === "enter" && key.sequence === "\n") {
+    const d = typeof crlfDelay === "number" ? crlfDelay : 100;
+    return sinceReturnMs >= 0 && sinceReturnMs <= d ? "crlf-tail" : "newline";
+  }
+  return "";
+}
+
+/** 攒着的几行 + 输入行上那一行 = 发出去的整段 */
+function composeText(above, line) {
+  return (Array.isArray(above) ? above : []).concat(String(line == null ? "" : line)).join("\n");
+}
+
+/** 一段（可能多行的）字摆回输入框：最后一行进输入行，光标在那儿接着改；前面的攒着。\r\n、单个 \r 都算换行 */
+function splitComposed(text) {
+  const lines = String(text == null ? "" : text).replace(/\r\n?/g, "\n").split("\n");
+  const line = lines.pop();
+  return { above: lines, line };
+}
+
+/** 攒着的行印在输入行上面给人看：一次粘进来两百行就不全印了，头几行 + 一句还有多少 */
+function echoRows(lines, max) {
+  const all = Array.isArray(lines) ? lines.map((l) => String(l == null ? "" : l)) : [];
+  const cap = Number(max) > 1 ? Number(max) : 8;
+  if (all.length <= cap) return all;
+  return all.slice(0, cap - 1).concat(`…（还有 ${all.length - (cap - 1)} 行，都收下了）`);
+}
+
+/** 多行那段进历史的样子：历史文件一行一条，换行压成空格——↑ 翻回来是整段话，不是只剩第一行 */
+function historyLine(text) {
+  return String(text == null ? "" : text).replace(/\s*\r?\n\s*/g, " ").trim();
+}
+
+/**
+ * Ctrl+R 搜以前问过的话：rl.history（跨会话存盘的那份，新的在前），同一句只留一条。
+ * full 是这个会话里原样的多行原话：历史里那条压成一行的，能对上就换回带换行的原样，放回去还是原来的段落
+ */
+function historyRows(history, o) {
+  const opt = o || {};
+  const fullOf = new Map();
+  for (const f of Array.isArray(opt.full) ? opt.full : []) {
+    const t = String(f == null ? "" : f);
+    if (t.includes("\n")) fullOf.set(historyLine(t), t);
+  }
+  const cap = Number(opt.max) > 0 ? Number(opt.max) : HISTORY_MAX;
+  const seen = new Set();
+  const rows = [];
+  for (const raw of Array.isArray(history) ? history : []) {
+    const text = String(raw == null ? "" : raw).replace(/\s+/g, " ").trim();
+    if (!text || seen.has(text) || text === "/exit") continue;
+    seen.add(text);
+    rows.push({ id: String(rows.length), label: text.length > 56 ? text.slice(0, 56) + "…" : text, meta: "", hay: text, text: fullOf.get(text) || text });
+    if (rows.length >= cap) break;
+  }
+  return rows;
+}
+
+// ── 跑着的时候那一行 ─────────────────────────────────────────────────────────
+/** 12345 → 12.3k。整千不带 .0；十万往上不要小数 */
+function kCount(n) {
+  const v = Math.max(0, Math.round(Number(n) || 0));
+  if (v < 1000) return String(v);
+  if (v >= 100000) return Math.round(v / 1000) + "k";
+  return (v / 1000).toFixed(1).replace(/\.0$/, "") + "k";
+}
+
+/**
+ * 挂在「第 N 步 思考中…」/「● 工具」那一行后面的尾巴：「 · 12s · 8.4k tokens · Esc 停」。
+ * token 没报上来就不写（不是 0，是还没记过）；stop 空 = 收尾时的定格，只留用了多久
+ */
+function tickSuffix(o) {
+  const opt = o || {};
+  const s = Math.max(0, Math.floor(Number(opt.secs) || 0));
+  const t = s >= 60 ? `${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}s` : `${s}s`;
+  const tok = Number(opt.tokens) > 0 ? ` · ${kCount(opt.tokens)} tokens` : "";
+  const stop = opt.stop ? ` · ${opt.stop} 停` : "";
+  return ` · ${t}${tok}${stop}`;
+}
+
 module.exports = {
   COMMANDS, PASTE_GAP_MS, HISTORY_MAX, SHELL_NOTE_MAX, SHELL_NOTES_KEEP, shellNote, withShellNotes,
   parse, mergePaste, makeInbox, resolveCd, complete, menu, helpText, unknownText, badArgText,
@@ -859,5 +964,6 @@ module.exports = {
   PICKER_ROWS, pickerRowsOf, filterPickerRows, pickerWindow, pickerView, sessionPickerRows, modelPickerRows,
   sizeText, sessionUsageText, changedFilesText, checkpointListText, pickCheckpoint, rewindResultText, mcpText, compactedText, initTask,
   PLAN_GO_TEXT, PLAN_NEXT_HINT, planNextRows, planNextMode,
+  continuedLine, newlineKey, composeText, splitComposed, echoRows, historyLine, historyRows, kCount, tickSuffix,
   sanitizeHistory, nearest, find,
 };

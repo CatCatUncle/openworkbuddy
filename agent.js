@@ -2899,6 +2899,8 @@ function modePrompt(mode) {
         stats.completion += result.usage.completion;
         stats.cached = (stats.cached || 0) + (result.usage.cached || 0);
         stats.calls++;
+        // 累计到这一步为止用了多少：终端那行「· 12s · 8.4k tokens」靠它走字，不用等到整趟跑完的 usage
+        if (depth === 0) emit({ type: "step_usage", prompt: stats.prompt, completion: stats.completion, calls: stats.calls });
       }
       // ── 输出撞上长度上限（Anthropic 报 max_tokens，OpenAI 兼容报 length）──────────────
       // 截在工具调用中间时，最后那个调用的参数是半截的：Anthropic SDK 会把半截 JSON 硬解析成一个

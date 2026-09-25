@@ -15,6 +15,8 @@
  *   8. 交互模式闲着的时候，网页 / 手机在同一条会话上聊了一轮：下一句开跑前先接上，存盘也不把那一轮盖掉
  *   9. !命令：当场跑、不找模型；Ctrl+C 停的是那条命令不是整个程序；输出跟下一句话带给模型，会话里记的还是人那句
  *  10. Plan 出完计划摆「开干 / 接着改」：回车就切到 Craft 照计划做；选接着改、Esc 都留在 Plan；输入行上已经打了字就不弹
+ *  11. 多行输入：行尾 \ 回车、Ctrl+J、Option+回车都是换行不是发出去；粘进来的多行不自己发；Ctrl+R 搜回来的还是原来那几行；
+ *      Ctrl+G 用编辑器写（编辑器没正常退出就原样留着）；Ctrl+C 扔掉攒着的那段；跑着时那一行走字、Esc 停这趟不退出
  * 没有 python3 / pty 的机器跳过。
  */
 const assert = require("assert");
@@ -29,42 +31,13 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /** 只当「最多等这么久」用：不拖着进程不让退 */
 const atMost = (ms) => new Promise((r) => setTimeout(r, ms).unref());
 
-// 开一个 pty 把命令放进去：自己的 stdin 原样写进终端，终端吐的原样打到 stdout。
-// Node 这边写一次，终端那头就是一块——粘贴、输入法上屏就是这么来的
-const BRIDGE = `
-import os, pty, sys, select, signal, struct, fcntl, termios
-pid, fd = pty.fork()
-if pid == 0:
-    os.execvp(sys.argv[1], sys.argv[1:])
-fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 100, 0, 0))
-signal.signal(signal.SIGTERM, lambda *a: (os.kill(pid, 9), os._exit(1)))
-src = [fd, 0]
-while True:
-    r, _, _ = select.select(src, [], [])
-    if fd in r:
-        try: d = os.read(fd, 65536)
-        except OSError: break
-        if not d: break
-        os.write(1, d)
-    if 0 in r:
-        d = os.read(0, 65536)
-        if d: os.write(fd, d)
-        else: src = [fd]
-_, st = os.waitpid(pid, 0)
-sys.exit(os.WEXITSTATUS(st) if os.WIFEXITED(st) else 1)
-`;
-
-function havePty() {
-  if (process.platform === "win32") return false;
-  const r = spawnSync("python3", ["-c", "import pty, termios, fcntl"], { stdio: "ignore", timeout: 10000 });
-  return r.status === 0;
-}
+const { BRIDGE, havePty } = require("./lib/pty");
 
 /**
  * 在 pty 里起一趟 openworkbuddy。模型是本地假的：reply(messages) 说这一轮吐什么
  * （[工具名, 参数] 的数组，或者一句收工的话），可以是 async 的——想让它「想」多久由测试说了算。
  */
-async function ptyRun({ args, reply }, drive) {
+async function ptyRun({ args, reply, env: more }, drive) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-pty-"));
   const ws = path.join(home, "ws");
   fs.mkdirSync(ws);
@@ -102,7 +75,7 @@ async function ptyRun({ args, reply }, drive) {
   cfg.mcp_servers = [];
   fs.writeFileSync(path.join(home, "config.json"), JSON.stringify(cfg));
 
-  const env = { ...process.env, OPENWORKBUDDY_HOME: home, OPENWORKBUDDY_CLI_LIVE: "1", NO_COLOR: "1", TERM: "xterm-256color" };
+  const env = { ...process.env, OPENWORKBUDDY_HOME: home, OPENWORKBUDDY_CLI_LIVE: "1", NO_COLOR: "1", TERM: "xterm-256color", ...(more || {}) };
   delete env.FORCE_COLOR;
   const kid = spawn("python3", ["-c", BRIDGE, process.execPath, path.join(ROOT, "cli.js"), ...args, "-C", ws, "--no-mcp"], { env, stdio: ["pipe", "pipe", "pipe"] });
   let out = "";
@@ -467,6 +440,136 @@ async function run() {
       await t.type("/exit\r");
     });
     assert.ok(t7 && t7.exited() === 0, "正常退出");
+  }
+
+  // ---- ⑧ 多行输入、Ctrl+R、Ctrl+G、跑着时那一行、Esc 停 ----
+  {
+    let t8 = null;
+    const edDir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-pty-ed-"));
+    const ed = path.join(edDir, "ed.sh");
+    // 假编辑器：有 .fail 就当人 :cq 了（退出码 3、文件不动），没有就写两行进去
+    fs.writeFileSync(ed, `#!/bin/sh\nprintf '%s\\n' "$1" >> "$0.paths"\nif [ -f "$0.fail" ]; then exit 3; fi\nprintf '编辑器第一行\\n编辑器第二行EDMARK\\n' > "$1"\n`, { mode: 0o755 });
+    try {
+      await ptyRun({
+        args: [],
+        env: { EDITOR: ed, VISUAL: "" },
+        reply: async (msgs) => {
+          const u = msgs.filter((m) => m.role === "user").pop();
+          if (u && String(u.content).trim() === "慢一点") await sleep(15000); // 停得掉的话等不到这一下（停掉的那句会并进下一句一起发，所以按整句认）
+          return "好的。";
+        },
+      }, async (t) => {
+        t8 = t;
+        await t.until(/openworkbuddy> /, "提示符");
+        let mark = t.out().length;
+        await t.type("第一行\\\r");
+        await t.until(/  \.\.\. /, "★行尾 \\ 回车：换到「  ... 」接着打，不发★", mark);
+        await t.type("第二行");
+        t.send("\n"); // Ctrl+J
+        await sleep(300);
+        await t.type("第三行");
+        t.send("\x1b\r"); // Option+回车
+        await sleep(300);
+        assert.strictEqual(t.users.length, 0, "★换行键都不是发出去★");
+        await t.type("第四行\r");
+        await t.waitFor(() => t.users.length === 1, "整段发出去");
+        assert.ok(t.users[0].includes("第一行\n第二行\n第三行\n第四行"), "★四行合成一条、换行都在★\n" + JSON.stringify(t.users[0]));
+        assert.ok(!t.users[0].includes("\\"), "续行的那个 \\ 不带过去");
+        let done = await t.until(/好的。/, "第一轮回答", mark);
+        await t.until(/openworkbuddy> /, "提示符回来", done);
+
+        // 括号粘贴：里头的回车不算发出去
+        mark = t.out().length;
+        t.send("\x1b[200~粘A\r\t粘B\r粘C\x1b[201~"); // 中间那行带 Tab：攒着的行原样留着缩进
+        await sleep(1200);
+        assert.strictEqual(t.users.length, 1, "★粘进来的多行不自己发出去★\n" + t.out().slice(mark));
+        await t.type("尾巴\r");
+        await t.waitFor(() => t.users.length === 2, "粘的那段回车才发");
+        assert.ok(t.users[1].includes("粘A\n\t粘B\n粘C尾巴"), "★粘的三行原样（Tab 缩进也在）、接着打的字接在最后一行后面★\n" + JSON.stringify(t.users[1]));
+        done = await t.until(/好的。/, "第二轮回答", mark);
+        await t.until(/openworkbuddy> /, "提示符回来", done);
+
+        // Ctrl+R：搜回来的是原来那几行，不是压成一行的历史
+        mark = t.out().length;
+        t.send("\x12");
+        await t.until(/搜以前问过的话/, "★Ctrl+R 摆出历史★", mark);
+        await t.type("粘B");
+        await sleep(200);
+        t.send("\r");
+        await sleep(400);
+        assert.strictEqual(t.users.length, 2, "挑中只是放回输入框，不自己发");
+        t.send("\r");
+        await t.waitFor(() => t.users.length === 3, "放回来的那段再回车发出去");
+        assert.ok(t.users[2].includes("粘A\n\t粘B\n粘C尾巴"), "★Ctrl+R 放回来的还是原来那几行★\n" + JSON.stringify(t.users[2]));
+        done = await t.until(/好的。/, "第三轮回答", mark);
+        await t.until(/openworkbuddy> /, "提示符回来", done);
+
+        // Ctrl+G：编辑器里写好的整段摆回来，回车才发
+        mark = t.out().length;
+        t.send("\x07");
+        await t.until(/EDMARK/, "★编辑器写的摆回输入框★", mark);
+        await sleep(300);
+        assert.strictEqual(t.users.length, 3, "编辑器写完不自己发");
+        t.send("\r");
+        await t.waitFor(() => t.users.length === 4, "回车发出去");
+        assert.ok(t.users[3].includes("编辑器第一行\n编辑器第二行EDMARK"), "★编辑器里的两行原样发出去★\n" + JSON.stringify(t.users[3]));
+        done = await t.until(/好的。/, "第四轮回答", mark);
+        await t.until(/openworkbuddy> /, "提示符回来", done);
+        // 认编辑器这一趟真打开的那个文件：扫整个临时目录的话，别的进程（上一轮跑挂的）留下的也算到这趟头上
+        const opened = fs.readFileSync(ed + ".paths", "utf8").trim().split("\n").pop();
+        assert.ok(/owb-edit-/.test(opened), "编辑器拿到的是我们建的临时文件：" + opened);
+        assert.ok(!fs.existsSync(opened) && !fs.existsSync(path.dirname(opened)), "临时文件用完就删（连目录）：" + opened);
+
+        // 编辑器没正常退出：打了的字原样留着，照实说退出码
+        fs.writeFileSync(ed + ".fail", "");
+        mark = t.out().length;
+        await t.type("原样留着");
+        t.send("\x07");
+        await t.until(/编辑器退出码 3/, "★照实说编辑器退出码★", mark);
+        t.send("\r");
+        await t.waitFor(() => t.users.length === 5, "留着的那句回车发出去");
+        assert.ok(t.users[4].includes("原样留着") && !t.users[4].includes("EDMARK"), "★编辑器没正常退出就不用它的★\n" + JSON.stringify(t.users[4]));
+        done = await t.until(/好的。/, "第五轮回答", mark);
+        await t.until(/openworkbuddy> /, "提示符回来", done);
+
+        // Ctrl+C：攒着的那段扔掉，不退出、不发
+        mark = t.out().length;
+        await t.type("不要了\\\r");
+        await t.until(/  \.\.\. /, "续行", mark);
+        await t.type("这行也不要");
+        t.send("\x03");
+        await t.until(/上面那几行没发，不要了/, "★Ctrl+C 扔掉攒着的那段★", mark);
+        t.send("\r");
+        await sleep(500);
+        assert.strictEqual(t.users.length, 5, "★扔掉的那段不会跟着下一个回车发出去★");
+        assert.strictEqual(t.exited(), null, "Ctrl+C 扔的是那段，不是退出");
+
+        // 跑着时那一行：过两秒挂上「· Ns · Esc 停」；按 Esc 停这一趟，程序还在
+        mark = t.out().length;
+        await t.type("慢一点\r");
+        await t.until(/思考中… · \d+s · Esc 停/, "★跑着的那一行走字、写着怎么停★", mark);
+        t.send("\x1b");
+        await t.until(/按了 Esc/, "★Esc 停这一趟★", mark);
+        await t.until(/openworkbuddy> /, "★停完回提示符★", t.out().lastIndexOf("按了 Esc"));
+        assert.strictEqual(t.exited(), null, "★Esc 不退出★");
+        const after = t.out().slice(mark);
+        assert.ok(!/好的。/.test(after), "真停了：慢的那一轮没等到回答\n" + after);
+        // 原地重画是一串 \r 盖上去的，屏幕上留下的是最后那一版
+        const seen = (after.split("（按了 Esc")[0].split("\n").filter((l) => l.trim()).pop() || "").split("\r").map((x) => x.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "")).filter((x) => x.trim()).pop() || "";
+        assert.ok(/思考中… · \d+s\s*$/.test(seen), "★定格成「· Ns」，不留「Esc 停」这句过期的话★\n" + JSON.stringify(seen));
+        // 停完接着用：下一句照常发、照常回
+        mark = t.out().length;
+        const n8 = t.users.length;
+        await t.type("再来一句\r");
+        await t.waitFor(() => t.users.length === n8 + 1, "★Esc 停完下一句照常发★");
+        done = await t.until(/好的。/, "下一句的回答", mark);
+        await t.until(/openworkbuddy> /, "提示符回来", done);
+        await t.type("/exit\r");
+      });
+    } finally {
+      fs.rmSync(edDir, { recursive: true, force: true });
+    }
+    assert.ok(t8 && t8.exited() === 0, "正常退出");
   }
 
   console.log("cli-pty：通过");

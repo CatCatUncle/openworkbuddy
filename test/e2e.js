@@ -10329,13 +10329,17 @@ async function testThinkingSwitch() {
   // ⑨ 接线：本机引擎那条路要真把档位传进去，而且要排在 opts 前面 ——
   //    排在后面的话，engine_options 里没写 thinking 的用户（绝大多数）会被 undefined 覆盖成不生效
   const src = fs.readFileSync(path.join(__dirname, "..", "agent.js"), "utf8");
-  const at = src.indexOf("const r = await backend.run({");
-  assert(at > 0, "agent.js 里找不到 backend.run 调用");
-  const block = src.slice(at, src.indexOf("});", at));
-  // 取的必须是 prefs.agentCfg(config)：思考档是**按账号**存的（prefs.js），
-  // 直接读 config.agent.thinking 的话，多人服务器上跑的是平台管理员选的那档，不是发起人自己选的
-  assert(/thinking:\s*prefs\.agentCfg\(config\)\.thinking/.test(block), "本机引擎接管时没把 app 的思考模式设置传下去（用户要的就是这两边一致）");
-  assert(block.indexOf("thinking:") < block.indexOf("...opts"), "thinking 排在 ...opts 后面了，单个引擎就没法覆盖全局档位");
+  // 认的是 backend.run({ 本身，不认它前面怎么接：以前写死「const r = await backend.run({」，
+  // 调用包进 runWith（线程失效时重开一根）以后就找不到了。每一处调用都得带上档位
+  const sites = [...src.matchAll(/backend\.run\(\{/g)].map((m) => m.index);
+  assert(sites.length > 0, "agent.js 里找不到 backend.run 调用");
+  for (const at of sites) {
+    const block = src.slice(at, src.indexOf("});", at));
+    // 取的必须是 prefs.agentCfg(config)：思考档是**按账号**存的（prefs.js），
+    // 直接读 config.agent.thinking 的话，多人服务器上跑的是平台管理员选的那档，不是发起人自己选的
+    assert(/thinking:\s*prefs\.agentCfg\(config\)\.thinking/.test(block), "本机引擎接管时没把 app 的思考模式设置传下去（用户要的就是这两边一致）");
+    assert(block.indexOf("thinking:") < block.indexOf("...opts"), "thinking 排在 ...opts 后面了，单个引擎就没法覆盖全局档位");
+  }
   for (const [f, label] of [["engines/claude-code.js", "claude"], ["engines/codex.js", "codex"]]) {
     const t = fs.readFileSync(path.join(__dirname, "..", f), "utf8");
     assert(/planForEngine\(/.test(t), label + " 引擎没接思考模式，设置页选了也传不到命令行");
