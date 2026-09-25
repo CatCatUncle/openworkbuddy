@@ -203,5 +203,63 @@ console.log("\n【8】接进命令行：只在「那头真是终端」时渲染"
   ok(A.helpText().includes("--raw"), "帮助里写着这条路");
 }
 
+console.log("\n【9】流式不卡、不变样：字面量的 [1] a[0] user_name 2 * 3 不压着，任意一刀切下去结果都一样");
+{
+  // 任意一处切成两片、以及一个字一个字喂，都得跟一次性喂的一样——带色、不带色都比
+  const lines = [
+    "我先用 `read_file` 看了配置。",
+    "匹配 `*.js` 的文件",
+    "这是 __加粗的词__ 收工",
+    "变量 user_name 和 foo_ 都在这",
+    "见文档[1]，a[0] 是第一个，2 * 3 = 6",
+    "转义的 \\*不是斜体\\* 和 \\_这个\\_",
+    "- **重点**：详见 [文档](https://x.y/z) 和 *斜体*",
+    "**粗**_斜_~~删~~ 贴在一起",
+    "a*b*c 与 *真斜体* 与 _真_ 与 x_y_z",
+    "路径 C:\\\\dir\\\\ 结尾",
+  ];
+  let bad = 0, badC = 0, first = "";
+  for (const l of lines) {
+    const md = l + "\n";
+    const once = plain(md), onceC = colored(md);
+    for (let k = 1; k < md.length; k++) {
+      const r = M.createRenderer({ color: false });
+      if (r.write(md.slice(0, k)) + r.write(md.slice(k)) + r.end() !== once) { bad++; first = first || `${l} @${k}`; }
+      const rc = M.createRenderer({ color: true });
+      if (rc.write(md.slice(0, k)) + rc.write(md.slice(k)) + rc.end() !== onceC) { badC++; first = first || `带色 ${l} @${k}`; }
+    }
+    if (streamed(md, 1, false) !== once) { bad++; first = first || `逐字 ${l}`; }
+    if (streamed(md, 1, true) !== onceC) { badC++; first = first || `逐字带色 ${l}`; }
+  }
+  eq(bad, 0, `★${lines.length} 行每一处切口都试一遍，不带色的结果跟一次性喂的一样★ ${first}`);
+  eq(badC, 0, "带色的也一样");
+
+  // 这些本来就是字面量，inline() 一个都不会动：压着就是整行卡到换行才出来
+  for (const [head, rest] of [["见文档[1]", "，后面的字"], ["a[0]", " 是第一个"], ["变量 user_", "name 在这"], ["算一下 2 *", " 3"], ["看 `read_file`", " 的结果"]]) {
+    const r = M.createRenderer({ color: false });
+    r.write("先说一句，");
+    const got = r.write(head) + r.write(rest);
+    ok(got.includes(rest.trim()), `「${head}${rest}」没等换行就吐出来了`, got);
+  }
+
+  // 一整行没有换行、里面一个落单的 [：原来每来一片都把压着的整截重扫一遍，行越长越慢
+  const r = M.createRenderer({ color: false });
+  const t0 = Date.now();
+  let out = r.write("开头 [");
+  for (let i = 0; i < 20000; i++) out += r.write("字");
+  const ms = Date.now() - t0;
+  ok(out.length > 15000, "★落单的 [ 压住的字有上限★ 不会整行卡到换行", out.length);
+  ok(ms < 2000, `两万个字逐字喂完 ${ms}ms（原来是平方级）`);
+
+  // 带色：粗体转义码的 ESC [ 不许被当成链接的 [
+  const c = colored("- **重点**：详见 [文档](https://x.y/z)\n");
+  ok(c.includes(ESC + "[1m重点") && c.includes(ESC + "[4m文档"), "粗体后面跟链接，两样都渲染对", JSON.stringify(c));
+  eq(c.replace(/\u001b\[[0-9;]*m/g, ""), "• 重点：详见 文档 https://x.y/z\n", "去掉颜色以后字一个不差");
+  eq(plain("## **标题** 和 [x](http://u) `c`\n"), "标题 和 x http://u c\n", "标题里的 **、链接、`代码` 也渲染，不原样打出记号");
+  const h = colored("## 看 `c` 和 **粗** 完\n");
+  ok(/\u001b\[39m\u001b\[36m/.test(h) && /\u001b\[22m\u001b\[1m/.test(h), "标题里行内样式收尾以后立刻补回标题的青色和粗体，后半截还是标题的样子", JSON.stringify(h));
+  ok(!c.includes(ESC + ESC), "没有叠在一起的转义码（原来会打出一截 1m重点 … [文档）", JSON.stringify(c));
+}
+
 console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
 process.exit(fail === 0 ? 0 : 1);

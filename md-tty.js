@@ -35,40 +35,98 @@ const A = {
 /**
  * 半行里从哪儿开始不能吐。
  * 返回可以安全吐出去的长度：这一段里所有记号都是成对闭合的，渲染出来不会再变。
+ * prev 是这半行前面已经吐掉的最后一个字（行首给空串）：单个 * _ 能不能当斜体开头，得看它左边贴着什么。
+ *
+ * 规矩跟 inline() 一条条对齐：inline 根本不会动的（2 * 3、user_name、[1]、a[0]），这儿也不许压着——
+ * 压着就是整行卡到换行才出来，而且每来一片都要把压着的那一截从头再扫一遍，行越长越慢。
  */
-function safeCut(s) {
-  const cuts = [];
-  // 反引号：奇数个就说明最后那个还开着
-  const bt = [];
-  for (let i = 0; i < s.length; i++) if (s[i] === "`") bt.push(i);
-  if (bt.length % 2 === 1) cuts.push(bt[bt.length - 1]);
-  // ** 和 ~~：成对出现，落单的那个开始往后都不能吐
-  for (const mk of ["*", "~"]) {
-    const at = [];
-    for (let i = 0; i + 1 < s.length; i++) if (s[i] === mk && s[i + 1] === mk) { at.push(i); i++; }
-    if (at.length % 2 === 1) cuts.push(at[at.length - 1]);
+const HOLD_MAX = 1000; // 没闭合的记号最多压住这么多字：再长多半不是记号，放行，免得卡到换行
+const WORD = /\w/, SPACE = /\s/;
+const ESCAPABLE = "\\`*_{}[]()#+-.!~>|"; // 跟 inline() 第一条正则是同一张表，改一处要改两处
+function safeCut(s, prev) {
+  const n = s.length;
+  let cut = n;
+  const hold = (i) => { if (i < cut) cut = i; };
+  const spans = []; // [起, 止)：已经配上对的记号，切口不能落在里头
+  const ends = new Uint8Array(n + 1);
+  const pair = (b, e) => { spans.push([b, e]); ends[e] = 1; };
+  const tok = new Uint8Array(n); // 配上对的 ** __ ~~：inline() 会把它们换成转义码（关颜色时直接删掉）
+  // 先把转义和行内代码涂成不参与任何匹配的字，下面只在涂过的这份上找记号——
+  // inline() 也是先把它俩抠走再干别的：`read_file` 里的 _ 不是斜体，\* 也不是
+  const a = s.split("");
+  for (let i = 0; i < n; i++) {
+    if (a[i] !== "\\") continue;
+    if (i + 1 === n) { hold(i); break; } // 行尾一个反斜杠：下一片可能是被它转义的那个字
+    if (ESCAPABLE.includes(a[i + 1])) { a[i] = a[i + 1] = "\u0001"; i++; }
   }
-  // 单个 * / _：把成对的 ** __ 先摘掉再数，落单同理
+  for (let i = 0; i < n; i++) {
+    if (a[i] !== "`") continue;
+    let j = i + 1;
+    while (j < n && a[j] !== "`") j++;
+    if (j === n) { hold(i); a.fill("\u0001", i); break; } // 反引号还开着：它后面的都可能是代码
+    if (j === i + 1) continue; // `` 空的不算代码，第二个反引号还能跟后面的配
+    a.fill("\u0001", i, j + 1);
+    i = j;
+  }
+  const m = a.join("");
+  const mark = (x) => m[x] === "*" || m[x] === "_" || m[x] === "~";
+  // ** __ ~~：跟 inline() 那几条正则一样从左往右找，隔至少一个字的下一个同样记号就是收尾；
+  // 找不到收尾的，从它开始往后都不能吐
+  for (const mk of ["**", "__", "~~"]) {
+    for (let o = m.indexOf(mk); o >= 0; ) {
+      const c = m.indexOf(mk, o + 3);
+      if (c < 0) { hold(o); break; }
+      pair(o, c + 2);
+      tok[o] = tok[o + 1] = tok[c] = tok[c + 1] = 1;
+      o = m.indexOf(mk, c + 2);
+    }
+  }
+  // 单个 * _：照 inline() 那条斜体正则判。开头的左边不能贴字母数字（也不能是同一个记号）、右边不能贴空白；
+  // 收尾的就是下一个同样的记号，它左边不能贴空白、右边不能贴字母数字。判不出来的（右边还没来）才压着
   for (const ch of ["*", "_"]) {
     const at = [];
-    for (let i = 0; i < s.length; i++) {
-      if (s[i] !== ch) continue;
-      if (s[i + 1] === ch) { i++; continue; } // 这是 ** / __，上面数过了
-      at.push(i);
+    for (let i = 0; i < n; i++) if (m[i] === ch && !tok[i]) at.push(i); // 配上对的 ** __ 上面算过了
+    for (let k = 0; k < at.length; k++) {
+      const i = at[k];
+      const p = i > 0 ? m[i - 1] : prev;
+      const j = at[k + 1];
+      // 跟别的记号贴在一起的（**重点***斜体*、*斜体*__粗__）：旁边那对记号开颜色时换成转义码、关颜色时直接删掉，
+      // 它的邻居跟着变，判法也跟着变。这种写法少见，压到换行整行一起渲染，不去猜
+      if (mark(i - 1) || (!WORD.test(p || " ") && (mark(i + 1) || (j !== undefined && (mark(j - 1) || mark(j + 1)))))) {
+        let b = i;
+        while (mark(b - 1)) b--;
+        hold(b); break;
+      }
+      if (p && (WORD.test(p) || p === ch)) continue; // user_name、a*b：当不了开头
+      if (i + 1 === n) { hold(i); break; }
+      if (SPACE.test(m[i + 1])) continue;            // 2 * 3
+      if (j === undefined || j + 1 === n) { hold(i); break; } // 收尾的还没来，或者来了但还不知道右边贴什么
+      if (!SPACE.test(m[j - 1]) && !WORD.test(m[j + 1]) && m[j + 1] !== ch) { pair(i, j + 1); k++; }
     }
-    if (at.length % 2 === 1) cuts.push(at[at.length - 1]);
   }
-  // 链接：有 [ 却还没等到它的 ](…)
-  let from = 0;
-  for (;;) {
-    const i = s.indexOf("[", from);
-    if (i < 0) break;
-    if (!/\[[^\]\n]*\]\([^)\s]*\)/.test(s.slice(i))) { cuts.push(i); break; }
-    from = i + 1;
+  // 链接 [文字](地址)。[1]、a[0] 这种 ] 后面跟的不是 ( 的，已经不可能是链接了，不用等
+  for (let i = m.indexOf("["); i >= 0 && i < cut; i = m.indexOf("[", i + 1)) {
+    const j = m.indexOf("]", i + 1);
+    if (j < 0 || j + 1 === n) { hold(i); break; } // ] 还没来；或者刚到，下一片可能就是 (
+    if (m[j + 1] !== "(") { i = j; continue; }    // 中间别的 [ 也只能配这个 ]，一起跳过
+    const url = /\([^)\s]+\)/y; url.lastIndex = j + 1;
+    if (url.test(m)) { pair(i, url.lastIndex); i = url.lastIndex - 1; continue; }
+    const tail = /\([^)\s]*$/y; tail.lastIndex = j + 1;
+    if (tail.test(m)) { hold(i); break; } // 地址还在路上
+    i = j;
   }
-  // 行尾一个单独的反斜杠：下一片可能是被它转义的那个字符
-  if (s.endsWith("\\")) cuts.push(s.length - 1);
-  return cuts.length ? Math.max(0, Math.min(...cuts)) : s.length;
+  // 刚收尾的 ** __ ~~ 正好在结尾：下一片要是紧贴一个 * _，就是上面说的那种，等一片再说
+  if (cut === n && tok[n - 1]) hold(spans.find((x) => x[1] === n)[0]);
+  // 切口落在一对记号中间，就退到这对的开头。按开头从后往前退一遍就够：退过去以后只可能落进更靠前的那对
+  spans.sort((x, y) => y[0] - x[0]);
+  for (const [b, e] of spans) if (b < cut && cut < e) cut = b;
+  if (n - cut > HOLD_MAX) cut = n;
+  // 结尾一个没配上对的 * _ ~：跟下一片的第一个字可能凑成 ** __ ~~，留到下一片
+  if (cut === n && mark(n - 1) && !tok[n - 1]) cut--;
+  if (cut === n && m[n - 1] === "\\") cut--; // 放行以后也不能把反斜杠跟它转义的字拆开
+  // 切口左边是个没配上对的 * _：单独渲染时它右边是行尾，可能被当成斜体收尾，整行里它右边贴着字就不是
+  while (cut > 0 && (m[cut - 1] === "*" || m[cut - 1] === "_") && !ends[cut]) cut--;
+  return cut;
 }
 
 /**
@@ -92,11 +150,38 @@ function inline(s, color) {
   t = t.replace(/(^|[^\w*])\*(?!\s)([^*\n]+?)(?<!\s)\*(?![\w*])/g, (_m, p, x) => p + on("italic") + x + on("italicOff"));
   t = t.replace(/(^|[^\w_])_(?!\s)([^_\n]+?)(?<!\s)_(?![\w_])/g, (_m, p, x) => p + on("italic") + x + on("italicOff"));
   // 链接：文字加下划线，地址留在后面（终端里地址本身才是能点、能复制的那个）
-  t = t.replace(/\[([^\]\n]*)\]\(([^)\s]+)\)/g, (_m, txt, url) =>
+  // 前面粗体、斜体插进来的转义码也是 ESC [ 开头，那个 [ 不是链接：从它开始配，整段就乱码了
+  t = t.replace(/(?<!\u001b)\[([^\]\n]*)\]\(([^)\s]+)\)/g, (_m, txt, url) =>
     (txt ? on("under") + txt + on("underOff") + " " : "") + on("dim") + url + on("dimOff"));
   t = t.replace(/\u0000C(\d+)\u0000/g, (_m, i) => on("cyan") + spans[Number(i)] + on("colorOff"));
   t = t.replace(/\u0000E(\d+)\u0000/g, (_m, i) => esc[Number(i)]);
   return t;
+}
+
+/**
+ * 切口左边那个字。被反斜杠转义过的（\*）整行渲染时是个占位符，不算记号也不算字母。
+ * floor 是上一刀的位置：切口从不落在反斜杠和它转义的字中间，往回数反斜杠数到那儿就够了——
+ * 不然一长串反斜杠，每来一块都得从行首数一遍
+ */
+function prevAt(line, from, floor) {
+  if (from <= 0) return "";
+  const c = line[from - 1];
+  let k = 0;
+  while (from - 2 - k >= (floor || 0) && line[from - 2 - k] === "\\") k++;
+  return k % 2 === 1 && ESCAPABLE.includes(c) ? "\u0001" : c;
+}
+
+/**
+ * 渲染一行从 from 起的后半截。开头要是个 * _，而它在整行里左边贴着字（user_name 的 _），
+ * inline() 整行渲染时不会拿它当斜体开头；单独渲染这半截它却成了行首。
+ * 前面垫一个字母再渲染、渲染完去掉，它的左邻居就跟整行里一样了（不能用反斜杠转义：
+ * 转义完它自己成了占位符，右边那个字的左邻居又变了）
+ */
+function inlineFrom(line, from, color, p) {
+  const piece = line.slice(from);
+  const c = piece[0];
+  if ((c === "*" || c === "_") && p && (WORD.test(p) || p === c)) return inline("a" + piece, color).slice(1);
+  return inline(piece, color);
 }
 
 /** 这半行还看不出是什么块：再等等，别急着按正文吐 */
@@ -142,6 +227,7 @@ function createRenderer(opts) {
   let buf = "";   // 还没收到换行的那半行
   let done = 0;   // 这半行里已经按正文吐出去的原文长度
   let fence = ""; // 代码块围栏的记号（空串 = 不在代码块里）
+  let prev = "";  // done 左边那个字（prevAt 的结果），done 挪一次算一次
 
   const renderLine = (line) => {
     if (fence) {
@@ -154,10 +240,16 @@ function createRenderer(opts) {
       case "fence":
         fence = b.mark;
         return b.lang ? on("dim") + "│ " + b.lang + on("dimOff") + "\n" : "";
-      case "head":
-        return b.ind + (b.level <= 2
-          ? on("bold") + on("cyan") + b.text + on("colorOff") + on("boldOff")
-          : on("bold") + b.text + on("boldOff")) + "\n";
+      case "head": {
+        // 标题里的 **、`代码`、链接照样渲染（原来原样打出 ** 和 [x](u)）。
+        // 它们收尾的关码会把标题自己的粗体、青色一起关掉，关完立刻补回来
+        const hi = b.level <= 2;
+        let t = inline(b.text, color);
+        if (color) t = t.replace(/\u001b\[22m/g, A.boldOff + A.bold).replace(/\u001b\[39m/g, hi ? A.colorOff + A.cyan : A.colorOff);
+        return b.ind + (hi
+          ? on("bold") + on("cyan") + t + on("colorOff") + on("boldOff")
+          : on("bold") + t + on("boldOff")) + "\n";
+      }
       case "hr":
         return on("dim") + "─".repeat(Math.min(width, 48)) + on("dimOff") + "\n";
       case "quote":
@@ -192,15 +284,16 @@ function createRenderer(opts) {
         const line = buf.slice(0, i);
         buf = buf.slice(i + 1);
         // 这行的前半截已经按正文吐过了：后半截只渲染行内记号，不能再加一次块前缀
-        out += done > 0 ? inline(line.slice(done), color) + "\n" : renderLine(line);
-        done = 0;
+        out += done > 0 ? inlineFrom(line, done, color, prev) + "\n" : renderLine(line);
+        done = 0; prev = "";
       }
       // 剩下的半行：在代码块里就等着（代码按行走，抢那一点不值当）；还看不出是什么块也等着；
       // 已经定性成正文了，就把「后面不会再变」的那一段先吐出去
       if (!fence && !undecided(buf) && (done > 0 || blockOf(buf).kind === "p")) {
-        const cut = safeCut(buf.slice(done));
+        const cut = safeCut(buf.slice(done), prev);
         if (cut > 0) {
-          out += inline(buf.slice(done, done + cut), color);
+          out += inlineFrom(buf.slice(0, done + cut), done, color, prev);
+          prev = prevAt(buf, done + cut, done);
           done += cut;
         }
       }
@@ -208,9 +301,9 @@ function createRenderer(opts) {
     },
     end() {
       let out = "";
-      if (buf) out += done > 0 ? inline(buf.slice(done), color) + "\n" : renderLine(buf);
+      if (buf) out += done > 0 ? inlineFrom(buf, done, color, prev) + "\n" : renderLine(buf);
       else if (done > 0) out += "\n";
-      buf = ""; done = 0; fence = "";
+      buf = ""; done = 0; fence = ""; prev = "";
       return out;
     },
   };
