@@ -1867,10 +1867,10 @@ function modePrompt(mode) {
 
 
   /**
-   * 强制收尾时的最后一句话。不给工具、单独一小段超时预算（撞的就是时间上限，不能再等 5 分钟），
+   * 强制收尾时的最后一句话。不许调工具、单独一小段超时预算（撞的就是时间上限，不能再等 5 分钟），
    * 失败就悄悄算了——收尾说明没拿到，也不该把整个任务变成一次报错。
    */
-  async function wrapUp({ history, system, systemStableLen, stopNote, emit, depth, stats, llmOverride, traceNode }) {
+  async function wrapUp({ history, system, systemStableLen, stopNote, emit, depth, stats, llmOverride, traceNode, tools }) {
     history.push({
       role: "user",
       content: `【系统】任务已到上限被强制收尾（${stopNote}）。现在不要再调用任何工具，直接给用户一段收尾说明：
@@ -1892,7 +1892,10 @@ function modePrompt(mode) {
         system,
         systemStableLen, // 跟主循环切在同一处：收尾这一问的 system 前缀照样走缓存读
         history,
-        tools: [],
+        // 工具表照发、tool_choice 设成 none：历史里有工具调用时 Anthropic 不给 tools 直接 400，
+        // 收尾说明就悄悄没了。OpenAI 兼容那边 llm.js 见到 none 自己不带 tools
+        tools: tools || [],
+        toolChoice: "none",
         signal: AbortSignal.timeout(Math.min(90000, config.agent.llm_timeout_ms || 300000)),
         onTextDelta: (delta) => emit({ type: "text", delta, depth }),
       });
@@ -1903,7 +1906,9 @@ function modePrompt(mode) {
         stats.cached = (stats.cached || 0) + (result.usage.cached || 0);
         stats.calls++;
       }
-      history.push({ role: "assistant", text: result.text, toolCalls: [], raw: result.raw });
+      // 不认 tool_choice 的中转可能还是回了 tool_use 块：没人执行，留在 raw 里就是一条配不上对的调用
+      const raw = Array.isArray(result.raw) ? result.raw.filter((b) => !b || b.type !== "tool_use") : result.raw;
+      history.push({ role: "assistant", text: result.text, toolCalls: [], raw });
       return result.text || "";
     } catch (e) {
       console.warn("[agent] 收尾说明没拿到:", e.message);
@@ -2822,6 +2827,11 @@ function modePrompt(mode) {
           if (Array.isArray(result.raw)) result.raw = result.raw.filter((b) => !(b && b.type === "tool_use" && ids.has(b.id)));
         }
       }
+      // 参数不是对象（有的服务无参工具发 "null"，也有发数组的）一律当空参数：下游到处读 input.xxx，
+      // 一个 null 就能把整个任务带走；按空参数走，缺什么由工具自己报给模型改
+      for (const tc of result.toolCalls || []) {
+        if (!tc.input || typeof tc.input !== "object" || Array.isArray(tc.input)) tc.input = {};
+      }
       history.push({
         role: "assistant",
         text: result.text,
@@ -2858,6 +2868,12 @@ function modePrompt(mode) {
       }
 
       if (!result.toolCalls.length) {
+        // 打回＝指望它下一步改。可这已经是最后一步的话，continue 出去循环就结束了——得记成撞了步数上限，
+        // 不然被打回的那句「做完了」会当成功交差，收尾说明和自动续跑都不走
+        const bounce = (content) => {
+          history.push({ role: "user", content });
+          if (step === maxSteps - 1) stopNote = `已达最大步数（${maxSteps} 步）`;
+        };
         // 成果核验：声称已生成的文件不在磁盘上、或者只是个 0 字节空壳 → 打回去重做（最多打回 2 次）
         const bad = missingDeliverables(result.text);
         if (bad.length && honestyRetries < 2 && Date.now() < deadline - 30000) {
@@ -2868,10 +2884,7 @@ function modePrompt(mode) {
           if (gone.length) parts.push(`磁盘上根本不存在：${gone.slice(0, 5).join("、")}`);
           if (empty.length) parts.push(`文件在但是 0 字节空文件：${empty.slice(0, 5).join("、")}`);
           const list = parts.join("；");
-          history.push({
-            role: "user",
-            content: `【系统自动核验】你上一条回复声称已生成/可获取这些文件，但核验不通过——${list}。在文字里写命令和「已生成成功」不等于执行；写出来是空文件也不算交付。现在立即用 write_file / run_node / run_shell 真实生成一遍，写完用 read_file 或 list_files 读回来确认内容真的在里面，再如实汇报。如果执行失败，就如实报告失败原因和报错内容。严禁再声称不存在或空的文件已生成。`,
-          });
+          bounce(`【系统自动核验】你上一条回复声称已生成/可获取这些文件，但核验不通过——${list}。在文字里写命令和「已生成成功」不等于执行；写出来是空文件也不算交付。现在立即用 write_file / run_node / run_shell 真实生成一遍，写完用 read_file 或 list_files 读回来确认内容真的在里面，再如实汇报。如果执行失败，就如实报告失败原因和报错内容。严禁再声称不存在或空的文件已生成。`);
           emit({ type: "text", delta: callout.line("warn", `**成果核验未通过**：${list}，已自动打回要求真实执行。`), depth });
           continue;
         }
@@ -2880,12 +2893,9 @@ function modePrompt(mode) {
         const faked = unseenVisualClaims(result.text, sawImage);
         if (faked && visionRetries < 1 && Date.now() < deadline - 30000) {
           visionRetries++;
-          history.push({
-            role: "user",
-            content: `【系统自动核验】你在结语里写了「${faked}」，可这一趟 look_at_image 一次都没成功看到图——没看过就不算核对过。二选一，别有第三种：` +
-              `（1）现在真调一次 look_at_image 带上具体问题去看，看成了再照实说；（2）看不成（渠道报错/没余额/返回空正文）就把这句核对的话删掉，` +
-              `明说「没能核对图上的文字，请你自己过一眼」。严禁把没看到的内容当作看过写进结论。`,
-          });
+          bounce(`【系统自动核验】你在结语里写了「${faked}」，可这一趟 look_at_image 一次都没成功看到图——没看过就不算核对过。二选一，别有第三种：` +
+            `（1）现在真调一次 look_at_image 带上具体问题去看，看成了再照实说；（2）看不成（渠道报错/没余额/返回空正文）就把这句核对的话删掉，` +
+            `明说「没能核对图上的文字，请你自己过一眼」。严禁把没看到的内容当作看过写进结论。`);
           emit({ type: "text", delta: callout.line("warn", "**成果核验未通过**：它说核对过图上的文字，但这一趟一次都没真看成过图，已打回要求真看或如实说明。"), depth });
           continue;
         }
@@ -2898,23 +2908,19 @@ function modePrompt(mode) {
         openLeft = left.open.length ? left.open : todoOpen;
         if (!left.open.length && todoOpen.length && finishRetries < 2 && Date.now() < deadline - 30000 && !(stopSignal && stopSignal.aborted)) {
           finishRetries++;
-          history.push({
-            role: "user",
-            content: `【系统·收尾核验】你停下来了，但你自己列的进度清单里这些还没标 done：\n\n${todoOpen.slice(0, 12).map((t, i) => `${i + 1}. ${t}`).join("\n")}\n\n` +
-              `接着把它们做完，每做完一条就 todo_write 把它标成 done。确实做不了的（缺权限、缺凭证、要用户拍板），在清单里把它改成 done 并在内容后面注明「（做不了：原因）」，最终回复里单独讲清楚。清单列多了、有几条其实不用做，也照实改掉，别空着收尾。`,
-          });
+          bounce(`【系统·收尾核验】你停下来了，但你自己列的进度清单里这些还没标 done：\n\n${todoOpen.slice(0, 12).map((t, i) => `${i + 1}. ${t}`).join("\n")}\n\n` +
+            `接着把它们做完，每做完一条就 todo_write 把它标成 done。确实做不了的（缺权限、缺凭证、要用户拍板），在清单里把它改成 done 并在内容后面注明「（做不了：原因）」，最终回复里单独讲清楚。清单列多了、有几条其实不用做，也照实改掉，别空着收尾。`);
           emit({ type: "text", delta: callout.line("wait", `**还没做完，已自动打回继续做**：进度清单里还有 ${todoOpen.length} 条没打勾（${todoOpen.slice(0, 3).join("、")}${todoOpen.length > 3 ? " 等" : ""}）。`), depth });
           continue;
         }
         if ((left.open.length || admits) && finishRetries < 2 && Date.now() < deadline - 30000 && !(stopSignal && stopSignal.aborted)) {
           finishRetries++;
           const listed = left.open.slice(0, 12).map((t, i) => `${i + 1}. ${t}`).join("\n");
-          history.push({
-            role: "user",
-            content: left.open.length
+          bounce(
+            left.open.length
               ? `【系统·收尾核验】你停下来了，但工作目录的 PROGRESS.md 里这些条目还没打勾：\n\n${listed}${left.open.length > 12 ? `\n…（共 ${left.open.length} 项未完成）` : ""}\n\n任务没做完不许收尾。现在接着做这些没打勾的（做完一项就 edit_file 把它改成 - [x]），绝不重做已完成的部分。如果其中某项确实做不了——缺权限、缺凭证、需要用户拍板——就把它在 PROGRESS.md 里标成 - [x] 并在条目后面注明「（做不了：原因）」，然后在最终回复里单独列一节「需要你处理」讲清楚。严禁把没做的事说成做完了。`
-              : `【系统·收尾核验】你在回复里说还有没做完的部分，但已经不再动手了。任务没做完不许收尾：现在立即把剩下的做完；如果确实做不了（缺权限、缺凭证、需要用户拍板），就明说是哪一项、卡在哪、需要用户做什么，别用「后续再补」把它糊过去。如果其实已经全部做完了，就直接明确说一句「全部完成」并给出最终交付清单。`,
-          });
+              : `【系统·收尾核验】你在回复里说还有没做完的部分，但已经不再动手了。任务没做完不许收尾：现在立即把剩下的做完；如果确实做不了（缺权限、缺凭证、需要用户拍板），就明说是哪一项、卡在哪、需要用户做什么，别用「后续再补」把它糊过去。如果其实已经全部做完了，就直接明确说一句「全部完成」并给出最终交付清单。`
+          );
           emit({
             type: "text",
             delta: left.open.length
@@ -2931,7 +2937,7 @@ function modePrompt(mode) {
             const bad = await HK.beforeDone(hk, { cwd: progressDir(), stopSignal });
             if (bad && hookRetries < 2 && Date.now() < deadline - 30000) {
               hookRetries++;
-              history.push({ role: "user", content: bad.text });
+              bounce(bad.text);
               emit({ type: "text", delta: callout.line("wait", `**done 钩子没过，已打回接着改**：\`${bad.hook.run}\` ${bad.why}。`), depth });
               continue;
             }
@@ -2946,7 +2952,7 @@ function modePrompt(mode) {
         break;
       }
 
-      const runOne = async (tc) => {
+      const runOneInner = async (tc) => {
         if (stopSignal && stopSignal.aborted) return { id: tc.id, content: "（用户已停止任务，该工具未执行）", isError: true };
         emit({
           type: "tool_use",
@@ -3028,6 +3034,18 @@ function modePrompt(mode) {
         // 死循环判定用的都是原文，只有进历史的这一份换掉
         return spillToolResult({ id: tc.id, name: tc.name, content: String(r.content), isError: r.isError }, tc.input);
       };
+      // runOne 绝不往外抛：上面 try 只包住了工具本身，前后的事件、记账、落盘出了岔子照样会冒上来。
+      // 冒上来的话并发那一批里别的调用已经跑完（出图出片是真花了钱），结果却全被记成「未拿到结果」，
+      // 模型只会再下一单。就地变成这一个调用的报错，别的照常交差
+      const runOne = (tc) =>
+        runOneInner(tc).catch((e) => {
+          const msg = (e && e.message) || String(e);
+          console.warn(`[agent] ${tc.name} 调用处理出错:`, msg);
+          const r = { id: tc.id, name: tc.name, content: `（${tc.name} 执行时抛出异常：${msg}）`, isError: true };
+          // 卡片可能已经亮了「进行中」，补一条结果把它关上
+          try { emit({ type: "tool_result", id: tc.id, name: tc.name, depth, isError: true, outcome: "异常", preview: r.content }); } catch {}
+          return r;
+        });
 
       // 只读工具（搜索/抓网页/读文件）并发跑：深度研究一口气抓五个链接，串行是五次网络等待
       // 叠加，并发只花最慢那一次。但并发只吃「连续的只读段」——会动文件、跑命令、委派专家的
@@ -3051,10 +3069,14 @@ function modePrompt(mode) {
       } catch (e) {
         // 兜底的第二道：无论如何都别让「已 push 的 assistant + 没 push 的工具结果」这种
         // 半截状态留在历史里落盘。缺谁补谁，push 完再把异常抛上去。
+        // 并发那一批里已经跑完的（mapPool 挂在 e.partial 上）照实记，别跟着一起算成没拿到
+        if (e && Array.isArray(e.partial)) toolResults.push(...e.partial.filter(Boolean));
         const done = new Set(toolResults.map((r) => r.id));
         for (const tc of result.toolCalls) {
           if (!done.has(tc.id)) toolResults.push({ id: tc.id, name: tc.name, content: `（${tc.name} 未拿到结果：${(e && e.message) || e}）`, isError: true });
         }
+        const order = new Map(result.toolCalls.map((tc, i) => [tc.id, i]));
+        toolResults.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
         history.push({ role: "tool", results: toolResults });
         throw e;
       }
@@ -3130,7 +3152,7 @@ function modePrompt(mode) {
       // 手动停止不花钱；模型响应超时也跳过——模型都挂起了，再拿它写收尾只是多等一轮超时
       // 输出截断也跳过：它刚连着两次写爆上限，再让它写一段收尾大概率还是截断，白花一次钱
       if (!(stopSignal && stopSignal.aborted) && !stopNote.startsWith("模型响应超时") && !stopNote.startsWith(TRUNC_STOP)) {
-        const wrapped = await wrapUp({ history, system, systemStableLen, stopNote, emit, depth, stats, llmOverride: L, traceNode: tr });
+        const wrapped = await wrapUp({ history, system, systemStableLen, stopNote, emit, depth, stats, llmOverride: L, traceNode: tr, tools });
         if (wrapped) finalText = wrapped;
       }
       // 「没做完」和「撞上限」得给不同的话：前者要把还差哪几项摆出来，后者才是叫用户调上限
@@ -3255,18 +3277,28 @@ function splitParallelRuns(calls, readOnly, gen) {
   return groups;
 }
 
-/** 限流并发跑一批，结果按原顺序返回（工具结果的顺序要和 tool_calls 对得上） */
+/**
+ * 限流并发跑一批，结果按原顺序返回（工具结果的顺序要和 tool_calls 对得上）。
+ * 有一个抛了：不再开新的（别在整批已经算失败之后还去出图扣钱），在跑的等它们跑完，
+ * 再把第一个异常抛出去，已拿到的结果挂在 err.partial 上（没跑的位置是空的）
+ */
 async function mapPool(items, limit, fn) {
   const out = new Array(items.length);
   let next = 0;
+  let failed = null;
   await Promise.all(
     Array.from({ length: Math.min(limit, items.length) }, async () => {
-      while (next < items.length) {
+      while (next < items.length && !failed) {
         const i = next++;
-        out[i] = await fn(items[i], i);
+        try {
+          out[i] = await fn(items[i], i);
+        } catch (e) {
+          if (!failed) failed = e instanceof Error ? e : new Error(String(e));
+        }
       }
     })
   );
+  if (failed) throw Object.assign(failed, { partial: out });
   return out;
 }
 

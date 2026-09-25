@@ -296,7 +296,7 @@ function anthropicSystemBlocks(system, stableLen) {
   return [{ type: "text", text: system, cache_control: cc }];
 }
 
-async function anthropicChat(cfg, { system, systemStableLen, history, tools, onTextDelta, onActivity, signal }) {
+async function anthropicChat(cfg, { system, systemStableLen, history, tools, toolChoice, onTextDelta, onActivity, signal }) {
   let Anthropic;
   try {
     Anthropic = require("@anthropic-ai/sdk");
@@ -340,8 +340,9 @@ async function anthropicChat(cfg, { system, systemStableLen, history, tools, onT
       ...think.params,
       system: anthropicSystemBlocks(system, systemStableLen),
       messages: amsgs,
-      // 空数组要整个字段不发：不给工具是一种正当用法（比如强制收尾那一问），
-      // 而一部分服务端会把 tools: [] 判成参数非法直接 400
+      // 空数组要整个字段不发：一部分服务端会把 tools: [] 判成参数非法直接 400。
+      // 但历史里带着 tool_use/tool_result 时 Anthropic 要求必须定义 tools，所以强制收尾那一问
+      // 照发工具表、再用 tool_choice none 禁掉调用（工具表在缓存前缀最前面，照发还不破缓存）
       ...(tools && tools.length
         ? {
             tools: tools.map((t) => ({
@@ -349,6 +350,7 @@ async function anthropicChat(cfg, { system, systemStableLen, history, tools, onT
               description: t.description,
               input_schema: t.input_schema,
             })),
+            ...(toolChoice === "none" ? { tool_choice: { type: "none" } } : {}),
           }
         : {}),
     },
@@ -399,14 +401,14 @@ function openaiUsage(u) {
 function toOpenAIMessages(system, rawHistory) {
   const cleaned = sendableHistory(rawHistory, false);
   const history = repairToolPairs(cleaned);
-  // 跳过了空 assistant 才会出现两条 user 挨着；有的服务端（如 deepseek-reasoner）不收连续同角色，
-  // 并成一条。没跳过就一条都不动，免得改了缓存前缀
-  const mergeUsers = cleaned.length < (Array.isArray(rawHistory) ? rawHistory.length : 0);
+  // 两条 user 挨着在循环里很常见：核验打回后又插话、压缩摘要后接保留的那句、打回后自动续跑、
+  // 完成钩子、截断追问……有的服务端（如 deepseek-reasoner、要求一问一答交替的 vLLM 模板）
+  // 不收连续同角色，一律并成一条。history 只追加，合并结果是它的纯函数，不会改动前面的缓存前缀
   const messages = [{ role: "system", content: system }];
   for (const entry of history) {
     if (entry.role === "user") {
       const last = messages[messages.length - 1];
-      if (mergeUsers && last && last.role === "user" && typeof last.content === "string" && typeof entry.content === "string") {
+      if (last && last.role === "user" && typeof last.content === "string" && typeof entry.content === "string") {
         last.content += "\n\n" + entry.content;
       } else {
         messages.push({ role: "user", content: entry.content });
@@ -462,6 +464,8 @@ function rescueLeakedToolCalls(raw) {
     } catch {
       continue;
     }
+    // 参数得是个对象；null/数组/标量按没带参数算，免得下游读 input.xxx 直接炸
+    if (!input || typeof input !== "object" || Array.isArray(input)) input = {};
     toolCalls.push({ id: `rescued_${toolCalls.length}`, name, input });
   }
   // 标记之前的那段还是模型的正常叙述，留着；标记之后全是调用负载，砍掉
@@ -527,7 +531,7 @@ function outputCapField(cfg) {
   return host === "api.openai.com" || host.endsWith(".openai.azure.com") ? "max_completion_tokens" : "max_tokens";
 }
 
-async function openaiChat(cfg, { system, history, tools, onTextDelta, onActivity, signal }) {
+async function openaiChat(cfg, { system, history, tools, toolChoice, onTextDelta, onActivity, signal }) {
   // 兜底那句 "ollama" 是给本地 Ollama 的：它不校验 Key，但 Authorization 头缺了会被某些版本拒掉
   const apiKey = headerKey(cfg, "openai") || "ollama";
   const useStream = cfg.stream !== false;
@@ -552,8 +556,10 @@ async function openaiChat(cfg, { system, history, tools, onTextDelta, onActivity
       stream: useStream,
       ...(useStream ? { stream_options: { include_usage: true } } : {}), // 流式也带回 token 用量（DeepSeek/OpenRouter 等均支持）
       messages: toOpenAIMessages(system, history),
-      // 同上：OpenAI 兼容接口对 tools: [] 一律报「数组不能为空」，没有工具就别带这个字段
-      ...(tools && tools.length
+      // 同上：OpenAI 兼容接口对 tools: [] 一律报「数组不能为空」，没有工具就别带这个字段。
+      // 强制收尾（toolChoice none）也不带：这边历史里有工具消息不给 tools 照样收，
+      // 而不少兼容服务不认 tool_choice，带上工具表反倒可能又调一次工具
+      ...(tools && tools.length && toolChoice !== "none"
         ? {
             tools: tools.map((t) => ({
               type: "function",
@@ -618,14 +624,18 @@ async function openaiChat(cfg, { system, history, tools, onTextDelta, onActivity
   let finishReason = null;
   let usage = null; // 最后一个 chunk 里的 token 用量（stream_options.include_usage）
   const tcByIndex = new Map(); // index -> {id, name, args}
+  // 有的兼容网关不给 index：靠 id 认是哪一个调用，没 id 的续片接在上一个调用后面
+  const tcKeyById = new Map();
+  let tcLastKey = null;
   const guard = createLeakGuard(onTextDelta);
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();
   let buf = "";
   while (true) {
     const { done, value } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
+    // 收流时冲掉解码器残留字节并补一个换行：最后一行 data: 不带换行就收流的上游，
+    // 那一行不补就整行丢了（finish_reason、用量都在里面）
+    buf += done ? decoder.decode() + "\n" : decoder.decode(value, { stream: true });
     let idx;
     while ((idx = buf.indexOf("\n")) >= 0) {
       const line = buf.slice(0, idx).trim();
@@ -664,13 +674,25 @@ async function openaiChat(cfg, { system, history, tools, onTextDelta, onActivity
         guard(delta.content);
       }
       for (const tc of delta.tool_calls || []) {
-        const slot = tcByIndex.get(tc.index) || { id: "", name: "", args: "" };
-        if (tc.id) slot.id = tc.id;
-        if (tc.function?.name) slot.name += tc.function.name;
+        let key;
+        if (tc.index != null && tc.index !== "" && Number.isInteger(Number(tc.index))) key = Number(tc.index);
+        else if (tc.id && tcKeyById.has(tc.id)) key = tcKeyById.get(tc.id);
+        else if (tc.id || tcLastKey === null) key = tcByIndex.size ? Math.max(...tcByIndex.keys()) + 1 : 0;
+        else key = tcLastKey;
+        const slot = tcByIndex.get(key) || { id: "", name: "", args: "" };
+        if (tc.id) {
+          slot.id = tc.id;
+          tcKeyById.set(tc.id, key);
+        }
+        // 有的服务每个分片都把完整名字再发一遍，照拼会拼成 read_fileread_file
+        const nm = tc.function?.name;
+        if (nm && nm !== slot.name) slot.name += nm;
         if (tc.function?.arguments) slot.args += tc.function.arguments;
-        tcByIndex.set(tc.index, slot);
+        tcByIndex.set(key, slot);
+        tcLastKey = key;
       }
     }
+    if (done) break;
   }
 
   const toolCalls = [...tcByIndex.entries()]
@@ -729,7 +751,10 @@ function keepBadArgs(args, e) {
 function parseToolArgs(raw, name) {
   const s = String(raw == null ? "" : raw);
   try {
-    return JSON.parse(s || "{}");
+    const v = JSON.parse(s || "{}");
+    // 有的本地服务无参工具会发 "null"，也可能是数组/标量：一律当没带参数，
+    // 不然下游读 input.xxx 直接抛异常，一个坏调用就把整个任务带走
+    return v && typeof v === "object" && !Array.isArray(v) ? v : {};
   } catch (e) {
     const head = sliceFirstObject(s);
     if (head && head.length < s.length) {
@@ -798,7 +823,23 @@ async function chatWithRetry(fn, args) {
         const info = { kind: "retry", attempt: attempt + 1, total: RETRY_DELAYS.length, delayMs: RETRY_DELAYS[attempt] };
         try { args.onStatus(`上游出错，${RETRY_DELAYS[attempt] / 1000} 秒后自动重试（第 ${attempt + 1}/${RETRY_DELAYS.length} 次）：${msg.slice(0, 100)}`, info); } catch {}
       }
-      await new Promise((r) => setTimeout(r, RETRY_DELAYS[attempt]));
+      // 退避也要听停止信号：用户在等重试的那几秒里点了停，不能干等满 2/5/10 秒
+      await new Promise((resolve, reject) => {
+        const sig = args.signal;
+        // 抛 signal 自带的原因（手动停/卡住是 AbortError，超预算是 TimeoutError），agent 那边按名字认
+        const abortErr = () =>
+          sig.reason instanceof Error ? sig.reason : Object.assign(new Error("This operation was aborted"), { name: "AbortError" });
+        if (sig && sig.aborted) return reject(abortErr());
+        const onAbort = () => {
+          clearTimeout(t);
+          reject(abortErr());
+        };
+        const t = setTimeout(() => {
+          if (sig) sig.removeEventListener("abort", onAbort);
+          resolve();
+        }, RETRY_DELAYS[attempt]);
+        if (sig) sig.addEventListener("abort", onAbort, { once: true });
+      });
     }
   }
 }

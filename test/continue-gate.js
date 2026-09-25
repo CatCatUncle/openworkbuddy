@@ -157,9 +157,9 @@ const out = (...answers) => ({ ok: true, answers });
       return {
         provider: "mock", model: "scripted",
         calls: () => calls,
-        async chat({ tools: ts }) {
+        async chat({ tools: ts, toolChoice }) {
           calls++;
-          if (!ts.length) return { text: "资料收集完了，正文还没写。", toolCalls: [], stopReason: "end", usage: { prompt: 10, completion: 5 } };
+          if (!ts.length || toolChoice === "none") return { text: "资料收集完了，正文还没写。", toolCalls: [], stopReason: "end", usage: { prompt: 10, completion: 5 } };
           return {
             text: "接着做。",
             toolCalls: [{ id: "tc_" + calls, name: "run_node", input: { code: "console.log(1)", purpose: "占位" } }],
@@ -376,6 +376,44 @@ const out = (...answers) => ({ ok: true, answers });
       eq(ev.retry && ev.retry.delayMs, 2000, "  └ retry.delayMs = 2000");
       ok(/上游出错，2 秒后自动重试/.test(ev.text || "") && ev.depth === 0, "  └ text 和 depth 照旧：老前端只读 text，看到的还是那句话", ev);
       ok(st.filter((e) => !/上游出错/.test(e.text || "")).every((e) => !("retry" in e)), "  └ 别的状态事件不带 retry（界面不会把普通状态当成重试）");
+    }
+
+    // D 等重试的那几秒里按了停：当场收，不干等满 2/5/10 秒（界面上倒计时还在走，用户以为停不下来）
+    {
+      const { getEventListeners } = require("events");
+      const ac = new AbortController();
+      let n = 0, threw = null;
+      const t0 = Date.now();
+      const stopAt = setTimeout(() => ac.abort(), 100); // 第一次 503 之后、2 秒退避中间按停
+      try {
+        await chatWithRetry(async () => { n++; throw new Error("LLM 接口错误 503: upstream busy"); }, { signal: ac.signal, onStatus: () => {} });
+      } catch (e) { threw = e; }
+      clearTimeout(stopAt);
+      const took = Date.now() - t0;
+      ok(threw && threw.name === "AbortError", "★★退避中按了停：抛 AbortError★★ agent 按这个名字认成停止，不当成上游报错", threw && { name: threw.name, msg: String(threw.message).slice(0, 60) });
+      ok(took < 1500, "  └ 当场收，没干等满 2 秒", took);
+      eq(n, 1, "  └ 停了就不再发下一次请求");
+
+      // 超预算也一样：signal 自带的原因原样抛出去（TimeoutError），agent 才分得清「超时」和「手动停」
+      let threw2 = null;
+      const t1 = Date.now();
+      try {
+        await chatWithRetry(async () => { throw new Error("LLM 接口错误 429: rate limited"); }, { signal: AbortSignal.timeout(80) });
+      } catch (e) { threw2 = e; }
+      ok(threw2 && threw2.name === "TimeoutError" && Date.now() - t1 < 1500, "  └ 时限到了也当场收，抛的是 TimeoutError", threw2 && threw2.name);
+
+      // 反向对照：没按停就照常等完、照常重试成功，等完把自己挂的监听摘掉（不然长任务一步挂一个，越攒越多）
+      const realST = global.setTimeout;
+      global.setTimeout = (fn, ms, ...a) => realST(fn, 0, ...a);
+      const ac2 = new AbortController();
+      let m = 0, res = null;
+      try {
+        res = await chatWithRetry(async () => { if (++m === 1) throw new Error("LLM 接口错误 503: upstream busy"); return { text: "好了", toolCalls: [] }; }, { signal: ac2.signal });
+      } finally {
+        global.setTimeout = realST;
+      }
+      ok(res && res.text === "好了" && m === 2, "  └（对照）没按停：等完照常重试，第二次成功", { m, res });
+      eq(getEventListeners(ac2.signal, "abort").length, 0, "  └（对照）等完之后 abort 监听已经摘掉");
     }
 
     jev.askMetered = realAsk;

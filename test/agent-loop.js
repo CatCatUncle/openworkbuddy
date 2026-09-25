@@ -175,11 +175,12 @@ const cfgOf = (agent, extra) => ({ agent: { max_steps: 6, tool_timeout_ms: 30000
 
 /** 在一个全新的临时工作目录里真跑一趟 runTask，把事件和目录一起交回来 */
 let runSeq = 0;
-async function runOnce({ llm, history, config, ...rest }) {
+async function runOnce({ llm, history, config, setup, ...rest }) {
   // 建在 TMP 里面、跟着 TMP 一起收，用不着再 mkdtemp 一层：repo-hygiene【7】只认括号里写了 tmpdir() 的，
   // 嵌套的 mkdtemp 会被它当成「建在 tmp 之外」
   const dir = path.join(TMP, "run-" + (++runSeq));
   fs.mkdirSync(dir);
+  if (setup) setup(dir); // 开跑前先摆好现场（比如一份还没打完勾的 PROGRESS.md）
   const events = [];
   const rt = createAgentRuntime({ config: config || cfgOf(), llm, mcpManager: new McpManager(), experts: EXPERTS });
   const r = await tools.withWorkspace(dir, () => rt.runTask({ history, emit: (e) => events.push(e), ...rest }));
@@ -193,8 +194,9 @@ function scripted(script) {
   return {
     provider: "mock", model: "scripted",
     seen, wraps: () => wraps,
-    async chat({ history, tools: ts }) {
-      if (!ts || !ts.length) { wraps++; return { text: "（收尾）", toolCalls: [], stopReason: "end_turn", usage: { prompt: 1, completion: 1 } }; }
+    async chat({ history, tools: ts, toolChoice }) {
+      // 强制收尾那一问：工具表照发但 toolChoice 是 none
+      if (!ts || !ts.length || toolChoice === "none") { wraps++; return { text: "（收尾）", toolCalls: [], stopReason: "end_turn", usage: { prompt: 1, completion: 1 } }; }
       seen.push(JSON.parse(JSON.stringify(history)));
       const r = script[Math.min(seen.length - 1, script.length - 1)];
       return JSON.parse(JSON.stringify({ usage: { prompt: 10, completion: 5 }, raw: undefined, ...r }));
@@ -608,7 +610,7 @@ const emptyAN = (m) => m.role === "assistant" && (!m.content || (Array.isArray(m
       return {
         provider: "mock", model: "scripted", ...extra, seen,
         async chat(args) {
-          if (args.tools && args.tools.length) seen.push({ system: args.system, stableLen: args.systemStableLen });
+          if (args.tools && args.tools.length && args.toolChoice !== "none") seen.push({ system: args.system, stableLen: args.systemStableLen });
           return { text: "好的。", toolCalls: [], stopReason: "end_turn", usage: { prompt: 1, completion: 1 } };
         },
       };
@@ -663,6 +665,7 @@ const emptyAN = (m) => m.role === "assistant" && (!m.content || (Array.isArray(m
         const bodies = [];
         const srv = http.createServer((req, res) => {
           let b = "";
+          req.setEncoding("utf8"); // 中文会被切在两块中间，按 Buffer 拼就是乱码
           req.on("data", (c) => (b += c));
           req.on("end", () => {
             try { bodies.push(JSON.parse(b)); } catch { bodies.push(null); }
@@ -693,7 +696,7 @@ const emptyAN = (m) => m.role === "assistant" && (!m.content || (Array.isArray(m
         const llmW = {
           provider: "mock", model: "scripted",
           async chat(args) {
-            const n = (args.tools || []).length;
+            const n = args.toolChoice === "none" ? 0 : (args.tools || []).length;
             seenW.push({ n, stableLen: args.systemStableLen, system: String(args.system || "") });
             if (n) return { text: "看一眼。", toolCalls: [{ id: "w" + seenW.length, name: "list_files", input: {} }], stopReason: "tool_use", usage: { prompt: 1, completion: 1 } };
             return { text: "（收尾）", toolCalls: [], stopReason: "end_turn", usage: { prompt: 1, completion: 1 } };
@@ -992,6 +995,325 @@ const emptyAN = (m) => m.role === "assistant" && (!m.content || (Array.isArray(m
         ok(iN >= 0 && iN < iC && iC < iE && iC < iF, "★runTask 里：normalizeHistory → closeDanglingCalls → 第一个事件 / 引擎分岔★", { iN, iC, iE, iF });
       }
     }
+    // ── ⑭ 最后一步被核验打回 ─────────────────────────────────────────────────
+    console.log("\n⑭ 最后一步被核验打回：记成撞上限，照样收尾、续跑，不当成功交差");
+    {
+      const progress = (dir) => fs.writeFileSync(path.join(dir, "PROGRESS.md"), "# 目标\n- [x] 第一章\n- [ ] 第二章\n- [ ] 第三章\n");
+      const claimDone = () => scripted([{ text: "全部完成了。", toolCalls: [], stopReason: "end_turn" }]);
+
+      // A 进度档还有没打勾的，它说做完了，偏偏是最后一步
+      {
+        const llm = claimDone();
+        const { r, events, history } = await runOnce({ llm, setup: progress, history: [{ role: "user", content: "写三章小说" }], config: cfgOf({ max_steps: 1, auto_continue_rounds: 0 }) });
+        ok(/^已达最大步数/.test(r.stopped || ""), "★★最后一步被打回：stopped 记成撞了步数上限★★ 以前是 null，被打回的那句「做完了」当成功交差", r.stopped);
+        ok(events.some((e) => e.type === "limit"), "  └ 发了 limit 事件（界面才知道是被上限掐断的）");
+        eq(llm.wraps(), 1, "  └ 走了强制收尾那一问（说清做到哪、还差什么）");
+        const last = history[history.length - 1];
+        ok(last.role === "assistant" && userTexts(history).some((t) => t.startsWith("【系统·收尾核验】")), "  └ 打回那句留在历史里，后面接着收尾说明，不是一句没人回的话挂在末尾", history.map((e) => e.role));
+        ok(/（收尾）/.test(r.finalText) && !/^全部完成了。$/.test(r.finalText), "  └ 交给用户的不再是被打回的那句「全部完成了」", r.finalText);
+      }
+      // B 还有续跑轮次：交给外层续跑，新一轮有新的步数
+      {
+        const llm = claimDone();
+        const { events } = await runOnce({ llm, setup: progress, history: [{ role: "user", content: "写三章小说" }], config: cfgOf({ max_steps: 1, auto_continue_rounds: 2 }) });
+        ok(events.filter((e) => e.type === "auto_continue").length >= 1, "★最后一步被打回、还有续跑轮次：真的续跑了★ 以前 continuable 判 false，直接收摊", events.filter((e) => e.type === "auto_continue").length);
+      }
+      // C 成果核验（声称生成了不存在的文件）也一样
+      {
+        const llm = scripted([{ text: "报告已生成：report.docx，请查收。", toolCalls: [], stopReason: "end_turn" }]);
+        const { r, events } = await runOnce({ llm, history: [{ role: "user", content: "写个报告" }], config: cfgOf({ max_steps: 1, auto_continue_rounds: 0 }) });
+        ok(/^已达最大步数/.test(r.stopped || "") && events.some((e) => e.type === "limit") && llm.wraps() === 1, "★成果核验在最后一步打回：同样记成撞上限、走收尾★", { stopped: r.stopped, wraps: llm.wraps() });
+      }
+      // 接线：五处打回都走同一个 bounce，不许再有哪处自己 push 完直接 continue
+      {
+        const at = AGENT_SRC.indexOf("const bounce = (content) =>");
+        const end = AGENT_SRC.indexOf("const runOneInner = async (tc) =>", at);
+        const body = at > 0 && end > at ? AGENT_SRC.slice(at, end) : "";
+        eq((body.match(/history\.push\(/g) || []).length, 1, "  └ 纯文字分支里只剩 bounce 自己那一处 push（新加的核验忘了走 bounce 就会红）");
+        ok((body.match(/\bbounce\(/g) || []).length >= 5, "  └ 成果/看图/清单/进度档/done 钩子五处打回都走 bounce", (body.match(/\bbounce\(/g) || []).length);
+      }
+      // 反向对照 1：最后一步正常答完、没被打回——不许凭空记成撞上限
+      {
+        const llm = scripted([{ text: "你好，有什么要做的？", toolCalls: [], stopReason: "end_turn" }]);
+        const { r, events } = await runOnce({ llm, history: [{ role: "user", content: "你好" }], config: cfgOf({ max_steps: 1, auto_continue_rounds: 0 }) });
+        ok(r.stopped === null && llm.wraps() === 0 && !events.some((e) => e.type === "limit"), "  └（对照）最后一步正常答完：stopped 还是 null，不收尾", { stopped: r.stopped, wraps: llm.wraps() });
+      }
+      // 反向对照 2：不是最后一步被打回的，打回额度用完照旧记「任务还有 N 项没做完」，不被改成撞上限
+      {
+        const llm = claimDone();
+        const { r } = await runOnce({ llm, setup: progress, history: [{ role: "user", content: "写三章小说" }], config: cfgOf({ max_steps: 3, auto_continue_rounds: 0 }) });
+        ok(/^任务还有 2 项没做完/.test(r.stopped || ""), "  └（对照）步数够、打回两次用完：还是「任务还有 2 项没做完」", r.stopped);
+      }
+    }
+
+    // ── ⑮ 工具参数不是对象 / 并发一批里有一个炸了 ──────────────────────────
+    console.log("\n⑮ 工具参数是 null 不许带走整个任务；并发一批里一个炸了，别的结果照实记");
+    {
+      const { parseToolArgs, rescueLeakedToolCalls } = llmMod._internals;
+      const { mapPool } = require(path.join(ROOT, "agent"));
+      eq(parseToolArgs("null"), {}, "★parseToolArgs：\"null\" 当成没带参数★（有的本地服务无参工具就这么发）");
+      eq([parseToolArgs("[1]"), parseToolArgs("7"), parseToolArgs("\"x\"")], [{}, {}, {}], "  └ 数组、数字、字符串也一样");
+      eq([parseToolArgs('{"path":"a"}'), parseToolArgs(""), parseToolArgs(undefined)], [{ path: "a" }, {}, {}], "  └（对照）正常对象、空参数照旧");
+      const resc = rescueLeakedToolCalls("<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>list_files\n```json\nnull\n```<｜tool▁call▁end｜>");
+      ok(resc.toolCalls.length === 1 && JSON.stringify(resc.toolCalls[0].input) === "{}", "  └ 正文里救回来的调用也一样：null 参数变 {}", resc.toolCalls);
+
+      // 真跑：模型直接给了 input: null（别的通道/桩也可能这么交）
+      {
+        const llm = scripted([
+          { text: "", toolCalls: [{ id: "n1", name: "list_files", input: null }], stopReason: "tool_use" },
+          { text: "看完了。", toolCalls: [], stopReason: "end_turn" },
+        ]);
+        let err = null, out = null;
+        try { out = await runOnce({ llm, history: [{ role: "user", content: "看看目录" }] }); } catch (e) { err = e; }
+        ok(!err && out && out.r.finalText === "看完了。", "★★参数是 null：任务没被带走，工具照常跑、模型接着答★★ 以前 runOne 读 tc.input.purpose 当场抛", err ? err.message : out.r.finalText);
+        const tr = out ? out.history.find((e) => e.role === "tool") : null;
+        ok(tr && tr.results.length === 1 && !/未拿到结果|抛出异常/.test(tr.results[0].content), "  └ 工具结果是真结果，不是「未拿到结果」", tr && tr.results);
+        eq(llm.seen.length, 2, "  └ 模型被问了第二次");
+      }
+
+      // 并发一批里第一个调用在工具前后的环节炸了（这里让界面事件抛异常来模拟）：
+      // 另外两个已经跑完的，结果得照实记，不能一起算成「未拿到结果」让模型再下一单
+      {
+        const llm = scripted([
+          { text: "", toolCalls: [
+            { id: "p0", name: "list_files", input: { path: "." } },
+            { id: "p1", name: "list_files", input: { path: ".", depth: 1 } },
+            { id: "p2", name: "list_files", input: { path: ".", depth: 2 } },
+          ], stopReason: "tool_use" },
+          { text: "好了。", toolCalls: [], stopReason: "end_turn" },
+        ]);
+        const evs = [];
+        const emit = (e) => { if (e.type === "tool_use" && e.id === "p0") throw new Error("界面那头炸了"); evs.push(e); };
+        let err = null, out = null;
+        try { out = await runOnce({ llm, history: [{ role: "user", content: "看看目录" }], emit }); } catch (e) { err = e; }
+        ok(!err && out && out.r.finalText === "好了。", "★★一个调用炸了：整个任务没被带走★★", err ? err.message : out.r.finalText);
+        const tr = out ? out.history.find((e) => e.role === "tool") : null;
+        const res = tr ? tr.results : [];
+        eq(res.map((x) => x.id), ["p0", "p1", "p2"], "  └ 三个结果都在，顺序跟调用对得上");
+        ok(res[0] && res[0].isError && /执行时抛出异常：界面那头炸了/.test(res[0].content), "  └ 炸了的那个如实报错", res[0]);
+        ok(res.slice(1).every((x) => !x.isError && !/未拿到结果/.test(x.content)), "★另外两个跑完的：结果照实记，不是「未拿到结果」★", res.slice(1).map((x) => String(x.content).slice(0, 30)));
+        ok(evs.some((e) => e.type === "tool_result" && e.id === "p0" && e.isError), "  └ 炸了的那个也补了 tool_result 事件（界面上那张卡不会一直转）");
+        ok(warns.some((w) => /list_files 调用处理出错/.test(w)), "  └ 留了一行日志（吞掉的异常必须留痕）");
+      }
+
+      // mapPool 自己：有一个抛了就不再开新的，在跑的等跑完，已拿到的挂在 err.partial 上
+      {
+        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+        const log = [];
+        let rejected = false, err = null;
+        try {
+          await mapPool([0, 1, 2, 3, 4], 2, async (x) => {
+            log.push("start " + x + (rejected ? "（已经报错之后）" : ""));
+            if (x === 0) throw new Error("boom");
+            await sleep(40);
+            log.push("finish " + x + (rejected ? "（已经报错之后）" : ""));
+            return x * 10;
+          });
+        } catch (e) { err = e; rejected = true; }
+        await sleep(150);
+        ok(err && err.message === "boom", "mapPool：第一个异常照样抛出去", err && err.message);
+        ok(!log.some((l) => /已经报错之后/.test(l)), "★★报错之后不再开新的、也没有还在跑的★★ 以前整批已判失败，剩下的出图出片还在接着扣钱", log);
+        eq(log.filter((l) => l.startsWith("start")).length, 2, "  └ 只开了出事前已经在跑的那两个");
+        ok(err && Array.isArray(err.partial) && err.partial[1] === 10 && err.partial[0] === undefined, "  └ 已拿到的结果挂在 err.partial 上", err && err.partial);
+        eq(await mapPool([1, 2, 3], 2, async (x) => x * 2), [2, 4, 6], "  └（对照）没出错：按原顺序交回全部结果");
+        ok(/e\.partial/.test(AGENT_SRC.slice(AGENT_SRC.indexOf("兜底的第二道"), AGENT_SRC.indexOf("兜底的第二道") + 800)), "  └ 主循环的兜底 catch 认 e.partial：跑完的不跟着算成没拿到");
+      }
+    }
+
+    // ── ⑯ 流式工具调用：不带 index、名字每片重发、最后一行不带换行 ────────────
+    console.log("\n⑯ 流式解析：不带 index 的两个调用不并成一个；最后一行没换行也不丢");
+    {
+      const http = require("http");
+      const sseServe = (lines) => new Promise((resolve) => {
+        const srv = http.createServer((req, res) => {
+          req.resume();
+          req.on("end", () => {
+            res.writeHead(200, { "Content-Type": "text/event-stream" });
+            for (const l of lines) res.write(l);
+            res.end();
+          });
+        });
+        srv.listen(0, "127.0.0.1", () => resolve(srv));
+      });
+      const d = (o) => "data: " + JSON.stringify(o) + "\n\n";
+      const tcChunk = (tcs, fin) => ({ choices: [{ delta: tcs ? { tool_calls: tcs } : {}, finish_reason: fin || null }] });
+      const TOOLS = [{ name: "read_file", description: "", input_schema: { type: "object" } }];
+      const call = async (lines) => {
+        const srv = await sseServe(lines);
+        try {
+          return await openaiChat({ base_url: `http://127.0.0.1:${srv.address().port}/v1`, model: "m", api_key: "sk-test-offline" }, { system: "s", history: [{ role: "user", content: "hi" }], tools: TOOLS });
+        } catch (e) {
+          return { error: e.message };
+        } finally {
+          await new Promise((r) => srv.close(r));
+        }
+      };
+      const w0 = warns.length;
+      const brief = (r) => (r.toolCalls || []).map((t) => ({ id: t.id, name: t.name, input: t.input }));
+
+      const a = await call([
+        d(tcChunk([{ id: "call_a", type: "function", function: { name: "read_file", arguments: "{\"path\":\"a.txt\"}" } }])),
+        d(tcChunk([{ id: "call_b", type: "function", function: { name: "read_file", arguments: "{\"path\":\"b.txt\"}" } }])),
+        d(tcChunk(null, "tool_calls")), "data: [DONE]\n\n"]);
+      eq(brief(a), [{ id: "call_a", name: "read_file", input: { path: "a.txt" } }, { id: "call_b", name: "read_file", input: { path: "b.txt" } }],
+        "★★不带 index 的两个调用：还是两个，名字不拼成 read_fileread_file★★ 以前第二个整个丢了");
+      ok(!warns.slice(w0).some((w) => /多出/.test(w)), "  └ 没有「参数后面多出 N 个字符」那行（以前两份参数被拼到一个槽里）", warns.slice(w0));
+
+      const a2 = await call([
+        d(tcChunk([{ id: "call_a", type: "function", function: { name: "read_file", arguments: "" } }])),
+        d(tcChunk([{ function: { arguments: "{\"path\":" } }])),
+        d(tcChunk([{ function: { arguments: "\"a.txt\"}" } }])),
+        d(tcChunk([{ id: "call_b", type: "function", function: { name: "read_file", arguments: "{\"path\":\"b.txt\"}" } }])),
+        d(tcChunk(null, "tool_calls")), "data: [DONE]\n\n"]);
+      eq(brief(a2), [{ id: "call_a", name: "read_file", input: { path: "a.txt" } }, { id: "call_b", name: "read_file", input: { path: "b.txt" } }],
+        "  └ 不带 index、参数分几片来（续片不带 id）：接在上一个调用后面");
+
+      const b = await call([
+        d(tcChunk([{ index: 0, id: "call_a", type: "function", function: { name: "read_file", arguments: "{\"path\":" } }])),
+        d(tcChunk([{ index: 0, function: { name: "read_file", arguments: "\"a.txt\"}" } }])),
+        d(tcChunk(null, "tool_calls")), "data: [DONE]\n\n"]);
+      eq(brief(b), [{ id: "call_a", name: "read_file", input: { path: "a.txt" } }], "★每片都重发一遍名字：名字不翻倍★");
+
+      const std = await call([
+        d(tcChunk([{ index: 0, id: "call_a", type: "function", function: { name: "read_file", arguments: "" } }])),
+        d(tcChunk([{ index: 1, id: "call_b", type: "function", function: { name: "read_file", arguments: "" } }])),
+        d(tcChunk([{ index: 0, function: { arguments: "{\"path\":\"a.txt\"}" } }])),
+        d(tcChunk([{ index: 1, function: { arguments: "{\"path\":\"b.txt\"}" } }])),
+        d(tcChunk(null, "tool_calls")), "data: [DONE]\n\n"]);
+      eq(brief(std), [{ id: "call_a", name: "read_file", input: { path: "a.txt" } }, { id: "call_b", name: "read_file", input: { path: "b.txt" } }],
+        "  └（对照）标准 OpenAI 流（带 index、两个调用交错着来）照旧");
+
+      const c = await call([
+        d({ choices: [{ delta: { content: "写到一半" }, finish_reason: null }] }),
+        "data: " + JSON.stringify({ choices: [{ delta: {}, finish_reason: "length" }], usage: { prompt_tokens: 1234, completion_tokens: 56 } })]);
+      ok(c.stopReason === "length", "★★最后一行不带换行就收流：finish_reason 没丢★★ 以前是 null，截断处理整个不走", c.stopReason);
+      ok(c.usage && c.usage.prompt === 1234 && c.usage.completion === 56, "  └ 这一次的 token 用量也记上了", c.usage);
+
+      const one = await call(["data: " + JSON.stringify({ choices: [{ delta: { content: "你好" }, finish_reason: "stop" }] })]);
+      ok(one.text === "你好" && !one.error, "  └ 整条流就一行、还不带换行：照样拿到正文，不误报「空响应」", one);
+    }
+
+    // ── ⑰ 强制收尾在 Anthropic 通道：历史里有工具调用也得带上 tools ───────────
+    console.log("\n⑰ 强制收尾：工具表照发 + tool_choice none，Anthropic 不再 400");
+    {
+      const http = require("http");
+      // 本机假服务，照 Anthropic 的规矩办：历史里有 tool_use/tool_result 却没定义 tools → 400
+      const sse = (evs) => evs.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join("");
+      const start = { type: "message_start", message: { id: "msg_t", type: "message", role: "assistant", model: "claude-x", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 1 } } };
+      const end = (why) => [{ type: "message_delta", delta: { stop_reason: why, stop_sequence: null }, usage: { output_tokens: 5 } }, { type: "message_stop" }];
+      const toolTurn = sse([start,
+        { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_w1", name: "list_files", input: {} } },
+        { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: "{\"path\":\".\"}" } },
+        { type: "content_block_stop", index: 0 }, ...end("tool_use")]);
+      const textTurn = (t) => sse([start,
+        { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+        { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: t } },
+        { type: "content_block_stop", index: 0 }, ...end("end_turn")]);
+      const bodies = [];
+      const srv = http.createServer((req, res) => {
+        let b = "";
+        req.setEncoding("utf8"); // 中文会被切在两块中间，按 Buffer 拼就是乱码
+        req.on("data", (c) => (b += c));
+        req.on("end", () => {
+          let body = null;
+          try { body = JSON.parse(b); } catch {}
+          bodies.push(body);
+          const blocks = ((body && body.messages) || []).flatMap((m) => (Array.isArray(m.content) ? m.content : []));
+          const hasToolBlocks = blocks.some((x) => x && (x.type === "tool_use" || x.type === "tool_result"));
+          if (hasToolBlocks && !(body.tools && body.tools.length)) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            return res.end(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "Requests which include `tool_use` or `tool_result` blocks must define tools." } }));
+          }
+          res.writeHead(200, { "Content-Type": "text/event-stream" });
+          res.end(hasToolBlocks ? textTurn("收尾：目录看过了，别的还没动。") : toolTurn);
+        });
+      });
+      await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+      let out = null, err = null;
+      try {
+        const an = llmMod.createLLM({ models: [{ name: "桩A", provider: "anthropic", model: "claude-x", api_key: "sk-test-offline", base_url: `http://127.0.0.1:${srv.address().port}` }] });
+        out = await runOnce({ llm: an, history: [{ role: "user", content: "列一下目录" }], config: cfgOf({ max_steps: 1, auto_continue_rounds: 0 }) });
+      } catch (e) { err = e; } finally {
+        await new Promise((r) => srv.close(r));
+      }
+      const [main, wrap] = bodies;
+      ok(!err && bodies.length === 2, "撞上限后发了收尾那一问（一共两次请求）", err ? err.message : bodies.length);
+      ok(!!wrap && Array.isArray(wrap.tools) && wrap.tools.length > 0 && wrap.tool_choice && wrap.tool_choice.type === "none",
+        "★★收尾那一问：带着工具表、tool_choice 是 none★★ 以前不带 tools，历史里有工具调用就被 400", wrap && { tools: (wrap.tools || []).length, tool_choice: wrap.tool_choice });
+      ok(!!main && !!wrap && JSON.stringify(wrap.tools) === JSON.stringify(main.tools), "  └ 工具表跟主循环那份一字不差（缓存前缀照样吃得到）");
+      ok(!!main && !("tool_choice" in main), "  └（对照）主循环的请求不带 tool_choice");
+      ok(out && /收尾：目录看过了/.test(out.r.finalText) && /^已达最大步数/.test(out.r.stopped || ""), "★交给用户的是收尾说明，不是半句过程话★", out && out.r.finalText);
+
+      // OpenAI 兼容那边：toolChoice none 时照旧不带 tools（不少兼容服务不认 tool_choice，带上工具表反倒可能又调一次）
+      const TOOLS_OA = [{ name: "list_files", description: "", input_schema: { type: "object" } }];
+      const realFetch = global.fetch;
+      const oaBodies = [];
+      global.fetch = async (url, init) => {
+        oaBodies.push(JSON.parse(init.body));
+        return new Response(JSON.stringify({ choices: [{ message: { content: "好" }, finish_reason: "stop" }] }), { status: 200, headers: { "Content-Type": "application/json" } });
+      };
+      try {
+        const h = [{ role: "user", content: "hi" }];
+        await openaiChat({ base_url: "http://127.0.0.1:9/v1", api_key: "sk-test-offline", model: "m", stream: false }, { system: "s", history: h, tools: TOOLS_OA, toolChoice: "none" });
+        await openaiChat({ base_url: "http://127.0.0.1:9/v1", api_key: "sk-test-offline", model: "m", stream: false }, { system: "s", history: h, tools: TOOLS_OA });
+      } finally {
+        global.fetch = realFetch;
+      }
+      ok(oaBodies[0] && !("tools" in oaBodies[0]) && !("tool_choice" in oaBodies[0]), "  └ OpenAI 兼容：收尾那一问不带 tools、也不带 tool_choice", oaBodies[0] && Object.keys(oaBodies[0]));
+      ok(oaBodies[1] && Array.isArray(oaBodies[1].tools) && oaBodies[1].tools.length === 1, "  └（对照）平常的请求照旧带 tools");
+
+      // 不认 tool_choice 的中转还是回了 tool_use：收尾那条进历史前摘掉，不留一条没人应答的调用
+      {
+        const llmR = {
+          provider: "mock", model: "scripted",
+          async chat(args) {
+            if (args.toolChoice === "none") return { text: "收尾。", toolCalls: [], stopReason: "end_turn", raw: [{ type: "text", text: "收尾。" }, { type: "tool_use", id: "sneak1", name: "list_files", input: {} }], usage: { prompt: 1, completion: 1 } };
+            return { text: "", toolCalls: [{ id: "m1", name: "list_files", input: {} }], stopReason: "tool_use", raw: [{ type: "tool_use", id: "m1", name: "list_files", input: {} }], usage: { prompt: 1, completion: 1 } };
+          },
+        };
+        const { history } = await runOnce({ llm: llmR, history: [{ role: "user", content: "列一下目录" }], config: cfgOf({ max_steps: 1, auto_continue_rounds: 0 }) });
+        const last = history[history.length - 1];
+        ok(last.role === "assistant" && last.text === "收尾。" && !(last.raw || []).some((b) => b.type === "tool_use"), "★收尾回复里混进来的 tool_use 进历史前摘掉★", last.raw);
+        ok(!JSON.stringify(toAnthropicMessages(history)).includes("sneak1"), "  └ 下一轮发给 Anthropic 的请求里没有这条没人应答的调用");
+      }
+    }
+
+    // ── ⑱ 两条 user 挨着：一律并成一条 ─────────────────────────────────────
+    console.log("\n⑱ OpenAI 兼容：两条 user 挨着一律并成一条（deepseek-reasoner 等不收连续同角色）");
+    {
+      const U = (content) => ({ role: "user", content });
+      const A = (text) => ({ role: "assistant", text, toolCalls: [] });
+      const adj = (msgs) => msgs.some((m, i) => i && m.role === "user" && msgs[i - 1].role === "user");
+      const m1 = toOpenAIMessages("sys", [U("写小说"), A("写好了"), U("【系统·收尾核验】还没打勾"), U("【用户插话（在任务执行中补充）】封面用蓝色")]);
+      ok(!adj(m1), "★★打回之后又插话：发出去的不再是两条 user 挨着★★ 以前只有跳过空 assistant 时才并", m1.map((m) => m.role));
+      ok(/还没打勾\n\n【用户插话/.test(m1[m1.length - 1].content), "  └ 两句都在，按先后并成一条", m1[m1.length - 1].content);
+      const normal = [U("a"), A("b"), U("c")];
+      eq(toOpenAIMessages("sys", normal).map((m) => [m.role, m.content]), [["system", "sys"], ["user", "a"], ["assistant", "b"], ["user", "c"]], "  └（对照）本来就一问一答交替的：一个字不动");
+      // 前缀稳定：历史只追加，前面那几条每次转出来都一样（缓存吃得到）
+      const h = [U("写小说"), A("写好了"), U("再改改"), U("用蓝色")];
+      const p1 = toOpenAIMessages("sys", h);
+      const p2 = toOpenAIMessages("sys", [...h, A("改好了"), U("谢谢")]);
+      eq(p2.slice(0, p1.length), p1, "  └ 再追加几轮，前面转出来的逐字不变（提示词缓存照样命中）");
+
+      // 压缩之后：摘要那条 user 后面紧跟保留下来的那句 user
+      const realMkdir = fs.mkdirSync;
+      fs.mkdirSync = function (p, ...a) { if (/compact-archive/.test(String(p))) throw new Error("测试桩：不归档"); return realMkdir.call(this, p, ...a); };
+      try {
+        const rt = createAgentRuntime({
+          config: cfgOf({ compact_threshold_chars: 8000, compact_keep_turns: 2, compact_keep_chars: 5000 }),
+          llm: { provider: "mock", model: "假压缩器", async chat() { return { text: "## 目标\n年报\n## 已完成\n无", usage: null }; } },
+          mcpManager: new McpManager(), experts: EXPERTS,
+        });
+        const hc = [U("先随便聊聊"), A("甲".repeat(9000)), U("写一份很长的年报"), A("乙".repeat(9000)), U("封面用蓝色"), A("好")];
+        await rt.compactHistory(hc, {});
+        ok(String(hc[0].content).startsWith("【系统·上下文压缩】") && hc[1] && hc[1].role === "user", "压缩真压了，摘要后面紧跟一条 user（不然下面测的不是这个形状）", hc.map((e) => e.role));
+        const mc = toOpenAIMessages("sys", hc);
+        ok(!adj(mc), "★压缩之后：摘要和保留的那句不再是两条 user 挨着★", mc.map((m) => m.role));
+      } finally {
+        fs.mkdirSync = realMkdir;
+      }
+    }
+
   } catch (e) {
     fail++;
     console.log("  ✗ 跑崩了：" + ((e && e.stack) || e));

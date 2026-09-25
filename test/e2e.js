@@ -5636,9 +5636,9 @@ async function testForcedWrapUp() {
       provider: "mock",
       model: "scripted",
       calls: () => calls,
-      async chat({ history, tools }) {
+      async chat({ history, tools, toolChoice }) {
         calls++;
-        if (!tools.length) {
+        if (!tools.length || toolChoice === "none") {
           const last = history[history.length - 1];
           assert(last.role === "user" && last.content.includes("强制收尾"), "收尾指令没进历史");
           onWrap && onWrap();

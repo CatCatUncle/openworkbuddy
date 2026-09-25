@@ -327,7 +327,7 @@ async function agentMcpChecks() {
   };
   const llm = {
     provider: "mock", model: "scripted",
-    chat: async ({ tools: ts }) => (ts && ts.length)
+    chat: async ({ tools: ts, toolChoice }) => (ts && ts.length && toolChoice !== "none")
       ? { text: "调一下 MCP。", toolCalls: [{ id: "m1", name: "mcp__srv__hang", input: {} }], stopReason: "tool_use", usage: { prompt: 1, completion: 1 } }
       : { text: "（收尾）", toolCalls: [], stopReason: "end_turn", usage: { prompt: 1, completion: 1 } },
   };
