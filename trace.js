@@ -138,6 +138,14 @@ function rotateIfNeeded(file) {
     }
   } catch {}
 }
+/**
+ * 认得出「还是不是同一本账」。滚动是 rename，接着写的那本是新建的，inode 和创建时间都不一样；
+ * 清空了再写也一样。别的进程滚掉的也认得出来。
+ */
+function ledgerTag(file) {
+  try { const st = fs.statSync(file); return st.ino + ":" + st.birthtimeMs; } catch { return ""; }
+}
+/** 写一行。返回刚写进的那本账是谁（ledgerTag）；这一行把它写满滚走了就返回空串 */
 function localRecord(config, event) {
   try {
     const file = localTraceFile(config);
@@ -145,9 +153,11 @@ function localRecord(config, event) {
     // 只有这一行在热路径上，而它跟账本里已经躺了多少条完全无关
     fs.appendFileSync(file, JSON.stringify({ schema: 1, recordedAt: Date.now(), ...event }) + "\n", "utf8");
     rotateIfNeeded(file);
+    return ledgerTag(file);
   } catch (e) {
     // Trace 不能反过来把任务搞挂；服务端日志留一条，设置页仍能显示其它账本。
     if (process.env.OPENWORKBUDDY_TRACE_DEBUG) console.warn("[本地追踪] 写入失败:", e.message);
+    return "";
   }
 }
 
@@ -203,8 +213,17 @@ function localTraceList(config, { limit = 50, traceId = "" } = {}) {
     if (!traces.has(id)) traces.set(id, { id, name: "", startTime: "", endTime: "", input: null, output: "", metadata: {}, tags: [], userId: "", sessionId: "", error: "", observations: [] });
     return traces.get(id);
   };
-  for (const event of localReadEvents(config)) {
+  // 提示词在账本里是「全文记一次 + 之后只记编号」（见 createTracer 里的 localInputOf），这儿按编号拼回原样。
+  // 拼出来的是新对象：缓存里那份事件还要给下一次刷新用，改了它下次就拼不回来了
+  const msgDict = new Map();
+  for (let event of localReadEvents(config)) {
     if (traceId && event.traceId !== traceId) continue;
+    if (event.input && Array.isArray(event.input.$msgs)) {
+      let d = msgDict.get(event.traceId);
+      if (!d) { d = Object.create(null); msgDict.set(event.traceId, d); }
+      Object.assign(d, event.input.add || {});
+      event = { ...event, input: event.input.$msgs.map((h) => d[h] || { role: "system", content: "（这条消息记在更早的账本里，那本已经清理掉了）" }) };
+    }
     const trace = ensure(event.traceId);
     if (event.kind === "trace") {
       if (event.phase === "start") Object.assign(trace, { name: event.name || trace.name, startTime: event.startTime || trace.startTime, input: event.input, metadata: event.metadata || {}, tags: event.tags || [], userId: event.userId || trace.userId, sessionId: event.sessionId || trace.sessionId });
@@ -270,7 +289,13 @@ function localTraceList(config, { limit = 50, traceId = "" } = {}) {
     t.name = String(t.name).slice(0, -first.length) + last;
     t.name_derived = true;
   }
-  return traceId ? out[0] || null : out.slice(0, Math.max(1, Math.min(200, Number(limit) || 50)));
+  if (traceId) return out[0] || null;
+  // 列表不带整段提示词：每一步的输入是几十条消息，一趟长任务就是几十 MB，而列表一个字都不显示。
+  // 只留条数；点进某一趟走的是带 traceId 的这条路，那儿原样全给。
+  // 名字、第几轮上面都已经算完了，放在最后清才不会把它们清成空的
+  const slim = (o) => (Array.isArray(o.input) ? { ...o, input: null, input_messages: o.input.length } : o);
+  return out.slice(0, Math.max(1, Math.min(200, Number(limit) || 50)))
+    .map((t) => ({ ...slim(t), observations: t.observations.map(slim) }));
 }
 function localTraceClear(config) {
   // 「清空」就得真清空：归档的那几本也是 trace，留着的话用户点完清空
@@ -509,6 +534,43 @@ function createTracer(config) {
     return cfg.ready && traceId ? `${cfg.host}/trace/${traceId}` : "";
   };
 
+  // 本地账本里的提示词只记新增的消息。同一趟任务每走一步，喂给模型的都是「整段历史 + 新的一两条」，
+  // 原来每步整段照抄：80 步的长任务一本账 27 MB，滚两本就把别的任务挤掉了，Trace 列表一刷也是几十 MB。
+  // 现在每条消息在一趟任务里只落一次全文，后面的步骤记编号，读的时候按编号拼回原样。
+  // 发给 Langfuse 的那份不动——那边要的是每一步的完整输入。
+  const packed = new Map(); // traceId -> { at, next, ids: Map<这条消息的 JSON, 编号> }
+  let packedIn = "";        // 编号都记在哪本账里。换了本（滚动、清空、别的进程滚的）就从头记全文，每本账自己读得懂
+  const PACK_IDLE_MS = 30 * 60 * 1000; // 跟列表判「断了」同一个线：进程被杀、没走到 end 的，别一直占着内存
+  const PACK_MAX = 2000;               // 一趟任务攒这么多条就重来一遍，超长任务也别把内存吃满
+  const isMessages = (v) => Array.isArray(v) && v.length > 0 && v.every((m) => m && typeof m === "object" && !Array.isArray(m) && typeof m.role === "string");
+  function localInputOf(traceId, input) {
+    if (!isMessages(input)) return input;
+    const tag = ledgerTag(localTraceFile(config));
+    if (!tag || tag !== packedIn) { packed.clear(); packedIn = tag; }
+    const now = Date.now();
+    for (const [k, v] of packed) if (now - v.at > PACK_IDLE_MS) packed.delete(k);
+    let p = packed.get(traceId);
+    if (!p) { p = { at: now, next: 0, ids: new Map() }; packed.set(traceId, p); }
+    p.at = now;
+    if (p.ids.size > PACK_MAX) p.ids = new Map(); // 编号接着往下数，不会跟之前的撞
+    const refs = [], add = {};
+    for (const m of input) {
+      const key = JSON.stringify(m);
+      let h = p.ids.get(key);
+      if (h === undefined) { h = String(p.next++); p.ids.set(key, h); add[h] = m; }
+      refs.push(h);
+    }
+    return { $msgs: refs, add };
+  }
+  /** 带提示词的那几行走这儿：写完记住落在哪本账里，下一行才知道能不能接着只记编号 */
+  function recordPacked(event) {
+    const tag = localRecord(config, event);
+    // 空串 = 这一行刚把账本写满滚走了；前后两个 tag 对不上 = 中间被别的进程滚过。两种都从头记全文。
+    // 前一个是空串（这本账是这一行新建的）不算：清过才写的这一行，本身就是全文
+    if (!tag || (packedIn && tag !== packedIn)) packed.clear();
+    packedIn = tag;
+  }
+
   function localBodyOf(o = {}) {
     const b = {};
     if (o.input !== undefined) b.input = typeof o.input === "string" ? capText(o.input, CAP_TEXT) : o.input;
@@ -541,6 +603,7 @@ function createTracer(config) {
         ended = true;
         localRecord(config, { traceId, kind, phase: "end", ...(kind === "trace" ? {} : { observationId: id }), endTime: nowIso(), ...localBodyOf(o) });
         if (kind === "trace") {
+          packed.delete(traceId);
           // 根节点认的字段跟 observation 不是一套：没有 endTime，也没有 traceId / usage / level。
           // 多塞字段轻则被忽略、重则整条被拒收，所以这儿另拼一份，token 账和出没出错折进 metadata
           if (cfgNow().ready) push("trace-create", { id, ...traceBodyOf(o) });
@@ -605,7 +668,7 @@ function createTracer(config) {
       if (o.model) body.model = String(o.model);
       if (o.modelParameters) body.modelParameters = o.modelParameters;
     }
-    localRecord(config, { traceId, observationId: id, parentId: parentId && parentId !== traceId ? parentId : "", kind, phase: "start", name: body.name, startTime, input: body.input, metadata: body.metadata, model: body.model, modelParameters: body.modelParameters });
+    recordPacked({ traceId, observationId: id, parentId: parentId && parentId !== traceId ? parentId : "", kind, phase: "start", name: body.name, startTime, input: localInputOf(traceId, body.input), metadata: body.metadata, model: body.model, modelParameters: body.modelParameters });
     if (cfgNow().ready) push(kind + "-create", body);
     return node({ id, traceId, kind });
   }
@@ -636,7 +699,7 @@ function createTracer(config) {
       // userId / sessionId 也要落本地：以前只发给 Langfuse，本地账本里一条都没有，
       // 于是「这趟是谁跑的、属于哪个会话」在不开 Langfuse 的人那儿永远看不到——
       // 而不开 Langfuse 才是默认状态
-      localRecord(config, { traceId: id, kind: "trace", phase: "start", name: body.name, startTime: body.timestamp, userId: body.userId, sessionId: body.sessionId, input: body.input, metadata: body.metadata, tags: body.tags });
+      recordPacked({ traceId: id, kind: "trace", phase: "start", name: body.name, startTime: body.timestamp, userId: body.userId, sessionId: body.sessionId, input: localInputOf(id, body.input), metadata: body.metadata, tags: body.tags });
       if (cfgNow().ready) push("trace-create", body);
       return node({ id, traceId: id, kind: "trace" });
     },
@@ -685,7 +748,7 @@ function createTracer(config) {
       };
     },
     localTraces(options) { return localTraceList(config, options); },
-    clearLocalTraces() { localTraceClear(config); },
+    clearLocalTraces() { localTraceClear(config); packed.clear(); packedIn = ""; },
     flush,
   };
 }

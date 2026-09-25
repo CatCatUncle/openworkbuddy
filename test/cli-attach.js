@@ -391,7 +391,7 @@ console.log("\n⑨ cli.js 接线：顺序和边界");
   has(/roots: \[getWorkspaceDir\(\), process\.cwd\(\)\]/, "相对路径先按工作目录找，再按人现在所在的目录找");
 
   const iWanted = CLI_SRC.indexOf("const wanted = namedFiles.concat(shot.files);");
-  const iPipe = CLI_SRC.indexOf("const piped = await readStdin();");
+  const iPipe = CLI_SRC.search(/const piped = await readStdin\(/); // 括号里带不带参数都认（现在传「命令行给没给任务」）
   ok(iWanted > 0 && iPipe > 0 && iWanted < iPipe,
     "★摘文件必须排在读管道前面★ `cat 报错.log | openworkbuddy \"这什么意思\"` 里提到的路径是材料不是附件，" +
     "扫一遍会把人家日志里随口提到的文件全搬进工作目录", { iWanted, iPipe });

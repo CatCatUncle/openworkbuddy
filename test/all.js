@@ -60,6 +60,7 @@ const SUITES = [
   ["cli-approve", "危险操作征求同意：终端卡片 + 手机上点"],
   ["cli-toolview", "终端里的工具调用：● 命令(对象) + └ 输出，跟 Claude Code / Codex 一个读法"],
   ["cli-pty", "真终端里敲键盘：单子出来前的键、粘贴、手机抢答、没回车的半句"],
+  ["cli-oneshot", "一次性跑和脚本调用：stdin 开着不关、--session 打错、--json 列会话/引擎、--help 不加载大件"],
   ["repl-commands", "REPL 命令表"],
   ["session-search", "任务历史检索：正文 / 产出文件名 / 意思相近"],
   ["systemone", "判断模型 Jev：题目怎么拼、回答怎么读、确定度不够就不许照做"],

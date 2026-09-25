@@ -20,7 +20,6 @@ const path = require("path");
 const icons = require("./icons.js");
 const { dataPath } = require("./paths");
 const crypto = require("crypto");
-const express = require("express");
 const store = require("./store");
 const org = require("./org");
 const rbac = require("./rbac"); // 谁能做什么：角色分档和能力表只有那一个文件说了算
@@ -1895,7 +1894,8 @@ function migrateLegacySettings() {
 }
 
 function createRouter(opts) {
-  const router = express.Router();
+  // express 只有这儿用：命令行每次起一个任务都会 require 本文件，顶上加载 express 白花 25–35 ms
+  const router = require("express").Router();
   const onRename = (opts || {}).onRename;
   try { migrateLegacySettings(); } catch (e) { console.warn("[账号] 老开关搬家失败：" + e.message); }
   try { migrateOwners(); } catch (e) { console.warn("[账号] 超级管理员搬家失败：" + e.message); }

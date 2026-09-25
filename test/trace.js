@@ -739,6 +739,80 @@ async function main() {
        "  └ 而且这一条排在钥匙那条前面：地址错的时候 ready 也是 false，顺序反了就永远显示不出来");
   }
 
+  // ===================================================================
+  console.log("\n【15】长任务的提示词：账本里每条消息只落一次全文，读出来一字不差");
+  // ===================================================================
+  // 每走一步喂给模型的都是「整段历史 + 新的一两条」。以前每步整段照抄，80 步的任务一本账 27 MB，
+  // 滚两本就把别的任务挤掉了；Trace 列表一刷也是几十 MB，而列表上一个提示词字都不显示。
+  {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-trace-pack-"));
+    const config = { workspace_dir: dir };
+    const file = path.join(dir, ".openworkbuddy", "traces.jsonl");
+    const t = tracing.createTracer(config);
+    const filler = "这一段是工具回来的长输出，".repeat(60);
+    const hist = [{ role: "system", content: "你是助手。" + filler }, { role: "user", content: "把仓库里的日志改成 pino" }];
+    const sent = [];
+    const tr = t.trace({ name: "长任务", sessionId: "p1", input: hist.slice() });
+    for (let i = 1; i <= 80; i++) {
+      const input = hist.map((m) => ({ ...m }));
+      sent.push(input);
+      tr.generation({ name: `第 ${i} 步`, model: "m", input }).end({ output: "好", usage: { prompt: 10, completion: 1 } });
+      hist.push({ role: "assistant", content: `第 ${i} 步：我改了 src/f${i}.js` }, { role: "tool", content: `结果 ${i}：` + filler });
+    }
+    tr.end({ output: "改完了" });
+    const size = fs.statSync(file).size;
+    const full = Buffer.byteLength(JSON.stringify(sent));
+    ok(size * 20 < full, `★账本比照抄小一个数量级以上★（落盘 ${Math.round(size / 1024)} KB，照抄得 ${Math.round(full / 1024)} KB）`, { size, full });
+
+    const one = t.localTraces({ traceId: tr.id });
+    const gens = one.observations.filter((o) => o.kind === "generation");
+    eq(gens.length, 80, "80 步都在");
+    const same = gens.every((g, i) => JSON.stringify(g.input) === JSON.stringify(sent[i]));
+    ok(same, "★点进这一趟，每一步的输入跟当时喂给模型的一字不差★（顺序、重复的消息都拼回原样）");
+    eq(JSON.stringify(one.input), JSON.stringify(sent[0].slice(0, 2)), "  └ 整趟的任务输入也拼得回来");
+    ok(!/\$msgs/.test(JSON.stringify(one)), "  └ 读出来的东西里不带编号那层壳");
+
+    const list = t.localTraces({});
+    const row = list.find((r) => r.id === tr.id);
+    eq(row.name, "长任务", "列表上名字还在（先算名字再瘦身，顺序反了就是空的）");
+    const lg = row.observations.find((o) => o.kind === "generation" && o.name === "第 80 步");
+    eq(lg.input, null, "列表不带整段提示词（一个字都不显示，带上就是几十 MB）");
+    eq(lg.input_messages, sent[79].length, "  └ 只留条数", lg.input_messages);
+    ok(Buffer.byteLength(JSON.stringify(list)) * 20 < full, "  └ 列表整体也小一个数量级", Buffer.byteLength(JSON.stringify(list)));
+
+    // 工具那一步的输入不是消息，列表上还要靠它显示「动的哪个文件」、搜索也搜它
+    const sp = t.trace({ name: "带工具", sessionId: "p2", input: "写个文件" });
+    sp.span({ name: "工具 write_file", input: { path: "workspace/a.md" } }).end({ output: "ok" });
+    sp.end({ output: "ok" });
+    const r2 = t.localTraces({}).find((r) => r.sessionId === "p2");
+    eq(r2.input, "写个文件", "反向对照：字符串输入原样留在列表上");
+    eq(r2.observations[0].input && r2.observations[0].input.path, "workspace/a.md", "反向对照：工具参数原样留在列表上（界面靠它显示路径、搜索也搜它）");
+
+    // 换了一本账（别的进程滚走的、或者被清空）：新账本自己得读得懂，不能只剩编号
+    const t2 = tracing.createTracer(config);
+    const tr2 = t2.trace({ name: "跨账本", sessionId: "p3", input: [{ role: "user", content: "开始" }] });
+    const h2 = [{ role: "user", content: "开始" }, { role: "assistant", content: "第一段" + filler }];
+    tr2.generation({ name: "第 1 步", model: "m", input: h2.slice() }).end({ output: "a" });
+    fs.renameSync(file, path.join(dir, ".openworkbuddy", "traces-2000-01-01T00-00-00.jsonl")); // 别的进程把它滚走了
+    h2.push({ role: "user", content: "继续" });
+    tr2.generation({ name: "第 2 步", model: "m", input: h2.slice() }).end({ output: "b" });
+    const fresh = fs.readFileSync(file, "utf8");
+    ok(fresh.includes("第一段"), "★滚走之后的第一条又是全文★——编号指向的那本账随时可能被清理，每本账得自己读得懂");
+    fs.rmSync(path.join(dir, ".openworkbuddy", "traces-2000-01-01T00-00-00.jsonl")); // 旧的那本被清理了
+    const back = t2.localTraces({ traceId: tr2.id });
+    const g2 = back && back.observations.find((o) => o.name === "第 2 步");
+    eq(JSON.stringify(g2 && g2.input), JSON.stringify(h2), "  └ 旧账本删了，新账本里的这一步照样拼得回来");
+
+    t2.clearLocalTraces();
+    h2.push({ role: "assistant", content: "收尾" });
+    tr2.generation({ name: "第 3 步", model: "m", input: h2.slice() }).end({ output: "c" });
+    ok(fs.readFileSync(file, "utf8").includes("第一段"), "清空之后的第一条也是全文");
+    const g3 = t2.localTraces({ traceId: tr2.id }).observations.find((o) => o.name === "第 3 步");
+    eq(JSON.stringify(g3.input), JSON.stringify(h2), "  └ 读回来一字不差");
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+
   await lf.close();
   console.log("\n================================");
   console.log(`通过 ${pass} 条，失败 ${fail} 条`);

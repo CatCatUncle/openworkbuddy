@@ -23,6 +23,30 @@
 
 // Node 太老 / 依赖没装：排在所有 require 最前面，不然用户拿到的是一句 Cannot find module
 require("./boot-check").enforce({ rootDir: __dirname });
+
+// ---------- 参数解析 ----------
+// 解析规则和帮助文本都在 cli-args.js 的那张声明表里，它是纯的：认不出来的选项会
+// 原样报回来，由这儿决定怎么说、退出码给几。以前是一串 else if，认不出的词一律
+// 当任务文本塞给模型——拼错一个 --quiet，钱照花、进度照打，人还以为自己关掉了。
+const cliArgs = require("./cli-args");
+const parsed = cliArgs.parse(process.argv.slice(2));
+const opts = parsed.opts;
+const words = parsed.words;
+
+// ---------- 帮助 / 版本 ----------
+// 排在下面那一串 require 前面：看个版本号不该先把 agent、MCP、模型客户端全加载一遍
+if (opts.help) { console.log(cliArgs.helpText()); process.exit(0); }
+if (opts.version) { console.log(`OpenWorkBuddy ${require("./package.json").version}`); process.exit(0); }
+
+// --json 的 stdout 只许有事件流。依赖里零星的 console.log（MCP 连上了、某处调试行）
+// 一律改走 stderr，不然 `| jq` 读到半行中文就整条管道炸了；-q 下这些杂讯也一起闭嘴。
+{
+  const util = require("util");
+  const toErr = (...a) => { if (!opts.quiet) process.stderr.write(util.format(...a) + "\n"); };
+  console.log = toErr;
+  console.info = toErr;
+}
+
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -46,15 +70,6 @@ const cliLive = require("./cli-live"); // 把这趟活儿播给网页/手机：�
 const termImage = require("./term-image"); // 终端里直接把产出的图画出来 + /open 交给系统程序
 const account = require("./account");
 const store = require("./store");
-
-// ---------- 参数解析 ----------
-// 解析规则和帮助文本都在 cli-args.js 的那张声明表里，它是纯的：认不出来的选项会
-// 原样报回来，由这儿决定怎么说、退出码给几。以前是一串 else if，认不出的词一律
-// 当任务文本塞给模型——拼错一个 --quiet，钱照花、进度照打，人还以为自己关掉了。
-const cliArgs = require("./cli-args");
-const parsed = cliArgs.parse(process.argv.slice(2));
-const opts = parsed.opts;
-const words = parsed.words;
 
 // ---------- 输出通道 ----------
 // 着色只在「那一头真的是终端」时才加：answer 判 stdout，progress 判 stderr。
@@ -99,9 +114,7 @@ const newMdRenderer = () => (renderMd
   ? mdTty.createRenderer({ width: process.stdout.columns || 80, color: !noColorEnv })
   : null);
 
-// ---------- 帮助 / 版本 / 参数写错了 ----------
-if (opts.help) { console.log(cliArgs.helpText()); process.exit(0); }
-if (opts.version) { console.log(`OpenWorkBuddy ${require("./package.json").version}`); process.exit(0); }
+// ---------- 参数写错了 ----------
 if (parsed.problems.length) {
   // 退出码 2 单独留给「参数写错了」：脚本里能跟「任务失败」分开处理，
   // 也免得 `openworkbuddy --qiet ... && 下一步` 在打错字的时候照样往下走
@@ -542,19 +555,24 @@ function listCliSessions(n, cliOnly = false) {
   let names = [];
   try { names = fs.readdirSync(SESS_DIR).filter((f) => f.endsWith(".json")); } catch { return []; }
   if (cliOnly) names = names.filter((f) => f.startsWith("cli_"));
+  // 先按改动时间排、截到 n 条，再读内容：几百条会话、每条几百 KB 时，全读一遍再截要多等半秒多，
+  // 而 -c / resume 只要最新那一条
   return names
     .map((f) => {
       const p = path.join(SESS_DIR, f);
       let mtime = 0; try { mtime = fs.statSync(p).mtimeMs; } catch {}
+      return { f, p, mtime };
+    })
+    .sort((a, b) => b.mtime - a.mtime)
+    .slice(0, n)
+    .map(({ f, p, mtime }) => {
       const j = store.readJson(p, {}) || {};
       // 轮数按「问了几次」算：transcript 里一问一答是两条，直接数长度会把一次问答报成 2 轮
       const turns = (j.transcript || []).filter((t) => t && t.type === "user").length;
       const id = f.replace(/\.json$/, "");
       // body 只喂给搜索，不上屏：截短一点，选单最多十二条，没必要为搜索读进几万字
       return { id, mtime, title: j.title || "", turns, from: id.startsWith("cli_") ? "命令行" : "桌面", engine: j.engine || "", body: sessSearch.digestOf(j, 1200) };
-    })
-    .sort((a, b) => b.mtime - a.mtime)
-    .slice(0, n);
+    });
 }
 /** 新会话 id：带到秒 + 三位随机。
  *  以前是 `cli_YYYYMMDD`，同一天的每条命令共用一个文件，而 runTask 会把助手回复和工具结果
@@ -574,9 +592,21 @@ if (sub === "resume" && !opts.session) {
   opts.session = last.id;
   prog(dim(`（续接 ${last.from}会话 ${last.id}：${last.title || "无标题"}）\n`));
 }
-let sessionId = opts.session || (opts.cont && (listCliSessions(1, true)[0] || {}).id) || newSessionId();
-if (opts.cont && !opts.session && !listCliSessions(1, true).length) prog(dim("（没有可续接的命令行会话，开一个新的）\n"));
+const lastCli = opts.cont && !opts.session ? listCliSessions(1, true)[0] : null;
+if (opts.cont && !opts.session && !lastCli) prog(dim("（没有可续接的命令行会话，开一个新的）\n"));
+let sessionId = opts.session || (lastCli && lastCli.id) || newSessionId();
 let sessFile = sessFileOf(sessionId);
+// 点名要接的会话不存在（多半是少粘了一位）：当场停。以前悄悄开一个同名的空会话，钱照花、模型一句前文都看不到，
+// 退出码还是 0。REPL 里 /resume 早就这么拒了，两条入口说法得一样
+if (opts.session && !fs.existsSync(sessFile)) {
+  const want = String(opts.session);
+  const near = listCliSessions(50).filter((r) => r.id.startsWith(want.slice(0, Math.max(4, want.length - 4)))).slice(0, 3);
+  process.stderr.write(red(`没有这个会话：${want}\n`));
+  process.stderr.write(dim(near.length
+    ? `是不是这个：\n${near.map((r) => `  ${r.id}  ${r.title || "无标题"}`).join("\n")}\n`
+    : "openworkbuddy sessions 列出最近的会话\n"));
+  process.exit(2);
+}
 // 跟网页端是同一批文件，写法也得一样：原子改名 + .bak，坏了先回退别直接覆盖
 let sess = store.readJson(sessFile, { history: [], transcript: [], title: "" });
 function saveSess() {
@@ -1436,15 +1466,34 @@ async function runOnceIn(runtime, text, mode, interactive) {
   return aborted ? "aborted" : state.error ? "error" : "ok";
 }
 
-/** 管道进来的内容。没接管道（stdin 是终端）就返回空串，绝不阻塞等输入。 */
-function readStdin() {
+/**
+ * 管道进来的内容。没接管道（stdin 是终端）就返回空串，绝不阻塞等输入。
+ * 命令行里已经给了任务时，stdin 多半是调用方顺手开着没关的管道（编排器、ssh、agent 的 Bash 工具默认都这样）：
+ * 一直不来字也一直不关。以前就一直等下去，一个字不打。现在 3 秒没来第一个字就不等了；来了字就照旧读到头
+ */
+const STDIN_FIRST_BYTE_MS = 3000;
+function readStdin(hasTask) {
   if (process.stdin.isTTY) return Promise.resolve("");
   return new Promise((resolve) => {
-    let buf = "";
+    let buf = "", got = false, done = false;
+    const onData = (d) => { got = true; buf += d; };
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      process.stdin.removeListener("data", onData);
+      resolve(buf);
+    };
+    const timer = hasTask ? setTimeout(() => {
+      if (got) return;
+      process.stdin.pause(); // 不再读，也不拖着进程不让退
+      prog(dim("· 标准输入开着但 3 秒没有内容，不等了\n"));
+      finish();
+    }, STDIN_FIRST_BYTE_MS) : null;
     process.stdin.setEncoding("utf8");
-    process.stdin.on("data", (d) => { buf += d; });
-    process.stdin.on("end", () => resolve(buf));
-    process.stdin.on("error", () => resolve(buf));
+    process.stdin.on("data", onData);
+    process.stdin.on("end", finish);
+    process.stdin.on("error", finish);
   });
 }
 const STDIN_MAX = 200000; // 再多就不是「材料」是「数据集」了，该让 agent 自己去读文件
@@ -1515,6 +1564,11 @@ function splitFiles(text) {
     const cur = (config.agent || {}).engine || "builtin";
     const found = await engines.detectAll((config.agent || {}).engine_options || {});
     const rows = [{ ...engines.BUILTIN, installed: true, version: "" }, ...found];
+    // --json：一行一个 JSON，跟任务的事件流一个格式。表格是给人看的，对齐空格、颜色脚本没法拆
+    if (opts.json) {
+      for (const e of rows) process.stdout.write(JSON.stringify({ id: e.id, label: e.label, installed: !!e.installed, version: e.version || "", current: e.id === cur }) + "\n");
+      process.exit(0);
+    }
     for (const e of rows) {
       const mark = e.id === cur ? green(" ●") : "  ";
       const state = e.id === "builtin" ? "" : e.installed ? green(`已装 ${e.version}`) : yellow("没装");
@@ -1528,6 +1582,14 @@ function splitFiles(text) {
 
   if (opts.list) {
     const rows = listCliSessions(opts.list);
+    if (opts.json) {
+      // 挑一条再 resume 的脚本要的是 id，不是去拆那张表
+      for (const r of rows) {
+        process.stdout.write(JSON.stringify({ id: r.id, mtime: new Date(r.mtime).toISOString(), title: r.title, turns: r.turns,
+          from: r.id.startsWith("cli_") ? "cli" : "desktop", engine: r.engine || null }) + "\n");
+      }
+      process.exit(0);
+    }
     if (!rows.length) { process.stdout.write("（还没有任何会话）\n"); process.exit(0); }
     for (const r of rows) {
       // 本地时间。toISOString() 给的是 UTC，跟会话 id 里那串本地时间戳差一个时区，
@@ -1583,7 +1645,7 @@ function splitFiles(text) {
   }
 
   // 管道：有任务描述时当附加材料，没有时管道内容本身就是任务（openworkbuddy < 任务.txt）
-  const piped = await readStdin();
+  const piped = await readStdin(!!String(oneShot || "").trim());
   if (piped.trim()) {
     const body = piped.length > STDIN_MAX
       ? piped.slice(0, STDIN_MAX) + `\n…（标准输入共 ${piped.length} 字符，这里只截了前 ${STDIN_MAX} 个）`
