@@ -57,6 +57,22 @@ const DELEGATE_TEAM_TOOL = {
   },
 };
 
+// 只读的探索子智能体。跟委派专家的区别：不用配专家、不能动手、同一轮发几个就并发跑。
+// 大范围翻代码/资料时，翻过的几十个文件留在它自己的上下文里，主线只收一段结论
+const EXPLORE_TOOL = {
+  name: "explore",
+  description:
+    "开一个只读的探索子智能体，去工作目录里翻代码/文档/资料，回答一个具体问题，交回简明结论（带 文件:行号）。它只能读、搜、查，不能改文件、跑命令，也不会来问用户。适合大范围搜索、摸清陌生项目结构、同时查几个互不相干的问题——同一轮里发多个 explore 会并发跑，它翻过的文件不占你的上下文。一两个已知文件自己 read_file 更快。",
+  input_schema: {
+    type: "object",
+    properties: {
+      question: { type: "string", description: "要它查清的问题。要自包含：它看不到你和用户的对话" },
+      paths: { type: "array", items: { type: "string" }, description: "可选：先从这些文件/目录看起" },
+    },
+    required: ["question"],
+  },
+};
+
 const ASK_USER_TOOL = {
   name: "ask_user",
   description:
@@ -1099,6 +1115,8 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
 
   async function coordinatorSystemPrompt(user, hint, baseDir) {
     let p = await baseSystemPrompt(user, hint, baseDir);
+    // 不写这句，模型只会把 explore 当成「慢一点的 read_file」，一次发一个，并发白给了
+    p += `\n\n大范围翻代码/资料、或者要同时查几个互不相干的问题时，同一轮里发几个 explore 并发去查，你自己的上下文留给真正要改的地方。`;
     if (experts.length) {
       p += `\n\n## 可委派的专家（delegate_to_expert）\n`;
       p += experts
@@ -1197,6 +1215,8 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
         // 判断不动任何东西，只看不动的档位里照样该能用——「这一批里哪几条要人工看」本来就是个只读问题
         ...(jev.status(config).ready ? [DECIDE_TOOL] : []),
         USE_SKILL_TOOL,
+        // 探索子智能体本身只读，只看不动的档位正是最常用它的时候。只给顶层：子智能体再开子智能体会套娃
+        ...(depth === 0 ? [EXPLORE_TOOL] : []),
       ];
     }
     // 组织关掉了命令行：连工具定义一起摘掉，别只在执行时拦。留着定义等于让模型先想一个
@@ -1219,6 +1239,7 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
     // 白烧一轮不说，用户还以为自己哪里填错了
     if (mailer.configured((config.im || {}).smtp)) tools.push(SEND_EMAIL_TOOL);
     if (jev.status(config).ready) tools.push(DECIDE_TOOL);
+    if (depth === 0) tools.push(EXPLORE_TOOL); // 不用配专家就有；专家/探索子智能体自己拿不到，免得套娃
     if (depth === 0 && experts.length) tools.push(DELEGATE_TOOL);
     // 团委派只给主协调者：专家在团里接力时 depth 已经 >0，再让它组团会套娃
     if (depth === 0 && expertTeams.some((t) => teamMembers(t).length >= 2)) tools.push(DELEGATE_TEAM_TOOL);
@@ -1730,6 +1751,50 @@ function modePrompt(mode) {
       } catch (e) {
         return { content: `创建飞书文档失败：${e.message}`, isError: true };
       }
+    }
+    if (tc.name === "explore") {
+      if (depth > 0) return { content: "子智能体不能再开探索子智能体，自己直接查。", isError: true };
+      const question = String(tc.input.question || "").trim();
+      if (!question) return { content: "question 不能为空：写清要它查什么。", isError: true };
+      const paths = (Array.isArray(tc.input.paths) ? tc.input.paths : []).map((x) => String(x || "").trim()).filter(Boolean).slice(0, 20);
+      // 每个探索一个编号：同一轮并发的几个，过程区里靠它分得清哪行是谁的
+      const label = `探索${(stats.explores = (stats.explores || 0) + 1)}`;
+      const sub = await runTask({
+        projectContext,
+        lang,
+        history: [{ role: "user", content: question + (paths.length ? `\n\n先从这些看起：${paths.join("、")}` : "") }],
+        emit: (ev) => {
+          // 它撞了自己的步数上限，收的只是这一个探索，不是整个任务。原样发出去界面会喊「任务强制收尾」
+          if (ev.type === "limit") return emit({ type: "status", text: `${label} 没查完就收了：${ev.note || ""}`, depth: ev.depth, expert: label });
+          // 调用 id 加上父调用的前缀：几个探索并发，各自的 call_0 会撞号，界面就把 A 的结果贴到 B 的卡上
+          const id = ev.id && (ev.type === "tool_use" || ev.type === "tool_result") ? { id: `${tc.id}/${ev.id}` } : {};
+          emit({ ...ev, expert: label, ...id });
+        },
+        systemPrompt:
+          `你是一个只读的探索子智能体，替主智能体查清一个问题。\n- 工作目录：${safeWorkspaceDir(baseDir)}${worktreeLine()}\n` +
+          `- 只能读、搜、查：不改文件、不跑命令、不问用户（也问不到）。\n` +
+          `- 先广后窄：find_files / search_files 定位，再 read_file 看关键段落，别整本整本地读。\n` +
+          `- 收尾交一段简明结论：先答问题本身，再列依据（文件:行号 或 链接），查不到就直说查了哪些地方没找到。不写客套话，结论会原样交回主智能体。`,
+        mode: "ask",
+        depth: depth + 1,
+        maxSteps: Math.min(config.agent.max_steps || 25, 15), // 探索是查一个问题，不该烧掉跟整个任务一样多的步数
+        user,
+        taskLabel,
+        sessionId,
+        runToken,
+        baseDir,
+        deadline, // 共享总时间预算、token 账本和停止信号：停止按一下，几个探索一起停
+        stats,
+        stopSignal,
+        // 只看不动档 + 闸门强制开：总开关关着时闸门对「只看不动」的拒也放行（run_shell 就漏过）。
+        // 工具清单里本来就没有写工具，runOne 那道也会拦，这一层是防哪天清单摆错了
+        sec: { ...(sec || security.getSecurity(config)), permission_mode: "plan", gateway: true },
+        llmOverride,
+        // 故意不给 askUser：几个探索并发时各弹一个问题，用户分不清是谁在问
+        traceNode,
+      });
+      // 结论第一行紧跟标头：过程区那一行只摘第一行，换了行就只剩个标头
+      return { content: `【${label} 的结论】${String(sub.finalText || "").trim() || "(没有结论)"}`, isError: false };
     }
     if (tc.name === "delegate_to_expert") {
       if (depth > 0) return { content: "专家不能再委派他人，请直接完成任务。", isError: true };
@@ -2469,6 +2534,20 @@ function modePrompt(mode) {
     const system = stableSystem + (await volatileSystemBlock({ user, memHint, projBlock, mediaReopened }));
     const systemStableLen = stableSystem.length;
     const tools = toolList(depth, mode);
+    // 这一轮真摆给模型的工具名。只读档（ask/plan）清单外的一律不执行（见 runOne）：以前全靠「不摆写工具」，
+    // 模型硬编一个 write_file 照样写成功；探索子智能体跑的就是 ask 档，不拦它的只读是一句空话
+    const readOnlyMode = mode === "ask" || mode === "plan";
+    const offered = new Set(tools.map((t) => t.name));
+    if (offered.has("fetch_url")) offered.add("render_page"); // 老会话里的旧名，tools.js 还当 fetch_url 的别名认
+    const notOffered = (name) => {
+      const real = name === "explore" || TOOL_DEFS.some((t) => t.name === name) || toolList(0, "craft").some((t) => t.name === name);
+      if (real) {
+        return `【系统拦截】${name} 不在这一轮给你的工具清单里（现在是只看不动的档位：能读、搜、查，不能改文件、跑命令），本次没有执行。只用清单里有的工具；非它不可就停下来如实说明。`;
+      }
+      // 纯拼错的：跟 tools.js 那句一字不差，evolve.js 靠「未知工具: 名字」认幻觉工具名
+      const guess = require("./tools")._internals.nearestTool(name, [...offered]);
+      return `未知工具: ${name}` + (guess ? `。你是不是想调 ${guess}？工具名必须一字不差地写全。` : "");
+    };
     // ── 已加载的技能：挂在系统提示词里，不进历史 ───────────────────────────
     // 名字 → 全文。use_skill 往这儿放（见 runToolCall），每一步的 system 都带上它（见下面 skillBlock）。
     // 开跑前先把上一趟加载过的捡回来：历史里 use_skill 那条工具调用、以及压缩摘要里
@@ -2967,7 +3046,11 @@ function modePrompt(mode) {
         const seen = loopHist.get(loopKey);
         let r;
         const dead = deadMedia.get(tc.name);
-        if (dead && dead.n >= 2) {
+        // 只拦只读档：craft 档清单外的是没配的工具（它自己的处理会说「去设置里配、别重试」）、
+        // 子智能体里的 delegate/explore（处理里自己拒），或者纯拼错（tools.js 报未知工具）——都有更准的话
+        if (readOnlyMode && !offered.has(tc.name)) {
+          r = { content: notOffered(tc.name), isError: true };
+        } else if (dead && dead.n >= 2) {
           // 连请求都不发了，连本地那道熔断闸也不走——直接把上次那句话奉还
           r = { content: `${dead.content}\n\n【本轮已停用 ${tc.name}】这条渠道连着拦了 ${dead.n} 次，再调也是这句话。按上面说的如实收尾，别把没拿到的结果当拿到过。`, isError: true };
         } else if (seen && seen.streak >= 4 && tc.name !== "ask_user") {
@@ -3054,7 +3137,9 @@ function modePrompt(mode) {
       // 白等一次搜索的时间。切段之后前两个搜索照样并发，写文件仍旧排在它们后面。
       // 生成类（出图/出片/出声）同理，但单独一类、单独一个上限：一集短剧十二个镜头，
       // 一条条排队最坏要等上一两个小时，而这些调用之间本来就没有先后关系。
-      const groups = splitParallelRuns(result.toolCalls, READ_ONLY_TOOLS, GEN_TOOLS);
+      // explore 也并进只读段：子智能体只读、各查各的，同一轮发几个就该一起跑。不塞进 READ_ONLY_TOOLS——
+      // 那张表还是只读档的工具清单，放进去就成了「子智能体的清单里又有 explore」
+      const groups = splitParallelRuns(result.toolCalls, READ_ONLY_TOOLS.concat("explore"), GEN_TOOLS);
       const genMax = Math.max(1, Math.min(4, Math.round(+config.agent.gen_parallel_max) || GEN_PARALLEL_MAX));
       let toolResults = [];
       try {
@@ -3314,7 +3399,7 @@ const TOOL_VERB = {
   forget: "忘掉", library_list: "翻资料库", library_read: "读资料", library_import: "取素材", save_skill: "存技能",
   use_skill: "用技能", desktop_pet: "桌面宠物", ask_user: "问你一句", feishu_doc: "飞书文档", notify_user: "推到群",
   schedule_task: "排期", list_schedules: "看排期", send_email: "发邮件",
-  delegate_to_expert: "委派专家", delegate_to_team: "委派专家团",
+  delegate_to_expert: "委派专家", delegate_to_team: "委派专家团", explore: "探索",
   find_files: "找文件", multi_edit: "改", shell_output: "看后台输出", shell_kill: "停后台", todo_write: "进度",
 };
 
@@ -3364,7 +3449,7 @@ function toolHeadline(name, input) {
     }
     case "generate_image": case "generate_video": case "gen_diagram": case "text_to_speech":
       obj = tailText(i.prompt || i.text || i.spec || "", 46); break;
-    case "ask_user":
+    case "ask_user": case "explore":
       obj = tailText(i.question || "", 46); break;
     case "delegate_to_expert":
       obj = String(i.expert || ""); break;

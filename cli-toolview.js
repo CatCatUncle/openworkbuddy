@@ -21,10 +21,10 @@ const LABEL = {
   run_shell: "Shell", run_node: "Node", read_file: "Read", write_file: "Write", edit_file: "Edit",
   multi_edit: "Edit", search_files: "Search", find_files: "Find", list_files: "List",
   fetch_url: "Fetch", render_page: "Fetch", web_search: "WebSearch", use_skill: "Skill",
-  todo_write: "Todo", shell_output: "ShellOutput", shell_kill: "ShellKill",
+  todo_write: "Todo", shell_output: "ShellOutput", shell_kill: "ShellKill", explore: "Explore",
 };
 /** 参数里挑哪个当「对象」，按顺序找第一个有值的 */
-const ARG_KEYS = ["command", "path", "file_path", "pattern", "query", "url", "name", "skill", "expert", "team", "prompt", "title"];
+const ARG_KEYS = ["command", "path", "file_path", "pattern", "query", "url", "name", "skill", "expert", "team", "prompt", "title", "question"];
 /** 输出最多露几行 */
 const MAX_LINES = 4;
 

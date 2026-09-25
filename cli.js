@@ -610,7 +610,9 @@ function makeEmit(state) {
       if (ev.depth === 0) prog(dim(`\n· 第 ${ev.step} 步 思考中…`));
       state.streamed = false;
     } else if (ev.type === "parallel") {
-      prog(dim(`\n  ▸▸ ${ev.count} ${ev.kind === "gen" ? "条生成任务一起跑" : "个只读工具并发执行"}`));
+      // 子智能体里的那一批也带上是谁：几个探索并发时，光一句「3 个只读工具并发」分不清是哪个的
+      const who = ev.depth > 0 && ev.expert ? `${ev.expert} · ` : "";
+      prog(dim(`\n  ▸▸ ${who}${ev.count} ${ev.kind === "gen" ? "条生成任务一起跑" : "个只读工具并发执行"}`));
       state.streamed = false;
     } else if (ev.type === "tool_use") {
       // 「● Shell(npm test)」：跑的是哪条命令、动的是哪个文件，一眼看得见（见 cli-toolview.js）

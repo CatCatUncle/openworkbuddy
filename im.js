@@ -579,7 +579,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
   const TOOL_LABELS = {
     run_shell: "执行命令", run_node: "运行代码", write_file: "写文件", read_file: "读文件",
     edit_file: "改文件", list_files: "看目录", web_search: "联网搜索", fetch_url: "抓取网页",
-    use_skill: "加载技能", delegate_to_expert: "委派专家", delegate_to_team: "召集团队",
+    use_skill: "加载技能", delegate_to_expert: "委派专家", delegate_to_team: "召集团队", explore: "派子智能体探索",
     create_feishu_doc: "写飞书文档", remember: "记笔记",
   };
 
