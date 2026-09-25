@@ -846,6 +846,12 @@ const termInterject = [];
 let pendingAsk = null;
 /** 交互模式那个常驻 readline。单发模式下一直是 null——那边现开一个用完就关 @type {import("readline").Interface|null} */
 let replRl = null;
+/**
+ * 把提示符重新摆出来：打了一半的字留着，光标放到它们后面。
+ * 光写 rl.prompt() 的话 readline 把光标挪回行首——任务跑着时敲的字跟着提示符回来，
+ * 人接着打，新字全插到了前头
+ */
+const promptKeep = (rl) => { rl.cursor = rl.line.length; rl.prompt(true); };
 /** 手机上先答了的时候，把终端这边那个还挂着的提示符撤掉 @type {null | (() => void)} */
 let cancelAsk = null;
 /** 此刻占着终端那个提示符的是哪道题。撤提示符之前得认一下，别把正等着的另一道题连坐撤掉 */
@@ -924,10 +930,12 @@ function raceRemote(id, readTerminal, mapRemote) {
     };
     off = remoteWait(id, (a) => {
       const cancel = cancelAsk; // 先抓住：done 之后这个槽可能已经被下一道题占了
+      // 终端那个提示符还挂着一道已经有答案的题，不撤掉它会一直等到超时。
+      // 得先撤再印通知：单子是按「往上退几行」擦的，通知先印出来，擦掉的就是通知和单子下半截，上半截留在屏上。
+      // 撤掉会让终端那条路还回 null，但那个 then 要等下一拍，下面这个 done 先到，算手机的
+      if (cancel) { try { cancel(); } catch {} }
       prog(yellow(`\n  » 手机上答了\n`));
       done(mapRemote(a));
-      // 终端那个提示符还挂着一道已经有答案的题，不撤掉它会一直等到超时
-      if (cancel) { try { cancel(); } catch {} }
     });
     readTerminal().then(done, () => done(null));
   });
@@ -964,10 +972,19 @@ function termReadLine(promptText, timeoutMs) {
     if (timer.unref) timer.unref();
     const onAbort = () => finish(null);
     if (sig) sig.addEventListener("abort", onAbort, { once: true });
-    cancelAsk = () => finish(null);
+    cancelAsk = () => {
+      // 别处（手机、网页上的审批卡）已经答了：终端里打了一半的那句是这道题的答案，不是下一条任务。
+      // 留在 rl.line 里的话，任务一跑完它就跟着提示符回来，人再敲一个字、回车，就当新任务发出去了
+      if (!settled && ctx && ctx.interactive && replRl && replRl.line) {
+        replRl.line = "";
+        replRl.cursor = 0;
+        prog(dim("\n  （终端里打了一半的那句没发出去）\n"));
+      }
+      finish(null);
+    };
     if (!somebodyHome()) return; // 这头没人，只等手机和超时
     pendingAsk = finish;
-    if (ctx && ctx.interactive && replRl) { replRl.setPrompt(askPrompt(promptText)); replRl.prompt(); return; }
+    if (ctx && ctx.interactive && replRl) { replRl.setPrompt(askPrompt(promptText)); promptKeep(replRl); return; }
     // 单发模式没有常驻 readline，现开一个。它自己接管 stdin，用完就关
     const one = readline.createInterface({ input: process.stdin, output: process.stderr, prompt: askPrompt(promptText) });
     one.prompt();
@@ -997,8 +1014,8 @@ function canPickByKey() {
 
 /**
  * 在终端里摆一张 ↑↓ 挑的单子（画在 stderr），等一个选择。
- * p.menu(sel) 给行，p.key(sel, key, ch, 摆出来多久) 说这个键干什么——都是 cli-approve 里的纯函数。
- * @returns {Promise<string|null>} 选中第几条（"1" 起）；null = 超时 / Ctrl+C / 被手机那边抢答后撤掉
+ * p.menu(sel) 给行，p.key(sel, key, ch, 摆出来多久) 说这个键干什么——都是 cli-approve / cli-ask 里的纯函数。
+ * @returns {Promise<string|null>} 选中第几条（"1" 起）；null = 超时 / Ctrl+C / Esc 跳过 / 被手机那边抢答后撤掉
  */
 function termPick(p, timeoutMs) {
   const ctx = askCtx;
@@ -1020,6 +1037,11 @@ function termPick(p, timeoutMs) {
       const ls = p.menu(sel);
       try { process.stderr.write(ls.join("\n") + "\n"); drawn = ls.length; } catch { drawn = 0; }
     };
+    // 终端每送来一块就记下整块。按一个键是一块一个键；输入法上屏、粘贴是一块好几个字，
+    // readline 会拆成一个个 keypress，光看 keypress 分不出来。得排在 readline 前面收，所以用 prepend
+    let chunk = "";
+    const onData = (d) => { chunk = String(d); };
+    process.stdin.prependListener("data", onData);
     const finish = (v) => {
       if (settled) return;
       settled = true;
@@ -1027,6 +1049,7 @@ function termPick(p, timeoutMs) {
       if (sig) sig.removeEventListener("abort", onAbort);
       keyGrab = null;
       cancelAsk = null;
+      process.stdin.off("data", onData);
       if (unRaw) unRaw();
       erase(); // 单子收掉，结果由调用方印一行「✓ 批了这一次」
       done(v);
@@ -1040,6 +1063,9 @@ function termPick(p, timeoutMs) {
       const r = p.key(sel, key || {}, ch, Date.now() - t0);
       if (!r) return;
       if (r.cancel) { finish(null); if (ctx) ctx.onSigint(); return; } // Ctrl+C 还是「停下这趟」，跟敲一行那条路一样
+      // 选一条得是单独按下的那一个键。「好的，顺便…」上屏、粘进来一段带 y 的字，都不算点头
+      if (("pick" in r || r.skip) && chunk && chunk !== ((key && key.sequence) || ch)) return;
+      if (r.skip) return finish(null); // 提问那张的 Esc：这题不答、交给它自己定，这趟活儿照跑
       if ("pick" in r) return finish(String(r.pick + 1));
       sel = r.sel;
       draw();
@@ -1078,9 +1104,13 @@ async function askUserBoth(ask) {
       deadline: Date.now() + timeoutMs,
     });
   }
+  const fromPhone = (a) => (a.value == null ? "" : String(a.value));
   try {
-    return await makeAskUser((promptText, ms) =>
-      raceRemote(id, () => termReadLine(promptText, ms), (a) => (a.value == null ? "" : String(a.value))))(ask);
+    return await makeAskUser(
+      (promptText, ms) => raceRemote(id, () => termReadLine(promptText, ms), fromPhone),
+      // ↑↓ 单子那条路两头各贴个标签：手机上打了个「3」和终端上选了第 3 条，光看字是一样的
+      canPickByKey() ? (p, ms) => raceRemote(id, () => termPick(p, ms).then((v) => (v == null ? null : { key: v })), (a) => ({ text: fromPhone(a) })) : undefined
+    )(ask);
   } finally {
     if (live) live.unpend(id);
   }
@@ -1131,12 +1161,13 @@ async function handleApproval(entry) {
  * 也不受 --quiet 管——把一道正在等回答的选择题静音，换来的不是清净是卡死。
  *
  * @param {(prompt: string) => Promise<string|null>} readLine 怎么读这一行（两种模式各给各的）
+ * @param {Function} [pick] 摆 ↑↓ 单子挑（终端认按键时才有）；没有就敲一行
  * @returns {(a: {question: string, options: any[], timeoutMs: number}) => Promise<string|null>}
  */
 /** 等回答时的提示符。跟平时那个 `openworkbuddy>` 换个颜色和字，一眼看出来现在是它在等你，不是你在等它 */
 const askPrompt = (t) => (ttyErr ? `\x1b[33m${t}\x1b[0m` : t);
 
-function makeAskUser(readLine) {
+function makeAskUser(readLine, pick) {
   const paint = {
     q: (x) => bold(yellow(x)),
     n: (x) => (ttyErr ? `\x1b[36m${x}\x1b[0m` : x),
@@ -1148,7 +1179,9 @@ function makeAskUser(readLine) {
   return async (ask) => cliAsk.run(ask, {
     write: (x) => { inkSeq++; process.stderr.write(x); },
     readLine: (promptText, deadline) => readLine(promptText, deadline),
+    pick,
     width: (process.stderr.columns || 80) - 2,
+    rows: process.stderr.rows,
     paint: (x, k) => (paint[k] || ((y) => y))(x),
   });
 }
@@ -2317,7 +2350,7 @@ function splitFiles(text) {
     inbox.setBusy(false);
     quitArmed = 0;
     rl.setPrompt(PROMPT);
-    rl.prompt();
+    promptKeep(rl); // 跑着的时候敲了没回车的字还在这一行上，接着打得接在后面
   }
   saveHistory();
   rl.close();

@@ -15,8 +15,9 @@
  *
  * 终端认按键时（TTY），三档摆成一张 ↑↓ 挑的单子，跟 Claude Code / Codex 一样：光标停在
  * 第 1 条，回车就是选它。这跟第 1 条不冲突——单子摆在眼前、看着光标按下的回车是个选择；
- * 要防的是**单子出来之前**就敲进缓冲区的那个回车，所以刚摆出来那一小会儿的回车一律不认
- * （ENTER_GUARD_MS）。数字键和 y / n 照样直接选；Esc 就是不允许。
+ * 要防的是**单子出来之前**就敲进缓冲区的那个键，所以刚摆出来那一小会儿的回车、数字、字母
+ * 一律不认（ENTER_GUARD_MS）。过了这一小会儿，数字键和 y / n 直接选；Esc 就是不允许。
+ * 单键只认提示行里写着的那几个——a、「好」这种留给敲一行那条路，单键下它们多半是人在打字。
  * 不认按键的地方（管道、--json）还是敲一行，空行照旧不算。
  *
  * 「怎么读键盘、超时怎么算、谁来调 security.resolveApproval」都在 cli.js 那边。
@@ -78,7 +79,7 @@ function head(entry, o) {
   return lines;
 }
 
-/** 刚摆出来这么久之内的回车不认：那是单子出来之前就敲进缓冲区的，不是看着光标按的 */
+/** 刚摆出来这么久之内的回车、数字、字母都不认：那是单子出来之前就敲进缓冲区的，不是看着光标按的 */
 const ENTER_GUARD_MS = 400;
 
 /**
@@ -125,11 +126,15 @@ function menuKey(sel, key, ch, sinceMs) {
   if (k.name === "escape") return { pick: n - 1 }; // Esc＝不允许，明说出来，模型好换路
   if (k.name === "up" || (!k.ctrl && k.name === "k")) return { sel: (sel + n - 1) % n };
   if (k.name === "down" || (!k.ctrl && k.name === "j") || k.name === "tab") return { sel: (sel + 1) % n };
-  if (k.name === "return" || k.name === "enter") return sinceMs < ENTER_GUARD_MS ? null : { pick: sel };
+  // 刚摆出来那一小会儿到的键一律不认：回车、数字、字母都可能是单子出来之前敲进缓冲区的
+  if (sinceMs < ENTER_GUARD_MS) return null;
+  if (k.name === "return" || k.name === "enter") return { pick: sel };
   const c = String(ch || "").toLowerCase();
   if (/^[1-9]$/.test(c) && Number(c) <= n) return { pick: Number(c) - 1 };
-  const v = parse(c);
-  if (v) return { pick: CHOICES.findIndex((x) => x.allow === v.allow && x.scope === v.scope) };
+  // 单键只认提示行里写着的 y / n。a 没写出来、还是放得最宽的那档；中文词在单键下
+  // 只会是输入法整词上屏的头一个字——人在打一句话，不是在点头。这些留给敲一行那条路（parse）
+  if (c === "y") return { pick: 0 };
+  if (c === "n") return { pick: n - 1 };
   return null;
 }
 

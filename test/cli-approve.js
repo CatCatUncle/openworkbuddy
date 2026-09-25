@@ -168,9 +168,18 @@ async function run() {
     assert.deepStrictEqual(ap.menuKey(0, K("j"), "j", 0), { sel: 1 });
     assert.deepStrictEqual(ap.menuKey(1, K("k"), "k", 0), { sel: 0 });
     assert.deepStrictEqual(ap.menuKey(0, K("tab"), "\t", 0), { sel: 1 });
-    for (const [ch, want] of [["1", 0], ["2", 1], ["3", 2], ["y", 0], ["a", 1], ["n", 2], ["N", 2]]) {
-      assert.deepStrictEqual(ap.menuKey(0, K(ch.toLowerCase()), ch, 0), { pick: want }, `「${ch}」直接选第 ${want + 1} 条，不受回车护栏管`);
+    for (const [ch, want] of [["1", 0], ["2", 1], ["3", 2], ["y", 0], ["Y", 0], ["n", 2], ["N", 2]]) {
+      assert.deepStrictEqual(ap.menuKey(0, K(ch.toLowerCase()), ch, late), { pick: want }, `「${ch}」直接选第 ${want + 1} 条`);
+      // 以前数字、字母不受护栏管：任务跑着时顺手敲的一个 a，单子一冒出来就被当成「这类都允许」
+      assert.strictEqual(ap.menuKey(0, K(ch.toLowerCase()), ch, 0), null, `★刚摆出来就到的「${ch}」也不认★ 回车、数字、字母一样，可能是单子出来之前敲下的`);
+      assert.strictEqual(ap.menuKey(0, K(ch.toLowerCase()), ch, ap.ENTER_GUARD_MS - 1), null, `护栏时间内的「${ch}」不认`);
     }
+    // 单键只认提示行里写着的。a 没写在提示里、放得还最宽；中文词单键下只会是输入法上屏的头一个字
+    for (const ch of ["a", "A", "好", "准", "可", "不", "拒", "别"]) {
+      assert.strictEqual(ap.menuKey(0, K(ch.toLowerCase()), ch, late), null, `★单键「${ch}」不选★ 那是人在打字，不是点头`);
+    }
+    assert.deepStrictEqual(ap.parse("a"), { allow: true, scope: "session" }, "敲一行那条路照旧认 a");
+    assert.deepStrictEqual(ap.parse("好"), { allow: true, scope: "once" }, "敲一行那条路照旧认「好」");
     assert.deepStrictEqual(ap.menuKey(0, K("escape"), "\x1b", 0), { pick: 2 }, "★Esc＝不允许★ 明说出来，模型好换路");
     assert.deepStrictEqual(ap.menuKey(0, K("c", { ctrl: true }), "\x03", 0), { cancel: true }, "Ctrl+C 是停这趟，不是选一条");
     assert.deepStrictEqual(ap.menuKey(0, K("d", { ctrl: true }), "\x04", 0), { cancel: true });

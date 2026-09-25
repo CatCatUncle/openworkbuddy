@@ -116,6 +116,111 @@ async function run() {
     assert.strictEqual(f.asked[0].timeoutMs, 30000, "超时没托到 30 秒下限，会比 agent 先撒手");
   }
 
+  // ---- ↑↓ 单子：跟审批那张一个样子，但刚摆出来那一下按的键一律不算 ----
+  // 以前终端里审批是 ↑↓ 挑、提问却是「答> 」敲序号，而且空行＝第 1 条——
+  // 单子出来之前就敲进缓冲区的那个回车，直接替人答了一道花钱 / 对外发布的题
+  {
+    const K = (name, extra) => Object.assign({ name }, extra || {});
+    const late = ask.ENTER_GUARD_MS + 1;
+    const key = ask.menuKey(OPTS.length); // 两条选项 + 「自己打一句」＝三行
+    for (const [name, ch] of [["return", "\r"], ["enter", ""], ["1", "1"], ["2", "2"], ["3", "3"], ["escape", "\x1b"]]) {
+      assert.strictEqual(key(0, K(name), ch, 0), null, `★刚摆出来就到的「${name}」不认★ 那是之前敲进缓冲区的，不是看着光标按的`);
+      assert.strictEqual(key(0, K(name), ch, ask.ENTER_GUARD_MS - 1), null, `护栏时间内「${name}」都不认`);
+    }
+    assert.deepStrictEqual(key(0, K("return"), "\r", late), { pick: 0 }, "过了护栏，回车选光标那条");
+    assert.deepStrictEqual(key(2, K("enter"), "", late), { pick: 2 }, "光标在「自己打一句」上回车，选的就是它");
+    for (const [ch, want] of [["1", 0], ["2", 1], ["3", 2]]) assert.deepStrictEqual(key(0, K(ch), ch, late), { pick: want }, `「${ch}」直接选第 ${want + 1} 条`);
+    for (const ch of ["4", "0", "x", "y", " ", ""]) assert.strictEqual(key(1, K(ch), ch, late), null, `「${ch}」认不出来就不管`);
+    // 挪光标不算拍板，护栏时间内也照挪
+    assert.deepStrictEqual(key(0, K("up"), "", 0), { sel: 2 }, "↑ 从第一条绕到「自己打一句」");
+    assert.deepStrictEqual(key(2, K("down"), "", 0), { sel: 0 }, "↓ 从最后一条绕回第一条");
+    assert.deepStrictEqual(key(0, K("j"), "j", 0), { sel: 1 });
+    assert.deepStrictEqual(key(1, K("k"), "k", 0), { sel: 0 });
+    assert.deepStrictEqual(key(0, K("tab"), "\t", 0), { sel: 1 });
+    // Esc 是「这题你定」，不是 Ctrl+C 那种「整趟停下」
+    assert.deepStrictEqual(key(0, K("escape"), "\x1b", late), { skip: true }, "★Esc 是跳过这题★ 不能把整趟活儿停掉");
+    assert.deepStrictEqual(key(0, K("c", { ctrl: true }), "\x03", 0), { cancel: true }, "Ctrl+C 什么时候都是停这趟");
+    assert.deepStrictEqual(key(0, K("d", { ctrl: true }), "\x04", 0), { cancel: true });
+
+    const { cols } = require("../text-width");
+    const m = ask.menu(1, OPTS, { width: 100, wait: "5 分钟" });
+    assert.strictEqual(m.filter((l) => l.includes("❯")).length, 1, "光标只有一个");
+    assert.ok(m.some((l) => l.includes("❯ 2. PDF")), "光标停在第 2 条");
+    assert.ok(m.some((l) => l.includes("3. " + ask.OWN)), "最后一条得是「自己打一句」：选项列漏了是常事");
+    // detail 是人唯一的判断依据，放得下就每条都摆着，不能逼人挨个挪光标才看得见
+    for (const o of OPTS) assert.ok(m.join("\n").includes(o.detail), `「${o.label}」的说明被吞了`);
+    assert.ok(m.join("\n").includes("5 分钟没人答"), "等多久要写出来");
+    const LONG = [
+      { label: "把整份报告导出成一份带目录和页眉页脚的 Word（.docx）文档交给甲方", detail: "甲方能直接在里面批注和改动，代价是排版到了别人机器上会跑，字体也可能被替换成默认的" },
+      { label: "PDF", detail: "版式锁死，打印和投屏到哪儿都一样，但对方改不了一个字，要改只能回来找你重新出一版" },
+      { label: "飞书文档", detail: "在线协作，谁都能评论，但离开飞书就打不开，发给外部客户还得另开权限" },
+    ];
+    for (const w of [30, 44, 60, 80, 120]) {
+      for (let sel = 0; sel <= LONG.length; sel++) {
+        const ls = ask.menu(sel, LONG, { width: w, wait: "5 分钟" });
+        const widest = Math.max(...ls.map(cols));
+        assert.ok(widest <= w, `★宽 ${w} 的终端里一行都不许折★ 折了重画就擦不干净（最宽 ${widest}）`);
+        assert.strictEqual(ls.filter((l) => l.includes("❯")).length, 1);
+      }
+    }
+    // 屏幕矮了：全摆开会高过屏幕，往回擦够不着顶——退成只有光标那条带说明
+    const tall = ask.menu(0, LONG, { width: 44 });
+    const short = ask.menu(1, LONG, { width: 44, rows: 12 });
+    assert.ok(tall.length > 11, "这组选项全摆开本来就比 12 行高（不然下面测不出东西）");
+    assert.ok(short.length <= 11, `★比屏幕矮一行★ 12 行的屏幕摆了 ${short.length} 行`);
+    assert.ok(short.join("").includes("版式锁死") && !short.join("").includes("在线协作"), "放不下时只有光标那条带说明");
+
+    // run() 走单子那条路
+    const pickIO = (got, lines) => {
+      const out = [];
+      const seen = {};
+      const queue = (lines || []).slice();
+      return {
+        io: {
+          write: (s) => out.push(s),
+          readLine: async (prompt, ms) => { seen.read = { prompt, ms }; return queue.length ? queue.shift() : null; },
+          pick: async (p, ms) => { seen.p = p; seen.ms = ms; return got; },
+          width: 72,
+        },
+        text: () => out.join(""),
+        seen,
+      };
+    };
+    {
+      const f = pickIO({ key: "2" });
+      assert.strictEqual(await ask.run({ question: "报告交哪种格式？", options: OPTS, timeoutMs: 300000 }, f.io), "PDF", "单子上选第 2 条");
+      assert.ok(f.text().includes("？ 报告交哪种格式？"), "问题本身照印");
+      assert.ok(f.text().includes("选了：PDF"), "选完没回显");
+      assert.ok(!/敲序号|回车＝第 1 条/.test(f.text()), "有单子就别再印敲序号那套提示");
+      assert.ok(!f.seen.read, "★有单子可挑就不该再摆「答> 」★");
+      assert.strictEqual(f.seen.ms, 300000, "超时带给摆单子的那一层");
+      assert.ok(f.seen.p.menu(0).join("\n").includes("5 分钟没人答"));
+      assert.strictEqual(f.seen.p.key(0, { name: "return" }, "\r", 0), null, "★交出去的 key 带回车护栏★");
+      assert.deepStrictEqual(f.seen.p.key(0, { name: "3" }, "3", 1000), { pick: 2 }, "交出去的 key 认得出第三行「自己打一句」");
+    }
+    // 最后那条「自己打一句」：退回敲一行，打什么交什么
+    {
+      const f = pickIO({ key: "3" }, ["  用飞书文档 "]);
+      assert.strictEqual(await ask.run({ question: "交哪种？", options: OPTS }, f.io), "用飞书文档", "自己打的那句没交出去");
+      assert.strictEqual(f.seen.read.prompt, "答> ");
+      assert.strictEqual(f.seen.read.ms, 300000);
+    }
+    // 在那一行上空着回车＝不答，不是第 1 条：人刚说了「都不是」
+    assert.strictEqual(await ask.run({ question: "交哪种？", options: OPTS }, pickIO({ key: "3" }, [""]).io), null, "说了「都不是」又空着回车，不能算成第 1 条");
+    assert.strictEqual(await ask.run({ question: "交哪种？", options: OPTS }, pickIO({ key: "3" }).io), null);
+    // 超时 / Esc / Ctrl+C
+    assert.strictEqual(await ask.run({ question: "交哪种？", options: OPTS }, pickIO(null).io), null);
+    // 手机上答的：跟敲一行同一套认法，认不准就原样交
+    assert.strictEqual(await ask.run({ question: "交哪种？", options: OPTS }, pickIO({ text: "pdf" }).io), "PDF");
+    assert.strictEqual(await ask.run({ question: "交哪种？", options: OPTS }, pickIO({ text: "都不要，用飞书文档" }).io), "都不要，用飞书文档");
+    // 开放问题没得挑：还是敲一行
+    {
+      const f = pickIO({ key: "1" }, ["叫小助手"]);
+      assert.strictEqual(await ask.run({ question: "你想叫它什么名字？", options: [] }, f.io), "叫小助手");
+      assert.ok(!f.seen.p, "没有选项还摆了单子");
+    }
+  }
+
   console.log("cli-ask：通过");
 }
 
