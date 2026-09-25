@@ -138,9 +138,14 @@ function readOnlySeg(seg) {
   return READ_ONLY.has(head);
 }
 
-/** 整条命令里第一段「可能动东西」的。全都只读就返回空字符串——这趟不花钱 */
-function firstMutating(command) {
-  for (const seg of security.splitSegments(command)) {
+/**
+ * 整条命令里第一段「可能动东西」的。全都只读就返回空字符串——这趟不花钱。
+ * skip 认出来的段（人已经批过的）直接跳过：批了「这类都允许」还弹卡，等于花钱问一个人已经答过的问题。
+ * 拆段跟命令闸用同一套，`bash -c '…'` 里那条也单独看。
+ */
+function firstMutating(command, skip) {
+  for (const seg of security.commandSegments(command)) {
+    if (skip && skip(seg)) continue;
     if (!readOnlySeg(seg)) return seg;
   }
   return "";
@@ -183,7 +188,7 @@ function needsJudge({ verdict, sec, text, kind } = {}) {
   const s = sec || {};
   if (!s.gateway) return "";
   if (s.cmd_risk_gate !== true) return "";
-  return kind === "代码" ? firstMutatingCode(text) : firstMutating(text);
+  return kind === "代码" ? firstMutatingCode(text) : firstMutating(text, (seg) => security.listedCommand(s, seg));
 }
 
 function riskQuestions(kind) {

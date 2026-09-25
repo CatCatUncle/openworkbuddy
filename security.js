@@ -230,7 +230,24 @@ function resolvePathWithPolicy(sec, rel, workspaceDir, base) {
 // ---------- 命令安全 ----------
 
 /** 只是包在真命令外面的东西，判断「这段到底在跑什么」时要先剥掉 */
-const WRAPPERS = new Set(["nohup", "command", "builtin", "exec", "env", "time", "nice", "ionice", "xargs", "then", "else", "do", "{", "("]);
+const WRAPPERS = new Set(["nohup", "command", "builtin", "exec", "env", "time", "nice", "ionice", "xargs", "timeout", "stdbuf", "then", "else", "do", "{", "("]);
+/**
+ * 包装词自己带的、要吃掉下一个词当值的开关。不认得它们，`nice -n 5 rm -rf x` 剥完是「5 rm -rf x」，
+ * 删除保护看见的头是个 5。不带值的开关（xargs -0、env -i）不用列，以 - 开头的一律跳过。
+ * sudo / doas 故意不算包装词：询问名单里的「sudo 」要靠它开头才认得出来。
+ */
+const WRAP_ARGOPTS = {
+  env: /^(?:-[uC]|--(?:unset|chdir))$/,
+  nice: /^(?:-n|--adjustment)$/,
+  ionice: /^-[cnp]$/,
+  timeout: /^(?:-[sk]|--(?:signal|kill-after))$/,
+  stdbuf: /^-[ioe]$/,
+  exec: /^-a$/,
+  time: /^-[of]$/,
+  xargs: /^(?:-[IdEnLPsa]|--(?:arg-file|delimiter|eof|max-args|max-lines|max-procs|max-chars|process-slot-var))$/,
+};
+/** 能用 -c 塞进一整串命令的 shell */
+const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "ash"]);
 /** 会真的把文件弄没的命令 */
 const DELETE_CMDS = new Set(["rm", "rmdir", "srm", "unlink", "shred", "del", "erase", "rd"]);
 /** 会在用户桌面上弹出东西的命令（macOS open、Linux xdg-open、Windows start/explorer），见 checkCommand 里那段 */
@@ -240,10 +257,12 @@ const DESKTOP_OPEN_CMDS = new Set(["open", "xdg-open", "start", "explorer"]);
 // 永久放行名单也盖不住——这不是沙箱，只是把「一条命令毁掉一晚上工作」换成一次审批。
 // 批过一次的（「以后别再问这类」）按 danger:key 记在本会话里，不会反复骚扰。
 const DANGER_PATTERNS = [
-  { key: "dev-write", re: /(?:^|\s)>{1,2}\s*\/dev\/(?!null\b|stdout\b|stderr\b|tty\b|zero\b|fd\/)/i, rule: "重定向直写设备文件（> /dev/…）" },
+  // > 前面不要求空白：`cat img>/dev/disk4`、`1>/dev/disk2` 跟带空格的是一回事；2>/dev/null 靠后面那串排除
+  { key: "dev-write", re: />{1,2}\|?\s*\/dev\/(?!null\b|stdout\b|stderr\b|tty\b|zero\b|fd\/)/i, rule: "重定向直写设备文件（> /dev/…）" },
   { key: "dd-dev", re: /\bdd\b[^\n]*\bof=\/dev\//i, rule: "dd 直写设备（of=/dev/…）" },
   { key: "compose-down-v", re: /\bdocker(?:-|\s+)compose\b[^\n]*\bdown\b[^\n]*(?:\s-\w*v|\s--volumes\b)/i, rule: "compose down 带 -v 会把数据卷一起删掉" },
-  { key: "git-force-push", re: /\bgit\b[^\n]*\bpush\b[^\n]*(?:\s--force\b|\s-f\b)/i, rule: "git 强推会改写远端历史" },
+  // 强推不止 -f 一种写法：-uf 这种并在一起的短开关、refspec 前面加个 +（origin +main）都是强推
+  { key: "git-force-push", re: /\bgit\b[^\n]*\bpush\b[^\n]*(?:\s--force\b|\s-[a-z]*f[a-z]*\b|\s['"]?\+[^\s+])/i, rule: "git 强推会改写远端历史" },
   { key: "sql-drop", re: /\b(?:drop\s+(?:table|database|schema)|truncate\s+table)\b/i, rule: "SQL 删库/删表/清表" },
   { key: "mkfs-disk", re: /\b(?:mkfs|diskutil\s+(?:erase\w*|partitiondisk)|fdisk)\b/i, rule: "磁盘格式化/分区" },
 ];
@@ -307,16 +326,100 @@ function splitSegments(command, out = [], depth = 0) {
 function stripEnvAssign(seg) {
   return seg.replace(/^(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+)+/, "");
 }
-/** 剥到真正在跑的那条命令：包装词去掉、`/bin/rm` 还原成 `rm` */
+/**
+ * 从开头读一个 shell 词，引号和反斜杠按 shell 的规矩去掉。
+ * `\rm`、`'rm'`、`r''m` 在 shell 眼里都是 rm——拿原样去比名单，一对引号就把删除保护绕过去了。
+ * @returns {[string, string]} [去完引号的词, 后面剩下的]
+ */
+function readWord(s) {
+  const src = String(s || "").replace(/^\s+/, "");
+  let out = "";
+  let quote = null;
+  let i = 0;
+  for (; i < src.length; i++) {
+    const c = src[i];
+    if (quote === "'") { if (c === "'") quote = null; else out += c; continue; }
+    // 引号外反斜杠吃掉下一个字符；双引号里只有 " \ $ ` 换行这几个才算转义
+    if (c === "\\" && (!quote || /["\\$`\n]/.test(src[i + 1] || ""))) {
+      if (src[i + 1] !== "\n") out += src[i + 1] || "";
+      i++;
+      continue;
+    }
+    if (quote) { if (c === quote) quote = null; else out += c; continue; }
+    if (c === "'" || c === '"') { quote = c; continue; }
+    if (/\s/.test(c)) break;
+    out += c;
+  }
+  return [out, src.slice(i)];
+}
+/** 跳过包装词自己的参数：`nice -n 5`、`timeout 30`、`env -u X FOO=1`、`xargs -I {}`，剩下的才是它要跑的 */
+function skipWrapperArgs(tok, rest) {
+  const takesValue = WRAP_ARGOPTS[tok];
+  let duration = tok === "timeout"; // timeout 在命令前头还有个时长
+  let s = rest;
+  while (s.trim()) {
+    const [w, after] = readWord(s);
+    if (w === "--") return after;
+    if (w.startsWith("-")) s = takesValue && takesValue.test(w) ? readWord(after)[1] : after;
+    else if (tok === "env" && /^[A-Za-z_]\w*=/.test(w)) s = after;
+    else if (duration && /^\d/.test(w)) { s = after; duration = false; }
+    else break;
+  }
+  return s;
+}
+/** 剥到真正在跑的那条命令：包装词连同它的参数去掉、引号去掉、`/bin/rm` 还原成 `rm` */
 function bareCommand(seg) {
   let s = stripEnvAssign(seg).trim();
-  for (let i = 0; i < 5; i++) {
-    const tok = s.split(/\s+/)[0] || "";
+  for (let i = 0; i < 8; i++) {
+    const [tok, rest] = readWord(s);
     if (!WRAPPERS.has(tok)) break;
-    s = s.slice(tok.length).trim();
+    // `command -v rm` 是在问 rm 装没装，不是跑它
+    if (tok === "command" && /^\s*-[a-zA-Z]*[vV]/.test(rest)) break;
+    s = skipWrapperArgs(tok, rest).trim();
   }
-  const tok = s.split(/\s+/)[0] || "";
-  return tok.includes("/") ? path.basename(tok) + s.slice(tok.length) : s;
+  const [tok, rest] = readWord(s);
+  return (tok.includes("/") ? path.basename(tok) : tok) + rest;
+}
+
+/**
+ * 一段命令里面套着的、同样会被执行的那串：`bash -c '…'`、`eval '…'`、`find … -exec … \;`。
+ * 删除保护和名单只认每段开头那个词，不挖出来单独算，`bash -c 'rm -rf x'` 的头就只是个 bash。
+ * 没有就返回空串。
+ */
+function nestedCommand(bare) {
+  const [tok, rest] = readWord(bare);
+  if (tok === "eval") {
+    // eval 把后面所有词拼成一串再跑
+    const words = [];
+    for (let s = rest; s.trim(); ) { const [w, after] = readWord(s); words.push(w); s = after; }
+    return words.join(" ");
+  }
+  if (SHELLS.has(tok)) {
+    for (let s = rest; s.trim(); ) {
+      const [w, after] = readWord(s);
+      if (!/^[-+]/.test(w)) return ""; // bash build.sh：跑的是个脚本文件，里头看不见
+      if (/^-[a-zA-Z]*c/.test(w)) return readWord(after)[0];
+      // -o pipefail、-euxo pipefail、-O extglob：o 结尾的这一簇后面跟着个选项名，一起跳过
+      s = /^[-+][a-zA-Z]*[oO]$|^--(?:rcfile|init-file)$/.test(w) ? readWord(after)[1] : after;
+    }
+    return "";
+  }
+  if (tok === "find") {
+    // -exec 后面到 \; 或 + 为止是另一条命令，find 每找到一个就替你跑一遍
+    const re = /\s-(?:exec|execdir|ok|okdir)\s+([\s\S]*?)(?=\s+(?:\\;|';'|";"|\+)(?:\s|$)|$)/g;
+    return [...rest.matchAll(re)].map((m) => m[1]).join("\n");
+  }
+  return "";
+}
+
+/** 拆段，再把每段里套着的命令也挖出来各算一段（挖出来的里面还套着，接着挖） */
+function commandSegments(command) {
+  const segs = splitSegments(command);
+  for (let k = 0; k < segs.length && segs.length < 64; k++) {
+    const inner = nestedCommand(bareCommand(segs[k]));
+    if (inner) splitSegments(inner, segs);
+  }
+  return segs;
 }
 
 /** 一条黑名单路径在命令行里可能长什么样 */
@@ -351,28 +454,88 @@ function clearSessionAllow() {
   sessionAllow.clear();
 }
 
-/** 多子命令的工具，规则粒度取到第二个词：放行 `git status` 不等于放行 `git push --force` */
-const SUBCMD_TOOLS = new Set(["git", "npm", "pnpm", "yarn", "npx", "docker", "kubectl", "pm2", "brew", "cargo", "go", "pip", "pip3", "python", "python3", "node", "gh", "systemctl", "ffmpeg"]);
+/**
+ * 多子命令的工具，规则粒度取到第二个词：放行 `git status` 不等于放行 `git push --force`。
+ * ffmpeg 不在这儿：它没有子命令，第二个词永远是 -i 这种开关，按整个工具记。
+ */
+const SUBCMD_TOOLS = new Set(["git", "npm", "pnpm", "yarn", "npx", "docker", "kubectl", "pm2", "brew", "cargo", "go", "pip", "pip3", "python", "python3", "node", "gh", "systemctl"]);
+/**
+ * 子命令前面能插的全局开关里，要吃掉下一个词当值的那几个。不跳过它们，`git -C repo status`
+ * 的第二个词是 -C，规则就退成了整个 git——批一次看状态，`git reset --hard` 跟着一起放行。
+ * 不带值的（--no-pager、-P）和 `--opt=值` 这种写法不用列，以 - 开头的一律跳过。
+ */
+const GLOBAL_VALUE_OPTS = {
+  git: ["-C", "-c", "--git-dir", "--work-tree", "--namespace"],
+  npm: ["--prefix", "-w", "--workspace"],
+  pnpm: ["-C", "--dir", "--filter", "-F"],
+  yarn: ["--cwd"],
+  npx: ["-p", "--package"],
+  docker: ["-H", "--host", "--context", "-c", "--config", "-l", "--log-level"],
+  kubectl: ["-n", "--namespace", "--context", "--kubeconfig", "--cluster", "--user", "-s", "--server"],
+  cargo: ["-C", "-Z", "--config"],
+  go: ["-C"],
+  systemctl: ["-H", "--host", "-M", "--machine"],
+  node: ["-r", "--require", "--import", "--loader"],
+  python: ["-W", "-X"],
+  python3: ["-W", "-X"],
+};
+/** 这些开关后面跟的是一段代码：`node -e`、`python -c` 批一次「这类都允许」等于批了任意代码，不给规则 */
+const CODE_OPTS = {
+  node: /^-[a-z]*[ep]|^--(?:eval|print)\b/,
+  python: /^-[a-zA-Z]*c/,
+  python3: /^-[a-zA-Z]*c/,
+  npx: /^(?:-c|--call)\b/,
+};
 
 /**
  * 从一段命令里推出一条「以后遇到这类就别问了」的规则。
  * 粒度太粗会把危险的一起放过去（放行 `git` 等于放行 `git push -f`），
  * 太细又等于没记（带具体文件名的规则下次必然不命中）。取「命令 + 子命令」是这两者之间。
+ * 推不出一条稳妥的就返回空串：只放这一次，下回照样问。
  */
 function ruleFor(text) {
   const seg = splitSegments(String(text || ""))[0] || String(text || "");
   const bare = bareCommand(seg).trim();
   const parts = bare.split(/\s+/).filter(Boolean);
   if (!parts.length) return "";
-  if (SUBCMD_TOOLS.has(parts[0]) && parts[1] && !parts[1].startsWith("-")) return `${parts[0]} ${parts[1]}`;
-  return parts[0];
+  const tool = parts[0];
+  // `. venv/bin/activate` 记成「.」，批一次以后 `./deploy.sh` 也算同类；
+  // 包装词只有 `command -v` 会剩下来，记成 command 等于把 `command rm -rf` 一起放了
+  if (tool === "source" || tool.startsWith(".") || WRAPPERS.has(tool)) return "";
+  if (!SUBCMD_TOOLS.has(tool)) return tool;
+  const valued = GLOBAL_VALUE_OPTS[tool] || [];
+  for (let i = 1; i < parts.length; i++) {
+    const p = parts[i];
+    if (CODE_OPTS[tool] && CODE_OPTS[tool].test(p)) return "";
+    // python -m pytest：-m 后面那个模块名就是它的子命令
+    if (p === "-m" && /^python3?$/.test(tool)) return parts[i + 1] ? `${tool} -m ${parts[i + 1]}` : "";
+    if (valued.includes(p)) { i++; continue; }
+    if (p.startsWith("-")) continue;
+    // node <<EOF、python3 < x.py：喂进去的是代码，不是子命令
+    return /^[<>]/.test(p) ? "" : `${tool} ${p}`;
+  }
+  return ""; // 只有开关没有子命令（git --version、node --test）
 }
 
+/**
+ * 名单里有没有一条是这段的前缀。以字母数字结尾的那条按整词比：批过 `git` 不等于批了 `gitk`，
+ * 批过 `rm` 不等于批了 `rmdir`。以 / 这类符号结尾的（`./scripts/`）本来就是写成前缀的，照旧。
+ */
 function matchesPrefix(list, seg, env, bare) {
   return (list || []).some((p) => {
     const q = String(p || "").trim();
-    return q && (seg.startsWith(q) || env.startsWith(q) || bare.startsWith(q));
+    if (!q) return false;
+    const whole = /\w$/.test(q);
+    return [seg, env, bare].some((s) => s.startsWith(q) && (!whole || s.length === q.length || /\s/.test(s[q.length])));
   });
+}
+
+/** 这一段人已经点过头没有：永久放行名单（cmd_allow）或者本会话「这类都允许」。判险那道闸也靠它跳过批过的段 */
+function listedCommand(sec, seg) {
+  const s = String(seg || "");
+  const env = stripEnvAssign(s);
+  const bare = bareCommand(s);
+  return matchesPrefix((sec || {}).cmd_allow, s, env, bare) || matchesPrefix([...sessionAllow], s, env, bare);
 }
 
 /**
@@ -398,7 +561,8 @@ function checkWrite(sec, relPath) {
  * 权限档位排在黑名单之后、名单之前：全自动也不放开黑名单，只看不动则一条都不放。
  */
 function checkCommand(sec, command) {
-  const segs = splitSegments(command);
+  // `bash -c '…'`、`find -exec …` 里套着的那条也各算一段，外面那层批过了不代替里面那条
+  const segs = commandSegments(command);
   const mode = permissionMode(sec);
   const needles = sec.gateway ? (sec.file_blacklist || []).map((b) => ({ raw: String(b).trim(), needles: pathNeedles(b) })) : [];
   for (const seg of segs) {
@@ -437,7 +601,7 @@ function checkCommand(sec, command) {
       return { action: "ask", rule: "要在你桌面上打开文件或网页（用户没要求就别替他开，交付只报路径）", seg, ruleKey: ruleFor(seg) };
     }
     if (sec.delete_protect) {
-      const findDeletes = tok === "find" && /(\s-delete\b|-exec\s+(\S*\/)?rm\b)/.test(bare);
+      const findDeletes = tok === "find" && /(\s-delete\b|-(?:exec|ok)(?:dir)?\s+(\S*\/)?(?:rm|rmdir|unlink|shred|srm)\b)/.test(bare);
       if (DELETE_CMDS.has(tok) || findDeletes) return { action: "ask", rule: "删除保护（rm 类命令需审批）", seg, ruleKey: ruleFor(seg) };
     }
   }
@@ -694,6 +858,8 @@ module.exports = {
   checkCommand,
   checkCode,
   ruleFor,
+  listedCommand, // 判险那道闸用：人批过的段不再花钱判
+  commandSegments, // 同上：两道闸按同一个拆法看命令，不然一边看得见 `bash -c` 里那条、一边看不见
   addSessionAllow,
   listSessionAllow,
   clearSessionAllow,
