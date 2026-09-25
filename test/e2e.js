@@ -3612,17 +3612,32 @@ function testPermissionModes() {
     const cliSrc = fs.readFileSync(path.join(__dirname, "..", "cli.js"), "utf8");
     assert(/if \(opts\.perm\)/.test(cliSrc), "cli.js 里没有 --perm 的落地：参数表上有这个选项、真跑起来却不认");
     assert(!/writeJson\w*\([^)]*CONFIG_PATH[^)]*permission_mode/.test(cliSrc), "cli.js 把 --perm 回写进 config.json 了：这就成了长期设置，跟 -C 的规矩不一致");
-    // 这四行就是 cli.js 里那段覆盖，原样搬过来
-    const cfg = { security: { gateway: true, delete_protect: true, permission_mode: "auto" } };
+    // cli.js 读完配置得先补默认策略，换档也得在补齐的那份上改。原来它自己拼
+    // { ...config.security, permission_mode }：config.json 里没写 security 段（config.example.json
+    // 就没有）时 gateway 是 undefined，闸门当成关着，rm -rf 不问、黑名单不拦，换档换了个寂寞
+    const fillAt = cliSrc.search(/\bsecurity\.getSecurity\(config\);/);
+    assert(fillAt >= 0 && fillAt < cliSrc.search(/if \(opts\.perm\)/), "cli.js 读完 config.json 没先补安全中心默认值：没写 security 段时闸门是关的");
+    assert(!/config\.security = \{ \.\.\.\(config\.security \|\| \{\}\), permission_mode/.test(cliSrc), "cli.js 换档还在自己拼 security 对象：没写的 gateway、删除保护全是 undefined");
+    // 从一份根本没有 security 段的配置开始，下面三行就是 cli.js 里的写法
+    const cfg = {};
+    security.getSecurity(cfg);
     const snapshot = JSON.stringify(cfg.security);
-    const applyPerm = (perm) => { cfg.security = { ...(cfg.security || {}), permission_mode: perm }; };
-    assert.strictEqual(security.checkWrite(security.getSecurity(cfg), "a.md").action, "allow");
+    const applyPerm = (perm) => { security.getSecurity(cfg).permission_mode = perm; };
+    // 直接拿 cfg.security 判：agent 就是原样把它交给工具的，没人会再替你补一遍默认值
+    assert.strictEqual(cfg.security.gateway, true, "没写 security 段时安全闸门没默认打开");
+    assert.strictEqual(security.checkWrite(cfg.security, "a.md").action, "allow");
+    assert.strictEqual(security.checkCommand(cfg.security, "rm -rf x").action, "ask", "没写 security 段时删除保护不生效");
     applyPerm("plan");
     assert.strictEqual(security.permissionMode(cfg.security), "plan");
-    assert.strictEqual(security.checkWrite(security.getSecurity(cfg), "a.md").action, "deny", "--perm plan 没真的关掉写文件");
-    assert.strictEqual(security.checkCommand(security.getSecurity(cfg), "ls").action, "deny", "--perm plan 没真的关掉跑命令");
+    assert.strictEqual(security.checkWrite(cfg.security, "a.md").action, "deny", "--perm plan 没真的关掉写文件");
+    assert.strictEqual(security.checkCommand(cfg.security, "ls").action, "deny", "--perm plan 没真的关掉跑命令");
     applyPerm("ask");
-    assert.strictEqual(security.checkWrite(security.getSecurity(cfg), "a.md").action, "ask", "--perm ask 没真的开始问");
+    assert.strictEqual(security.checkWrite(cfg.security, "a.md").action, "ask", "--perm ask 没真的开始问");
+    assert.strictEqual(security.checkCommand(cfg.security, "ls").action, "ask", "--perm ask 普通命令没问");
+    applyPerm("full");
+    assert.strictEqual(security.checkCommand(cfg.security, "git push --force origin main").action, "ask", "--perm full 把高危命令也放了：闸门没补齐");
+    assert.strictEqual(cfg.security.gateway, true, "换档把安全闸门换丢了");
+    applyPerm("ask");
     // 覆盖只动 permission_mode，别的字段（黑名单、删除保护、运行时开关）必须原样留着——
     // 一个「换档顺手把删除保护也抹了」的实现，比不能换档危险得多
     const after = JSON.parse(JSON.stringify(cfg.security));

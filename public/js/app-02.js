@@ -1923,18 +1923,23 @@ async function pollApprovals() {
     const inner = document.querySelector(".input-inner");
     inner.insertBefore(bar, inner.querySelector(".input-card"));
   }
+  // 还是那几条就别重画：命令原文现在整条给、框里能滚，每 3 秒重画一次，人往下翻到一半就被弹回顶上
+  const sig = JSON.stringify([list.map(a => a.id), apCanAlways]);
+  if (bar.dataset.sig === sig) return;
+  bar.dataset.sig = sig;
   // ruleKey 为空 = 这次拦截的理由不适合被记住（碰了文件黑名单那种），只给「本次允许」
   bar.innerHTML = list.map(a => `
     <div class="ap-row">
       <div class="ap-main">
         <div class="ap-head">${ic("shield")}${esc(a.kind)}待审批${a.source ? ` · <span class="ap-src" title="发起审批的任务">来自「${esc(a.source)}」</span>` : ""}${a.rule ? ` · <span class="ap-why">${esc(a.rule)}</span>` : ""}</div>
-        <code class="ap-cmd" title="${esc(a.text)}">${esc(a.text.slice(0, 160))}</code>
+        <code class="ap-cmd" style="white-space:pre-wrap;word-break:break-all;max-height:7.5em;overflow:auto">${esc(a.text)}</code>
+        ${a.seg && a.seg !== a.text ? `<div class="ap-why" style="word-break:break-all">触发的是这一段：<code>${esc(a.seg)}</code></div>` : ""}
         ${a.detail ? `<pre class="ap-diff">${paintDiff(a.detail)}</pre>` : ""}
       </div>
       <div class="ap-btns">
         <button class="ap-ok" data-id="${esc(a.id)}" data-scope="once">本次允许</button>
         ${a.ruleKey ? `<button class="ap-ok2" data-id="${esc(a.id)}" data-scope="session" title="本次运行期间不再问「${esc(a.ruleKey)}」">本会话一直允许</button>` : ""}
-        ${a.ruleKey && apCanAlways ? `<button class="ap-ok2" data-id="${esc(a.id)}" data-scope="always" title="把「${esc(a.ruleKey)}」写进放行名单，重启也生效">一直允许</button>` : ""}
+        ${a.persistable && apCanAlways ? `<button class="ap-ok2" data-id="${esc(a.id)}" data-scope="always" title="把「${esc(a.ruleKey)}」写进放行名单，重启也生效">一直允许</button>` : ""}
         <button class="ap-no" data-id="${esc(a.id)}">拒绝</button>
       </div>
     </div>`).join("");
@@ -1951,10 +1956,11 @@ async function pollApprovals() {
     // 界面上什么都没变——用户只会再点一次，直到 120 秒超时按拒绝收场。
     if (!r.ok) {
       toast(r.error || "这条审批没批成，任务还等着——再点一次试试");
+      delete bar.dataset.sig; // 按钮刚才全禁用了，得重画一遍才点得动
       pollApprovals();
       return;
     }
-    if (allow && r.downgraded) toast(`已允许，本次运行期间不再问「${r.ruleKey}」。永久放行需平台管理员设置`);
+    if (allow && r.downgraded) toast(`已允许，本次运行期间不再问「${r.ruleKey}」。${r.reason || "永久放行需平台管理员设置"}`);
     else if (allow && r.scope === "always" && r.ruleKey) toast(`已永久放行「${r.ruleKey}」（可在 设置 → 安全中心 的放行名单里删掉）`);
     else if (allow && r.scope === "session" && r.ruleKey) toast(`本次运行期间不再问「${r.ruleKey}」`);
     pollApprovals();

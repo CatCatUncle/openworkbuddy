@@ -155,6 +155,10 @@ if (!fs.existsSync(CONFIG_PATH) && sub !== "doctor") {
   process.exit(1);
 }
 const config = store.readJson(CONFIG_PATH, {});
+// 跟网页服务一样先把安全中心的默认策略补齐：config.json 里常常根本没有 security 这一段，
+// 不补的话 gateway 是 undefined → 闸门当成关着，删除保护、黑名单、高危拦截全都不生效。
+// 只补内存里这份，不回写文件
+security.getSecurity(config);
 
 // ---------- --perm：这一趟放多少权 ----------
 // 网页那边四档是点得到的（设置里一个下拉），命令行原来只能改 config.json —— 而 config.json 是
@@ -164,7 +168,7 @@ const config = store.readJson(CONFIG_PATH, {});
 // 下面所有人（runtime、审批钩子、/perm）读的都是 config.security.permission_mode 这一个字段，
 // 改它一处就全生效，不存在 CLI 一套、内核另一套的分叉。
 if (opts.perm) {
-  config.security = { ...(config.security || {}), permission_mode: opts.perm };
+  security.getSecurity(config).permission_mode = opts.perm;
 }
 // ---------- --model：这一次用哪个模型 ----------
 // 跟 --perm 一样只改内存。认 models 里的名字，也认型号 id；认不出来就停，绝不退回默认那条去花钱
@@ -1867,7 +1871,7 @@ function splitFiles(text) {
     const cur = permNow();
     const at = ids.indexOf(cur); // 当前是 full 就落到第一档，等于往回收，安全
     const next = ids[((at < 0 ? -1 : at) + 1) % ids.length];
-    config.security = { ...(config.security || {}), permission_mode: next };
+    security.getSecurity(config).permission_mode = next;
     const m = security.PERMISSION_MODES[next];
     sayAbove(dim(`权限 → 「${m.label}」（${next}）　${m.desc}（只管这一趟；Shift+Tab 到不了「全自动」，那个得敲 /perm full）\n`));
   }
@@ -2006,7 +2010,7 @@ function splitFiles(text) {
       if (!security.PERMISSION_MODES[v.arg]) { prog(yellow(`没有「${v.arg}」这个档位，只能是 ${Object.keys(security.PERMISSION_MODES).join(" / ")}\n`)); return; }
       // 只动内存里这份。跟 --perm 同一个道理：交互里临时松一档，不该把 config.json 也改了，
       // 否则退出以后所有的活儿都跟着松了，而人早就忘了自己在这儿敲过一句 /perm。
-      config.security = { ...(config.security || {}), permission_mode: v.arg };
+      security.getSecurity(config).permission_mode = v.arg;
       const m = security.PERMISSION_MODES[v.arg];
       prog(dim(`已经切到「${m.label}」——${m.desc}（只管这一趟，没改配置文件）\n`));
       return;

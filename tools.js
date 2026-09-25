@@ -3327,6 +3327,9 @@ async function executeToolCore(name, input, opts = {}) {
     }
     return r.path;
   };
+  // 档位是「只看不动 / 每步都问」时跑命令、跑代码也得照档办：安全闸门总开关关掉的是名单那套规则，
+  // 不是用户当场选的档。原来只有写文件那几个工具传了 force，关了闸门以后 plan 档照样能 rm
+  const modeGated = () => ["plan", "ask"].includes(security.permissionMode(sec));
   /**
    * 闸门统一走这里：拦下就返回一段给模型看的说明，放行返回 null。
    * run_shell 和 run_node 用的是同一套 —— 只守 shell 那扇门是守不住的，
@@ -3352,6 +3355,7 @@ async function executeToolCore(name, input, opts = {}) {
       source: opts.taskLabel || "",
       owner: opts.actor || "",
       detail, // 改文件的 diff：看着改了哪几行批，而不是对着一个文件名下注
+      seg: verdict.seg || "", // 长命令里到底是哪一段触发的：尾巴上藏一句 rm -rf，人得一眼看得见
     });
     security.audit(label + "审批", text, ok ? "已批准" : "已拒绝");
     if (ok) return null;
@@ -3451,7 +3455,9 @@ async function executeToolCore(name, input, opts = {}) {
           return { content: "内置 Node.js 运行时已在 设置 → 安全中心 停用，无法执行代码。", isError: true };
         }
         const code = String(input.code || "");
-        const blocked = await passGate(await judgeRisk(security.checkCode(sec, code), "代码", code), "代码", code.slice(0, 500));
+        // 给人批的是整段代码，不能只给前 500 字：危险的那句完全可以写在第 501 个字以后。
+        // modeGated：只看不动/每步都问是用户当场选的档，闸门总开关关着也得照档办
+        const blocked = await passGate(await judgeRisk(security.checkCode(sec, code), "代码", code), "代码", code, { force: modeGated() });
         if (blocked) return blocked;
         return await runNode(code, timeoutMs, fileBase, opts.stopSignal);
       }
@@ -3459,7 +3465,7 @@ async function executeToolCore(name, input, opts = {}) {
         if (orgBlocksShell()) return shellBlocked("run_shell");
         const cmd = String(input.command || "");
         if (!cmd.trim()) return { content: "command 是空的：要跑什么命令写在 command 里。", isError: true };
-        const blocked = await passGate(await judgeRisk(security.checkCommand(sec, cmd), "命令", cmd), "命令", cmd);
+        const blocked = await passGate(await judgeRisk(security.checkCommand(sec, cmd), "命令", cmd), "命令", cmd, { force: modeGated() });
         if (blocked) return blocked;
         const hookSays = await HK.beforeShell(opts.hooks, cmd, { cwd: fileBase, stopSignal: opts.stopSignal });
         if (hookSays) { security.audit("命令执行", cmd, "钩子拦截"); return { content: hookSays, isError: true }; }
@@ -3776,10 +3782,40 @@ async function executeToolCore(name, input, opts = {}) {
         if (!/^[a-z0-9][a-z0-9-_]{1,40}$/.test(name)) {
           return { content: "技能名不合法：请用小写字母/数字/连字符，如 market-research", isError: true };
         }
-        const dir = dataPath("skills", name);
+        // 技能存在工作区外、全机共用，每趟任务都会重新读进提示词：一次注入就能一直留着。
+        // 所以它得跟写文件一样过档位、跟装技能一样过扫描，覆盖已有的还得人点头
+        const skills = require("./skills");
+        const guard = require("./skill-guard");
+        const toolward = require("./toolward");
+        const hit = skills.getSkillFull(name); // 跟技能页一样认 frontmatter 里的名字，别另起一个同名的把原来那个盖住
+        if (hit && hit.readonly) return { content: `「${name}」是插件 ${hit.plugin} 带的技能，不能覆盖。换个名字存`, isError: true };
+        const dir = hit ? path.join(skills.SKILLS_DIR, hit.dir) : dataPath("skills", name);
+        const file = path.join(dir, "skill.md");
+        const rel = `skills/${path.basename(dir)}/skill.md`;
+        const body = String(input.content || "");
+        const scan = toolward.merge(guard.scanOne("skill.md", body), toolward.scanText("skill.md", body, { security: sec }, { subject: name }));
+        if (scan.level === "block") {
+          // 模型手里没有「仍然安装」那颗按钮：真要存，得人自己去技能页粘进去
+          security.audit("保存技能拦截", rel, "拦截");
+          return { content: guard.explain(scan, name), isError: true };
+        }
+        const was = readBefore(file);
+        let verdict = security.checkWrite(sec, rel); // 只看不动 → 拒
+        // 扫描只认得已知写法，大白话写的注入它看不出来，兜底的还得是人：每步都问照问；
+        // 别的档新建直接存，覆盖已有的、扫出告警的要点头。ruleKey 留空：批过「这类都允许」
+        // 的写文件，不该顺带把改技能也放了
+        if (verdict.action !== "deny" && (security.permissionMode(sec) === "ask" || was || scan.level === "warn")) {
+          const why = was ? `覆盖已有技能「${name}」` : scan.level === "warn" ? `新技能「${name}」扫出告警` : `新建技能「${name}」`;
+          verdict = { action: "ask", rule: why, seg: rel, ruleKey: "" };
+        }
+        const blocked = await passGate(verdict, "保存技能", rel, {
+          force: true,
+          detail: (scan.level === "warn" ? guard.explain(scan, name) + "\n\n" : "") + diffText(rel, was, body),
+        });
+        if (blocked) return blocked;
         fs.mkdirSync(dir, { recursive: true });
-        fs.writeFileSync(path.join(dir, "skill.md"), input.content, "utf8");
-        return { content: `技能「${name}」已保存并生效（skills/${name}/skill.md）`, isError: false };
+        fs.writeFileSync(file, body, "utf8");
+        return { content: `技能「${name}」已保存并生效（${rel}）`, isError: false };
       }
       case "library_list":
         return { content: libraryList(), isError: false };

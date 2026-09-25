@@ -63,6 +63,11 @@ function head(entry, o) {
   const lines = [""];
   lines.push(paint(`⚠ 要你点头：${String(e.kind || "危险操作").trim()}`, "warn"));
   if (e.rule) lines.push(paint(`  拦它的规则：${e.rule}`, "detail"));
+  // 长命令里具体是哪一段被拦：几百字的原文里，危险的那句往往藏在尾巴上
+  const seg = String(e.seg || "").trim();
+  if (seg && seg !== String(e.text || "").trim()) {
+    for (const ln of wrap(`触发的片段：${seg}`, width - 4)) lines.push(paint("  " + ln, "detail"));
+  }
   // 谁在求批准。多个任务并行时（网页上还开着一趟），不写清楚等于让人替陌生任务签字
   if (e.source) lines.push(paint(`  来自任务：${String(e.source).slice(0, 60)}`, "detail"));
   lines.push("");
@@ -213,6 +218,7 @@ function card(entry, deadline) {
     rule: String(e.rule || ""),
     source: String(e.source || ""),
     detail: String(e.detail || ""), // 改文件的 diff，手机上的卡也给看
+    seg: String(e.seg || ""), // 触发审批的那一段，跟网页审批条一样摆出来
     choices: CHOICES.map((c) => ({ allow: c.allow, scope: c.scope, label: c.label, sub: c.sub })),
     deadline: Number(deadline) || 0,
   };

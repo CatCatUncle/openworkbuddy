@@ -455,7 +455,11 @@ function checkCode(sec, code) {
   const src = String(code || "");
   const mode = permissionMode(sec);
   if (mode === "plan") return { action: "deny", rule: `当前权限档位是「${PERMISSION_MODES.plan.label}」，不执行代码`, seg: "" };
-  if (!sec.gateway) return { action: "allow" };
+  if (!sec.gateway) {
+    // 总开关关掉的是黑名单、子进程这些规则；「每步都问」是用户当场选的档，照样得问（跟写文件、跑命令一致）
+    if (mode === "ask" && !sessionAllow.has("code:*")) return { action: "ask", rule: "每步都问模式", seg: src.slice(0, 80), ruleKey: "code:*" };
+    return { action: "allow" };
+  }
   const low = src.toLowerCase();
   for (const b of sec.file_blacklist || []) {
     const raw = String(b).trim();
@@ -525,13 +529,33 @@ function emitApproval(ev) {
   for (const fn of approvalWatchers) { try { fn(ev); } catch {} }
 }
 
+/** 审批原文最多留多长。几万字的代码真有，全塞进轮询里不划算，超了就留头留尾 */
+const APPROVAL_TEXT_MAX = 20000;
+/** 太长才截，而且明写中间省了多少字——不许悄悄只给前半截：`| sh`、`--force` 往往就在尾巴上 */
+function clipForReview(v, max) {
+  const s = String(v || "");
+  if (s.length <= max) return s;
+  const head = Math.floor(max * 0.6);
+  const tail = max - head;
+  return s.slice(0, head) + `\n…（中间省略 ${s.length - head - tail} 字）…\n` + s.slice(-tail);
+}
+/**
+ * 「一直允许」写进的是 cmd_allow，而那张表只按命令前缀比。danger:/write:/code: 这几类规则
+ * 在闸里只认本会话记忆，写进去等于没写——按钮上说「重启也生效」，重启后照样问，是骗人。
+ * 高危命令、写文件、跑代码本来也不该一次点头就永久放开，所以这几类只能「本会话」。
+ */
+function isPersistableRule(ruleKey) {
+  const k = String(ruleKey || "");
+  return !!k && !/^(danger|write|code):/.test(k);
+}
+
 /**
  * @param owner 发起这次任务的登录名。多人共用一台服务器时这个字段是必须的：
  *   审批卡片上写着别人任务要跑的那条命令（路径、域名、脚本片段都在里面），
  *   没有归属就等于谁登录了都能看，还能替别人点「允许」。
  *   IM / 定时任务这类没有登录态的后台跑法留空，只有平台管理员看得见。
  */
-function requestApproval(kind, text, { timeoutMs = 120000, stopSignal, rule = "", ruleKey = "", source = "", owner = "", detail = "" } = {}) {
+function requestApproval(kind, text, { timeoutMs = 120000, stopSignal, rule = "", ruleKey = "", source = "", owner = "", detail = "", seg = "" } = {}) {
   const id = "ap_" + Date.now() + "_" + Math.floor(Math.random() * 1e6);
   return new Promise((resolve) => {
     let done = false;
@@ -550,13 +574,15 @@ function requestApproval(kind, text, { timeoutMs = 120000, stopSignal, rule = ""
     approvals.set(id, {
       id,
       kind,
-      text: String(text || "").slice(0, 500),
+      // 原来是悄悄 slice(0, 500)：危险的那句写在第 501 个字以后，人批的就是一条看不见它的命令
+      text: clipForReview(text, APPROVAL_TEXT_MAX),
       rule: String(rule || ""),
       // 「以后别再问这类」批的是这条规则；空字符串表示这次的原因不适合记住（比如碰了文件黑名单）
       ruleKey: String(ruleKey || ""),
       source: String(source || "").slice(0, 60), // 发起审批的任务标题：多任务并行时用户得知道是谁在求批
       owner: String(owner || ""),
       detail: String(detail || "").slice(0, 4000), // 改文件的 diff：审批卡上展开看，批的是具体改动不是文件名
+      seg: clipForReview(seg, 400), // 触发审批的那一段：长命令里一眼找到是哪句被拦的
       ts: new Date().toISOString(),
       resolve: finish,
     });
@@ -572,7 +598,8 @@ function requestApproval(kind, text, { timeoutMs = 120000, stopSignal, rule = ""
 function listApprovals(scopeTo) {
   const all = [...approvals.values()];
   const mine = scopeTo == null ? all : all.filter((e) => e.owner && e.owner === scopeTo);
-  return mine.map(({ id, kind, text, rule, ruleKey, source, detail, ts }) => ({ id, kind, text, rule, ruleKey, source, detail, ts }));
+  // persistable：这条能不能「一直允许」。不能的就别摆那个按钮，点了也写不进去
+  return mine.map(({ id, kind, text, rule, ruleKey, source, detail, seg, ts }) => ({ id, kind, text, rule, ruleKey, source, detail, seg, ts, persistable: isPersistableRule(ruleKey) }));
 }
 /**
  * @param scope once（默认，只放这一次）/ session（本会话同类不再问）/ always（由调用方写进永久放行名单）
@@ -677,6 +704,7 @@ module.exports = {
   listApprovals,
   resolveApproval,
   effectiveScope,
+  isPersistableRule, // 哪些规则能写进永久放行名单：server 的 always 和网页的按钮都认它
   checkFullDisk,
   checkAccessibility,
   checkAutomation,

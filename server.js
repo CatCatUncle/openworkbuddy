@@ -2452,23 +2452,31 @@ app.get("/api/security/approvals", (req, res) => {
 app.post("/api/security/approvals/:id", (req, res) => {
   const body = req.body || {};
   const scopeTo = approvalScope(req);
-  const { scope, downgraded } = security.effectiveScope(body.scope, scopeTo !== undefined);
+  let { scope, downgraded } = security.effectiveScope(body.scope, scopeTo !== undefined);
   const r = security.resolveApproval(req.params.id, !!body.allow, scope, scopeTo);
   if (!r.ok) {
     return res
       .status(r.forbidden ? 403 : 409)
       .json({ ...r, error: r.error || "这条审批已经结束了（等超时了，或者别处已经点过）" });
   }
+  // danger:/write:/code: 这几类 cmd_allow 管不到（闸里只认本会话），写进去重启后照样问，
+  // 按钮说的「重启也生效」就成了假话。降成本会话，照实说
+  let reason = "";
+  if (scope === "always" && r.ruleKey && !security.isPersistableRule(r.ruleKey)) {
+    scope = "session";
+    downgraded = true;
+    reason = "高危命令、写文件、跑代码只能本次运行期间放行，不进永久名单";
+  }
   if (r.ok && body.allow && scope === "always" && r.ruleKey) {
     const sec = security.getSecurity(config);
-    const list = Array.isArray(sec.cmd_allow) ? sec.cmd_allow : [...(security.DEFAULTS.cmd_allow || [])];
+    const list = Array.isArray(sec.cmd_allow) ? sec.cmd_allow : [];
     if (!list.includes(r.ruleKey)) {
-      list.push(r.ruleKey);
-      sec.cmd_allow = list;
+      // 另起一份再写：没配过名单时这就是 DEFAULTS 里那个数组，原地 push 会连默认值一起改掉
+      sec.cmd_allow = [...list, r.ruleKey];
       saveConfig();
     }
   }
-  res.json({ ...r, scope, downgraded });
+  res.json({ ...r, scope, downgraded, ...(reason ? { reason } : {}) });
 });
 // 执行模式表。界面上那个下拉不再自己写四行 HTML，从这儿取——
 // 「网页四个、命令行三个」就是抄出来的：goal 是后加的，抄到第三份就漏了。
