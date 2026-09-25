@@ -261,6 +261,21 @@ flowchart TB
 
 项目结构、测试、PR 规范都在 [参与贡献](CONTRIBUTING.md)。不用先开 issue 问，直接发 PR。
 
+## 从别家换过来
+
+在找 **Claude Cowork、Codex、WorkBuddy、豆包办公、千问办公的开源替代**，或者想给 **DeepSeek 找一个 agent 外壳（harness）**？每一家都写了一页老实对比，也写了什么时候还是用它更合适：
+
+| 你在用 / 在找 | 对比页 |
+|---|---|
+| Claude Cowork | [Claude Cowork 开源替代：本机运行、模型随便换](https://catcatuncle.github.io/openworkbuddy/zh/alternatives/claude-cowork/) |
+| Codex | [Codex 办公版替代：交付的是文件，还能拿 Codex 当发动机](https://catcatuncle.github.io/openworkbuddy/zh/alternatives/codex/) |
+| WorkBuddy | [WorkBuddy 开源替代：本机运行的 AI 办公助理](https://catcatuncle.github.io/openworkbuddy/zh/alternatives/workbuddy/) |
+| 豆包办公 | [豆包办公开源替代：也能用豆包模型](https://catcatuncle.github.io/openworkbuddy/zh/alternatives/doubao/) |
+| 千问办公 | [千问办公开源替代：通义模型照样用](https://catcatuncle.github.io/openworkbuddy/zh/alternatives/qwen/) |
+| DeepSeek | [DeepSeek agent 外壳：填上 Key 就能干活](https://catcatuncle.github.io/openworkbuddy/zh/alternatives/deepseek-agent/) |
+
+OpenWorkBuddy 是独立开源项目，跟上面这些公司都没有关联。
+
 ## 文档
 
 | 文档 | 一句话 | 文档 | 一句话 |
