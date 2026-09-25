@@ -306,7 +306,8 @@ const TOOL_DEFS = [
       properties: {
         query: { type: "string", description: "要搜的内容（默认按字面量搜）" },
         regex: { type: "boolean", description: "把 query 当正则处理，默认 false" },
-        dir: { type: "string", description: "只搜某个子目录，默认整个 workspace" },
+        ignore_case: { type: "boolean", description: "不传时：query 里有大写字母就区分大小写，全小写不区分。true/false 强制不分/区分" },
+        dir: { type: "string", description: "只搜某个子目录（或某一个文件），默认整个 workspace" },
         ext: { type: "string", description: "只搜某类扩展名，逗号分隔，如 js,ts,md" },
         max: { type: "number", description: "最多返回多少条命中，默认 60" },
       },
@@ -730,6 +731,44 @@ const TOOL_DEFS = [
 const READ_BIG = 4 * 1024 * 1024;
 const READ_CHUNK = 1 << 20;
 
+/**
+ * 按行段读，5 万字的上限只在整行上收。
+ *
+ * 以前是拼完再一刀 slice(0, 50000)：抬头写着「第 1-2000 行」，正文到第 771 行半截就断了，一个字没提——
+ * 模型以为 772-2000 行都看过了，照着没见过的代码去改。现在收在哪一行抬头就写到哪一行，末尾说清接着从哪读。
+ * 只有单独一行就超了（压缩过的 js、一行一整坨 JSON）才劈开那一行，也照直说。
+ */
+function numberedLines(rel, from) {
+  const room = 50000 - rel.length - 200; // 抬头和末尾那句话的地方先让出来
+  const out = [];
+  let used = 0, last = from - 1, cutLen = 0, full = false;
+  return {
+    /** 收下第 no 行；返回 false = 满了，后面的不用再给 */
+    push(no, text) {
+      if (full) return false;
+      let ln = `${no}\t${text}`;
+      if (used + ln.length + 1 > room) {
+        full = true;
+        if (out.length) return false;
+        ln = ln.slice(0, room);
+        if (/[\ud800-\udbff]$/.test(ln)) ln = ln.slice(0, -1); // 别把 emoji / 生僻字劈成半个
+        cutLen = text.length;
+      }
+      out.push(ln);
+      used += ln.length + 1;
+      last = no;
+      return !full;
+    },
+    /** to = 这次本该读到第几行（已按全文夹过），total = 全文行数 */
+    render(to, total) {
+      const notes = [];
+      if (cutLen) notes.push(`（第 ${last} 行这一行就有 ${cutLen} 字，只给了开头一截；要找这一行里的东西用 search_files 或 run_shell）`);
+      if (full && last < to) notes.push(`（到 5 万字上限了，只给到第 ${last} 行；接着读传 start_line=${last + 1}）`);
+      return `（${rel} 第 ${from}-${full ? last : to} 行，全文共 ${total} 行）\n${out.join("\n")}` + (notes.length ? "\n\n" + notes.join("\n") : "");
+    },
+  };
+}
+
 async function readBigFile(p, rel, size, s, e) {
   const { StringDecoder } = require("string_decoder");
   const fh = await fs.promises.open(p, "r");
@@ -746,7 +785,7 @@ async function readBigFile(p, rel, size, s, e) {
     const to = Math.max(from, e || from);
     const dec = new StringDecoder("utf8");
     const buf = Buffer.alloc(READ_CHUNK);
-    const out = [];
+    const out = numberedLines(rel, from);
     let carry = "", lineNo = 0, pos = 0;
     for (;;) {
       const { bytesRead } = await fh.read(buf, 0, buf.length, pos);
@@ -755,17 +794,18 @@ async function readBigFile(p, rel, size, s, e) {
       carry += dec.write(buf.subarray(0, bytesRead));
       const parts = carry.split("\n");
       carry = parts.pop();
+      // 收满了也接着往下数：抬头那个「全文共 N 行」得是真的
       for (const ln of parts) {
         lineNo++;
-        if (lineNo >= from && lineNo <= to) out.push(`${lineNo}\t${ln}`);
+        if (lineNo >= from && lineNo <= to) out.push(lineNo, ln);
       }
     }
     carry += dec.end();
     lineNo++; // 最后一段（可能是空串）也算一行：跟 content.split("\n") 的行数口径对齐，
-    if (lineNo >= from && lineNo <= to) out.push(`${lineNo}\t${carry}`); // 不然大小文件报的总行数会差一
+    if (lineNo >= from && lineNo <= to) out.push(lineNo, carry); // 不然大小文件报的总行数会差一
     // 翻页翻到头了不是失败，是「这就是结尾」这条信息本身——跟小文件那条路一个措辞
     if (from > lineNo) return `${rel} 到头了：全文共 ${lineNo} 行，start_line=${from} 已经在末尾之后，后面没有内容了。`;
-    return `（${rel} 第 ${from}-${Math.min(lineNo, to)} 行，全文共 ${lineNo} 行）\n${out.join("\n")}`.slice(0, 50000);
+    return out.render(Math.min(lineNo, to), lineNo);
   } finally {
     await fh.close();
   }
@@ -925,6 +965,32 @@ function bindStop(child, stopSignal, onStop) {
   return () => stopSignal.removeEventListener("abort", onAbort);
 }
 
+/**
+ * 超时也得整组收，不能交给 spawn 自带的 timeout。
+ *
+ * spawn 的 timeout 只 kill 直属那层 shell。`sleep 60; echo done`、`npm test | tail`、
+ * 脚本里再起一个 node——孙子进程还攥着 stdout，'close' 就一直等不来：超时到点了工具照样不回，
+ * 撞上开服务、watch 这种不会自己结束的，这一步就永远卡死，孙子进程还漏在后台。
+ * 所以到点走 killTree 整组送走；有人 setsid 跳出了进程组、仍拿着管道的，宽限过后直接把管道掐断，
+ * 保证这一步一定回得来。返回撤掉计时器的函数。
+ */
+function armTimeout(child, timeoutMs, onFire) {
+  if (!(timeoutMs > 0)) return () => {};
+  let hard = null;
+  const t = setTimeout(() => {
+    onFire();
+    killTree(child);
+    hard = setTimeout(() => { try { child.stdout.destroy(); child.stderr.destroy(); } catch {} }, 5000);
+    if (hard.unref) hard.unref();
+  }, timeoutMs);
+  return () => { clearTimeout(t); if (hard) clearTimeout(hard); };
+}
+
+/** 超时那句话：留着「执行超时被终止」这几个字，evolve.js 靠它归类 */
+function timeoutNote(timeoutMs, tip) {
+  return `(执行超时被终止：跑满 ${Math.max(1, Math.round(timeoutMs / 1000))} 秒没结束，连同它拉起的子进程一起停了${tip || ""})\n`;
+}
+
 function runNode(code, timeoutMs, cwd, stopSignal) {
   ensureDirs();
   const syntaxErr = precheckSyntax(code);
@@ -942,7 +1008,6 @@ function runNode(code, timeoutMs, cwd, stopSignal) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [file], {
       cwd: cwd || ws(),
-      timeout: timeoutMs,
       // 自成进程组，好让 killTree 能连着孙子进程一起收（脚本里再 spawn 是常事）
       detached: process.platform !== "win32",
       // ELECTRON_RUN_AS_NODE：桌面版里 execPath 是 Electron 二进制，不加这个每跑一次脚本
@@ -959,21 +1024,24 @@ function runNode(code, timeoutMs, cwd, stopSignal) {
     child.stderr.on("data", (d) => err.write(d));
     let stopped = false;
     const unbind = bindStop(child, stopSignal, () => { stopped = true; });
-    child.on("close", (code2, signal) => {
-      unbind();
+    let timedOut = false;
+    const disarm = armTimeout(child, timeoutMs, () => { timedOut = true; });
+    child.on("close", (code2) => {
+      unbind(); disarm();
       fs.rmSync(file, { force: true });
       const o = out.render(), e = err.render();
       let result = "";
       if (o) result += `stdout:\n${o}\n`;
       if (e) result += `stderr:\n${e}\n`;
-      // 先判停止再判超时：用户按停也是走 SIGTERM，两句话反了人看见的就是「超时」
+      // 先判停止再判超时：用户按停也是走 SIGTERM，两句话反了人看见的就是「超时」。
+      // 超时只认计时器：整组收掉之后，直属那层可能是被 SIGKILL 的、也可能是孩子没了自己退的，看信号认不出来
       if (stopped) result += "(用户已停止任务，脚本被终止)\n";
-      else if (signal === "SIGTERM") result += "(执行超时被终止)\n";
+      else if (timedOut) result += timeoutNote(timeoutMs);
       result += `exit code: ${code2}`;
-      resolve({ content: result, isError: stopped || code2 !== 0 });
+      resolve({ content: result, isError: stopped || timedOut || code2 !== 0 });
     });
     child.on("error", (e) => {
-      unbind();
+      unbind(); disarm();
       resolve({ content: `启动失败: ${e.message}`, isError: true });
     });
   });
@@ -1056,8 +1124,7 @@ function runShell(command, timeoutMs, cwd, stopSignal) {
     const sh = pickShell(command);
     const child = spawn(sh.bin, sh.args, {
       cwd: cwd || ws(),
-      timeout: timeoutMs,
-      // 同 runNode：整组一起杀，否则 `npm install` 那一窝会活过「让我停下」
+      // 同 runNode：整组一起杀，否则 `npm install` 那一窝会活过「让我停下」。超时也一样，见 armTimeout
       detached: process.platform !== "win32",
       env: { ...process.env, PATH: shellPath(), OPENWORKBUDDY_HOME: DATA_DIR },
       // stdin 不给：留着一根没人写的管道，`read`、python 的 input()、npm init 这种等输入的命令
@@ -1071,23 +1138,26 @@ function runShell(command, timeoutMs, cwd, stopSignal) {
     child.stderr.on("data", (d) => err.write(d));
     let stopped = false;
     const unbind = bindStop(child, stopSignal, () => { stopped = true; });
-    child.on("close", (code2, signal) => {
-      unbind();
+    let timedOut = false;
+    const disarm = armTimeout(child, timeoutMs, () => { timedOut = true; });
+    child.on("close", (code2) => {
+      unbind(); disarm();
       const o = out.render(), e = err.render();
       let result = "";
       if (o) result += `stdout:\n${o}\n`;
       if (e) result += `stderr:\n${e}\n`;
-      // 先判停止再判超时：用户按停也是走 SIGTERM，两句话反了人看见的就是「超时」
+      // 先判停止再判超时：用户按停也是走 SIGTERM，两句话反了人看见的就是「超时」。
+      // 超时只认计时器：整组收掉之后，直属那层可能是被 SIGKILL 的、也可能是孩子没了自己退的，看信号认不出来
       if (stopped) result += "(用户已停止任务，命令被终止)\n";
-      else if (signal === "SIGTERM") result += "(执行超时被终止)\n";
+      else if (timedOut) result += timeoutNote(timeoutMs, "。开服务、watch 这种不会自己结束的，用 background:true");
       result += `exit code: ${code2}`;
       // 缺的是我们认识的外部工具时，把 shell 那句 command not found 翻译一遍再递出去
       const hint = code2 !== 0 ? missingBinHint(o + "\n" + e) : "";
       if (hint) result += "\n" + hint;
-      resolve({ content: result, isError: stopped || code2 !== 0 });
+      resolve({ content: result, isError: stopped || timedOut || code2 !== 0 });
     });
     child.on("error", (e) => {
-      unbind();
+      unbind(); disarm();
       resolve({ content: `启动失败: ${e.message}`, isError: true });
     });
   });
@@ -1448,8 +1518,11 @@ async function readDocument(abs, rel, input) {
 
 const LIST_SKIP = new Set([".tmp", "node_modules", ".git", ".DS_Store", ".history"]);
 
-/** 列目录。depth>1 时递归展开——看项目结构时一次看清，比一层层 list_files 省好几轮 */
-function listFiles(target, depth = 1) {
+/**
+ * 列目录。depth>1 时递归展开——看项目结构时一次看清，比一层层 list_files 省好几轮。
+ * prefix 是 target 相对工作目录的路径，每一项都带上它：拿去 read_file 就是那个文件（跟 find_files、search_files 一个起点）
+ */
+function listFiles(target, depth = 1, prefix = "") {
   if (!fs.existsSync(target)) return "（目录不存在）";
   const maxDepth = Math.min(Math.max(Number(depth) || 1, 1), 3);
   const out = [];
@@ -1483,7 +1556,7 @@ function listFiles(target, depth = 1) {
         out.push(`${r}\t${st.size} 字节\t${st.mtime.toISOString()}`);
       }
     }
-  })(target, "", 1);
+  })(target, prefix, 1);
   if (!out.length) return "（空目录）";
   return out.join("\n") + (truncated ? "\n（超过 400 项，后面的没列——用 dir 指到具体子目录再看）" : "");
 }
@@ -1635,6 +1708,25 @@ function shiftIndent(fileLine, needleLine, repl) {
 }
 
 /**
+ * 宽松命中的那几行，文件里的缩进和 old_text 里的缩进是不是每行都差同样多（空行不算）。
+ * 按列比，不按字符串比：文件用 Tab、它给空格是正常情况，得认。一个 Tab 算几列，
+ * 从第一对「一边全 Tab、一边全空格」的行里对出来，对不出来按 4。
+ */
+function sameIndentShift(fileLines, needleLines) {
+  const lead = (l) => (l.match(/^[ \t]*/) || [""])[0];
+  let unit = 0;
+  for (let j = 0; j < fileLines.length && !unit; j++) {
+    const f = lead(fileLines[j]), n = lead(needleLines[j] || "");
+    if (/^\t+$/.test(f) && /^ +$/.test(n) && n.length % f.length === 0) unit = n.length / f.length;
+    else if (/^ +$/.test(f) && /^\t+$/.test(n) && f.length % n.length === 0) unit = f.length / n.length;
+  }
+  const cols = (s) => [...s].reduce((w, ch) => w + (ch === "\t" ? unit || 4 : 1), 0);
+  const deltas = new Set();
+  fileLines.forEach((l, j) => { if (l.trim()) deltas.add(cols(lead(l)) - cols(lead(needleLines[j] || ""))); });
+  return deltas.size <= 1;
+}
+
+/**
  * 文件用 Tab 缩进、它给的是空格（或反过来）：照写就是一个块里 Tab 空格混着，Python 直接 TabError。
  * 一层等于几个空格从命中的那几行里对出来——每一对都得算出同一个整数，对不上就不猜，原样返回。
  */
@@ -1733,8 +1825,11 @@ function planEdit(src, label, input) {
 
 function planEditLf(src, label, { old_text, new_text, replace_all }) {
   const needle = String(old_text == null ? "" : old_text);
-  const repl = String(new_text == null ? "" : new_text);
   if (!needle) throw new Error("old_text 是空的：edit_file 必须给出要被替换掉的原文");
+  // 没给 new_text 不能当「删掉」处理：参数名写成 new_str、或者干脆漏了，老写法照样回「已修改」，
+  // 整个函数就这么没了。要删得显式给 ""
+  if (new_text == null) throw new Error(`没给 new_text，文件没动。要替换成什么写在 new_text 里；确实要删掉这段就显式传 new_text:""。`);
+  const repl = String(new_text);
   const same = { src, out: src, noop: true, msg: `${label} 内容没有变化（new_text 和 old_text 一样）` };
   const idx = src.indexOf(needle);
   if (idx < 0) {
@@ -1748,8 +1843,24 @@ function planEditLf(src, label, { old_text, new_text, replace_all }) {
     }
     if (loose.length === 1) {
       const [start, end] = loose[0];
+      // 只按第一行的缩进差把 new_text 整体挪，前提是每一行差的都一样。
+      // 不一样（YAML 被它写平了、Python 中间一行缩错了）就没法知道 new_text 每行该缩多少：
+      // 照第一行挪，YAML 层级就变了、b() 就挪进了 if 里，语法检查还查不出来。宁可不改，把原文贴给它
+      if (!sameIndentShift(lines.slice(start, end), needle.replace(/\s+$/, "").split("\n"))) {
+        let block = lines.slice(start, end).join("\n");
+        const cut = block.length > 2000 ? "\n…（太长，只贴了前 2000 字）" : "";
+        if (cut) block = block.slice(0, 2000);
+        throw new Error(
+          `old_text 和文件第 ${start + 1}-${end} 行只差缩进，但各行差得不一样，猜不出 new_text 每行该缩多少，文件没动。那几行现在是这样：\n` +
+            `<<<原文开始\n${block}${cut}\n>>>原文结束\n把这段**原样**抄成 old_text（new_text 也照这个缩进写）再来一次，不用再 read_file 了。`
+        );
+      }
+      // 命中的是 [start, end) 这几整行，不含最后一行的换行符。old_text 末尾带的换行在文件里对应的是这个换行，
+      // new_text 末尾同样的换行得去掉，不然拼回去多出一个空行
+      let r2 = repl;
+      for (let k = (needle.match(/\s*$/)[0].match(/\n/g) || []).length; k > 0 && /\n[ \t]*$/.test(r2); k--) r2 = r2.replace(/\n[ \t]*$/, "");
       // new_text 是空的 = 要把这几行删掉，别塞一个空行进去
-      const body = repl === "" ? [] : matchIndentStyle(lines.slice(start, end), needle.split("\n"), shiftIndent(lines[start], needle.split("\n")[0], repl)).split("\n");
+      const body = repl === "" ? [] : matchIndentStyle(lines.slice(start, end), needle.split("\n"), shiftIndent(lines[start], needle.split("\n")[0], r2)).split("\n");
       const out = lines.slice(0, start).concat(body, lines.slice(end)).join("\n");
       if (out === src) return same;
       return {
@@ -1777,7 +1888,22 @@ function planEditLf(src, label, { old_text, new_text, replace_all }) {
 function readSource(file, label) {
   if (!fs.existsSync(file)) throw new Error(`文件不存在：${label}。新建文件请用 write_file。`);
   if (fs.statSync(file).isDirectory()) throw dirInsteadOfFile(file, label);
-  return fs.readFileSync(file, "utf8");
+  // 按 UTF-8 解开再写回去：GBK 的中文、图片里的字节解不开，全变成 �，改一行坏一片，
+  // 撤销留底记的也是坏掉那一版。解开再编回去跟原字节对不上，就一个字节都不动。
+  // 不用 TextDecoder 判：它默认把 BOM 吃掉，写回去 BOM 就没了
+  const buf = fs.readFileSync(file);
+  const src = buf.toString("utf8");
+  if (!Buffer.from(src, "utf8").equals(buf)) {
+    const bin = buf.includes(0);
+    throw new Error(
+      `已拦截，一个字节都没改：${label} 不是 UTF-8 文本（${bin ? "里面有 0 字节，像是二进制文件" : "可能是 GBK、Latin-1 这类旧编码"}）。` +
+        `edit_file/multi_edit 按 UTF-8 改，会把里面所有非 UTF-8 的字节换成乱码，撤销也找不回原样。` +
+        (bin
+          ? "二进制文件不能按文本改。"
+          : `要保留原编码，用 run_shell 按原编码读写（比如 Python 里 open(p, encoding="gbk")）；确定能转成 UTF-8 的，先 iconv -f GBK -t UTF-8 转好再改。`)
+    );
+  }
+  return src;
 }
 
 /**
@@ -1787,6 +1913,9 @@ function readSource(file, label) {
 function planMulti(src, label, edits) {
   if (!Array.isArray(edits) || !edits.length) throw new Error("edits 是空的：至少给一处 {old_text, new_text}");
   if (edits.length > 50) throw new Error(`一次最多 50 处，你给了 ${edits.length} 处。分几次改`);
+  // 漏了 new_text 的先挑出来单说：它跟 old_text 对不上是两回事，别吃到下面那句「old_text 要照改完的样子写」
+  const bare = edits.findIndex((e) => e && e.new_text == null);
+  if (bare >= 0) throw new Error(`第 ${bare + 1} 处（共 ${edits.length} 处）没给 new_text，整个文件没动。要删掉那段就显式传 new_text:""。`);
   let cur = src;
   const notes = [];
   for (const [i, e] of edits.entries()) {
@@ -2265,26 +2394,73 @@ const SEARCH_YIELD_ENTRIES = 800;
  * 停下来必须说实话：没扫完就写「没扫完」，绝不能报「没搜到」。报「没搜到」是在骗模型，
  * 它会据此断定这个符号不存在，然后把后面的活全建在这个错判上。
  */
-async function searchFiles(root, { query, regex, ext, max, only }) {
+async function searchFiles(root, { query, regex, ext, max, only, relBase, ignore_case }) {
   const limit = Math.min(Math.max(Number(max) || 60, 1), 300);
   const q = String(query || "");
   if (!q) throw new Error("query 是空的");
+  // 大小写照 ripgrep 的 smart-case：query 里有大写就按大小写严格搜，全小写不分。
+  // 以前一律不分：找 `^[A-Z_]+ =` 这种常量定义，max_retry、user_name 全混进来；改名前找 Foo 的调用点，foo 也算上
+  const letters = regex ? q.replace(/\\./g, "") : q; // \S、\W 这种转义里的大写字母不算
+  const caseless = ignore_case === true || (ignore_case !== false && !/\p{Lu}/u.test(letters));
   let re;
   try {
-    re = new RegExp(regex ? q : q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    re = new RegExp(regex ? q : q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), caseless ? "i" : "");
   } catch (e) {
     throw new Error(`正则不合法：${e.message}`);
   }
+  // 结果里的路径跟 read_file 同一个起点（relBase = 工作目录）。以前从搜索目录起算：
+  // dir 给 proj/src，回来的是 util/index.js，模型照着 read_file 就读到根下另一个同名文件，或者一句 ENOENT。
+  // 跳出这个起点的（白名单里的外部目录）给绝对路径，照样能直接拿去读
+  const relOf = (full) => {
+    const r = path.relative(relBase || root, full);
+    return (r === ".." || r.startsWith(".." + path.sep) || path.isAbsolute(r) ? full : r).split(path.sep).join("/");
+  };
   const exts = String(ext || "")
     .split(",")
     .map((x) => x.trim().replace(/^\./, "").toLowerCase())
     .filter(Boolean);
   const hits = [];
+  const skippedBig = []; // 顺着目录搜时跳过的大文件：报「没搜到」的时候它可能正好就在里面，得说出来
   let scanned = 0,
     bytes = 0,
     truncated = false, // 命中够数了（这是好事）
     overBudget = ""; // 预算烧完了，树还没走完（这个必须告诉模型）
   const deadline = Date.now() + SEARCH_BUDGET.ms;
+  const hit = (rel, no, line) => {
+    hits.push(`${rel}:${no}: ${line.trim().slice(0, 200)}`);
+    if (hits.length >= limit) truncated = true;
+  };
+  // 点名要搜的大文件（2.5MB 的 app.log 这种）：跟 readBigFile 一个路数分块流着搜，不整份读进内存
+  const grepBig = async (full, rel) => {
+    const { StringDecoder } = require("string_decoder");
+    let fh;
+    try { fh = await fs.promises.open(full, "r"); } catch { return; }
+    const dec = new StringDecoder("utf8");
+    const buf = Buffer.alloc(READ_CHUNK);
+    let carry = "", lineNo = 0, pos = 0;
+    try {
+      while (!truncated) {
+        if (bytes >= SEARCH_BUDGET.bytes) { overBudget = `读到 ${(SEARCH_BUDGET.bytes / 1048576).toFixed(1)}MB 的上限`; return; }
+        if (Date.now() > deadline) { overBudget = `搜了 ${(SEARCH_BUDGET.ms / 1000).toFixed(1)} 秒还没走完`; return; }
+        const { bytesRead } = await fh.read(buf, 0, buf.length, pos);
+        if (!bytesRead) break;
+        pos += bytesRead;
+        bytes += bytesRead;
+        carry += dec.write(buf.subarray(0, bytesRead));
+        const parts = carry.split("\n");
+        carry = parts.pop();
+        for (const ln of parts) {
+          lineNo++;
+          if (re.test(ln)) hit(rel, lineNo, ln);
+          if (truncated) return;
+        }
+      }
+      carry += dec.end();
+      if (!truncated && re.test(carry)) hit(rel, lineNo + 1, carry);
+    } finally {
+      await fh.close();
+    }
+  };
   let sinceYieldFiles = 0,
     sinceYieldBytes = 0,
     sinceYieldEntries = 0;
@@ -2324,10 +2500,18 @@ async function searchFiles(root, { query, regex, ext, max, only }) {
       } catch {
         continue;
       }
-      if (st.size > 2 * 1024 * 1024) continue; // 大文件多半是产物/数据，不是要找的代码
+      const rel = relOf(full);
+      // 大文件多半是产物/数据，不是要找的代码，顺着目录搜时跳过——但要记下来，不然它明明在里面也报「没搜到」
+      if (st.size > 2 * 1024 * 1024 && !only) { skippedBig.push(`${rel}（${(st.size / 1048576).toFixed(1)}MB）`); continue; }
       if (scanned >= SEARCH_BUDGET.files) { overBudget = `扫到 ${SEARCH_BUDGET.files} 个文件的上限`; return; }
       if (bytes >= SEARCH_BUDGET.bytes) { overBudget = `读到 ${(SEARCH_BUDGET.bytes / 1048576).toFixed(1)}MB 的上限`; return; }
       if (Date.now() > deadline) { overBudget = `搜了 ${(SEARCH_BUDGET.ms / 1000).toFixed(1)} 秒还没走完`; return; }
+      if (st.size > 2 * 1024 * 1024) {
+        if (fileHasNul(full)) continue;
+        scanned++;
+        await grepBig(full, rel);
+        continue;
+      }
       let buf;
       try {
         buf = fs.readFileSync(full);
@@ -2339,15 +2523,11 @@ async function searchFiles(root, { query, regex, ext, max, only }) {
       if (buf.includes(0)) continue; // 没扩展名/扩展名骗人的二进制，还是得兜住
       scanned++;
       sinceYieldFiles++;
-      const rel = path.relative(root, full) || e.name;
       const lines = buf.toString("utf8").split("\n");
       for (let i = 0; i < lines.length; i++) {
         if (!re.test(lines[i])) continue;
-        hits.push(`${rel}:${i + 1}: ${lines[i].trim().slice(0, 200)}`);
-        if (hits.length >= limit) {
-          truncated = true;
-          return;
-        }
+        hit(rel, i + 1, lines[i]);
+        if (truncated) return;
       }
       if (sinceYieldFiles >= SEARCH_YIELD_FILES || sinceYieldBytes >= SEARCH_YIELD_BYTES) await breathe();
     }
@@ -2355,18 +2535,21 @@ async function searchFiles(root, { query, regex, ext, max, only }) {
   const scale = `扫了 ${scanned} 个文本文件、${(bytes / 1048576).toFixed(1)}MB`;
   // 没扫完的实话 + 下一步怎么办：光说「没扫完」模型只会原样再搜一遍
   const narrow = `——用 dir 指到具体子目录，或用 ext 限类型（比如 ext="js,ts"）再搜一遍`;
+  const big = skippedBig.length
+    ? `；另有 ${skippedBig.length} 个超过 2MB 的文件没搜：${skippedBig.slice(0, 5).join("、")}${skippedBig.length > 5 ? " 等" : ""}——要搜就把 dir 指到那个文件`
+    : "";
   if (!hits.length) {
     return overBudget
-      ? `（没搜完就停了：${overBudget}，${scale}，还没搜到「${q}」。这**不代表没有**${narrow}）`
-      : `（没搜到「${q}」，${scale}）`;
+      ? `（没搜完就停了：${overBudget}，${scale}，还没搜到「${q}」。这**不代表没有**${narrow}${big}）`
+      : `（没搜到「${q}」，${scale}${caseless ? "" : "，区分了大小写，不分就传 ignore_case:true"}${big}）`;
   }
   return (
     hits.join("\n") +
     (truncated
       ? `\n（到 ${limit} 条上限了，后面还有没列出来的——把关键词写细，或用 dir/ext 缩范围）`
       : overBudget
-        ? `\n（共 ${hits.length} 条，但没搜完就停了：${overBudget}，${scale}${narrow}）`
-        : `\n（共 ${hits.length} 条，${scale}）`)
+        ? `\n（共 ${hits.length} 条，但没搜完就停了：${overBudget}，${scale}${narrow}${big}）`
+        : `\n（共 ${hits.length} 条，${scale}${big}）`)
   );
 }
 
@@ -3073,8 +3256,19 @@ async function viaMedia(cap, opts, input, run) {
 /** 工具跑完之后：改了文件就跑 after_edit 钩子，输出接在回执后面（钩子见 hooks.js） */
 async function executeTool(name, input, opts = {}) {
   const r = await executeToolCore(name, input, opts);
-  if (r && r.editedFile && !r.isError && opts.hooks) {
-    const said = await HK.afterEdit(opts.hooks, r.editedFile, { cwd: ws(), stopSignal: opts.stopSignal });
+  if (r && r.editedFile && !r.isError && opts.hooks && HK.pick(opts.hooks.after_edit, r.editedFile).length) {
+    const f = r.editedFile;
+    // prettier 这类钩子会把刚写的文件再改写一遍。那是我们自己这边的改动，不能让下一次 edit_file
+    // 当成「别人改过」拦下来。只在钩子跑之前盘上正是刚写的那一版时才重新登记——
+    // 追加前就被别人动过的（见 write_file append），别在这里把那一段也记成看过了
+    const read = () => { try { return fs.readFileSync(f); } catch { return null; } };
+    const pre = CT.staleNote(opts.sessionId, f, f) ? null : read();
+    let said = await HK.afterEdit(opts.hooks, f, { cwd: ws(), stopSignal: opts.stopSignal });
+    const post = pre && read();
+    if (post && !post.equals(pre)) {
+      CT.stampSeen(opts.sessionId, f);
+      said += `\n\n（after_edit 钩子改写了这个文件：${pre.length} → ${post.length} 字节。接着改就照改写后的样子来，你手上的 old_text 可能对不上了）`;
+    }
     if (said) return { ...r, content: String(r.content) + said };
   }
   return r;
@@ -3354,7 +3548,16 @@ async function executeToolCore(name, input, opts = {}) {
       case "write_file": {
         const rel = String(input.path || "");
         const p = resolveFile(rel);
-        let body = String(input.content || "");
+        // 没给 content 跟没给 path 一样是真会犯的错（参数名写成 file_text/contents、或者漏了）。
+        // 老写法当空串写下去，回一句「已覆盖（原 72 字节 → 现 0 字节）」算成功——文件清空了，模型还以为写好了
+        if (input.content == null) return { content: `这次 write_file 没给 content，一个字节都没写。要写的内容放在 content 里；真要建空文件或清空文件就显式传 content:""。`, isError: true };
+        // 给了个对象：String() 出来是「[object Object]」。.json 文件意思很明白，替它排成文本；别的文件没法猜
+        let body = input.content;
+        if (typeof body === "object") {
+          if (!/\.json$/i.test(rel)) return { content: `content 得是一段文本，这次给的是一个对象，一个字节都没写。`, isError: true };
+          body = JSON.stringify(body, null, 2) + "\n";
+        }
+        body = String(body);
         // 落盘之前先把 diff 算出来：审批卡上要给人看这次到底动了哪几行，看着批才算批
         const was = readBefore(p);
         // 原文件整篇是 \r\n：它写来的 \n 跟着换，不然重写/追加一次整个文件的换行就变了
@@ -3484,11 +3687,9 @@ async function executeToolCore(name, input, opts = {}) {
           if (from > lines.length)
             return { content: `${input.path} 到头了：全文共 ${lines.length} 行，start_line=${from} 已经在末尾之后，后面没有内容了。`, isError: false };
           const to = Math.min(lines.length, e || lines.length);
-          const body = lines
-            .slice(from - 1, to)
-            .map((l, i) => `${from + i}\t${l}`)
-            .join("\n");
-          return { content: `（${input.path} 第 ${from}-${to} 行，全文共 ${lines.length} 行）\n${body}`.slice(0, 50000), isError: false };
+          const out = numberedLines(String(input.path), from);
+          for (let i = from; i <= to; i++) if (!out.push(i, lines[i - 1])) break;
+          return { content: out.render(to, lines.length), isError: false };
         }
         const cut = content.length > 50000;
         return {
@@ -3509,17 +3710,24 @@ async function executeToolCore(name, input, opts = {}) {
           return { content: `读不了 ${rel}：${e.message}`, isError: true };
         }
       }
-      case "list_files":
-        return { content: listFiles(resolveFile(input.dir || "."), input.depth), isError: false };
+      case "list_files": {
+        const dir = resolveFile(input.dir || ".");
+        // 以前列 proj 回的是 src/a.js，模型拿去 read_file 读到的是根下另一个同名文件，或者干脆找不到
+        // 在工作目录外面的就带绝对路径，照样能直接拿去读
+        const rel = path.relative(resolveFile("."), dir);
+        const pre = (rel === ".." || rel.startsWith(".." + path.sep) || path.isAbsolute(rel) ? dir : rel).split(path.sep).join("/");
+        return { content: listFiles(dir, input.depth, pre), isError: false };
+      }
       case "search_files": {
         // pattern/path 是 grep 类工具的叫法，模型顺手就这么写；不认的话报「query 是空的」白烧一轮
         const q = { ...input, query: input.query || input.pattern, dir: input.dir || input.path };
         const root = resolveFile(q.dir || ".");
+        const relBase = resolveFile(".");
         // 给的是一个文件：只搜这一个。以前当目录去列，列不出来就回「没搜到、扫了 0 个文件」，像是真没有
         let isFile = false;
         try { isFile = fs.statSync(root).isFile(); } catch {}
-        if (isFile) return { content: await searchFiles(path.dirname(root), { ...q, only: root }), isError: false };
-        return { content: await searchFiles(root, q), isError: false };
+        if (isFile) return { content: await searchFiles(path.dirname(root), { ...q, only: root, relBase }), isError: false };
+        return { content: await searchFiles(root, { ...q, relBase }), isError: false };
       }
       case "chrome_cdp": {
         const action = String(input.action || "list_tabs");

@@ -97,6 +97,25 @@ const ok = (c, m, extra) => { if (c) { pass++; console.log("  ✓ " + m); } else
     ok(fs.readFileSync(path.join(WS, "a.txt"), "utf8") === "hello", "钩子失败不撤销改动");
     const r4 = await executeTool("write_file", { path: "c.txt", content: "hi" }, { security: { permission_mode: "full" } });
     ok(!/after_edit/.test(r4.content), "没配钩子：回执一个字不多（反向对照）");
+
+    // 格式化钩子（prettier --write 那种）把刚写的文件又改写一遍：那是自己这边的改动，下一次改不能当成「别人改过」拦下来
+    const fmt = HK.normalize({ after_edit: [{ match: "\\.js$", run: "perl -pi -e 's/\\t/  /g' \"$OWB_FILE\"" }] });
+    const o = { hooks: fmt, sessionId: "s-fmt", security: { permission_mode: "full" } };
+    const w5 = await executeTool("write_file", { path: "f.js", content: "function f() {\n\treturn 1;\n}\n" }, o);
+    ok(!w5.isError && fs.readFileSync(path.join(WS, "f.js"), "utf8") === "function f() {\n  return 1;\n}\n" && /钩子改写了这个文件/.test(w5.content),
+      "钩子真把文件改写了，回执里说了", w5.content);
+    const e5 = await executeTool("edit_file", { path: "f.js", old_text: "  return 1;", new_text: "  return 2;" }, o);
+    ok(!e5.isError && fs.readFileSync(path.join(WS, "f.js"), "utf8") === "function f() {\n  return 2;\n}\n", "★写完被格式化钩子改写，紧接着 edit_file 不被当成别人改过拦下★", e5.content);
+    const m5 = await executeTool("multi_edit", { path: "f.js", edits: [{ old_text: "return 2;", new_text: "return 3;\n\treturn 4;" }] }, o);
+    const e6 = await executeTool("edit_file", { path: "f.js", old_text: "  return 4;", new_text: "  return 5;" }, o);
+    ok(!m5.isError && !e6.isError && /return 5;/.test(fs.readFileSync(path.join(WS, "f.js"), "utf8")), "multi_edit 之后同样不拦", [m5.content, e6.content]);
+    await new Promise((res) => setTimeout(res, 20));
+    fs.writeFileSync(path.join(WS, "f.js"), "function f() {\n  return 5;\n}\n// 别人加的\n");
+    const e7 = await executeTool("edit_file", { path: "f.js", old_text: "  return 5;", new_text: "  return 6;" }, o);
+    ok(e7.isError && /内容变了/.test(e7.content), "工具之外真有人改了它：照样拦（反向对照）", e7.content);
+    const noop = HK.normalize({ after_edit: [{ match: "\\.js$", run: "true" }] });
+    const w8 = await executeTool("write_file", { path: "g.js", content: "let a = 1;\n" }, { ...o, hooks: noop });
+    ok(!/钩子改写了/.test(w8.content), "钩子没动文件：不说改写（反向对照）", w8.content);
   }
 
   console.log("\n【5】done：没过不许收尾");

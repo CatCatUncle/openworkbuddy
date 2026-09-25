@@ -327,6 +327,23 @@ async function until(fn, ms = 5000) {
     W("tab2.py", "def f():\n\tif y:  \n\t\treturn 1\n"); // 行尾多了空格，逼它走宽松匹配
     r = await E("tab2.py", { old_text: "def f():\n\tif y:\n\t\treturn 1", new_text: "def f():\n\tif y:\n\t\treturn 3" });
     ok(!r.isError && R("tab2.py") === "def f():\n\tif y:\n\t\treturn 3\n", "宽松匹配时 Tab 对 Tab 也不动（反向对照）", R("tab2.py"));
+
+    // 宽松匹配只会按第一行的缩进差整体挪。各行差得不一样时照挪就是改坏：YAML 层级变了、b() 挪进了 if，还报成功
+    W("app.yml", "server:\n  port: 80\n  host: a\n");
+    r = await E("app.yml", { old_text: "server:\nport: 80\nhost: a", new_text: "server:\nport: 8080\nhost: a" });
+    ok(r.isError && /各行差得不一样/.test(r.content) && r.content.includes("<<<原文开始\nserver:\n  port: 80\n  host: a\n>>>原文结束") && R("app.yml") === "server:\n  port: 80\n  host: a\n",
+      "★old_text 把 YAML 写平了：拒改、文件一个字节不动，原文贴回去让它照抄★", [r.content, R("app.yml")]);
+    W("mid.py", "def f(x):\n    if x:\n        a()\n    b()\n");
+    r = await E("mid.py", { old_text: "if x:\n    a()\n    b()", new_text: "if x:\n    a()\n    b()\n    c()" });
+    ok(r.isError && R("mid.py") === "def f(x):\n    if x:\n        a()\n    b()\n", "★中间一行缩进抄错：拒改，不把 b() 挪进 if 里★", [r.content, R("mid.py")]);
+    r = await E("mid.py", { edits: [{ old_text: "if x:\na()\nb()", new_text: "if x:\na()\nb()\nc()" }] }, "multi_edit");
+    ok(r.isError && /第 1 处/.test(r.content) && R("mid.py") === "def f(x):\n    if x:\n        a()\n    b()\n", "multi_edit 整段写平了一样拒", r.content);
+    W("tail.txt", "alpha \nbeta\ngamma\n");
+    r = await E("tail.txt", { old_text: "alpha\nbeta\n", new_text: "ALPHA\nBETA\n" });
+    ok(!r.isError && R("tail.txt") === "ALPHA\nBETA\ngamma\n", "★old_text/new_text 都带结尾换行：宽松匹配不多塞一个空行★", [r.content, R("tail.txt")]);
+    W("g.py", "def g():\n    a = 1\n    b = 2\n    c = 3\n");
+    r = await E("g.py", { old_text: "a = 1  \nb = 2\n", new_text: "a = 10\nb = 20\n" });
+    ok(!r.isError && R("g.py") === "def g():\n    a = 10\n    b = 20\n    c = 3\n", "每行都少同样一截缩进：照旧补回去，也不多空行（反向对照）", [r.content, R("g.py")]);
   }
 
   console.log("\n⑩ read_file 的边角");
@@ -366,6 +383,255 @@ async function until(fn, ms = 5000) {
     ok(!r.isError && /a\.js:1/.test(r.content) && /b\.js:1/.test(r.content), "pattern/path 也认", r.content);
     r = await executeTool("search_files", { query: "needle", dir: "sx/a.js" }, S);
     ok(!r.isError && /a\.js:1/.test(r.content) && !/b\.js/.test(r.content), "★给的是一个文件就只搜这一个★ 不再回「没搜到、扫了 0 个」", r.content);
+  }
+
+  console.log("\n⑫ 超时连孙子进程一起收，工具一定回得来");
+  if (process.platform !== "win32") {
+    const { spawnSync } = require("child_process");
+    // 每条用一个独一无二的秒数当记号（小数部分带上本进程 pid，同时跑两份也不会认错人），事后按它找有没有漏在后台的进程
+    const mark = (sec) => `${sec}.${process.pid}`;
+    const alive = (m) => !!spawnSync("pgrep", ["-f", "sleep " + m], { encoding: "utf8" }).stdout.trim();
+    const S = { sessionId: "s_tmo", actor: "fay", taskLabel: "测试", timeoutMs: 1500 };
+    const timed = async (tool, input, opts = S) => { const t0 = Date.now(); const r = await executeTool(tool, input, opts); return { r, ms: Date.now() - t0 }; };
+    let { r, ms } = await timed("run_shell", { command: `sleep ${mark(12)}; echo after` });
+    ok(ms < 5000 && r.isError && /执行超时被终止/.test(r.content) && !/after/.test(r.content), "★`sleep; echo` 这种复合命令到点就回★ 以前要等 sleep 跑完", { ms, c: r.content });
+    ok(await until(() => !alive(mark(12)), 3000), "孙子进程（那个 sleep）一起收掉了，没漏在后台");
+    ({ r, ms } = await timed("run_shell", { command: `sleep ${mark(13)} | tail -1` }));
+    ok(ms < 5000 && /执行超时被终止/.test(r.content) && /background:true/.test(r.content), "管道同样到点就回，并指一条路：不会自己结束的用 background", { ms, c: r.content });
+    ok(await until(() => !alive(mark(13)), 3000), "管道里的 sleep 也收掉了");
+    // run_node 里开子进程要人点头；这里先替它点了，不然两条都卡在审批上
+    const security = require(path.join(ROOT, "security"));
+    security.addSessionAllow("code:child_process");
+    ({ r, ms } = await timed("run_node", { code: `require("child_process").spawn("sleep", ["${mark(14)}"], { stdio: "inherit" });` }));
+    ok(ms < 5000 && r.isError && /执行超时被终止/.test(r.content), "★run_node 脚本拉起的子进程攥着输出，也到点就回★", { ms, c: r.content });
+    ok(await until(() => !alive(mark(14)), 3000), "脚本拉起的 sleep 收掉了");
+    // 自己另起进程组还攥着管道的（setsid 那种）：整组杀够不着它，宽限过后把管道掐断，保证这一步回得来
+    ({ r, ms } = await timed("run_node", { code: `require("child_process").spawn("sleep", ["${mark(15)}"], { stdio: "inherit", detached: true }).unref();` }));
+    ok(ms < 11000 && r.isError && /执行超时被终止/.test(r.content), "跳出进程组的孙子攥着管道：掐断管道也要回来", { ms, c: r.content });
+    spawnSync("pkill", ["-f", "sleep " + mark(15)]);
+    security.clearSessionAllow();
+    ({ r, ms } = await timed("run_shell", { command: "echo quick" }));
+    ok(!r.isError && /quick/.test(r.content) && !/执行超时/.test(r.content), "跑得完的命令不沾「超时」（反向对照）", r.content);
+    r = await executeTool("run_shell", { command: "echo oops >&2; exit 2" }, S);
+    ok(r.isError && /exit code: 2/.test(r.content) && !/执行超时/.test(r.content), "自己出错退出的也不是超时（反向对照）", r.content);
+  }
+
+  console.log("\n⑬ 少给 content / new_text 是错，不是「清空」");
+  {
+    const S = { sessionId: "s_miss", actor: "gus", taskLabel: "测试" };
+    W("keep.txt", "hello\nworld\n");
+    let r = await executeTool("write_file", { path: "keep.txt" }, S);
+    ok(r.isError && /没给 content/.test(r.content) && R("keep.txt") === "hello\nworld\n", "★write_file 没给 content：报错，文件一个字节不动★（以前「原 12 字节 → 现 0 字节」算成功）", [r.content, R("keep.txt")]);
+    r = await executeTool("write_file", { path: "keep.txt", file_text: "别家的参数名" }, S);
+    ok(r.isError && R("keep.txt") === "hello\nworld\n", "参数名写成 file_text 一样拦", r.content);
+    r = await executeTool("write_file", { path: "keep.txt", append: true }, S);
+    ok(r.isError && R("keep.txt") === "hello\nworld\n", "append 没给 content 也不报「+0 字节」成功", r.content);
+    r = await executeTool("write_file", { path: "never.md" }, S);
+    ok(r.isError && !fs.existsSync(path.join(WS, "never.md")), "新文件没给 content：不建空文件", r.content);
+    r = await executeTool("write_file", { path: "empty.txt", content: "" }, S);
+    ok(!r.isError && R("empty.txt") === "", "显式给 content:\"\" 照样能建空文件（反向对照）", r.content);
+    r = await executeTool("write_file", { path: "cfg.json", content: { a: 1 } }, S);
+    ok(!r.isError && JSON.parse(R("cfg.json")).a === 1, ".json 给了个对象：排成 JSON 文本写，不写「[object Object]」", R("cfg.json"));
+    W("obj.md", "# 标题\n");
+    r = await executeTool("write_file", { path: "obj.md", content: { a: 1 } }, S);
+    ok(r.isError && R("obj.md") === "# 标题\n", "别的文件给对象：报错，不动文件", [r.content, R("obj.md")]);
+
+    const fn = "function a() {\n  return 1;\n}\n";
+    W("m.js", fn + "const x = 1;\n");
+    r = await executeTool("edit_file", { path: "m.js", old_text: fn }, S);
+    ok(r.isError && /没给 new_text/.test(r.content) && R("m.js") === fn + "const x = 1;\n", "★edit_file 没给 new_text：报错，函数还在★（以前当成删掉）", [r.content, R("m.js")]);
+    r = await executeTool("edit_file", { path: "m.js", old_text: "const x = 1;", new_str: "const x = 42;" }, S);
+    ok(r.isError && /const x = 1;/.test(R("m.js")), "参数名写成 new_str 一样拦", r.content);
+    r = await executeTool("multi_edit", { path: "m.js", edits: [{ old_text: "return 1;", new_text: "return 2;" }, { old_text: "const x = 1;" }] }, S);
+    ok(r.isError && /第 2 处/.test(r.content) && /没给 new_text/.test(r.content) && R("m.js") === fn + "const x = 1;\n", "multi_edit 第 2 处没给：整个文件不动，报错点出第几处", [r.content, R("m.js")]);
+    W("crlf2.txt", "a = 1\r\nb = 2\r\n");
+    r = await executeTool("edit_file", { path: "crlf2.txt", old_text: "a = 1" }, S);
+    ok(r.isError && R("crlf2.txt") === "a = 1\r\nb = 2\r\n", "CRLF 文件走的另一条路也拦", r.content);
+    r = await executeTool("edit_file", { path: "m.js", old_text: "const x = 1;\n", new_text: "" }, S);
+    ok(!r.isError && R("m.js") === fn, "显式 new_text:\"\" 照旧是删掉这段（反向对照）", [r.content, R("m.js")]);
+  }
+
+  console.log("\n⑭ 按行段读：只在整行上收，抬头写到哪一行正文就到哪一行");
+  {
+    const S = { sessionId: "s_range", actor: "hal", taskLabel: "测试" };
+    const row = (i) => `line ${String(i).padStart(4, "0")} ` + "y".repeat(50);
+    W("long.txt", Array.from({ length: 2000 }, (_, i) => row(i + 1)).join("\n") + "\n");
+    const check = (r, what) => {
+      const head = /^（long\.txt 第 (\d+)-(\d+) 行，全文共 (\d+) 行）/.exec(r.content);
+      const nums = [...r.content.matchAll(/^(\d+)\t/gm)].map((m) => Number(m[1]));
+      const last = nums[nums.length - 1];
+      ok(head && Number(head[2]) === last, `${what}：抬头写的末行 = 正文最后一个行号`, [head && head[0], last]);
+      ok(r.content.includes(`\n${last}\t${row(last)}\n`), `${what}：最后一行是整行，没被劈开`, r.content.slice(-200));
+      ok(r.content.length <= 50000, `${what}：还在 5 万字以内`, r.content.length);
+      return last;
+    };
+    let r = await executeTool("read_file", { path: "long.txt", start_line: 1, end_line: 2000 }, S);
+    let last = check(r, "1-2000 行");
+    ok(last < 2000 && r.content.includes(`start_line=${last + 1}`) && /全文共 2001 行/.test(r.content), "★没给全就说只给到第几行、接着从哪读★（总行数口径不变）", r.content.slice(-160));
+    r = await executeTool("read_file", { path: "long.txt", offset: 1, limit: 2000 }, S);
+    ok(check(r, "offset/limit 写法") === last, "offset/limit 写法同样");
+    // 照着末尾那句一段段接着读：每一行正好拿到一次，读到结尾就不再提示
+    const seen = [];
+    for (let from = 1, n = 0; from <= 2000 && n < 10; n++) {
+      r = await executeTool("read_file", { path: "long.txt", start_line: from, end_line: 2000 }, S);
+      for (const m of r.content.matchAll(/^(\d+)\t(.*)$/gm)) seen.push(m[2] === row(Number(m[1])) ? Number(m[1]) : -1);
+      const next = /start_line=(\d+)/.exec(r.content);
+      from = next ? Number(next[1]) : 2001;
+    }
+    ok(seen.length === 2000 && seen.every((no, i) => no === i + 1) && !/start_line=/.test(r.content), "★照着提示接着读，2000 行一行不漏、一行不重★", [seen.length, r.content.slice(-120)]);
+    r = await executeTool("read_file", { path: "long.txt", start_line: 5, end_line: 7 }, S);
+    ok(/^（long\.txt 第 5-7 行/.test(r.content) && r.content.endsWith(`7\t${row(7)}`), "没到上限的原样给，不多一句话（反向对照）", r.content);
+    W("min.js", "x".repeat(80000) + "\nnext\n");
+    r = await executeTool("read_file", { path: "min.js", start_line: 1, end_line: 3 }, S);
+    ok(r.content.length <= 50000 && /第 1 行这一行就有 80000 字/.test(r.content) && /start_line=2/.test(r.content), "一行就超了（压缩过的 js）：劈开这一行并照直说", r.content.slice(-200));
+    W("emoji.txt", "😀".repeat(30000) + "\n");
+    r = await executeTool("read_file", { path: "emoji.txt", start_line: 1, end_line: 1 }, S);
+    ok(!/[\ud800-\udbff](?![\udc00-\udfff])/.test(r.content), "劈的时候不留半个 emoji");
+    // 大文件那条路（>4MB 分块读）同一个规矩，总行数照样数到底
+    const brow = (i) => `row ${String(i).padStart(6, "0")} ` + "z".repeat(60);
+    W("huge.log", Array.from({ length: 70000 }, (_, i) => brow(i + 1)).join("\n") + "\n");
+    r = await executeTool("read_file", { path: "huge.log", start_line: 100, end_line: 2100 }, S);
+    const head = /^（huge\.log 第 100-(\d+) 行，全文共 70001 行）/.exec(r.content);
+    const bl = head && Number(head[1]);
+    ok(head && bl < 2100 && r.content.includes(`\n${bl}\t${brow(bl)}\n`) && r.content.includes(`start_line=${bl + 1}`) && r.content.length <= 50000, "★>4MB 的大文件按行段读：同样整行收、说清接着从哪读、总行数数到底★", [head && head[0], r.content.slice(-160)]);
+  }
+
+  console.log("\n⑮ search_files：路径跟 read_file 同一个起点；大文件不装没有；大小写照 smart-case");
+  {
+    const S = { sessionId: "s_grep", actor: "ivy", taskLabel: "测试" };
+    W("proj/src/util/index.js", "export function parseDate() {}\n");
+    W("util/index.js", "// 根下另一个同名文件，不相干\n");
+    let r = await executeTool("search_files", { query: "parseDate", dir: "proj/src" }, S);
+    ok(/^proj\/src\/util\/index\.js:1: export function parseDate/.test(r.content), "★dir 指到子目录，回来的路径照样从工作目录起算★", r.content);
+    const rd = await executeTool("read_file", { path: r.content.split(":")[0] }, S);
+    ok(/parseDate/.test(rd.content), "拿这个路径去 read_file 读到的就是命中的那个文件", rd.content);
+    r = await executeTool("search_files", { query: "parseDate", dir: "proj/src/util/index.js" }, S);
+    ok(/^proj\/src\/util\/index\.js:1:/.test(r.content), "只搜一个文件时也不只剩个文件名", r.content);
+    r = await executeTool("search_files", { query: "parseDate" }, S);
+    ok(/^proj\/src\/util\/index\.js:1:/.test(r.content), "整个工作目录搜，路径跟原来一样（反向对照）", r.content);
+    // 成果子目录：read_file 从它起算，search_files 也得从它起算
+    const SB = { ...S, baseDir: "任务_查找" };
+    W("任务_查找/docs/a.md", "zzq 标记\n");
+    r = await executeTool("search_files", { query: "zzq", dir: "docs" }, SB);
+    ok(/^docs\/a\.md:1:/.test(r.content), "有成果子目录时，路径从子目录起算（跟 read_file 一个起点）", r.content);
+    ok(/zzq/.test((await executeTool("read_file", { path: "docs/a.md" }, SB)).content), "照着读得到");
+    // list_files 同一个起点
+    r = await executeTool("list_files", { dir: "proj", depth: 3 }, S);
+    ok(/^proj\/src\/util\/index\.js\t/m.test(r.content) && /^\[目录\] proj\/src\/$/m.test(r.content) && !/^src\//m.test(r.content), "★list_files 指到子目录，列出来的也从工作目录起算★", r.content);
+    r = await executeTool("list_files", { dir: "docs" }, SB);
+    ok(/^docs\/a\.md\t/.test(r.content), "list_files 在成果子目录里也跟 read_file 一个起点", r.content);
+    r = await executeTool("list_files", { dir: "." }, SB);
+    ok(/^\[目录\] docs\/$/m.test(r.content) && !/任务_查找/.test(r.content), "不给子目录时照旧（反向对照）", r.content);
+
+    const bigLines = Array.from({ length: 40000 }, (_, i) => `2026-09-25 INFO req ${i} ok ` + "p".repeat(40));
+    bigLines[31234] = "2026-09-25 FATAL ERROR 数据库连不上";
+    W("logs/app.log", bigLines.join("\n") + "\n");
+    ok(fs.statSync(path.join(WS, "logs/app.log")).size > 2 * 1024 * 1024, "造的日志过了 2MB（不然这一屏等于没测）");
+    r = await executeTool("search_files", { query: "FATAL", dir: "logs" }, S);
+    ok(/logs\/app\.log（2\.\dMB）/.test(r.content) && /超过 2MB 的文件没搜/.test(r.content) && /dir/.test(r.content), "★顺着目录搜跳过的大文件要点名说出来，不能只回「没搜到」★", r.content);
+    r = await executeTool("search_files", { query: "FATAL", dir: "logs/app.log" }, S);
+    ok(!r.isError && r.content.startsWith("logs/app.log:31235: 2026-09-25 FATAL ERROR"), "★点名那个大文件就真搜，行号对得上★", r.content.slice(0, 160));
+    r = await executeTool("search_files", { query: "parseDate", dir: "proj" }, S);
+    ok(!/2MB/.test(r.content), "没碰上大文件就不多这句话（反向对照）", r.content);
+
+    W("case/c.py", "MAX_RETRY = 5\nmax_retry = 5\nuser_name = 'x'\nfoo = Foo()\nfoo_bar = 1\n");
+    // 只看命中了哪几行，不管路径怎么写：这一段只验大小写
+    const lines = (c) => c.split("\n").filter((l) => /^(?:case\/)?c\.py:\d+:/.test(l)).map((l) => Number(l.split(":")[1]));
+    r = await executeTool("search_files", { query: "^[A-Z_]+ =", regex: true, dir: "case" }, S);
+    ok(JSON.stringify(lines(r.content)) === "[1]", "★带大写的正则按大小写严格匹配★ 找常量不再混进 max_retry、user_name", r.content);
+    r = await executeTool("search_files", { query: "Foo", dir: "case" }, S);
+    ok(JSON.stringify(lines(r.content)) === "[4]", "搜 Foo 不再把 foo_bar 算进来", r.content);
+    r = await executeTool("search_files", { query: "max_retry", dir: "case" }, S);
+    ok(JSON.stringify(lines(r.content)) === "[1,2]", "全小写照旧不分大小写，该找到的都找到（反向对照）", r.content);
+    r = await executeTool("search_files", { query: "\\w+_retry", regex: true, dir: "case" }, S);
+    ok(JSON.stringify(lines(r.content)) === "[1,2]", "正则里的 \\W、\\S 这种转义不算大写", r.content);
+    r = await executeTool("search_files", { query: "MAX_RETRY", ignore_case: true, dir: "case" }, S);
+    ok(JSON.stringify(lines(r.content)) === "[1,2]", "ignore_case:true 强制不分", r.content);
+    r = await executeTool("search_files", { query: "max_retry", ignore_case: false, dir: "case" }, S);
+    ok(JSON.stringify(lines(r.content)) === "[2]", "ignore_case:false 强制区分", r.content);
+    r = await executeTool("search_files", { query: "Max_Retry", dir: "case" }, S);
+    ok(/没搜到/.test(r.content) && /ignore_case/.test(r.content), "区分大小写没搜到时说一声，给出不分的开关", r.content);
+  }
+
+  console.log("\n⑯ 不是 UTF-8 的文件不按 UTF-8 改");
+  {
+    const S = { sessionId: "s_enc", actor: "fay", taskLabel: "测试" };
+    const B = (rel) => fs.readFileSync(path.join(WS, rel));
+    // GBK 的「中文」= d6d0 cec4。按 UTF-8 解开再写回去，改的是 port 那行，name 那行却变成了 ����
+    const gbk = Buffer.concat([Buffer.from("name="), Buffer.from([0xd6, 0xd0, 0xce, 0xc4]), Buffer.from("\nport=80\n")]);
+    W("app.properties", gbk);
+    let r = await executeTool("edit_file", { path: "app.properties", old_text: "port=80", new_text: "port=8080" }, S);
+    ok(r.isError && /不是 UTF-8/.test(r.content) && /GBK/.test(r.content) && B("app.properties").equals(gbk), "★GBK 文件：拒改，一个字节不动★", [r.content, B("app.properties").toString("hex")]);
+    const latin = Buffer.concat([Buffer.from("caf"), Buffer.from([0xe9]), Buffer.from("\nx=1\ny=2\n")]);
+    W("latin.txt", latin);
+    r = await executeTool("multi_edit", { path: "latin.txt", edits: [{ old_text: "x=1", new_text: "x=2" }, { old_text: "y=2", new_text: "y=3" }] }, S);
+    ok(r.isError && /不是 UTF-8/.test(r.content) && B("latin.txt").equals(latin), "★multi_edit 同样拒（Latin-1）★", [r.content, B("latin.txt").toString("hex")]);
+    const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d]), Buffer.from("IHDR abc "), Buffer.from([0xff, 0xfe, 0x80])]);
+    W("pic.dat", png);
+    r = await executeTool("edit_file", { path: "pic.dat", old_text: "abc", new_text: "xyz" }, S);
+    ok(r.isError && /二进制/.test(r.content) && B("pic.dat").equals(png), "二进制文件：拒改，签名字节还在", [r.content, B("pic.dat").toString("hex")]);
+    W("bom.txt", "﻿a=1\nb=2\n");
+    r = await executeTool("edit_file", { path: "bom.txt", old_text: "b=2", new_text: "b=3" }, S);
+    ok(!r.isError && B("bom.txt").equals(Buffer.from("﻿a=1\nb=3\n")), "带 BOM 的 UTF-8 照改，BOM 还在（反向对照）", [r.content, B("bom.txt").toString("hex")]);
+    W("zh.txt", "名字=中文\n端口=80\n");
+    r = await executeTool("multi_edit", { path: "zh.txt", edits: [{ old_text: "端口=80", new_text: "端口=8080" }] }, S);
+    ok(!r.isError && R("zh.txt") === "名字=中文\n端口=8080\n", "普通 UTF-8 中文照改（反向对照）", r.content);
+  }
+
+  console.log("\n⑰ 工作区里的符号链接不能把文件工具带出去");
+  {
+    const security = require(path.join(ROOT, "security"));
+    const OUT = fs.mkdtempSync(path.join(os.tmpdir(), "owb-code-out-"));
+    const BL = fs.mkdtempSync(path.join(os.tmpdir(), "owb-code-bl-"));
+    fs.writeFileSync(path.join(OUT, "secret.txt"), "TOP-SECRET\n");
+    fs.writeFileSync(path.join(BL, "id_rsa"), "FAKE-KEY\n");
+    W("in/a.txt", "inside\n");
+    const L = (target, rel) => { try { fs.unlinkSync(path.join(WS, rel)); } catch {} fs.symlinkSync(target, path.join(WS, rel)); };
+    L(OUT, "lnk");                                  // 链到工作区外面的普通目录
+    L(BL, "bl");                                    // 链到黑名单目录（~/.ssh 的替身）
+    L(path.join(BL, "authorized_keys2"), "notes.txt"); // 悬空链接：写它 = 在黑名单目录里新建
+    L(path.join(WS, "in"), "inner");                // 链到工作区里面：照常放行
+    L("loop2", "loop1"); L("loop1", "loop2");
+    const sec = { ...security.DEFAULTS, file_blacklist: [...security.DEFAULTS.file_blacklist, BL] };
+    const S = { sessionId: "s_link", actor: "gus", taskLabel: "测试", security: sec };
+    const run = (tool, input, o = S) => executeTool(tool, input, o);
+
+    let r = await run("read_file", { path: "lnk/secret.txt" });
+    ok(r.isError && /工作区外面/.test(r.content) && !/TOP-SECRET/.test(r.content), "★经链接读工作区外的文件：拦★", r.content);
+    r = await run("write_file", { path: "lnk/pwned.txt", content: "pwned\n" });
+    ok(r.isError && !fs.existsSync(path.join(OUT, "pwned.txt")), "★经链接往工作区外写：拦，外面没多出文件★", r.content);
+    r = await run("edit_file", { path: "lnk/secret.txt", old_text: "TOP-SECRET", new_text: "EDITED" });
+    ok(r.isError && fs.readFileSync(path.join(OUT, "secret.txt"), "utf8") === "TOP-SECRET\n", "经链接改：拦，原文件不动", r.content);
+    r = await run("list_files", { dir: "lnk" });
+    ok(r.isError, "经链接列目录：拦", r.content);
+    r = await run("read_file", { path: "bl/id_rsa" });
+    ok(r.isError && /黑名单/.test(r.content) && !/FAKE-KEY/.test(r.content), "★经链接读黑名单里的文件：按黑名单拦★", r.content);
+    r = await run("write_file", { path: "notes.txt", content: "ssh-ed25519 AAAA attacker\n" });
+    ok(r.isError && !fs.existsSync(path.join(BL, "authorized_keys2")), "★悬空链接也追到底：写它不会在黑名单目录里新建文件★", r.content);
+    r = await run("read_file", { path: "loop1/x" });
+    ok(r.isError, "链接绕成圈：报错，不卡死", r.content);
+    // run_node 自己在 .tmp 下链了一份本程序的 node_modules，文件工具不能借它碰本程序的依赖
+    await run("run_node", { code: "console.log(1)" });
+    const nm = fs.lstatSync(path.join(WS, ".tmp", "node_modules")).isSymbolicLink();
+    r = await run("read_file", { path: ".tmp/node_modules/docx/package.json" });
+    ok(nm && r.isError && /工作区外面/.test(r.content), "★.tmp/node_modules 是链到本程序依赖的：文件工具进不去★", { nm, c: r.content });
+
+    r = await run("read_file", { path: "inner/a.txt" });
+    ok(!r.isError && r.content === "inside\n", "链到工作区里面的照常读（反向对照）", r.content);
+    r = await run("write_file", { path: "inner/b.txt", content: "ok\n" });
+    ok(!r.isError && fs.readFileSync(path.join(WS, "in", "b.txt"), "utf8") === "ok\n", "链到工作区里面的照常写（反向对照）", r.content);
+    r = await run("read_file", { path: "lnk/secret.txt" }, { ...S, security: { ...sec, file_whitelist: [OUT] } });
+    ok(!r.isError && r.content === "TOP-SECRET\n", "链接那头在白名单里：放行（反向对照：拦的是越界，不是链接本身）", r.content);
+    r = await run("read_file", { path: path.join(OUT, "secret.txt") }, { ...S, security: { ...sec, file_whitelist: [OUT] } });
+    ok(!r.isError, "白名单目录直接给绝对路径照旧能读（反向对照）", r.content);
+    // 工作区本身是个链接（/tmp、/var 在 macOS 上就是）：它自己的文件不能被当成越界
+    const WSL = path.join(OUT, "ws-link");
+    fs.symlinkSync(WS, WSL);
+    const pr = security.resolvePathWithPolicy(sec, "in/a.txt", WSL);
+    ok(pr.allowed && pr.path === path.join(WSL, "in", "a.txt"), "工作区路径本身经过链接：里面的文件照常放行，回的还是字面路径（反向对照）", pr);
+    const nw = security.resolvePathWithPolicy(sec, "new/dir/c.txt", WS);
+    ok(nw.allowed, "还不存在的新文件照常放行（反向对照）", nw);
+    try { fs.rmSync(OUT, { recursive: true, force: true }); fs.rmSync(BL, { recursive: true, force: true }); } catch {}
   }
 
   try { fs.rmSync(WS, { recursive: true, force: true }); fs.rmSync(TMP, { recursive: true, force: true }); } catch {}

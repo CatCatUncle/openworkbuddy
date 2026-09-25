@@ -169,22 +169,61 @@ function underPrefix(p, prefix) {
 }
 
 /**
+ * 顺着符号链接走到底的真实位置。还不存在的那几截照原样接在后面（要新建的文件也得判）；
+ * 悬空的链接也要追——`notes.txt -> ~/.ssh/authorized_keys2` 这种，write_file 一写就在链接那头新建了。
+ * 追不下去（链接绕成圈、没权限）返回 null。
+ */
+function realOf(p) {
+  let cur = p, hops = 0;
+  const rest = [];
+  try {
+    for (;;) {
+      let st = null;
+      try { st = fs.lstatSync(cur); } catch {}
+      if (st && st.isSymbolicLink()) {
+        try { return path.join(fs.realpathSync.native(cur), ...rest); } catch {}
+        if (++hops > 40) return null;
+        // 悬空链接：照链接里写的目标往下追，相对目标按链接所在目录的真实位置算
+        cur = path.resolve(fs.realpathSync.native(path.dirname(cur)), fs.readlinkSync(cur));
+        continue;
+      }
+      if (st) return path.join(fs.realpathSync.native(cur), ...rest);
+      const up = path.dirname(cur);
+      if (up === cur) return path.join(cur, ...rest);
+      rest.unshift(path.basename(cur));
+      cur = up;
+    }
+  } catch { return null; }
+}
+
+/**
  * 按文件安全策略解析路径。workspace 内默认放行（黑名单除外）；
  * workspace 外仅白名单前缀放行 —— 这也让文件工具获得受控的越界能力。
+ *
+ * 光看字面路径不够：工作区里一个 `lnk -> ~/.ssh` 就能让 lnk/id_rsa 字面上在工作区里、
+ * 实际读写的却是黑名单里的东西（clone 来的仓库里就可能带着）。所以黑名单、工作区、白名单
+ * 都按真实位置再判一遍；工作区自己也取真实位置，不然 /tmp、/var 这种本身是链接的目录全被误拦。
  */
 function resolvePathWithPolicy(sec, rel, workspaceDir, base) {
   // base：本次任务的成果子目录（默认工作空间按对话分文件夹）；越界判定仍以整个 workspace 为界
   const p = path.resolve(base || workspaceDir, String(rel || ".").replace(/\\/g, "/"));
+  const real = realOf(p);
+  if (!real) return { path: p, allowed: false, reason: "路径里的符号链接追不到真实位置（绕成了圈，或者没权限读）" };
   if (sec.gateway) {
     for (const b of sec.file_blacklist || []) {
       const bp = expandPath(b);
-      if (underPrefix(p, bp)) return { path: p, allowed: false, reason: `路径在文件黑名单内（${b}）` };
+      if (underPrefix(p, bp) || underPrefix(real, bp) || underPrefix(real, realOf(bp) || bp)) {
+        return { path: p, allowed: false, reason: `路径在文件黑名单内（${b}）` };
+      }
     }
   }
-  if (underPrefix(p, workspaceDir)) return { path: p, allowed: true };
+  const inWs = underPrefix(p, workspaceDir);
+  if (inWs && underPrefix(real, realOf(workspaceDir) || workspaceDir)) return { path: p, allowed: true };
   for (const w of sec.file_whitelist || []) {
-    if (underPrefix(p, expandPath(w))) return { path: p, allowed: true, outside: true };
+    const wp = expandPath(w);
+    if (underPrefix(real, realOf(wp) || wp)) return { path: p, allowed: true, outside: true };
   }
+  if (inWs) return { path: p, allowed: false, reason: "路径经符号链接指到了工作区外面：workspace 外仅文件白名单目录可访问（设置 → 安全中心 → 文件安全）" };
   return { path: p, allowed: false, reason: "路径越界：workspace 外仅文件白名单目录可访问（设置 → 安全中心 → 文件安全）" };
 }
 
