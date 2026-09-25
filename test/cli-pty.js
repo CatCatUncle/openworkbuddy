@@ -13,6 +13,8 @@
  *   6. 正文跨过工具那一行：上一步没换行的半句先吐干净，下一步的 ## 标题照样渲染
  *   7. 弹了提问单子，就不再印「● Ask(题目)」和「└ 回答」：单子上已经有了
  *   8. 交互模式闲着的时候，网页 / 手机在同一条会话上聊了一轮：下一句开跑前先接上，存盘也不把那一轮盖掉
+ *   9. !命令：当场跑、不找模型；Ctrl+C 停的是那条命令不是整个程序；输出跟下一句话带给模型，会话里记的还是人那句
+ *  10. Plan 出完计划摆「开干 / 接着改」：回车就切到 Craft 照计划做；选接着改、Esc 都留在 Plan；输入行上已经打了字就不弹
  * 没有 python3 / pty 的机器跳过。
  */
 const assert = require("assert");
@@ -336,6 +338,135 @@ async function run() {
       assert.ok(!fs.existsSync(path.join(dir, ".conflicts")), "轮流聊不算冲突，不该另存一份");
       await t.type("/exit\r");
     });
+  }
+
+  // ---- ⑥ !命令：当场跑、不找模型；Ctrl+C 停那条命令；输出跟下一句话带过去 ----
+  {
+    let t6 = null;
+    await ptyRun({ args: [], reply: () => "看到了。" }, async (t) => {
+      t6 = t;
+      await t.until(/openworkbuddy> /, "提示符");
+      let mark = t.out().length;
+      await t.type("!echo SHELL$((6*7))MARK\r");
+      await t.until(/SHELL42MARK/, "命令输出当场上屏（算出来的 42，不是回显的那行字）", mark);
+      await t.until(/下一句话带给它/, "头一条说一声输出会带过去", mark);
+      await t.until(/openworkbuddy> /, "提示符回来", mark);
+      await sleep(300);
+      assert.strictEqual(t.users.length, 0, "★!命令 不找模型★ 自己看一眼不该花一分钱");
+
+      mark = t.out().length;
+      await t.type("!sleep 30; echo AFTER$((1+1))MARK\r");
+      await sleep(800);
+      const hit = Date.now();
+      t.send("\x03");
+      await t.until(/停了/, "Ctrl+C 停掉那条命令", mark, 6000);
+      const took = Date.now() - hit;
+      assert.ok(took < 2500, `★Ctrl+C 当场停★ 用了 ${took}ms`);
+      await t.until(/openworkbuddy> /, "提示符回来", mark);
+      await sleep(500);
+      assert.strictEqual(t.exited(), null, "★Ctrl+C 停的是命令，不是整个程序★");
+      assert.ok(!/AFTER2MARK/.test(t.out().slice(mark)), "★整组收掉★ 分号后面那条没接着跑\n" + t.out().slice(mark));
+      assert.ok(!/再按一次/.test(t.out().slice(mark)), "Ctrl+C 没落到「再按一次退出」上\n" + t.out().slice(mark));
+
+      await t.type("看看结果\r");
+      await t.waitFor(() => t.users.length === 1, "这句发给模型");
+      const u = t.users[0];
+      assert.ok(u.includes("SHELL42MARK"), "★!命令 的输出带给了模型★\n" + u);
+      assert.ok(/sleep 30/.test(u) && /SIGINT/.test(u), "停掉的那条也带上、说明是被停的\n" + u);
+      assert.ok(u.trim().endsWith("看看结果"), "人自己那句放最后\n" + u);
+      const done = await t.until(/看到了。/, "回答");
+      await t.until(/openworkbuddy> /, "提示符回来", done);
+
+      const dir = path.join(t.home, "data", "sessions");
+      const disk = JSON.parse(fs.readFileSync(fs.readdirSync(dir).filter((x) => x.endsWith(".json")).map((x) => path.join(dir, x))[0], "utf8"));
+      const turn = disk.transcript.find((x) => x.type === "user");
+      assert.strictEqual(turn.shown, "看看结果", "★会话里显示人自己那句★ 网页上那条对话不能是一大段命令输出");
+      assert.ok(turn.text.includes("SHELL42MARK"), "模型那边收到的全文照样存着");
+      assert.strictEqual(disk.title, "看看结果", "★会话标题是人那句★ 不是「（我刚在工作目录里自己跑了…」");
+
+      await t.type("看看结果2\r");
+      await t.waitFor(() => t.users.length === 2, "第二句发给模型");
+      assert.ok(!/SHELL42MARK/.test(t.users[1]), "★带过一次就清掉★ 不是每句都拖着那段输出\n" + t.users[1]);
+      await t.until(/openworkbuddy> /, "提示符回来", t.out().lastIndexOf("看看结果2"));
+      await t.type("/exit\r");
+    });
+    assert.ok(t6 && t6.exited() === 0, "正常退出");
+  }
+
+  // ---- ⑦ Plan 出完计划：摆「开干 / 接着改」，回车就照计划做，不用自己去敲 /mode craft ----
+  {
+    let t7 = null;
+    const GO = require("../repl-commands").PLAN_GO_TEXT;
+    const PICK = /计划写好了，接下来？/;
+    await ptyRun({
+      args: ["--mode", "plan"],
+      reply: async (msgs, n) => {
+        if (n === 4) await sleep(2500); // 这一趟慢点：留出时间在输入行上先打几个字
+        return n === 1 ? "照计划做完了。" : `## 计划${n}\n1. 改 a.txt`;
+      },
+    }, async (t) => {
+      t7 = t;
+      await t.until(/openworkbuddy> /, "提示符");
+      let mark = t.out().length;
+      await t.type("规划一下\r");
+      await t.until(PICK, "★Plan 跑完摆出下一步的单子★", mark);
+      await t.until(/接着改计划/, "两条都在", mark);
+      assert.ok(/按这份计划开干/.test(t.out().slice(mark)), "开干那条在\n" + t.out().slice(mark));
+      await sleep(300);
+      assert.strictEqual(t.users.length, 1, "单子摆着的时候不自己往下跑");
+
+      mark = t.out().length;
+      t.send("\r"); // 默认停在第一条：开干
+      await t.until(/已经切到 Craft/, "★回车就切到 Craft★", mark);
+      await t.waitFor(() => t.users.length === 2, "照计划开干那句发给模型");
+      assert.ok(t.users[1].includes(GO), "★交出去的是「按计划做」那句★\n" + t.users[1]);
+      await t.until(/照计划做完了。/, "开干那趟的回答", mark);
+      await t.until(/openworkbuddy> /, "提示符回来", t.out().lastIndexOf("照计划做完了。"));
+      await sleep(300);
+      assert.ok(!PICK.test(t.out().slice(t.out().lastIndexOf("照计划做完了。"))), "Craft 跑完不再问");
+      mark = t.out().length;
+      await t.type("/mode\r");
+      await t.until(/当前是 Craft/, "★切过去就留在 Craft★", mark);
+
+      // 选「接着改计划」：留在 Plan，不跑
+      await t.type("/mode plan\r");
+      mark = t.out().length;
+      await t.type("再规划一下\r");
+      await t.until(PICK, "又摆出来", mark);
+      mark = t.out().length;
+      t.send("\x1b[B");
+      await sleep(200);
+      t.send("\r");
+      await t.until(/还在 Plan/, "★选接着改：说一声还在 Plan★", mark);
+      await sleep(400);
+      assert.strictEqual(t.users.length, 3, "★选接着改不找模型★");
+
+      // Esc：什么都不做，照旧回提示符
+      mark = t.out().length;
+      await t.type("第三次规划\r");
+      await t.until(PICK, "第三次也摆", mark);
+      mark = t.out().length;
+      t.send("\x1b");
+      await t.until(/openworkbuddy> /, "Esc 回提示符", mark);
+      await sleep(400);
+      assert.strictEqual(t.users.length, 4, "Esc 不找模型");
+      mark = t.out().length;
+      await t.type("/mode\r");
+      await t.until(/当前是 Plan/, "★Esc、接着改都留在 Plan★", mark);
+
+      // 跑着的时候已经在输入行上打了字：他有下一句了，不弹单子抢键盘
+      mark = t.out().length;
+      await t.type("第四次\r");
+      await t.waitFor(() => t.users.length === 5, "第四次发出去");
+      await t.type("xyz");
+      await t.until(/计划4/, "第四次的回答", mark);
+      await sleep(800);
+      assert.ok(!PICK.test(t.out().slice(mark)), "★输入行上有字就不弹★\n" + t.out().slice(mark));
+      t.send("\x15"); // Ctrl+U 清掉那几个字
+      await sleep(200);
+      await t.type("/exit\r");
+    });
+    assert.ok(t7 && t7.exited() === 0, "正常退出");
   }
 
   console.log("cli-pty：通过");

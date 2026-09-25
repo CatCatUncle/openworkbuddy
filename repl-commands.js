@@ -50,7 +50,7 @@ const COMMANDS = [
   { name: "files", aliases: ["ls"], desc: "工作目录里现在有什么" },
   { name: "open", aliases: ["o"], arg: "[名字或序号]", desc: "用系统默认程序打开产出（终端里看不了的 SVG、Excel、视频都能看）；不给就打开工作目录" },
   { name: "paste", aliases: ["v"], desc: "把剪贴板里的截图、文件或一大段文字带进来" },
-  { name: "drop", desc: "带上了还没发出去的文件，不要了" },
+  { name: "drop", desc: "带上了还没发出去的文件、!命令 的输出，不要了" },
   { name: "clear", aliases: ["cls"], desc: "清屏；会话和上下文都不动" },
   { name: "exit", aliases: ["quit", "q"], desc: "退出" },
 ];
@@ -98,6 +98,7 @@ function nearest(word, custom) {
  *   { kind: "unknown", typed, suggest }                 长得像命令但没这条
  *   { kind: "bad-arg", name, arg, want }                命令对了，参数不对
  *   { kind: "custom", name, arg }                       .openworkbuddy/commands 里自己写的命令
+ *   { kind: "shell", cmd }                              !开头：人自己在终端里跑一条 shell，不经过模型
  */
 function parse(line, opt) {
   const custom = customList(opt && opt.custom);
@@ -110,6 +111,14 @@ function parse(line, opt) {
   // 第一个判的是 raw 而不是 body——body 已经修过边了，那个空格只在原文里还看得见
   if (/^[ \t]/.test(raw)) return { kind: "task", text: body };
   if (body.startsWith("//")) return { kind: "task", text: body.slice(1).trim() };
+  // !git status：自己跑一条命令看一眼，不花钱、不等模型（Claude Code / Codex 都是这个写法）。
+  // 跑完的输出由 cli.js 记下来，跟着下一句话带给模型。光一个 ! 没东西可跑，当普通的话发；
+  // 真想发一句 ! 开头的话就写 !!，跟 // 一个路数（全角的 ！ 本来就不算，中文感叹不会误触）
+  if (body.startsWith("!!")) return { kind: "task", text: body.slice(1).trim() };
+  if (body.startsWith("!")) {
+    const cmd = body.slice(1).trim();
+    return cmd ? { kind: "shell", cmd } : { kind: "task", text: body };
+  }
   if (!body.startsWith("/")) return { kind: "task", text: body };
 
   const m = body.match(/^(\/\S*)(?:\s+([\s\S]*))?$/);
@@ -513,6 +522,31 @@ function modelPickerRows(rows) {
   }));
 }
 
+/**
+ * Plan 出完一份计划，摆两条让人挑：开干，还是接着改。
+ *
+ * 以前 Plan 跑完就回到提示符，下一步全靠人自己知道——先 /mode craft，再说一句「按计划做」。
+ * 第一次用的人卡在这儿：计划看着挺好，然后呢？Claude Code 的 plan 模式收尾就是这么一问，
+ * 这儿照着做。这一层只管「摆哪两条、选了开干交出去哪句话、什么时候问」，画和收键在 cli.js 那边。
+ */
+const PLAN_GO_TEXT = "按上面这份计划开始做。做完逐条对照计划说清楚：哪几步做了，哪几步没做、为什么。";
+const PLAN_NEXT_HINT = "计划好了。要开干：/mode craft，再说一句「按计划做」；要改直接说哪儿不对\n";
+function planNextRows() {
+  return [
+    { id: "go", label: "按这份计划开干", meta: "切到 Craft，照上面的计划动手改", hay: "开干 执行 做 craft go" },
+    { id: "more", label: "接着改计划", meta: "留在 Plan，下一句说哪儿要改", hay: "改计划 修改 plan" },
+  ];
+}
+/**
+ * 这趟跑完要不要问、怎么问。"pick" 摆单子；"hint" 画不了单子就印一句怎么接着走；"" 不问。
+ * 输入行上已经打了字的不问：他已经在说下一句了，这时候弹单子是抢他的键盘。
+ * @param {{ mode: string, result: string, usable: boolean, typed?: string }} o
+ */
+function planNextMode(o) {
+  if (!o || o.mode !== "plan" || o.result !== "ok" || String(o.typed || "")) return "";
+  return o.usable ? "pick" : "hint";
+}
+
 /** /init：让它自己把这个目录摸清楚，写成一份以后每趟都读得到的项目规范。
  *  这儿只出「说什么」和「交出去哪句话」——真去看目录、真落盘的是模型走正常那条路，
  *  于是权限档、改文件前的确认、/diff 里的记录一个都不少。绕过去自己写文件是最糟的做法：
@@ -679,7 +713,8 @@ function helpText(opt) {
       ? ["  自己写的：", ...own.map(fmt), ""]
       : ["  想要自己的命令：把一段提示词存成 .openworkbuddy/commands/<名字>.md（或放 ~/ 下同名目录），", "  里面用 $ARGUMENTS 或 $1 $2 接参数，重开之后就能敲 /<名字>。", ""]),
     "  别的都当任务发给 agent。多行需求直接粘进来，会合成一条，不会被拆成好几条。",
-    "  想发一句本来就以 / 开头的话：行首加个空格，或者写成 //。",
+    "  想发一句本来就以 / 或 ! 开头的话：行首加个空格，或者双写成 // 、!!。",
+    "  !命令 自己在工作目录里跑一条 shell（!git status），不经过模型；输出会跟着下一句话带给它，/drop 可以不带。",
     "  任务跑着的时候打字回车 = 插话，下一步会带给它；Ctrl+C 停这趟活儿，不退出。",
     "",
   ].join("\n") + "\n";
@@ -775,12 +810,54 @@ function sanitizeHistory(lines, max) {
   return out;
 }
 
+/** 一条 !命令 的输出带给模型时最多多少字。再多就是在往上下文里倒日志了 */
+const SHELL_NOTE_MAX = 4000;
+/** 攒着没发的 !命令 最多带几条：连敲一串 ls、cat 看东西，模型要的是最近那几条 */
+const SHELL_NOTES_KEEP = 5;
+
+const ANSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]/g;
+
+/**
+ * 一条 !命令 跑完，交给模型的那段。
+ * 太长时头留四分之一、尾留四分之三——报错和汇总行几乎都在尾巴上，开头留一截让它知道跑的是什么。
+ * 颜色码、\r 进度条这种是给眼睛看的，带过去只是噪音。
+ */
+function shellNote({ cmd, out, code, signal, error } = {}, max = SHELL_NOTE_MAX) {
+  let text = String(out || "").replace(ANSI_RE, "");
+  // 进度条靠 \r 回到行首重画：只留每一行最后画上去的那一版
+  text = text.split("\n").map((l) => { const parts = l.split("\r").filter((x) => x !== ""); return parts.length ? parts[parts.length - 1] : ""; }).join("\n").trim();
+  if (text.length > max) {
+    const head = Math.floor(max / 4);
+    const tail = max - head;
+    text = `${text.slice(0, head)}\n…（中间省略 ${text.length - max} 字）…\n${text.slice(-tail)}`;
+  }
+  const end = error ? `（没跑起来：${error}）`
+    : signal ? `（被 ${signal} 停掉了）`
+    : code ? `（退出码 ${code}）` : "";
+  return `$ ${cmd}\n${text || "（没有输出）"}${end ? "\n" + end : ""}`;
+}
+
+/** 把攒着的 !命令 输出拼在这句话前面。没有就原样返回 */
+function withShellNotes(text, notes) {
+  const list = (notes || []).filter(Boolean).slice(-SHELL_NOTES_KEEP);
+  if (!list.length) return text;
+  const dropped = (notes || []).filter(Boolean).length - list.length;
+  return `（我刚在工作目录里自己跑了${dropped ? `几条命令，最近这 ${list.length} 条` : "这些命令"}，输出放在这儿供你参考）\n` +
+    list.map((n) => {
+      // 输出里自己就带 ``` 的（cat 一份 Markdown）：围栏比里面最长的那串反引号多一个，不然提前收口
+      const run = Math.max(2, ...(n.match(/`+/g) || []).map((x) => x.length));
+      const fence = "`".repeat(run + 1);
+      return `${fence}\n${n}\n${fence}`;
+    }).join("\n") + `\n\n${text}`;
+}
+
 module.exports = {
-  COMMANDS, PASTE_GAP_MS, HISTORY_MAX,
+  COMMANDS, PASTE_GAP_MS, HISTORY_MAX, SHELL_NOTE_MAX, SHELL_NOTES_KEEP, shellNote, withShellNotes,
   parse, mergePaste, makeInbox, resolveCd, complete, menu, helpText, unknownText, badArgText,
   modelRows, modelListText, pickModelRow,
   RESUME_MAX, ago, sessionRows, sessionListText, pickSessionRow,
   PICKER_ROWS, pickerRowsOf, filterPickerRows, pickerWindow, pickerView, sessionPickerRows, modelPickerRows,
   sizeText, sessionUsageText, changedFilesText, checkpointListText, pickCheckpoint, rewindResultText, mcpText, compactedText, initTask,
+  PLAN_GO_TEXT, PLAN_NEXT_HINT, planNextRows, planNextMode,
   sanitizeHistory, nearest, find,
 };

@@ -11,6 +11,8 @@
  *   ⑦ 跑到一半被 kill / 关了终端窗口：这一轮落盘、网页上那条标成结束、按信号给退出码，不是悄无声息地没了
  *   ⑧ 跑着的时候网页 / 手机也写了这条会话：两边的对话记录都在，那边的上下文另存一份，不整份盖掉
  *   ⑨ 网页端记着这条正在跑：开跑前提醒一句（只提醒不拦：服务端崩了没清的话这条记录是过期的）
+ *   ⑩ 工作目录（往上到 git 根）的 AGENTS.md 真的进了发给模型的请求——以前命令行一个字都不读，/init 白写
+ *   ⑪ 没人坐在终端前时碰到要批的一步：当场拒、说清楚怎么放行，不是干等两分钟；--allow 点名放行那一类
  *
  * 模型是本地假的，不出网。
  *   node test/cli-oneshot.js
@@ -72,14 +74,18 @@ async function setup({ mcp = false } = {}) {
   fs.mkdirSync(ws);
   const bodies = [];
   let hold = null; // 让模型「想」多久：设成一个 Promise，回话前先等它
+  let reply = null; // 这一轮回什么：(请求体) => message；不设就一句「做完了。」
   const llm = http.createServer((req, res) => {
     let raw = "";
     req.on("data", (c) => (raw += c));
     req.on("end", async () => {
       bodies.push(raw);
       if (hold) await hold;
+      let body = {};
+      try { body = JSON.parse(raw); } catch {}
+      const message = reply ? reply(body) : { role: "assistant", content: "做完了。" };
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: "做完了。" }, finish_reason: "stop" }], usage: { prompt_tokens: 5, completion_tokens: 2 } }));
+      res.end(JSON.stringify({ choices: [{ message, finish_reason: message.tool_calls ? "tool_calls" : "stop" }], usage: { prompt_tokens: 5, completion_tokens: 2 } }));
     });
   });
   await new Promise((r) => llm.listen(0, "127.0.0.1", r));
@@ -104,6 +110,7 @@ async function setup({ mcp = false } = {}) {
   return {
     home, ws, bodies, sessDir,
     setHold(p) { hold = p; },
+    setReply(fn) { reply = fn; },
     /** 起一趟 cli.js。stdin：ignore（不接）/ open（开着不关）/ 字符串（写完就关）/ { later, ms }（隔 ms 毫秒才写）。
      *  onSpawn(kid)：进程起来之后测试要对它做点什么（发信号、趁它跑着改文件） */
     run(args, { stdin = "ignore", ms = 30000, env: extraEnv = {}, onSpawn } = {}) {
@@ -292,6 +299,59 @@ async function run() {
       fs.writeFileSync(running, JSON.stringify(["s_别的会话"]));
       const r2 = await env.run(["--session", MID, "又一句", "--no-mcp"]);
       ok(r2.code === 0 && !/网页端记着/.test(r2.err), "反向对照：网页在跑的是别的会话，不提醒", r2.err.slice(-300));
+    }
+
+    console.log("\n— ⑩ 项目规范 AGENTS.md —");
+    {
+      const repo = path.join(env.home, "repo");
+      fs.mkdirSync(path.join(repo, ".git"), { recursive: true });
+      fs.mkdirSync(path.join(repo, "sub"), { recursive: true });
+      fs.writeFileSync(path.join(repo, "AGENTS.md"), "仓库根的规矩 ROOTMARK_R1");
+      fs.writeFileSync(path.join(repo, "sub", "AGENTS.md"), "子目录的规矩 SUBMARK_S1");
+      fs.writeFileSync(path.join(env.home, "AGENTS.md"), "仓库外面的 OUTSIDE_O1");
+      const before = env.bodies.length;
+      const r = await env.run(["-C", path.join(repo, "sub"), "看看", "--no-mcp"]);
+      const sent = env.bodies.slice(before).join("\n");
+      ok(r.code === 0 && sent.includes("SUBMARK_S1"), "★工作目录里的 AGENTS.md 进了发给模型的请求★ 以前命令行一个字都不读", r.err.slice(-300));
+      ok(sent.includes("ROOTMARK_R1"), "★往上走到 git 仓库根，根上那份也带上★");
+      ok(sent.indexOf("ROOTMARK_R1") < sent.indexOf("SUBMARK_S1"), "  └ 根在前、子目录在后（越靠后越具体）");
+      ok(!sent.includes("OUTSIDE_O1"), "  └ 仓库根再往上的不带（那不是这个项目的规矩）");
+      const b2 = env.bodies.length;
+      const r2 = await env.run(["还是看看", "--no-mcp"]);
+      const sent2 = env.bodies.slice(b2).join("\n");
+      ok(r2.code === 0 && sent2.length > 0 && !/ROOTMARK_R1|SUBMARK_S1|OUTSIDE_O1/.test(sent2) && !/项目既定规范/.test(sent2),
+         "反向对照：工作目录不在仓库里、自己也没放规范，提示词里就没有这一段", r2.err.slice(-300));
+    }
+
+    console.log("\n— ⑪ 没人在终端前时要批的一步 —");
+    {
+      // 模型第一轮要删一个文件（删除保护：要批），看到工具结果就收工
+      env.setReply((b) => ((b.messages || []).some((m) => m.role === "tool")
+        ? { role: "assistant", content: "收工。" }
+        : { role: "assistant", content: "", tool_calls: [{ id: "c1", type: "function", function: { name: "run_shell", arguments: JSON.stringify({ command: "rm a.txt", purpose: "清理" }) } }] }));
+      const victim = path.join(env.ws, "a.txt");
+      fs.writeFileSync(victim, "a");
+      const b0 = env.bodies.length;
+      const r = await env.run(["-C", env.ws, "清理一下", "--no-mcp"], { ms: 60000 });
+      ok(!r.hung && r.code === 0 && r.elapsed < 20000, "★没人批就当场拒，不干等两分钟★ 以前 cron 里每碰一条要批的就白卡 120 秒", { elapsed: r.elapsed, hung: r.hung, err: r.err.slice(-400) });
+      ok(fs.existsSync(victim), "  └ rm 没跑");
+      ok(/直接拒了/.test(r.err) && /rm a\.txt/.test(r.err), "  └ 说清楚哪一步被拒了", r.err.slice(-400));
+      ok(/--allow "rm"/.test(r.err) && /--ask-remote/.test(r.err), "  └ 下回怎么放行：给出能直接抄的 --allow，和从手机上批的开关", r.err.slice(-400));
+      ok(env.bodies.slice(b0).join("\n").includes("未获批准"), "  └ 模型收到的是「没批准」，接着换办法或者说明卡在哪");
+      const rq = await env.run(["-C", env.ws, "清理一下", "--no-mcp", "-q"], { ms: 60000 });
+      ok(/直接拒了/.test(rq.err), "★-q 下也说★ 活儿少干了一步不能一声不吭", rq.err.slice(-300));
+      const r2 = await env.run(["-C", env.ws, "清理一下", "--no-mcp", "--allow", "rm"], { ms: 60000 });
+      ok(r2.code === 0 && !fs.existsSync(victim), "★--allow rm：点名的这一类不用批，真删了★", r2.err.slice(-400));
+      ok(/预先放行：rm/.test(r2.err) && !/直接拒了/.test(r2.err), "  └ 开头那行写着放行了什么", r2.err.slice(-400));
+      fs.writeFileSync(victim, "a");
+      const r2b = await env.run(["-C", env.ws, "清理一下", "--no-mcp", "--allow", "rmdir"], { ms: 60000 });
+      ok(fs.existsSync(victim) && /直接拒了/.test(r2b.err), "  └ 按整词比：放行 rmdir 不等于放行 rm", r2b.err.slice(-300));
+      const b3 = env.bodies.length;
+      const r3 = await env.run(["-C", env.ws, "x", "--no-mcp", "--allow", "danger:force-push"]);
+      ok(r3.code === 2 && /git-force-push/.test(r3.err) && env.bodies.length === b3, "★--allow 写错：退出码 2、列出有哪些，一分钱不花★ 写错等于没放行，跑到半夜被拒才发现就晚了", r3.err.slice(-300));
+      const r4 = await env.run(["-C", env.ws, "x", "--no-mcp", "--allow", "npm test && rm -rf ."]);
+      ok(r4.code === 2 && /拆开/.test(r4.err) && env.bodies.length === b3, "  └ 带 && 的规则永远比不中：当场说", r4.err.slice(-300));
+      env.setReply(null);
     }
   } finally {
     env.close();

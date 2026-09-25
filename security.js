@@ -518,6 +518,54 @@ function ruleFor(text) {
 }
 
 /**
+ * 命令行 --allow 写的一条 → 放进本会话放行名单的那个键。
+ *
+ * 记下的跟审批卡上「本会话同类不再问」是同一种东西，只是开跑前就说好：cron、CI 里没人点头，
+ * 又确实要它跑 npm test 的，一类一类点名放行，而不是整个 --perm full 敞开。
+ *   npm test / git status   命令前缀，跟 cmd_allow 一个比法（整词：放行 rm 不等于放行 rmdir）
+ *   write                   「每步都问」那档下写文件不问
+ *   code / code:child_process   跑代码不问 / 只放「代码里开子进程」那一类
+ *   danger:<类别>           某一类高危命令（git-force-push 这种）
+ * 认不出来的一律报错：写错一个字等于没放行，跑到半夜被拒才发现，不如开跑前就停下。
+ * @returns {{ key: string, label: string } | { error: string }}
+ */
+function parseAllowRule(s) {
+  const t = String(s == null ? "" : s).trim();
+  if (!t) return { error: "--allow 后面是空的" };
+  if (t === "write" || t === "write:*") return { key: "write:*", label: "写文件" };
+  if (t === "code" || t === "code:*") return { key: "code:*", label: "跑代码" };
+  if (t === "code:child_process") return { key: t, label: "代码里开子进程" };
+  const m = /^danger:(.*)$/.exec(t);
+  if (m) {
+    const d = DANGER_PATTERNS.find((x) => x.key === m[1].trim());
+    return d ? { key: "danger:" + d.key, label: d.rule }
+      : { error: `没有叫「${m[1]}」的高危类别，有这些：${DANGER_PATTERNS.map((x) => x.key).join(" / ")}` };
+  }
+  if (/^(write|code):/.test(t)) return { error: `认不出「${t}」：写文件写 write，跑代码写 code 或 code:child_process` };
+  // 名单是一段一段比的：带 ; & | 换行的规则永远比不中，等于没写
+  if (/[;&|\n]/.test(t)) return { error: `「${t}」里有 ; & | 这种连接符。规则按单条命令比，拆开写成几个 --allow` };
+  return { key: t, label: t };
+}
+
+/** 审批卡上记的那个键，换回 --allow 该怎么写（给「下回怎么不用批」那句提示用）。记不住的返回空串 */
+function allowFlagFor(ruleKey) {
+  const k = String(ruleKey || "");
+  if (!k) return "";
+  if (k === "write:*" || k === "code:*") return k.slice(0, -2);
+  return k;
+}
+
+/**
+ * 同上，再套好 shell 引号，能原样粘进命令行。
+ * 一律套双引号不行：`$EDITOR foo.txt` 记下的键是 `$EDITOR`，`--allow "$EDITOR"` 会被 shell 展开成 vim，放行的就不是这一类了
+ */
+function allowFlagArg(ruleKey) {
+  const f = allowFlagFor(ruleKey);
+  if (!f) return "";
+  return /^[\w.\/:@%+=, -]+$/.test(f) ? `"${f}"` : `'${f.replace(/'/g, "'\\''")}'`;
+}
+
+/**
  * 名单里有没有一条是这段的前缀。以字母数字结尾的那条按整词比：批过 `git` 不等于批了 `gitk`，
  * 批过 `rm` 不等于批了 `rmdir`。以 / 这类符号结尾的（`./scripts/`）本来就是写成前缀的，照旧。
  */
@@ -858,6 +906,9 @@ module.exports = {
   checkCommand,
   checkCode,
   ruleFor,
+  parseAllowRule, // 命令行 --allow：开跑前点名放行的那几类
+  allowFlagFor,
+  allowFlagArg,
   listedCommand, // 判险那道闸用：人批过的段不再花钱判
   commandSegments, // 同上：两道闸按同一个拆法看命令，不然一边看得见 `bash -c` 里那条、一边看不见
   addSessionAllow,

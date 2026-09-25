@@ -258,6 +258,76 @@ async function run() {
     assert.strictEqual(seen.length, n, "退订之后不再收到");
   }
 
+  // ---- ⑦ 没人批时那句「下回加 --allow …」：照抄回去必须真能放行同一类 ----
+  // 提示里给的写法 --allow 自己不认、或者认成了另一类，比不给还糟：用户照抄了，半夜照样被拒
+  {
+    const security = require("../security");
+    const { execFileSync } = require("child_process");
+    const ask = { ...security.DEFAULTS, permission_mode: "ask" };
+    const def = { ...security.DEFAULTS };
+    const check = (sec, kind, x) => (kind === "cmd" ? security.checkCommand(sec, x)
+      : kind === "write" ? security.checkWrite(sec, x) : security.checkCode(sec, x));
+    const cases = [
+      [ask, "cmd", "rm dist/old.js"], [ask, "cmd", "npm test"], [def, "cmd", "rm dist/old.js"],
+      [ask, "cmd", "$EDITOR notes.md"],
+      [ask, "write", "a.txt"], [ask, "code", "print(1)"],
+      [def, "code", "require(\"child_process\").execSync(\"ls\")"],
+      [def, "cmd", "git push --force origin main"], [def, "cmd", "docker compose down -v"],
+      [def, "cmd", "psql -c \"DROP TABLE users\""], [def, "cmd", "dd if=a.img of=/dev/disk4"],
+      [def, "cmd", "cat a.img > /dev/disk4"], [def, "cmd", "mkfs.ext4 /dev/sdb1"],
+    ];
+    // 高危表和询问名单是两道闸：mkfs 两张表里都有，放了高危那道，询问名单还会按 mkfs.ext4 再要一次。
+    // 这是有意的（各管各的），钉在这儿：哪天两道合成一道了，这条会红，文档那句也得跟着改
+    const twoGates = { "mkfs.ext4 /dev/sdb1": ["danger:mkfs-disk", "mkfs.ext4"] };
+    const keys = new Set();
+    try {
+      for (const [sec, kind, x] of cases) {
+        security.clearSessionAllow();
+        const chain = [];
+        let r = check(sec, kind, x);
+        assert.strictEqual(r.action, "ask", `${x}：得先是要批的`);
+        // 每拒一次照抄一次提示，最多三轮：模拟的正是「半夜被拒 → 加上提示里那句 → 再跑」
+        for (let round = 0; r.action === "ask" && round < 3; round++) {
+          assert.ok(r.ruleKey, `${x}：审批卡上有键`);
+          assert.ok(!chain.includes(r.ruleKey), `★${x}：照抄了 --allow 还是按同一类拒★ ${r.ruleKey}`);
+          const arg = security.allowFlagArg(r.ruleKey);
+          // 真过一遍 shell：用户是把这串粘进终端的，引号怎么剥、$ 展不展开以 shell 为准
+          const typed = execFileSync("sh", ["-c", `printf %s ${arg}`], { encoding: "utf8" });
+          const p = security.parseAllowRule(typed);
+          assert.ok(!p.error, `★${x}：提示里的 --allow ${arg} 自己得认★ ${p.error || ""}`);
+          assert.strictEqual(p.key, r.ruleKey, `★${x}：照抄回去放行的得是同一类★`);
+          security.addSessionAllow(p.key);
+          chain.push(r.ruleKey);
+          keys.add(r.ruleKey);
+          r = check(sec, kind, x);
+        }
+        assert.strictEqual(r.action, "allow", `★${x}：照着提示放完真不问了★ ${JSON.stringify(r)}`);
+        assert.strictEqual(chain.join(" + "), (twoGates[x] || chain.slice(0, 1)).join(" + "),
+          `${x}：只该拒一次（两道闸的那几条除外）`);
+      }
+    } finally {
+      security.clearSessionAllow();
+    }
+    assert.strictEqual(keys.size, 13, "上面每条都得落在不同的一类上，不然等于少测了几类");
+    assert.ok(keys.has("$EDITOR"), "★$ 开头的键也测到了★ 双引号会被 shell 展开成别的命令");
+    // 黑名单那种没有「同类」可放：提示里不给 --allow，只给手机那条路
+    assert.strictEqual(security.allowFlagArg(""), "");
+    // 单引号里再有单引号：ruleFor 眼下产不出这种键，这层是防着以后的
+    for (const k of ["it's $HOME", "a'b'c", "`x`"]) {
+      const back = execFileSync("sh", ["-c", `printf %s ${security.allowFlagArg(k)}`], { encoding: "utf8" });
+      assert.strictEqual(back, k, `★${k}：过一遍 shell 原样回来★`);
+    }
+
+    // 写错的当场说，别悄悄变成一条永远比不中的规则
+    const bad = (s, re, why) => { const p = security.parseAllowRule(s); assert.ok(p.error && re.test(p.error), `${why}：${JSON.stringify(p)}`); };
+    bad("", /空/, "空的");
+    bad("danger:force-push", /git-force-push/, "★高危类别拼错：列出真有的★");
+    bad("write:src", /write/, "write: 后面没有别的写法");
+    bad("code:shell", /code:child_process/, "code: 后面只认 child_process");
+    bad("npm test && rm -rf .", /拆开/, "★带 && 的永远比不中★");
+    bad("a;b", /拆开/, "带 ; 的同理");
+  }
+
   console.log("cli-approve：通过");
 }
 

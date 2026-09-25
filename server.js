@@ -54,6 +54,7 @@ const sweep = require("./sweep");
 const modes = require("./modes"); // 执行模式的唯一真源（craft/goal/plan/ask）
 const cfgMerge = require("./config-merge"); // 存配置时把外面手改的那些合进来，不整份覆盖
 const cfgLint = require("./config-lint"); // 手改配置写错了当场说，别让人以为「改了没反应」
+const projectMemo = require("./project-memo"); // 工作目录往上到 git 根的 AGENTS.md / CLAUDE.md，命令行也用这一份
 const mediaModels = require("./media-models");
 const mediaHealth = require("./media-health"); // 连不通的媒体渠道熔断表：设置页要显示，保存时要清空 // 图/视频/语音/视觉：渠道表 + 每路多模型
 const chatModels = require("./chat-models"); // 对话模型：渠道共用一把 Key（跟上面共用 config.providers）
@@ -3035,60 +3036,10 @@ function projectContextOf(p) {
   const conns = alive(p.connectors, (config.mcp_servers || []).map((s) => s.name));
   if (conns.length) parts.push(`本项目挂载的连接器：${conns.join("、")}。涉及外部系统时优先用这些连接器提供的工具。`);
   // 项目目录里的 AGENTS.md / CLAUDE.md 是写给 agent 看的项目规范（pi / Claude Code 的通行惯例），
-  // 用户既然放了就自动带上，不用再往项目指令里手抄一遍
-  for (const fname of ["AGENTS.md", "CLAUDE.md"]) {
-    if (!p.dir) break;
-    const fp = path.join(p.dir, fname);
-    if (!fs.existsSync(fp)) continue;
-    let txt = "";
-    try {
-      txt = fs.readFileSync(fp, "utf8").trim();
-    } catch (e) {
-      // 以前这儿是个 catch {}：规范没带上，模型照跑，用户以为写进去的规矩生效了。
-      warnOnce(`memo-read:${fp}`, `[项目规范] ${fname} 读不出来（${e.message}），这一趟没带上它`);
-      continue;
-    }
-    // 空文件不算数。老写法在这儿也 break，于是一个空的 AGENTS.md 能把旁边写满规矩的 CLAUDE.md 挡在门外
-    if (!txt) continue;
-    parts.push(`项目目录里的 ${fname}（项目既定规范，必须遵守）：\n${clampMemo(txt, fname, fp)}`);
-    break;
-  }
+  // 用户既然放了就自动带上，不用再往项目指令里手抄一遍。往上一直找到 git 仓库根，和命令行用的是同一份逻辑
+  const memo = projectMemo.memoContext(p.dir);
+  if (memo) parts.push(memo);
   return parts.join("\n\n");
-}
-
-/** 同一件事只喊一次：这些警告在每趟任务开头都会走一遍，喊三次就再没人看了 */
-const warnedOnce = new Set();
-function warnOnce(key, msg) {
-  if (warnedOnce.has(key)) return;
-  warnedOnce.add(key);
-  console.warn(msg);
-}
-
-// 项目规范塞进系统提示词的上限。再长就开始挤掉提示词里别的东西（工具说明、专家名单）
-const MEMO_MAX = 6000;
-
-/**
- * 规范太长时截一段，**并且把截了这件事说出来**。
- *
- * 老写法是 .slice(0, 6000)，一声不吭。一份两万字的 CLAUDE.md 有四分之三根本没进提示词，
- * 而模型看到的是一份「看起来很完整」的规范——它不知道后面还有，于是照着前四分之一干活，
- * 用户看到的是「我明明在 CLAUDE.md 里写了不许这样」。这种事查不出来：日志里什么都没有。
- *
- * 现在两头都留话：正文里告诉模型「还有一截没给你，拿不准就自己去读整份」，
- * 控制台告诉用户「你这份太长了，建议拆一拆」。
- */
-function clampMemo(txt, fname, fp) {
-  if (txt.length <= MEMO_MAX) return txt;
-  const cut = txt.length - MEMO_MAX;
-  const head = txt.slice(0, MEMO_MAX);
-  // 从段落边界断开，别切在半句话中间；找不到合适的边界（整份是一大段）就直接切
-  const brk = head.lastIndexOf("\n\n");
-  const body = brk > MEMO_MAX * 0.6 ? head.slice(0, brk) : head;
-  warnOnce(`memo-long:${fp}:${txt.length}`,
-    `[项目规范] ${fname} 有 ${txt.length} 字，超过 ${MEMO_MAX} 字上限，只带了前面一部分（少了约 ${cut} 字）。` +
-    `建议精简，或者把细则拆成单独的文件让 agent 需要时自己读。`);
-  return `${body}\n\n（${fname} 太长，这里只放了前面一部分，后面还有约 ${cut} 字没带上。` +
-    `遇到拿不准的规矩，先用 read_file 把 ${fname} 整份读一遍再动手。）`;
 }
 
 function ensureProjects() {

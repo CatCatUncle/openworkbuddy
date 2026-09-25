@@ -57,6 +57,7 @@ const FLAGS = [
   { long: "raw", type: "bool", key: "raw", value: true, desc: "答案原样输出 Markdown，不在终端里渲染" },
   { long: "no-mcp", type: "bool", key: "mcp", value: false, desc: "跳过 MCP 连接器，启动更快" },
   { long: "ask-remote", type: "bool", key: "askRemote", value: true, desc: "没人坐在终端前也允许 agent 提问，答案从手机上给" },
+  { long: "allow", type: "strs", key: "allow", arg: "<规则>", desc: "这一趟预先点头的一类操作，可以写几次：npm test、write、code、danger:git-force-push" },
   { long: "off", type: "bool", key: "off", value: true, desc: "配合 openworkbuddy 2fa：真的把那个账号的二次验证关掉（不写就只看状态）" },
   { long: "score", type: "bool", key: "score", value: true, desc: "配合 openworkbuddy jev：把后面那几个选项当成从低到高的档位，问一道打分题" },
   { long: "version", short: "V", type: "bool", key: "version", value: true, desc: "打印版本号" },
@@ -80,7 +81,7 @@ const SUBS = [
   { name: "completion", usage: "openworkbuddy completion <shell>", desc: "生成 Tab 补全脚本（bash / zsh / fish）" },
 ];
 
-const DEFAULTS = { mode: "craft", session: null, mcp: true, workspace: null, files: [], cont: false, json: false, quiet: false, raw: false, list: 0, help: false, version: false, askRemote: false, off: false, score: false, perm: null, model: null, maxSteps: null, appendSystem: null };
+const DEFAULTS = { mode: "craft", session: null, mcp: true, workspace: null, files: [], cont: false, json: false, quiet: false, raw: false, list: 0, help: false, version: false, askRemote: false, allow: [], off: false, score: false, perm: null, model: null, maxSteps: null, appendSystem: null };
 
 /** 编辑距离。只用来猜「你是不是想说 X」，不求快 */
 function editDistance(a, b) {

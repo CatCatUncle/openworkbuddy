@@ -225,6 +225,7 @@ The diagram doubles as a reading order: start at `server.js`, then see how `agen
 
 ## What's new
 
+- **Sep 25** CLI: after Plan mode writes a plan, pick "go" or "keep editing"; `!command` runs shell yourself and hands the output to the agent; with nobody at the terminal approvals are denied at once, and `--allow` approves ahead of time; AGENTS.md / CLAUDE.md are read up to the repo root
 - **Sep 25** Any file an answer mentions is clickable if it exists in the workspace, not just the ones made in that turn
 - **Sep 24** CLI approvals are picked with ↑↓ and Enter; tool calls show as `● Shell(command)` with `└ output` beneath, like Claude Code
 - **Sep 24** Canvas video: a job the provider already accepted is no longer retried automatically, so you are not charged twice; it sends the card's length, aspect ratio and resolution

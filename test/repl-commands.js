@@ -887,6 +887,91 @@ console.log("\n⑳之二 /init");
      "★现成的那句话不过 splitFiles★ 那一步是摘「人拖进来的文件」的，拿它扫一句现成的话会把 AGENTS.md 当附件摘走，句子当场缺一块");
 }
 
+// ── ⑳之三 !命令：自己在终端里跑一条 shell，输出跟下一句话带给模型 ─────────
+console.log("\n⑳之三 !命令");
+{
+  const sh = (line) => { const v = R.parse(line); return v.kind === "shell" ? `shell:${v.cmd}` : tag(line); };
+  eq(sh("!git status"), "shell:git status", "★!git status 是自己跑，不是发给模型★");
+  eq(sh("!  ls -la  "), "shell:ls -la", "! 后面的空白修掉");
+  eq(sh("!"), "task:!", "★光一个 ! 没东西可跑★ 当普通的话发，不能跑一条空命令");
+  eq(sh("!   "), "task:!", "! 加一串空格也一样");
+  eq(sh(" !ls"), "task:!ls", "★行首一个空格 = 逃生口★ 跟 / 那条规矩一样");
+  eq(sh("!!重要：先别动数据库"), "task:!重要：先别动数据库", "★!! = 我就是想发一句 ! 开头的话★ 吃掉一个 !，跟 // 同一个路数");
+  eq(sh("！太好了"), "task:！太好了", "★全角感叹号不算★ 中文里一句感叹不能被当成 shell 跑掉");
+  eq(sh("ls !important"), "task:ls !important", "! 不在行首就是普通字");
+  eq(sh("/mode craft"), "cmd:mode craft", "（反向对照）斜杠命令照旧");
+  ok(/!命令/.test(R.helpText()) && /!!/.test(R.helpText()), "/help 里写着能敲 !命令，也写着 !! 这个逃生口", R.helpText().slice(-400));
+
+  // 交给模型的那段：颜色码、进度条、太长、退出码
+  const n1 = R.shellNote({ cmd: "npm test", out: "\x1b[32m✓ ok\x1b[0m\n\x1b]8;;http://x\x07link\x1b]8;;\x07\n", code: 0 });
+  eq(n1, "$ npm test\n✓ ok\nlink", "★颜色码和终端超链接转义都剥掉★ 带给模型的是字，不是控制序列");
+  eq(R.shellNote({ cmd: "curl -O x", out: "  1%\r 50%\r100%\ndone\n", code: 0 }), "$ curl -O x\n100%\ndone", "★\\r 进度条只留最后画上去的那版★ 不然一条下载能灌几百行");
+  eq(R.shellNote({ cmd: "false", out: "", code: 1 }), "$ false\n（没有输出）\n（退出码 1）", "★非零退出码写明★ 模型要知道这条是失败的");
+  eq(R.shellNote({ cmd: "sleep 30", out: "", code: null, signal: "SIGINT" }), "$ sleep 30\n（没有输出）\n（被 SIGINT 停掉了）", "被 Ctrl+C 停掉的也说清楚");
+  eq(R.shellNote({ cmd: "nope", out: "", code: null, error: "spawn ENOENT" }), "$ nope\n（没有输出）\n（没跑起来：spawn ENOENT）", "没跑起来说没跑起来");
+  ok(!/退出码/.test(R.shellNote({ cmd: "true", out: "x", code: 0 })), "（反向对照）退出码 0 不写，不然每条都像出了事");
+  const big = "HEAD-" + "m".repeat(20000) + "-TAIL";
+  const nb = R.shellNote({ cmd: "cat big.log", out: big, code: 0 });
+  ok(nb.length < R.SHELL_NOTE_MAX + 200, "★太长就截★ 一条 cat 大日志不能把上下文灌满", nb.length);
+  ok(nb.includes("HEAD-") && nb.includes("-TAIL"), "★头尾都留★ 报错和汇总在尾巴上，开头说明跑的是什么");
+  ok(/中间省略 \d+ 字/.test(nb), "截了要说截了", nb.slice(0, 200));
+  const [headPart, tailPart] = nb.slice("$ cat big.log\n".length).split(/\n…（中间省略 \d+ 字）…\n/);
+  ok(tailPart && tailPart.length > headPart.length * 2, "★尾巴分得比头多★", [headPart.length, tailPart && tailPart.length]);
+
+  // 拼到下一句话前面
+  eq(R.withShellNotes("帮我修一下", []), "帮我修一下", "★没跑过 !命令 就原样返回★ 一个字都不多");
+  eq(R.withShellNotes("帮我修一下", undefined), "帮我修一下", "不传也不崩");
+  const w = R.withShellNotes("帮我修一下", ["$ git status\nM a.js"]);
+  ok(w.endsWith("\n\n帮我修一下"), "★人自己那句话放最后★ 模型最后读到的是要它干什么", w);
+  ok(w.includes("```\n$ git status\nM a.js\n```"), "每条输出用围栏包起来", w);
+  ok(/自己跑了/.test(w), "说清楚这是人自己跑的，不是它跑的", w);
+  const md = R.withShellNotes("看看", ["$ cat README.md\n```js\nx()\n```"]);
+  ok(md.includes("````\n$ cat README.md") && md.includes("```\n````"), "★输出里自带 ``` 的：外层围栏多一个反引号★ 不然 cat 一份 Markdown 就提前收口", md);
+  const many = Array.from({ length: 8 }, (_, i) => `$ echo ${i}\n${i}`);
+  const wm = R.withShellNotes("好", many);
+  ok(!wm.includes("$ echo 2\n") && wm.includes("$ echo 3\n") && wm.includes("$ echo 7\n"), `★最多带最近 ${R.SHELL_NOTES_KEEP} 条★ 连敲一串 ls 看东西，要的是最后那几条`, wm);
+  ok(/最近这 5 条/.test(wm), "丢了前面的要说", wm.slice(0, 80));
+
+  // cli.js 那头真接上了
+  const src = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
+  ok(/v\.kind === "shell"/.test(src), "★cli.js 主循环真的认 shell 这一类★ 不然 !ls 会落到「当任务发走」");
+  ok(/repl\.withShellNotes\(/.test(src) && /repl\.shellNote\(/.test(src), "输出真的记下来、真的拼进下一句");
+  const sig = src.slice(src.indexOf('rl.on("SIGINT"'), src.indexOf('rl.on("SIGINT"') + 300);
+  ok(sig.indexOf("shellKid") > -1 && sig.indexOf("shellKid") < sig.indexOf("inbox.busy"), "★Ctrl+C 先停正在跑的 !命令★ 不能落到「再按一次退出」上", sig);
+  ok(/detached: process\.platform !== "win32"/.test(src) && /process\.kill\(-kid\.pid/.test(src), "★整组收★ !npm run dev 起的子进程也得一块儿停", "");
+  const drop = src.slice(src.indexOf('v.name === "drop"'), src.indexOf('v.name === "drop"') + 700);
+  ok(/shellNotes\.length = 0/.test(drop), "/drop 连 !命令 的输出一起不带", drop);
+  ok(/notes\.length \? 这句 : undefined/.test(src), "★拼了输出时，会话里显示的还是人自己那句（shown）★ 标题不能变成一大段 git status");
+}
+
+// ── ⑳之四 Plan 出完计划：摆「开干 / 接着改」 ─────────────────────────
+console.log("\n⑳之四 Plan 出完计划");
+{
+  const rows = R.planNextRows();
+  ok(rows.length === 2 && rows[0].id === "go" && rows[1].id === "more", "★两条，开干在前★ 回车默认就是开干", rows);
+  ok(/开干/.test(rows[0].label) && /Craft/.test(rows[0].meta), "开干那条说清楚会切到 Craft", rows[0]);
+  ok(/改计划/.test(rows[1].label) && /Plan/.test(rows[1].meta), "接着改那条说清楚还留在 Plan", rows[1]);
+  ok(R.filterPickerRows(rows, "craft").length === 1 && R.filterPickerRows(rows, "改").length >= 1, "打字能筛（选择器那套本来就能搜）");
+  const v = R.pickerView(rows, { title: "t", verb: "定" });
+  ok(v.total === 2 && v.sel === 0, "摆出来选中第一条", v);
+  ok(/计划/.test(R.PLAN_GO_TEXT) && /逐条对照/.test(R.PLAN_GO_TEXT), "★开干那句要它做完对着计划交账★ 不然做一半说做完了没人对得出来", R.PLAN_GO_TEXT);
+
+  const m = (o) => R.planNextMode({ mode: "plan", result: "ok", usable: true, typed: "", ...o });
+  ok(m({}) === "pick", "Plan 正常跑完、画得了单子：摆");
+  ok(m({ usable: false }) === "hint", "★画不了单子也得说下一步怎么走★");
+  ok(/\/mode craft/.test(R.PLAN_NEXT_HINT), "那句提示给的是真能敲的命令", R.PLAN_NEXT_HINT);
+  ok(m({ mode: "craft" }) === "" && m({ mode: "ask" }) === "" && m({ mode: "goal" }) === "", "别的模式不问");
+  ok(m({ result: "error" }) === "" && m({ result: "aborted" }) === "", "★出错、Ctrl+C 停掉的不问★ 半截计划不该让人开干");
+  ok(m({ typed: "x" }) === "" && m({ typed: "x", usable: false }) === "", "★输入行上已经打了字不问★ 他已经在说下一句了");
+  ok(R.planNextMode(null) === "", "没参数不炸");
+
+  const src = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
+  const at = src.indexOf("repl.planNextMode(");
+  const blk = src.slice(at, at + 1200);
+  ok(at > 0 && /mode: 这趟模式/.test(blk) && /result: last/.test(blk) && /typed: rl\.line/.test(blk), "★cli.js 主循环真的问了★ 按这一趟的模式和结果问", blk.slice(0, 200));
+  ok(/opts\.mode = "craft"/.test(blk) && /runOnce\(runtime, repl\.PLAN_GO_TEXT, "craft", true\)/.test(blk), "★选开干：切到 Craft 并且马上照计划跑★", blk);
+}
+
 // ── 文档那张表得跟着命令表走 ─────────────────────────────────────────
 // 真实发生过：命令表里已经有 /open /paste /drop，docs/命令行用法.md 还写着「十条内置命令」、
 // 表里一条都没有。文档是很多人唯一读过的东西，少三条 = 这三个功能对外等于不存在

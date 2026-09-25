@@ -63,6 +63,7 @@ const sessSearch = require("./session-search"); // /resume 的搜索和 --list �
 const mdTty = require("./md-tty"); // 正文里的 Markdown：终端里渲染出来，别让 **加粗** 糊在脸上
 const attach = require("./cli-attach"); // 带进来的文件/图片：拖进来的路径、@ 补全、剪贴板
 const modes = require("./modes"); // 执行模式的唯一真源；界面和这儿必须是同一份
+const projectMemo = require("./project-memo"); // AGENTS.md / CLAUDE.md：桌面端和这儿读的是同一份
 const cliAsk = require("./cli-ask"); // agent 问一句时，终端里怎么摆这道选择题
 const cliApprove = require("./cli-approve"); // 危险操作求批准时，终端里怎么摆那张卡
 const security = require("./security"); // 审批是它发起的；命令行订它的钩子才知道有人正等着点头
@@ -182,6 +183,16 @@ security.getSecurity(config);
 // 改它一处就全生效，不存在 CLI 一套、内核另一套的分叉。
 if (opts.perm) {
   security.getSecurity(config).permission_mode = opts.perm;
+}
+// ---------- --allow：这一趟开跑前就点好头的那几类 ----------
+// 跟审批卡上「本会话同类不再问」记进同一张表（只在内存里，退出就没了）。
+// 没人坐在终端前的时候，要批的一律当场拒（见 handleApproval）——想让 cron 里的活儿跑 npm test，就在这儿点名
+const allowLabels = [];
+for (const s of opts.allow || []) {
+  const r = security.parseAllowRule(s);
+  if (r.error) { process.stderr.write(red(r.error + "\n")); process.exit(2); }
+  security.addSessionAllow(r.key);
+  allowLabels.push(r.label);
 }
 // ---------- --model：这一次用哪个模型 ----------
 // 跟 --perm 一样只改内存。认 models 里的名字，也认型号 id；认不出来就停，绝不退回默认那条去花钱
@@ -1235,6 +1246,19 @@ async function askUserBoth(ask) {
  */
 async function handleApproval(entry) {
   const live = liveNow;
+  // 终端前没人、也没说要等手机（--ask-remote）：跟提问同一个规矩，当场拒掉。
+  // 以前这儿照样摆卡片干等两分钟——cron、管道里跑的活儿每碰一条要批的就白卡 120 秒，最后照样是拒
+  if (!somebodyHome() && !(opts.askRemote && live && live.live)) {
+    const r = security.resolveApproval(entry.id, false, "once");
+    if (!r || !r.ok) return;
+    const flag = security.allowFlagArg(entry.ruleKey);
+    const what = [entry.rule, entry.seg].filter(Boolean).join("：");
+    // 不走 prog：-q、--json 下这句也得有人看见——活儿少干了一步，不能一声不吭
+    inkSeq++;
+    process.stderr.write(yellow(`  ✗ 这一步要人批准，终端前没人，直接拒了（${what.slice(0, 120)}）\n`) +
+      dim(`    ${flag ? `预先放行这类：--allow ${flag}；` : ""}从手机上批：加 --ask-remote\n`));
+    return;
+  }
   const deadline = Number(entry.deadline) || Date.now() + 120000;
   const timeoutMs = Math.max(5000, deadline - Date.now());
   if (live) live.pend(cliApprove.card(entry, deadline));
@@ -1304,7 +1328,7 @@ function makeAskUser(readLine, pick) {
  * 在里头 enterWorkspace 会把工作目录**留给 REPL**——跑完一趟之后 /cwd 显示的还是那个分身目录，
  * 用户从此在一个他没听说过的地方干活。withWorkspace 是有边界的，出了这个函数自动还原。
  */
-async function runOnce(runtime, text, mode, interactive) {
+async function runOnce(runtime, text, mode, interactive, shown) {
   const wt = require("./worktree");
   const STORE = dataPath("data", "worktrees");
   let opened = null;
@@ -1319,20 +1343,26 @@ async function runOnce(runtime, text, mode, interactive) {
       else if (o && o.error) process.stderr.write(dim("（分身没开成，照旧在原工作区跑：" + o.error + "）\n"));
     }
   } catch {} // 隔离判断出错绝不能让任务起不来：退回老样子就是这个功能上线前的样子
-  if (!opened) return runOnceIn(runtime, text, mode, interactive);
+  if (!opened) return runOnceIn(runtime, text, mode, interactive, shown);
   process.stderr.write(yellow(wt.hint(opened)) + "\n");
   try {
-    return await require("./tools").withWorkspace(opened.dir, () => runOnceIn(runtime, text, mode, interactive));
+    return await require("./tools").withWorkspace(opened.dir, () => runOnceIn(runtime, text, mode, interactive, shown));
   } finally {
     try {
-      const rel = wt.release(STORE, opened.dir, { title: text.slice(0, 40) });
+      const rel = wt.release(STORE, opened.dir, { title: (shown || text).slice(0, 40) });
       process.stderr.write(dim(rel && rel.removed ? "（这趟没留下改动，分身已经收掉）\n" : wt.hint(rel) + "\n"));
     } catch {}
   }
 }
 
-/** @returns {"ok"|"error"|"aborted"} 给退出码用 */
-async function runOnceIn(runtime, text, mode, interactive) {
+/**
+ * @param shown 人自己打的那句话。text 前面拼了给模型看的东西（!命令 的输出）时才传，
+ *              会话标题、网页上那条对话显示的都是它，不是那一大段
+ * @returns {"ok"|"error"|"aborted"} 给退出码用
+ */
+async function runOnceIn(runtime, text, mode, interactive, shown) {
+  if (!shown || shown === text) shown = "";
+  const asked = shown || text;
   // 积分闸门：默认是关的（本地个人用不限额），开了才拦。CLI 消耗记在管理员（首个注册用户）名下
   const owner = account.defaultUser();
   if (owner && account.creditsEnabled() && owner.credits <= 0) {
@@ -1349,18 +1379,18 @@ async function runOnceIn(runtime, text, mode, interactive) {
     }
   }
   sess.history.push({ role: "user", content: text });
-  if (!sess.title) sess.title = text.slice(0, 24);
+  if (!sess.title) sess.title = asked.slice(0, 24);
   // 在终端里起的活儿归「工程」线。网页/手机上切到那个标签就能看见这条会话——
   // 这是两条线里唯一一条服务端替人填的：它确实是从命令行进来的，不是猜的。
   sess.lane = "cli";
   const state = { streamed: false, usage: null, files: null, changed: [], finalParts: [], error: null, md: newMdRenderer() };
   // 挂到实时目录上：网页端的「工程」标签就是靠它知道这台机器的终端里此刻在干什么
   const live = cliLive.announce({
-    id: sessionId, title: sess.title || text.slice(0, 60), cwd: getWorkspaceDir(),
+    id: sessionId, title: sess.title || asked.slice(0, 60), cwd: getWorkspaceDir(),
     mode, user: owner ? owner.username : "",
   });
   state.live = live;
-  live.event({ type: "status", text: `终端里起了一趟活儿：${text.slice(0, 60)}` });
+  live.event({ type: "status", text: `终端里起了一趟活儿：${asked.slice(0, 60)}` });
   // 心跳：模型想得久的时候一个事件都不出，光靠事件盖时间戳会被判成「这进程死了」
   const beatTimer = live.live ? setInterval(() => live.beat(), cliLive.BEAT_MS) : null;
   if (beatTimer && beatTimer.unref) beatTimer.unref();
@@ -1378,7 +1408,7 @@ async function runOnceIn(runtime, text, mode, interactive) {
     try { require("./engines/jsonl").killAll("SIGTERM"); } catch {}
     try {
       const said = state.finalParts.join("");
-      sess.transcript.push({ type: "user", text, mode, at: new Date().toISOString() });
+      sess.transcript.push({ type: "user", text, ...(shown ? { shown } : {}), mode, at: new Date().toISOString() });
       sess.transcript.push({ type: "assistant", events: [{ type: "text", delta: (said ? said + "\n\n" : "") + "（任务被中断，进程已退出）" }], at: new Date().toISOString() });
       saveSess();
     } catch {}
@@ -1440,8 +1470,9 @@ async function runOnceIn(runtime, text, mode, interactive) {
     const r = await runtime.runTask({
       history: sess.history,
       sessionId, // 文件检查点记在这个会话名下，/rewind 才知道哪些是这趟活儿改的
+      // 工作目录（往上到 git 根）的 AGENTS.md / CLAUDE.md 先带上——/init 写的就是它，以前命令行一个字都不读。
       // 进行中的目标注进任务上下文：agent 每一轮都对着验收标准干活，不跑偏
-      projectContext: [goalKit.contextFor(sess.goal), opts.appendSystem].filter(Boolean).join("\n\n") || undefined,
+      projectContext: [projectMemo.memoContext(getWorkspaceDir()), goalKit.contextFor(sess.goal), opts.appendSystem].filter(Boolean).join("\n\n") || undefined,
       maxSteps: opts.maxSteps || undefined, // --max-steps：只管这一次
       emit: makeEmit(state),
       mode: modes.agentMode(mode), // goal 在外面那层循环里，agent 只认识 ask/plan/craft
@@ -1522,7 +1553,7 @@ async function runOnceIn(runtime, text, mode, interactive) {
   // --json 下正文没走 stdout，最终文本从事件里攒回来，落盘的内容两种模式必须一样
   if (!finalText && state.finalParts.length) finalText = state.finalParts.join("");
   // 落盘：Web 端打开该会话也能回放（最终文本 + 用量）
-  sess.transcript.push({ type: "user", text, mode, at: new Date().toISOString() });
+  sess.transcript.push({ type: "user", text, ...(shown ? { shown } : {}), mode, at: new Date().toISOString() });
   const events = [];
   if (finalText) events.push({ type: "text", delta: finalText });
   if (state.usage) events.push(state.usage);
@@ -1758,6 +1789,10 @@ function splitFiles(text) {
   const permLine = permNow() === security.DEFAULT_MODE ? ""
     : ` · 权限 ${security.PERMISSION_MODES[permNow()].label}${permNow() === "full" ? yellow("（连删除也不问了）") : ""}`;
   prog(dim(`${who} · 模式 ${modes.modeLabel(opts.mode)}${permLine} · 工作目录 ${getWorkspaceDir()} · 会话 ${sessionId}\n`));
+  if (allowLabels.length) {
+    // 放行名单是内置 agent 这一个进程里的；本机引擎（claude -p / codex）按它自己那套权限开关走，不认这张表
+    prog(dim(`预先放行：${allowLabels.join("、")}${engineBackend ? yellow(`（${engineBackend.label} 不认 --allow，它按自己的权限开关走）`) : ""}\n`));
+  }
 
   if (flow) {
     // 几步共用一个会话；{{名字}} 贴的是那一步落盘的最终回复。管道和 -f 带进来的材料跟着第一步走
@@ -1837,6 +1872,10 @@ function splitFiles(text) {
   // 带上了、还没跟着问题发出去的文件名。拖一个文件进来先攒着，等人把要问的话打完再一块儿发——
   // 拖进来的那一下就发出去，等于让模型自己猜要拿这个文件干嘛
   const pending = [];
+  // !命令 跑完的输出：攒着，跟下一句话一块儿带给模型（/drop 可以不带）。
+  // shellKid 是正在跑的那条——Ctrl+C 先停它，不能落到「再按一次退出」上
+  const shellNotes = [];
+  let shellKid = null;
   const inbox = repl.makeInbox({
     onInterject: (text) => {
       // 它正等着一个答案：这一行是回答，不是插话。不先认这一条的话，
@@ -2117,6 +2156,7 @@ function splitFiles(text) {
 
   rl.on("SIGINT", () => {
     menuClose();
+    if (shellKid) { stopShell(); return; } // !命令 跑着：停的是它
     if (inbox.busy) { if (stopCurrent) stopCurrent(); return; } // 停这趟活儿，不退出
     if (rl.line) { // 打了一半不想要了：清掉这行就行，别退出
       rl.write(null, { ctrl: true, name: "e" });
@@ -2132,6 +2172,48 @@ function splitFiles(text) {
     rl.prompt();
   });
   const nextInput = () => inbox.next();
+
+  // !命令：人自己在工作目录里跑一条 shell，边跑边往屏幕上印，不经过模型、不花钱。
+  // 跟 run_shell 用同一个 shell（macOS 上 zsh 关掉 nomatch），PATH 也补齐 homebrew 那几个目录。
+  // stdin 不接：这里不是真终端，vim、交互式 python 这种会一直等输入的东西 Ctrl+C 能停
+  const runShell = (cmd) => new Promise((resolve) => {
+    const tools = require("./tools");
+    const { bin, args, opts: shOpts } = tools._internals.pickShell(cmd);
+    const bufs = [];
+    let bytes = 0, tailNl = true;
+    let kid;
+    try {
+      kid = require("child_process").spawn(bin, args, {
+        ...shOpts, cwd: getWorkspaceDir(), env: { ...process.env, PATH: tools.shellPath() },
+        stdio: ["ignore", "pipe", "pipe"],
+        detached: process.platform !== "win32", // 自己一个进程组，Ctrl+C 连它起的子进程一块儿收
+      });
+    } catch (e) { resolve({ out: "", code: null, error: e.message }); return; }
+    shellKid = kid;
+    const take = (w) => (d) => {
+      w.write(d);
+      tailNl = d[d.length - 1] === 10;
+      if (bytes < 2 * 1024 * 1024) { bufs.push(d); bytes += d.length; } // 带给模型的只要头尾几千字，攒这么多足够了
+    };
+    kid.stdout.on("data", take(process.stdout));
+    kid.stderr.on("data", take(process.stderr));
+    const done = (r) => {
+      if (shellKid === kid) shellKid = null;
+      if (!tailNl) process.stdout.write("\n");
+      resolve({ out: Buffer.concat(bufs).toString("utf8"), ...r });
+    };
+    kid.on("error", (e) => done({ code: null, error: e.message }));
+    kid.on("close", (code, signal) => done({ code, signal }));
+  });
+  const stopShell = () => {
+    const kid = shellKid;
+    if (!kid) return;
+    const hit = (sig) => { try { process.kill(-kid.pid, sig); } catch { try { kid.kill(sig); } catch {} } };
+    hit("SIGINT");
+    // 有的程序把 SIGINT 吞了（等输入的那种）：给两秒，还在就硬收
+    const t = setTimeout(() => { if (kid.exitCode === null && kid.signalCode === null) hit("SIGKILL"); }, 2000);
+    if (t.unref) t.unref();
+  };
 
   // 自己写的斜杠命令：跟着工作目录走（/cd 之后换成那个项目的），读盘很便宜，每条输入前重读一次，
   // 改完 .md 不用重开终端
@@ -2393,6 +2475,11 @@ function splitFiles(text) {
       const who = eng ? `底层 ${eng.label}` + green("（不花 API 额度）") : `模型 ${llm.provider}（${llm.model}）`;
       const turns = (sess.transcript || []).filter((t) => t.type === "user").length;
       prog(dim(`模式 ${opts.mode} · ${who}\n工作目录 ${getWorkspaceDir()}\n会话 ${sessionId} · 跑过 ${turns} 轮\n`));
+      // 每趟活儿开跑前带上的项目规范：写了没生效最难查，这里摆出来是哪几份、各带了多少字
+      const memos = projectMemo.memoFiles(getWorkspaceDir(), { warn: () => {} });
+      prog(dim(memos.length
+        ? `项目规范 ${memos.map((m) => m.body === null ? `${m.rel}（超上限没带上）` : `${m.rel}（${m.chars} 字）`).join("、")}\n`
+        : "项目规范 没有（/init 可以在工作目录生成一份 AGENTS.md）\n"));
       let costOf = null;
       try { const pr = require("./pricing"); costOf = (u) => pr.costOf(u, { local: !!u.local }); } catch {}
       prog(dim(repl.sessionUsageText(sess.transcript, costOf) + "\n"));
@@ -2469,10 +2556,12 @@ function splitFiles(text) {
       return;
     }
     if (v.name === "drop") {
-      if (!pending.length) { prog(dim("本来就没带着什么\n")); return; }
+      if (!pending.length && !shellNotes.length) { prog(dim("本来就没带着什么\n")); return; }
       // 只是不往这句话上挂了，文件不删：删掉的可能正是人刚拖进来、还打算用的那份
-      prog(dim(`不带了：${pending.join("、")}（文件还在工作目录里，/files 看得到）\n`));
+      if (pending.length) prog(dim(`不带了：${pending.join("、")}（文件还在工作目录里，/files 看得到）\n`));
+      if (shellNotes.length) prog(dim(`刚才那 ${shellNotes.length} 条 !命令 的输出也不带了\n`));
       pending.length = 0;
+      shellNotes.length = 0;
       return;
     }
   };
@@ -2491,6 +2580,18 @@ function splitFiles(text) {
     }
     if (v.kind === "unknown") { prog(yellow(repl.unknownText(v))); rl.prompt(); continue; }
     if (v.kind === "bad-arg") { prog(yellow(repl.badArgText(v))); rl.prompt(); continue; }
+    if (v.kind === "shell") {
+      const r = await runShell(v.cmd);
+      if (r.error) prog(red(`没跑起来：${r.error}\n`));
+      else if (r.signal) prog(yellow(`（停了：${r.signal}）\n`));
+      else if (r.code) prog(yellow(`（退出码 ${r.code}）\n`));
+      shellNotes.push(repl.shellNote({ cmd: v.cmd, ...r }));
+      // 头一条说一次就够：连敲五条 ls，每条后面都跟一句同样的提示就成了噪音
+      if (shellNotes.length === 1) prog(dim("  输出会跟着你下一句话带给它；不想带就敲 /drop\n"));
+      quitArmed = 0;
+      rl.prompt();
+      continue;
+    }
     // 命令现场交出来的那趟活儿（/init）：不再过 splitFiles——那一步是摘「人拖进来的文件」的，
     // 拿它去扫一句现成的话，会把 AGENTS.md 这种词当附件摘走，剩下的句子当场缺一块
     let 现成的 = "";
@@ -2524,9 +2625,29 @@ function splitFiles(text) {
     inbox.setBusy(true);
     menuClose(); // 活儿要开跑了，菜单先收掉——正文一冲下来它就成了屏幕上的残渣
     rl.setPrompt(""); // 任务跑着的时候别让提示符插进流式正文里
-    last = await runOnce(runtime, attach.withNote(body, pending.splice(0)), 这趟模式, true);
+    const 这句 = attach.withNote(body, pending.splice(0));
+    const notes = shellNotes.splice(0);
+    // 拼了 !命令 输出的时候，会话里显示的还是人自己打的那句（shown），模型那边收到的是全的
+    last = await runOnce(runtime, repl.withShellNotes(这句, notes), 这趟模式, true, notes.length ? 这句 : undefined);
     inbox.setBusy(false);
     quitArmed = 0;
+    // Plan 出完计划：摆「开干 / 接着改」让人挑，别让他自己去想下一步该敲什么
+    const 下一步 = repl.planNextMode({ mode: 这趟模式, result: last, usable: pickerUsable(), typed: rl.line });
+    if (下一步 === "hint") prog(dim(repl.PLAN_NEXT_HINT));
+    if (下一步 === "pick") {
+      const picked = await chooseFrom(repl.planNextRows(), {
+        title: "openworkbuddy> 计划写好了，接下来？", verb: "定", hint: "Esc 先不选，直接打字说别的",
+      });
+      if (picked && picked.id === "go") {
+        // 切过去就留在 Craft：计划做完多半还有收尾要改，再切回 Plan 是人自己的事
+        opts.mode = "craft";
+        prog(dim(`已经切到 ${modes.modeLabel("craft")}，照计划开干\n`));
+        inbox.setBusy(true);
+        last = await runOnce(runtime, repl.PLAN_GO_TEXT, "craft", true);
+        inbox.setBusy(false);
+        quitArmed = 0;
+      } else if (picked) prog(dim("还在 Plan：下一句说哪儿要改\n"));
+    }
     rl.setPrompt(PROMPT);
     promptKeep(rl); // 跑着的时候敲了没回车的字还在这一行上，接着打得接在后面
   }

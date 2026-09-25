@@ -1896,16 +1896,16 @@ function runConfigGates() {
   // ===================================================================
   console.log("\n【14】项目规范（AGENTS.md / CLAUDE.md）：带不全得说，别让模型以为自己看的是全本");
 
-  const MEMO_MAX = Number((serverSrc.match(/const MEMO_MAX = (\d+)/) || [])[1]);
-  ok(MEMO_MAX > 0, "server.js 里能取到项目规范的长度上限", MEMO_MAX);
+  const memoMod = require(path.join(ROOT, "project-memo"));
+  const MEMO_MAX = memoMod.MEMO_MAX;
+  ok(MEMO_MAX > 0, "project-memo.js 里能取到项目规范的长度上限", MEMO_MAX);
 
   const warns = [];
   const mkWarnOnce = () => {
     const seen = new Set();
     return (key, msg) => { if (seen.has(key)) return; seen.add(key); warns.push(msg); };
   };
-  const mkClamp = (warnOnce) =>
-    new Function("MEMO_MAX", "warnOnce", slice("server.js", "clampMemo") + "\nreturn clampMemo;")(MEMO_MAX, warnOnce);
+  const mkClamp = (warnOnce) => (txt, fname, fp) => memoMod.clampMemo(txt, fname, fp, MEMO_MAX, warnOnce);
 
   // 超长：老写法是 .slice(0, 6000)，模型收到的是一份**看起来完整**的规范——
   // 后半截的规矩它压根不知道存在，于是照着前半截干，用户以为规范写了就生效了。
@@ -1944,9 +1944,9 @@ function runConfigGates() {
   const PDIR = path.join(TMP, "memo-proj");
   fs.mkdirSync(PDIR, { recursive: true });
   const mkCtx = (warnOnce) => new Function(
-    "experts", "skillsMgr", "config", "path", "fs", "warnOnce", "clampMemo",
+    "experts", "skillsMgr", "config", "projectMemo",
     slice("server.js", "projectContextOf") + "\nreturn projectContextOf;"
-  )([], { loadSkills: () => [] }, {}, path, fs, warnOnce, mkClamp(warnOnce));
+  )([], { loadSkills: () => [] }, {}, { memoContext: (dir) => memoMod.memoContext(dir, { warn: warnOnce }) });
 
   fs.writeFileSync(path.join(PDIR, "AGENTS.md"), "   \n\n  ");
   fs.writeFileSync(path.join(PDIR, "CLAUDE.md"), "这里写满了项目规矩：提交前先跑测试。");
@@ -1969,7 +1969,46 @@ function runConfigGates() {
   eq(warns.length, 1, "规范读不出来时喊一句（以前这儿是个 catch {}，出事了一点声都没有）");
   ok(/没带上/.test(warns[0]), "  └ 说的是「这一趟没带上它」，不是一句看不懂的报错", warns[0]);
   ok(/提交前先跑测试/.test(ctx), "  └ 而且继续往下找 CLAUDE.md，不是整段规范都不要了");
-  ok(/txt = fs\.readFileSync\(fp, "utf8"\)\.trim\(\);\s*\n\s*\} catch \(e\) \{/.test(serverSrc),
+  ok(/txt = fs\.readFileSync\(fp, "utf8"\)\.trim\(\);\s*\n\s*\} catch \(e\) \{/.test(fs.readFileSync(path.join(ROOT, "project-memo.js"), "utf8")),
      "  └ 源码里这次读接的是带错误对象的 catch，不是那个吞掉一切的空 catch");
   fs.rmSync(PDIR, { recursive: true, force: true });
+
+  // 往上找到 git 仓库根：子目录里开工，根上那份通用规矩也得带上（Codex / Claude Code 都这么干）
+  const REPO = path.join(TMP, "memo-repo");
+  fs.mkdirSync(path.join(REPO, ".git"), { recursive: true });
+  fs.mkdirSync(path.join(REPO, "a", "b"), { recursive: true });
+  fs.writeFileSync(path.join(REPO, "AGENTS.md"), "根规矩R");
+  fs.writeFileSync(path.join(REPO, "a", "b", "CLAUDE.md"), "深处规矩B");
+  const quiet = { warn: () => {} };
+  let files = memoMod.memoFiles(path.join(REPO, "a", "b"), quiet);
+  eq(files.map((f) => f.rel).join("|"), "../../AGENTS.md|CLAUDE.md", "从子目录往上走到 git 根：两份都找到，根在前，路径写成相对工作目录的（模型要 read_file 就照着读）");
+  ctx = memoMod.memoContext(path.join(REPO, "a", "b"), quiet);
+  ok(ctx.indexOf("根规矩R") < ctx.indexOf("深处规矩B") && /以靠后的为准/.test(ctx), "  └ 拼进提示词时根在前、越靠后越具体，并且说了冲突听谁的");
+  ok(!/以靠后的为准/.test(memoMod.memoContext(REPO, quiet)), "  └ 反向对照：只有一份时不多嘴那句「冲突听谁的」");
+  // .git 是文件（worktree / submodule）也算仓库根
+  const WT = path.join(REPO, "a", "wt");
+  fs.mkdirSync(WT, { recursive: true });
+  fs.writeFileSync(path.join(WT, ".git"), "gitdir: /elsewhere");
+  eq(memoMod.chainToGitRoot(WT).join("|"), WT, "worktree 里 .git 是个文件，也在那儿停，不再往上带外层仓库的规矩");
+
+  // 不在 git 仓库里：只看工作目录本身，不许一路爬到 ~/AGENTS.md
+  const LOOSE = path.join(TMP, "memo-loose");
+  fs.mkdirSync(path.join(LOOSE, "sub"), { recursive: true });
+  fs.writeFileSync(path.join(LOOSE, "AGENTS.md"), "外面的规矩X");
+  eq(memoMod.memoFiles(path.join(LOOSE, "sub"), quiet).length, 0, "不在仓库里：子目录没放就是没有，不往上捡别人的规矩");
+  eq(memoMod.memoFiles(LOOSE, quiet).map((f) => f.rel).join("|"), "AGENTS.md", "  └ 反向对照：工作目录自己放了就带上");
+
+  // 字数上限几份共用，离工作目录近的先分：子目录的最具体，挤不下时该让的是根上那份
+  fs.writeFileSync(path.join(REPO, "a", "b", "CLAUDE.md"), "深".repeat(MEMO_MAX - 100));
+  warns.length = 0;
+  files = memoMod.memoFiles(path.join(REPO, "a", "b"), { warn: mkWarnOnce() });
+  eq(files[1].chars, MEMO_MAX - 100, "几份共用上限：离工作目录最近的那份整份带上");
+  ok(files[0].body === null, "  └ 根上那份分不到字数就不带（不是两份各砍一半，砍成两份都不完整的）");
+  ok(warns.some((w) => /没带上/.test(w) && /AGENTS\.md/.test(w)), "  └ 控制台说一声是哪份没带上", warns);
+  ctx = memoMod.memoContext(path.join(REPO, "a", "b"), quiet);
+  ok(/\.\.\/\.\.\/AGENTS\.md 也是项目规范/.test(ctx) && /read_file/.test(ctx), "  └ 提示词里也留一句：还有这份没给你，涉及了自己去读");
+  const all = files.reduce((n, f) => n + f.chars, 0);
+  ok(all <= MEMO_MAX, "  └ 加起来没超上限", all);
+  fs.rmSync(REPO, { recursive: true, force: true });
+  fs.rmSync(LOOSE, { recursive: true, force: true });
 }
