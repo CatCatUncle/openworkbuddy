@@ -1173,6 +1173,8 @@ const FILELIST_STUBS = [
   IC_STUB,
   "window.filesCache = [];",
   "window.syncOutCards = () => 0;", // 产出卡那一段不在这屏里；renderFiles 顺手同步卡片的事在本回合产出那屏验
+  // 回答里文件名补链接那一段也不在这屏里（产出到了那屏验它本身），这里只数 renderFiles 叫没叫它
+  "window.chatCol = document.createElement('div'); window.RELINKS = []; window.relinkAnswers = (el) => { window.RELINKS.push(el); return 0; };",
   "window.esc = (s) => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');",
   "window.toast = () => {};",
   "window.snapshotFiles = () => {};",
@@ -1202,6 +1204,7 @@ const FILELIST_CHECKS = `
     f("散在根目录的.txt", t0.getTime() - 60 * D),
   ];
   renderFiles(data);
+  ok("清单一刷新就去补回答里的文件链接（对的是整列对话）", window.RELINKS.length === 1 && window.RELINKS[0] === window.chatCol, String(window.RELINKS.length));
   const el = document.getElementById("file-list");
   const heads = () => [...el.querySelectorAll(".time-head .name")].map((n) => n.textContent);
   const dirs = () => [...el.querySelectorAll(".dir-head .name")].map((n) => n.textContent);
@@ -1972,6 +1975,8 @@ const TRAIL_STUBS = [
   "var pvCurrent = null; var pvClosedAt = 0;",
   "window.PV = []; var previewFile = (n) => { window.PV.push(n); pvPanel.classList.add('show'); pvCurrent = n; };",
   "window.fetch = async () => ({ ok: true, json: async () => ({}) });",
+  // 右侧清单：收尾时拿它认「盘上本来就有的文件」。默认空，第 7 节有几条会往里放东西
+  "var filesCache = []; var filesRoot = '';",
 ].join("\n");
 
 // ================= 本机引擎在跑时的模型选择器 =================
@@ -6835,6 +6840,34 @@ const TRAIL_CHECKS = `
     u0.finish();
     ok("这趟没产出：正文里像文件名的词一律不碰，右侧也不动",
       u0.turn.querySelectorAll(".a-text .file-ln").length === 0 && window.PV.length === 0);
+
+    // 盘上本来就有的：这一趟一个文件没动，正文提到的那张图是上一轮画的、就在工作目录里。
+    // 用户原话：「一些在产出目录下有的文件怎么没给我搞成链接啊」
+    reset(1200);
+    filesCache = [F("两家核心差异.png"), F("两家核心差异.svg")];
+    const ue = createTurnUI("再讲讲", "chat", "s_t");
+    ue.handleEvent({ type: "text", delta: "对照图还是上一轮那张 两家核心差异.png，没重画。" });
+    ue.finish();
+    const le = [...ue.turn.querySelectorAll(".a-text .file-ln")];
+    ok("这一趟没产出，但正文提到的文件盘上就有：照样能点，也不因此弹预览",
+      le.length === 1 && le[0].dataset.name === "两家核心差异.png" && window.PV.length === 0, le.map((a) => a.dataset.name).join("|"));
+    le[0].click();
+    ok("点它在右边打开的就是清单里那份", window.PV.length === 1 && window.PV[0] === "两家核心差异.png", window.PV.join("|"));
+
+    // 回放历史时清单常常还没拉到：收尾那一下没东西可链，清单一到（renderFiles → relinkAnswers）补上
+    reset(1200);
+    filesCache = [];
+    const ur = createTurnUI("回放那一轮", "chat", "s_t");
+    ur.handleEvent({ type: "text", delta: "图在 三种伪装方式对比.png。" });
+    ur.finish();
+    ok("清单还没到：先不链（没有依据说它存在）", ur.turn.querySelectorAll(".a-text .file-ln").length === 0);
+    filesCache = [F("三种伪装方式对比.png")];
+    const nr = relinkAnswers(chatCol);
+    const lr = [...ur.turn.querySelectorAll(".a-text .file-ln")];
+    ok("清单一到就补上链接（" + nr + " 处）", nr === 1 && lr.length === 1 && lr[0].dataset.name === "三种伪装方式对比.png");
+    ok("正文一个字没少", ur.turn.querySelector(".a-text").textContent === "图在 三种伪装方式对比.png。");
+    ok("再刷一遍清单：不重复插", relinkAnswers(chatCol) === 0 && ur.turn.querySelectorAll(".a-text .file-ln").length === 1);
+    filesCache = [];
     setW(900);
   }
 
@@ -8156,6 +8189,7 @@ const ARRIVAL_STUBS = `
   ${IC_STUB}
 const CALLS = { snap: [], pv: [] };
 function snapshotFiles(files){ CALLS.snap.push((files || []).length); }
+var filesCache = [], filesRoot = ""; // 右侧清单：「盘上本来就有的文件」那几条会往里放东西
 const pvPanel = document.getElementById("preview-panel");
 let pvCurrent = null;
 function previewFile(name){ CALLS.pv.push(name); pvPanel.classList.add("show"); pvCurrent = name; }
@@ -8278,6 +8312,74 @@ const ARRIVAL_CHECKS = `
      host2.querySelector("pre code").textContent === "open 任务_0910/张三_简历.docx",
      host2.querySelector("pre code").innerHTML);
   host2.remove();
+
+  // ---------- 盘上本来就有的文件也要能点 ----------
+  // 用户原话：「一些在产出目录下有的文件怎么没给我搞成链接啊」。
+  // 那张清单表五行：两张图是这一轮画的，三张是上一轮画的，全在工作目录里。以前只有这一轮那两行能点
+  const PNGS = ["newapi_原理.png", "cliproxyapi_原理.png", "sub2api_原理.png", "两家核心差异.png", "三种伪装方式对比.png"];
+  const LIST = PNGS.flatMap((n) => [F(n), F(n.replace(/png$/, "svg"))])
+    .concat([F("任务_A/README.md"), F("任务_B/README.md"), F("报告.md"), F("任务_C/报告.md")]);
+  const THIS = [F("sub2api_原理.png"), F("三种伪装方式对比.png")];
+  const mkTable = () => {
+    const h = document.createElement("div");
+    h.className = "a-text";
+    h.innerHTML = "<table><thead><tr><th>文件</th><th>讲什么</th></tr></thead><tbody>"
+      + PNGS.map((n) => "<tr><td><strong>" + n + "</strong></td><td>链路图</td></tr>").join("") + "</tbody></table>";
+    document.body.appendChild(h);
+    return h;
+  };
+  const tOld = mkTable();
+  ok("反向对照（老规矩只认这一轮的产出）：五行里只有两行能点", linkifyOutputs(tOld, fileLinkTargets(THIS)) === 2);
+  tOld.remove();
+  const tNew = mkTable();
+  const hitsT = linkifyOutputs(tNew, fileLinkTargets(THIS, LIST));
+  ok("连上盘上本来就有的：清单表五行都能点（" + hitsT + " 处）",
+     hitsT === 5 && tNew.querySelectorAll("td strong .file-ln").length === 5,
+     [...tNew.querySelectorAll(".file-ln")].map((a) => a.dataset.name).join("|"));
+  tNew.remove();
+  ok("裸名先认这一轮的产出（它就是这句话在说的那个），不被根上的同名旧文件抢走",
+     fileLinkTargets([F("任务_X/报告.md")], LIST).get("报告.md") === "任务_X/报告.md");
+  ok("这一轮没有同名产出时：根上那份比子目录那份浅，裸名指根上",
+     fileLinkTargets([], LIST).get("报告.md") === "报告.md");
+  ok("两个子目录各有一份 README.md：说的是哪个认不出来，裸名不链；全路径照链",
+     !fileLinkTargets([], LIST).has("README.md") && fileLinkTargets([], LIST).get("任务_A/README.md") === "任务_A/README.md");
+
+  // 清单刷新时补链接：回放历史那一下清单常常还没到，文件也可能是后来才生成的
+  const scope = document.createElement("div");
+  const mkTurn = (root, text) => {
+    const t = document.createElement("div");
+    t.className = "turn";
+    t.dataset.outRoot = root;
+    t.innerHTML = "<div class='body'><div class='a-text'><p>" + text + "</p></div></div>";
+    scope.appendChild(t);
+    return t;
+  };
+  const tA = mkTurn("", "上一轮那张 两家核心差异.png 还在");
+  const tB = mkTurn("r_old", "另一个工作目录里也有一张 两家核心差异.png");
+  const tC = mkTurn("r_now", "等下会生成 架构层次定位.png");
+  const tRun = document.createElement("div"); // 还在跑的回合（没收尾，没有 data-out-root）：正文每 100ms 重渲，不碰
+  tRun.className = "turn";
+  tRun.innerHTML = "<div class='body'><div class='a-text'><p>正在画 两家核心差异.png</p></div></div>";
+  scope.appendChild(tRun);
+  document.body.appendChild(scope);
+  filesCache = []; filesRoot = "";
+  ok("清单还没到：一处都不链", relinkAnswers(scope) === 0);
+  filesCache = LIST; filesRoot = "r_now";
+  const nR = relinkAnswers(scope);
+  ok("清单到了：同一个工作目录的回答补上链接（" + nR + " 处）",
+     nR === 1 && tA.querySelectorAll(".file-ln").length === 1 && tA.querySelector(".file-ln").dataset.name === "两家核心差异.png");
+  ok("反向对照：别的工作目录的回答不拿这份清单去链（同名文件在另一个根下是另一份东西）", tB.querySelectorAll(".file-ln").length === 0);
+  ok("还在跑的回合不碰", tRun.querySelectorAll(".file-ln").length === 0);
+  ok("清单没变再刷一遍：不重复插、不套娃", relinkAnswers(scope) === 0 && tA.querySelectorAll(".file-ln").length === 1);
+  ok("那个文件还没生成：先不链", tC.querySelectorAll(".file-ln").length === 0);
+  filesCache = LIST.concat([F("架构层次定位.png")]);
+  ok("后来才生成的文件：清单一刷新就补上", relinkAnswers(scope) === 1 && tC.querySelector(".file-ln").dataset.name === "架构层次定位.png");
+  ok("链接记着自己是哪个工作目录的（换过目录再点，开的还是当时那份）", tC.querySelector(".file-ln").dataset.root === "r_now");
+  CALLS.pv.length = 0;
+  tC.querySelector(".file-ln").click();
+  ok("点补上的链接照样在右边打开", CALLS.pv.length === 1 && CALLS.pv[0] === "架构层次定位.png", CALLS.pv.join("|"));
+  scope.remove();
+  filesCache = []; filesRoot = "";
 
   // ---------- 跑完了要能看见成果 ----------
   // 中途不弹是另一码事，这里说的是收尾

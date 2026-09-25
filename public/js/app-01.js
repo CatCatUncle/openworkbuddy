@@ -1158,6 +1158,7 @@ function createTurnUI(userText, turnMode, forSid, shown) {
   // 长跑徽章：步数/续跑轮次/产出件数实时挂在「运行中」计时旁，长任务不再只有一个转圈
   let liveStep = 0, liveRound = 0, liveRoundTotal = 0, liveOuts = 0, liveErr = 0;
   const liveOutFiles = []; // 这一趟改过的文件（收尾时拿它做正文链接 + 决定预览开哪一件）
+  let outRoot = ""; // 这一趟的文件事件是哪个工作目录的（服务端 workspaceKey）；没来过文件事件就是空
   const liveBadge = () => (liveStep ? ` · 第 ${liveStep} 步` : "") + (liveRound ? ` · 续跑 ${liveRound}/${liveRoundTotal} 轮` : "") + (liveOuts ? ` · 产出 ${liveOuts} 件` : "") + (liveErr ? ` · ${liveErr} 步出错` : "");
   const fmtDur = (ms) => { const s = Math.max(1, Math.round(ms / 1000)); return s < 60 ? s + "s" : Math.floor(s / 60) + "m" + (s % 60) + "s"; };
   // 单步耗时得带小数：fmtDur 最小档就是 1s，可工具里一大半是几百毫秒的本地读写，
@@ -1691,6 +1692,7 @@ function createTurnUI(userText, turnMode, forSid, shown) {
         : changedFiles(ev.files);
       liveOuts += turnOut.length;
       for (const f of turnOut) if (!liveOutFiles.some((x) => x.name === f.name)) liveOutFiles.push(f);
+      if (ev.root) outRoot = ev.root;
       renderTurnOutputs(body, turnOut, ev.files, ev); // 先算差异，快照要等 applyOutputArrival 才推进
       // 回放历史任务时这些是当时的文件列表：拿它去刷右侧面板会把现在的状态盖成旧的。产出 chip 照摆，其余一律不动
       if (!isReplaying) { if (ev.root) filesRoot = ev.root; renderFiles(ev.files); }
@@ -1809,10 +1811,12 @@ function createTurnUI(userText, turnMode, forSid, shown) {
     const outBlock = body.querySelector(":scope > .out-block");
     if (outBlock) body.appendChild(outBlock);
     addActionsBar();
-    // 正文里提到的产出文件名变成可点的链接。
-    // 放在收尾做而不是边流边做：流式那截正文每 100ms 就整段重渲一次，边渲边插链接会被自己抹掉
-    const outTargets = fileLinkTargets(liveOutFiles);
-    if (outTargets.size) body.querySelectorAll(".a-text").forEach((el) => linkifyOutputs(el, outTargets));
+    // 正文里提到的文件名变成可点的链接：这一趟的产出，加上工作目录里本来就有的文件。
+    // 放在收尾做而不是边流边做：流式那截正文每 100ms 就整段重渲一次，边渲边插链接会被自己抹掉。
+    // 右侧清单这会儿可能还没拉到（刚打开页面就回放历史）——拉到以后 renderFiles 会再补一遍，
+    // 所以把根记在回合上，补的时候认得出这张回答是不是同一个工作目录的
+    turn.dataset.outRoot = outRoot;
+    linkTurn(turn, fileLinkTargets(liveOutFiles, listingFor(outRoot)), outRoot);
     // 跑完了把成果直接摊开——中途一律不弹（见 outputArrivalPlan），收尾这一下才开
     const fpv = finishPreviewPlan({
       turnOut: liveOutFiles,
@@ -2855,6 +2859,7 @@ function renderFileFilter() {
 function renderFiles(files) {
   filesCache = files || [];
   syncOutCards(filesCache); // 对话里的产出卡落后于盘上文件的，按这份清单重画（细账见 syncOutCards）
+  relinkAnswers(chatCol); // 已经收尾的回答里提到、这份清单里真有的文件名，补成链接
   const el = document.getElementById("file-list");
   renderFileFilter();
   // 「只看成果」是个视图开关，不是删除：藏了多少条要如实写在底下，别让人以为文件没了
@@ -4556,25 +4561,101 @@ function markDupBasenames(grid) {
 function cssEsc(s) { return window.CSS && CSS.escape ? CSS.escape(s) : String(s).replace(/["\\]/g, "\\$&"); }
 // ---- 正文里提到的产出文件名 → 可点开的链接 ----
 // 模型收尾时爱写「简历已经写好了，在 张三_简历.html 里」——那串文件名在对话里是死的，
-// 用户得自己去右侧面板一行行找同名的那个。现在这一趟真产出过的名字，在正文里就是能点的。
-// 只认「这一趟真的产出过」的名字，不拿正则去猜「长得像文件名的东西」：
-// 猜出来的链接点开是 404，比压根没有链接更气人。
-function fileLinkTargets(files) {
+// 用户得自己去右侧面板一行行找同名的那个。现在正文里提到的文件名，只要盘上真有，就是能点的。
+// 认的是两份名单：这一趟真产出过的，和工作目录里现在就有的（右侧清单）。
+// 以前只认前一份，于是「这三张图上一轮画的、这两张这一轮画的」那张清单表里，
+// 只有两行能点，另外三行明明就在产出目录里，却是死字。
+// 不拿正则去猜「长得像文件名的东西」：猜出来的链接点开是 404，比压根没有链接更气人。
+//
+// 裸文件名（模型多半只写名字不写路径）指向哪一份：
+//   · 这一趟的产出优先——它就是这句话在说的那个
+//   · 这一趟的同一件产出常被拷成两份（任务子目录一份、根上一份），指路径最浅的那个
+//   · 清单里的同名文件只在认得出是哪一个时才链：一份，或者有一份比别的都浅（根上那份）。
+//     两个子目录里各有一份 README.md，模型说的是哪个没法知道，猜错了点开的是另一份东西，宁可不链
+function fileLinkTargets(files, listing) {
   const map = new Map();
   const depth = (n) => n.split("/").length;
-  for (const f of files || []) {
+  const nameOf = (f) => {
     const name = typeof f === "string" ? f : (f && f.name) || "";
-    if (!name || !/\.[A-Za-z0-9]{1,8}$/.test(name.split("/").pop())) continue; // 没后缀的不认，免得把普通词当文件名挑出来
+    return name && /\.[A-Za-z0-9]{1,8}$/.test(name.split("/").pop()) ? name : ""; // 没后缀的不认，免得把普通词当文件名挑出来
+  };
+  // 先铺清单，再拿这一趟的产出盖上去
+  const byBase = new Map();
+  for (const f of listing || []) {
+    const name = nameOf(f);
+    if (!name) continue;
     map.set(name, name);
-    // 模型多半只写文件名不写路径，所以裸文件名也要认得。同一件产出常被拷成两份
-    // （任务子目录一份、工作目录根一份），裸名指向路径最浅的那个——点「所在位置」时也是这个规矩
     const base = name.split("/").pop();
-    const cur = map.get(base);
-    if (!cur || depth(name) < depth(cur)) map.set(base, name);
+    (byBase.get(base) || byBase.set(base, []).get(base)).push(name);
   }
+  for (const [base, names] of byBase) {
+    const d = names.map(depth), top = Math.min(...d);
+    if (d.filter((x) => x === top).length === 1) map.set(base, names[d.indexOf(top)]);
+  }
+  const own = new Map();
+  for (const f of files || []) {
+    const name = nameOf(f);
+    if (!name) continue;
+    own.set(name, name);
+    const base = name.split("/").pop();
+    const cur = own.get(base);
+    if (!cur || depth(name) < depth(cur)) own.set(base, name);
+  }
+  for (const [k, v] of own) map.set(k, v);
   return map;
 }
-function linkifyOutputs(root, targets) {
+/**
+ * 右侧清单（当前工作目录里现在真有的文件），前提是它跟这张回答是同一个工作目录。
+ * 根对不上就当没有：换过工作目录的话，同名文件在另一个根下是另一份东西（curStamp 同一条规矩）。
+ * typeof 那一道是给前端测试留的：它按段切真源码，切到这一段时清单变量可能还没声明。
+ */
+function listingFor(turnRoot) {
+  if (typeof filesCache === "undefined" || !Array.isArray(filesCache)) return [];
+  const fr = typeof filesRoot === "undefined" ? "" : String(filesRoot || "");
+  const r = String(turnRoot || "");
+  return r && fr && r !== fr ? [] : filesCache;
+}
+/**
+ * 给一张已经收尾的回答插文件链接。每个名字对每张回答只试一次：
+ * renderFiles 一趟任务里要走好多次，清单几百个名字 × 几十张回答，次次从头扫会卡。
+ * 先试的先占：收尾那一下这一趟的产出排在清单前面，裸名「报告.md」一旦指给了这趟的
+ * 任务_A/报告.md，后来清单里根上那份同名的就不会再把它抢走。
+ */
+function linkTurn(turn, targets, root) {
+  if (!turn || !targets || !targets.size) return 0;
+  const tried = turn._linkTried || (turn._linkTried = new Set());
+  // 回答收尾后正文不会再变，字只取一次。[文字](报告.md) 这种链接的路径不在正文里，也并进来，
+  // 不然校正它的那一步（linkifyOutputs 开头）拿不到对应的名字
+  if (turn._linkText == null) {
+    turn._linkText = [...turn.querySelectorAll(".body .a-text")].map((el) => el.textContent).join("\n")
+      + "\n" + [...turn.querySelectorAll(".body .a-text a.file-ln[data-md]")].map((a) => a.dataset.name || "").join("\n");
+  }
+  const pick = new Map();
+  for (const [k, v] of targets) {
+    if (tried.has(k)) continue;
+    tried.add(k);
+    if (turn._linkText.includes(k)) pick.set(k, v);
+  }
+  let n = 0;
+  if (pick.size) turn.querySelectorAll(".body .a-text").forEach((el) => { n += linkifyOutputs(el, pick, root); });
+  return n;
+}
+/**
+ * 清单刷新了：已经收尾的回答里，提到了、清单里又真有的文件名，补成链接。
+ * 收尾那一下清单可能还没到（刚打开页面就回放历史、切会话时清单还在路上），
+ * 也可能那个文件是后来才生成的——这两种以前都得刷新页面才能点。
+ * @returns {number} 这一遍新补了几处
+ */
+function relinkAnswers(scope) {
+  if (!scope) return 0;
+  let n = 0;
+  for (const turn of scope.querySelectorAll(".turn[data-out-root]")) {
+    const root = turn.dataset.outRoot;
+    n += linkTurn(turn, fileLinkTargets([], listingFor(root)), root);
+  }
+  return n;
+}
+function linkifyOutputs(root, targets, fileRoot) {
   if (!root || !targets || !targets.size) return 0;
   // renderMd 拼出来的 [文字](报告.md) 只照字面那条路径指，可模型十有八九只写文件名，
   // 真身在任务子目录里（任务_A/报告.md）。这儿拿这一趟的产出表把它校正过来，
@@ -4585,7 +4666,10 @@ function linkifyOutputs(root, targets) {
     const real = targets.get(want) || targets.get(want.split("/").pop());
     if (real && real !== want) { a.dataset.name = real; a.title = "点击预览 " + real; }
   }
-  const keys = [...targets.keys()].sort((a, b) => b.length - a.length); // 长的先匹配，全路径别被切成半截
+  // 清单能有几百个名字，正文里提到的往往就三五个：先按字面筛一遍，别拿几百个分支的正则去扫每一段字
+  const text = root.textContent || "";
+  const keys = [...targets.keys()].filter((k) => text.includes(k)).sort((a, b) => b.length - a.length); // 长的先匹配，全路径别被切成半截
+  if (!keys.length) return 0;
   const re = new RegExp(keys.map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "g");
   // 左边界：紧挨着 ASCII 路径字符说明这是更长的一串（别把 data.md 里的 a.md 挑出来）；
   // 右边界同理。中文紧挨着是常态（「生成了简历.html供你查看」），必须放行
@@ -4625,7 +4709,7 @@ function linkifyOutputs(root, targets) {
         if (start < 0 || start < last) continue;
       }
       if (start > last) frag.appendChild(document.createTextNode(s.slice(last, start)));
-      frag.appendChild(makeFileLink(s.slice(start, m.index + m[0].length), targets.get(m[0])));
+      frag.appendChild(makeFileLink(s.slice(start, m.index + m[0].length), targets.get(m[0]), fileRoot));
       last = m.index + m[0].length;
       hit++;
     }
@@ -4636,14 +4720,15 @@ function linkifyOutputs(root, targets) {
   }
   return n;
 }
-function makeFileLink(label, name) {
+function makeFileLink(label, name, root) {
   const a = document.createElement("a");
   a.className = "file-ln";
   a.dataset.name = name;
+  if (root) a.dataset.root = root; // 这张回答是哪个工作目录的：换过目录以后点它，开的还是当时那一份
   a.textContent = label;
   a.title = "点击预览";
   a.tabIndex = 0;
-  const open = (e) => { e.preventDefault(); previewFile(name); };
+  const open = (e) => { e.preventDefault(); previewFile(name, root || ""); };
   a.onclick = open;
   a.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") open(e); };
   return a;

@@ -225,6 +225,7 @@ The diagram doubles as a reading order: start at `server.js`, then see how `agen
 
 ## What's new
 
+- **Sep 25** Any file an answer mentions is clickable if it exists in the workspace, not just the ones made in that turn
 - **Sep 24** CLI approvals are picked with ↑↓ and Enter; tool calls show as `● Shell(command)` with `└ output` beneath, like Claude Code
 - **Sep 24** Canvas video: a job the provider already accepted is no longer retried automatically, so you are not charged twice; it sends the card's length, aspect ratio and resolution
 - **Sep 24** Chatting on the canvas shows up in task history right away, marked running; the input box hints `@` to reference files and `/` for skills
@@ -232,7 +233,6 @@ The diagram doubles as a reading order: start at `server.js`, then see how `agen
 - **Sep 23** CLI `/cost`: tokens, calls and an approximate cost for this session
 - **Sep 23** CLI gets `/review`, custom slash commands and `--model` & co.; hooks; `workflow` runs a multi-step file
 - **Sep 23** Better at code: find files by name, several edits to one file at once, edits blocked if the file changed since it was read, background shell commands, and a todo list it must tick off before finishing
-- **Sep 23** The preview card in the chat and the right-hand preview panel now open the same version of an image
 
 Older entries → **[Changelog](CHANGELOG.en.md)**.
 

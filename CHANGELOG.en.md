@@ -9,6 +9,7 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 ## 2026
 
+- **Sep 25** A file name mentioned in an answer is clickable whenever that file exists in the workspace. Before, only files created in that very turn were linked, so images made a turn earlier sat as dead text in the summary table. When you open an older task and the file list arrives a moment later, the links are filled in then. A bare name that matches files in two different subfolders stays unlinked rather than guessing
 - **Sep 24** CLI approvals are now picked with ↑↓ and Enter (number keys and y/n still pick directly, Esc means deny); an Enter within 0.4 s of the menu appearing is ignored, so a stray keypress typed earlier cannot approve a delete. No line wraps on a narrow terminal, so redraws erase cleanly
 - **Sep 24** Tool calls in the CLI now look like Claude Code / Codex: `● Shell(npm test)` shows which command ran or which file was edited, with `└` showing the first 4 lines of output and how many more; a nonzero exit code comes first; when calls run in parallel or an approval prompt comes in between, the call line is printed again before its result so it never hangs under the wrong one
 - **Sep 24** Canvas video: if a job fails after the provider already accepted it (result timed out, download dropped), it is no longer retried automatically, so you are not charged twice; the message gives the job ID
