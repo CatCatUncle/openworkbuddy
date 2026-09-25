@@ -10,6 +10,8 @@
  *   3. 手机上先答了审批：单子整张擦掉，「手机上答了」留在屏上
  *   4. 手机上先答了提问：终端里打了一半的那句不许变成下一条任务
  *   5. 任务跑着时敲了、没回车的字，跑完接着打是接在后面，不是插到前头
+ *   6. 正文跨过工具那一行：上一步没换行的半句先吐干净，下一步的 ## 标题照样渲染
+ *   7. 弹了提问单子，就不再印「● Ask(题目)」和「└ 回答」：单子上已经有了
  * 没有 python3 / pty 的机器跳过。
  */
 const assert = require("assert");
@@ -77,11 +79,13 @@ async function ptyRun({ args, reply }, drive) {
       const u = msgs.filter((m) => m.role === "user").pop();
       users.push(u ? String(typeof u.content === "string" ? u.content : JSON.stringify(u.content)) : "");
       const r = await reply(msgs, n++);
-      const message = Array.isArray(r)
-        ? { role: "assistant", content: "", tool_calls: r.map(([name, a], i) => ({ id: `c${n}_${i}`, type: "function", function: { name, arguments: JSON.stringify(a) } })) }
+      // 也可以回 { text, tools }：这一轮先说一段话再调工具
+      const tools = Array.isArray(r) ? r : r && typeof r === "object" ? r.tools : null;
+      const message = tools
+        ? { role: "assistant", content: (r && r.text) || "", tool_calls: tools.map(([name, a], i) => ({ id: `c${n}_${i}`, type: "function", function: { name, arguments: JSON.stringify(a) } })) }
         : { role: "assistant", content: String(r) };
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ choices: [{ message, finish_reason: Array.isArray(r) ? "tool_calls" : "stop" }], usage: { prompt_tokens: 5, completion_tokens: 2 } }));
+      res.end(JSON.stringify({ choices: [{ message, finish_reason: tools ? "tool_calls" : "stop" }], usage: { prompt_tokens: 5, completion_tokens: 2 } }));
     });
   });
   await new Promise((r) => llm.listen(0, "127.0.0.1", r));
@@ -273,6 +277,8 @@ async function run() {
       const picked = await t.until(/手机上答了/, "手机上答了", asked);
       await t.waitFor(() => /没发出去/.test(t.out().slice(asked)), "打了一半的那句被扔掉要说一声");
       await t.until(/做完了/, "第二件事做完", picked);
+      // 单子上已经有这道题：再印一行「● Ask(题目)」、答完再挂一行「└ 回答」，就是同一件事说三遍
+      assert.ok(!/● (Ask|ask_user)\b/.test(t.out()), "★弹了单子就不再印「● Ask(题目)」那行★\n" + t.out().slice(menuAt - 400));
       await t.until(/openworkbuddy> /, "提示符回来", picked);
       const before = t.users.length;
       await t.type("F\r");
@@ -281,6 +287,21 @@ async function run() {
       await t.type("/exit\r");
     });
     assert.ok(t3 && t3.exited() === 0, "正常退出");
+  }
+
+  // ---- ④ 正文渲染跨过工具那一行：上一步没换行的半句先吐干净，下一步的「## 标题」照样是标题 ----
+  {
+    const out = await ptyRun({
+      args: ["看看 a.txt"],
+      reply: (msgs) => (toolsDone(msgs) === 0
+        ? { text: "先看一眼", tools: [["read_file", { path: "a.txt" }]] }
+        : "## 结论\n文件里有 **一行**。"),
+    }, async (t) => { await t.until(/一行。/, "第二步的正文"); });
+    const lines = out.split(/\r?\n/).map((l) => l.replace(/\s+$/, ""));
+    assert.ok(lines.includes("结论"), "★下一步的「## 标题」渲染成标题★ 以前接在上一步没换行的半句后面，原样打出 ##\n" + out);
+    assert.ok(!/##/.test(out), "## 不许原样上屏\n" + out);
+    assert.ok(lines.includes("文件里有 一行。"), "标题下面那句照常渲染\n" + out);
+    assert.ok(!lines.some((l) => /先看一眼./.test(l)), "上一步那半句单独成行，不跟后面的东西粘在一起\n" + out);
   }
 
   console.log("cli-pty：通过");

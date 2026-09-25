@@ -22,6 +22,7 @@ const LABEL = {
   multi_edit: "Edit", search_files: "Search", find_files: "Find", list_files: "List",
   fetch_url: "Fetch", render_page: "Fetch", web_search: "WebSearch", use_skill: "Skill",
   todo_write: "Todo", shell_output: "ShellOutput", shell_kill: "ShellKill", explore: "Explore",
+  ask_user: "Ask", Bash: "Shell", // Bash 是本机 Claude Code 引擎报上来的名字，跟自带的 run_shell 一个样子
 };
 /** 参数里挑哪个当「对象」，按顺序找第一个有值的 */
 const ARG_KEYS = ["command", "path", "file_path", "pattern", "query", "url", "name", "skill", "expert", "team", "prompt", "title", "question"];
@@ -103,15 +104,23 @@ function resultLines(ev, o) {
   const max = Math.max(1, Number(opt.max) || MAX_LINES);
   const e = ev || {};
   const text = String(e.preview || "");
-  const cut = text.length >= 800; // agent 那边 preview 只给前 800 字，再往后还有多少不知道
+  // agent 那边 preview 只给前 800 字，再往后还有多少不知道；本机引擎截得更短，截没截它自己说（cut），
+  // 顺带报总行数（lines）的，「还有 N 行」就能说准数
+  const cut = !!e.cut || text.length >= 800;
   let body = [];
   const kind = e.isError ? "err" : "out";
-  const sh = (e.name === "run_shell" || e.name === "run_node") ? splitShell(text) : null;
+  const shellish = e.name === "run_shell" || e.name === "run_node" || e.name === "Bash";
+  const sh = shellish ? splitShell(text) : null;
   if (sh) {
     body = [...(sh.out ? sh.out.split("\n") : []), ...(sh.err ? sh.err.split("\n") : [])];
     if (sh.note) body.unshift(sh.note);
     if (sh.code !== "0") body.unshift(`exit code ${sh.code}`);
     if (!body.length) body = ["（没有输出）"];
+  } else if (shellish && !String(e.outcome || "").trim()) {
+    // 本机引擎（Claude Code 的 Bash、Codex 的命令）给的是命令输出原文，没有 exit code 那行：原样露头几行，
+    // 不能跟读文件一样只留第一行——38 passing / 2 failing 恰恰在后面
+    body = text.split("\n");
+    if (!body.some((l) => l.trim())) body = ["（没有输出）"];
   } else if (e.isError) {
     body = text.replace(/^工具执行出错:\s*/, "").split("\n");
   } else {
@@ -126,9 +135,10 @@ function resultLines(ev, o) {
   body = body.map((l) => l.replace(/\s+$/, "")).filter((l, i, a) => l || (i > 0 && i < a.length - 1));
   while (body.length && !body[body.length - 1]) body.pop();
   const shown = body.slice(0, max);
-  const rest = body.length - shown.length;
+  const total = Number(e.lines) > body.length ? Number(e.lines) : 0; // 引擎报了原文一共几行：按它说
+  const rest = (total || body.length) - shown.length;
   const out = shown.map((l, i) => (i === 0 ? "  └ " : "    ") + paint(clip(l, width - 4), kind));
-  if (rest > 0 || (cut && !e.isError)) out.push("    " + paint(rest > 0 ? `… 还有 ${rest}${cut ? "+" : ""} 行` : "… 后面还有", "more"));
+  if (rest > 0 || (cut && !e.isError)) out.push("    " + paint(rest > 0 ? `… 还有 ${rest}${cut && !total ? "+" : ""} 行` : "… 后面还有", "more"));
   return out;
 }
 

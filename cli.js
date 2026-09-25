@@ -589,7 +589,20 @@ const toolView = require("./cli-toolview");
 const termWidth = () => Math.max(40, (process.stderr.columns || 80) - 2);
 /** 工具那几行的颜色：● 和名字亮一点，参数和输出压暗，出错的红 */
 const toolPaint = (s, k) => ({ bullet: (y) => (ttyErr ? `\x1b[36m${y}\x1b[39m` : y), name: bold, arg: dim, out: dim, more: dim, err: red }[k] || ((y) => y))(s);
+/**
+ * 这些事件一来，上一段正文就算说完了：渲染器里压着的半行（还没等到换行的标题、列表、没配平的 **）先吐干净。
+ * 不吐的话，工具那行先上屏、压着的半句后到，两步的话还会粘成一行；下一步的「## 标题」也会被当成上一段的续行，原样打出 ##。
+ * status 不在里面：心跳、重试提示会插在一段话中间，在那儿吐等于把没配平的记号原样打出去
+ */
+const MD_BREAKS = new Set(["step_start", "parallel", "tool_use", "tool_result", "ask_user", "expert_start", "expert_done",
+  "team_start", "team_done", "limit", "failover", "compact", "trim", "auto_continue", "sleep", "todos", "milestones"]);
+
 function makeEmit(state) {
+  const flushMd = () => {
+    const r = state.md ? state.md.end() : "";
+    // 后面的进度行自带开头的换行；-q 下没有进度行，换行得留着，不然下一段正文接在同一行
+    if (r) answer(opts.quiet ? r : r.replace(/\n$/, ""));
+  };
   return (ev) => {
     // 先播给网页/手机，再管终端怎么显示：这两件事互不相干，哪边坏了都不该拖累另一边
     if (state.live) state.live.event(ev);
@@ -601,6 +614,7 @@ function makeEmit(state) {
       if (ev.type === "files") { state.files = ev.files || state.files; noteChanged(state, ev.changed); }
       return;
     }
+    if (MD_BREAKS.has(ev.type)) flushMd();
     if (ev.type === "text") {
       if (ev.depth > 0) return;
       // 这个空行是用来跟上面的进度隔开的；-q / 没进度可打的时候没东西要隔，
@@ -622,10 +636,32 @@ function makeEmit(state) {
       // 「● Shell(npm test)」：跑的是哪条命令、动的是哪个文件，一眼看得见（见 cli-toolview.js）
       if (!state.calls) state.calls = new Map();
       if (ev.id) state.calls.set(ev.id, ev);
+      // 问你一句：先不印。真弹了单子，单子上就有这道题，再印一行「● Ask(题目)」加一行「└ 用户的回答」是同一件事说三遍；
+      // 没弹成（无人值守、这一问被闸拦下）的，等结果回来再补印这一行
+      if (ev.name === "ask_user" && ev.id) { state.lastTool = null; return; }
       prog("\n" + toolView.callLine(ev, { width: termWidth(), paint: toolPaint }));
       state.lastTool = { id: ev.id, seq: inkSeq };
       state.streamed = false;
+    } else if (ev.type === "ask_user") {
+      // 单子马上要画了：记下是哪一次调用，它的结果回来时就不再印一遍。几个专家同时问的话按题目认
+      const q = String(ev.question || "");
+      for (const [id, c] of state.calls || []) {
+        if (c.name !== "ask_user" || (state.askCards && state.askCards.has(id))) continue;
+        let cq = "";
+        try { cq = String(JSON.parse(c.input_preview || "{}").question || "").trim().slice(0, 500); } catch {}
+        if (cq && cq !== q) continue;
+        (state.askCards || (state.askCards = new Set())).add(id);
+        break;
+      }
+      state.streamed = false;
     } else if (ev.type === "tool_result") {
+      if (ev.id && state.askCards && state.askCards.delete(ev.id)) {
+        // 单子上有题、选了什么 cli-ask 当场回显过、超时由 ask_answer 那条补一句，这儿没有要补的
+        if (state.calls) state.calls.delete(ev.id);
+        state.lastTool = null;
+        state.streamed = false;
+        return;
+      }
       // └ 只能紧挨着自己那行 ●。并发回来的顺序不一定、中间还可能插进一张审批单——那就把自己那行再印一遍
       const call = ev.id && state.calls ? state.calls.get(ev.id) : null;
       const last = state.lastTool;

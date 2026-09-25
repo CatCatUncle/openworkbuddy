@@ -222,7 +222,10 @@ async function run({
       }
       const bad = item.status === "failed" || (item.exit_code != null && item.exit_code !== 0);
       const out = item.aggregated_output || item.output || item.result || "";
-      emit({ type: "tool_result", id: item.id, name: t.name, isError: !!bad, preview: shorten(out, 300), depth: 0 });
+      // 命令输出留着换行（shorten 会把它压成一行，终端就只剩头一句），截没截、一共几行一并报上去
+      let text = "";
+      try { text = typeof out === "string" ? out : JSON.stringify(out) || ""; } catch { text = String(out); } // MCP 的 result 是个对象，String() 只剩 [object Object]
+      emit({ type: "tool_result", id: item.id, name: t.name, isError: !!bad, preview: text.slice(0, 800), cut: text.length > 800, lines: text.replace(/\n+$/, "").split("\n").length, depth: 0 });
     }
   };
 

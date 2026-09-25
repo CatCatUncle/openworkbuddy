@@ -16,8 +16,12 @@ const path = require("path");
 const http = require("http");
 const { spawn } = require("child_process");
 
-/** 真起一趟 openworkbuddy，模型是本地假的：按轮次吐 calls[i] 里的工具调用，吐完说一句收工 */
-async function cliRun(calls) {
+/**
+ * 真起一趟 openworkbuddy，模型是本地假的：按轮次吐 calls[i] 里的工具调用，吐完说一句收工。
+ * calls[i] 也可以是 { text, tools }：这一轮先说一段话再调工具（tools 省掉就是只说话、收尾）。
+ * 默认只回 stderr（进度和工具行都在那儿）；withOut 为真时回 { err, out }，out 是正文
+ */
+async function cliRun(calls, withOut) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-toolview-"));
   const ws = path.join(home, "ws");
   fs.mkdirSync(ws);
@@ -26,10 +30,11 @@ async function cliRun(calls) {
   const llm = http.createServer((req, res) => {
     req.resume();
     req.on("end", () => {
-      const call = calls[n++];
+      const step = calls[n++];
+      const call = Array.isArray(step) ? step : step && step.tools;
       const message = call
-        ? { role: "assistant", content: "", tool_calls: call.map(([name, args], i) => ({ id: `c${n}_${i}`, type: "function", function: { name, arguments: JSON.stringify(args) } })) }
-        : { role: "assistant", content: "收工。" };
+        ? { role: "assistant", content: (step && step.text) || "", tool_calls: call.map(([name, args], i) => ({ id: `c${n}_${i}`, type: "function", function: { name, arguments: JSON.stringify(args) } })) }
+        : { role: "assistant", content: (step && step.text) || "收工。" };
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ choices: [{ message, finish_reason: call ? "tool_calls" : "stop" }], usage: { prompt_tokens: 5, completion_tokens: 2 } }));
     });
@@ -49,11 +54,11 @@ async function cliRun(calls) {
       const kid = spawn(process.execPath, [path.join(__dirname, "..", "cli.js"), "干活", "-C", ws, "--no-mcp"], {
         env: { ...process.env, OPENWORKBUDDY_HOME: home, NO_COLOR: "1" }, stdio: ["ignore", "pipe", "pipe"],
       });
-      let err = "";
+      let err = "", out = "";
       kid.stderr.on("data", (d) => (err += d));
-      kid.stdout.resume();
+      kid.stdout.on("data", (d) => (out += d));
       const t = setTimeout(() => { kid.kill(); reject(new Error("跑了 60 秒没完：\n" + err)); }, 60000);
-      kid.on("close", () => { clearTimeout(t); resolve(err); });
+      kid.on("close", () => { clearTimeout(t); resolve(withOut ? { err, out } : err); });
     });
   } finally {
     llm.close();
@@ -121,6 +126,30 @@ async function run() {
     assert.ok(/^  └ /.test(lines[reads[1][1] + 1]), "再印的那行下面紧跟自己的结果");
     const search = lines.lastIndexOf("● Search(hello)");
     assert.ok(search > reads[1][1] && /^  └ /.test(lines[search + 1]), "Search 的结果也挂在自己下面\n" + err);
+  }
+
+  // ---- ⑤ 本机引擎报上来的：Claude Code 的 Bash、Codex 的命令，没有 exit code 那行也照样露几行 ----
+  assert.strictEqual(tv.callLine({ name: "Bash", input_preview: JSON.stringify({ command: "npm test" }) }), "● Shell(npm test)", "Claude Code 的 Bash 跟自带的 run_shell 一个样子");
+  assert.strictEqual(tv.callLine({ name: "ask_user", input_preview: JSON.stringify({ question: "用什么格式？" }) }), "● Ask(用什么格式？)", "提问那行叫 Ask，括号里是题目");
+  {
+    const raw = "> test\n> node t.js\n  38 passing\n  2 failing\n  1) boom\n  2) bang";
+    assert.deepStrictEqual(tv.resultLines({ name: "Bash", preview: raw, lines: 6 }),
+      ["  └ > test", "    > node t.js", "      38 passing", "      2 failing", "    … 还有 2 行"], "★命令输出露头几行★ 以前只剩第一行 > test，38 passing / 2 failing 看不见");
+    assert.deepStrictEqual(tv.resultLines({ name: "run_shell", preview: "a\nb\nc" }), ["  └ a", "    b", "    c"], "Codex 的命令输出没有 exit code 那行，也不能只留第一行");
+    const big = tv.resultLines({ name: "Bash", preview: "x\n".repeat(400).slice(0, 800), cut: true, lines: 2000 });
+    assert.strictEqual(big[big.length - 1], "    … 还有 1996 行", "引擎报了一共几行：说准数，不带 +");
+    const unknown = tv.resultLines({ name: "Bash", preview: "a\nb", cut: true });
+    assert.strictEqual(unknown[unknown.length - 1], "    … 后面还有", "截了但不知道一共几行：说后面还有");
+    assert.deepStrictEqual(tv.resultLines({ name: "Bash", preview: "\n" }), ["  └ （没有输出）"]);
+  }
+
+  // ---- ⑥ 无人值守时的提问：没有单子可弹，「● Ask(题目)」只印一次，下面挂回答 ----
+  {
+    const err = await cliRun([[["ask_user", { question: "用什么格式？", options: ["表格", "列表"] }]]]);
+    const asks = err.split("\n").filter((l) => l.startsWith("● Ask("));
+    assert.deepStrictEqual(asks, ["● Ask(用什么格式？)"], "★题目只印一次★ 工具开始时先不印，结果回来时补这一行\n" + err);
+    const lines = err.split("\n");
+    assert.ok(/^  └ /.test(lines[lines.indexOf(asks[0]) + 1]), "下面紧跟着结果\n" + err);
   }
 
   console.log("cli-toolview：通过");

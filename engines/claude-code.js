@@ -227,9 +227,10 @@ async function run({
       for (const b of m.message.content || []) {
         if (!b || typeof b !== "object" || b.type !== "tool_result") continue;
         const text = textOfToolResult(b.content);
+        // 截在哪、原文一共几行都报上去：终端那头照这个说「还有 N 行」，不然 Bash 的输出只剩头一行、也不知道后面还有
         emit({
           type: "tool_result", id: b.tool_use_id, name: toolNames.get(b.tool_use_id) || "",
-          isError: !!b.is_error, preview: text.slice(0, 300), depth: 0,
+          isError: !!b.is_error, preview: text.slice(0, 800), cut: text.length > 800, lines: text.replace(/\n+$/, "").split("\n").length, depth: 0,
         });
       }
       return;
