@@ -70,17 +70,33 @@ function buildServers({ home, baseDir = "", user = "", tools, extraServers = [] 
 }
 
 /**
+ * 这两种临时目录里是 MCP 配置，会带上用户 mcp_servers 里的 env（常常是 key）。
+ * 平时由调用方收尾时 cleanup；但第二次 Ctrl+C、关终端窗口、被 kill 时进程下一刻就没了，
+ * 走不到那一步。所以每个都记一笔，进程退出前统一删掉——exit 钩子只挂一次
+ */
+const TEMP_DIRS = new Set();
+function tempDir(prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  if (!tempDir.hooked) {
+    tempDir.hooked = true;
+    process.on("exit", () => { for (const d of TEMP_DIRS) { try { fs.rmSync(d, { recursive: true, force: true }); } catch {} } });
+  }
+  TEMP_DIRS.add(dir);
+  return { dir, rm: () => { TEMP_DIRS.delete(dir); try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} } };
+}
+
+/**
  * 落一份 mcp-config 临时文件给 claude 用。
  * @returns {{path:string, cleanup:function, names:string[]}}
  */
 function writeMcpConfig(servers) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-mcp-"));
+  const { dir, rm } = tempDir("owb-mcp-");
   const p = path.join(dir, "mcp.json");
   fs.writeFileSync(p, JSON.stringify({ mcpServers: servers }, null, 2));
   return {
     path: p,
     names: Object.keys(servers),
-    cleanup: () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} },
+    cleanup: rm,
   };
 }
 
@@ -111,14 +127,14 @@ function codexArgs(servers) {
  * @returns {{path:string, dir:string, bin:string, cleanup:function}}
  */
 function writeShim(server) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-shim-"));
+  const { dir, rm } = tempDir("owb-shim-");
   const p = path.join(dir, "owb");
   const q = (v) => "'" + String(v).replace(/'/g, "'\\''") + "'";
   const env = Object.entries(server.env || {}).map(([k, v]) => `${k}=${q(v)}`).join(" ");
   const argv = [server.command, ...(server.args || [])].map(q).join(" ");
   fs.writeFileSync(p, `#!/bin/sh\n# OpenWorkBuddy 借给本机引擎的工具入口（本次任务专用，跑完即删）\n${env} exec ${argv} "$@"\n`);
   fs.chmodSync(p, 0o755);
-  return { path: p, dir, bin: "owb", cleanup: () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} } };
+  return { path: p, dir, bin: "owb", cleanup: rm };
 }
 
 /**

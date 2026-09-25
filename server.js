@@ -6023,6 +6023,11 @@ app.post("/api/chat", async (req, res) => {
   if (!sessionAllowed(user, getSession(sessionId))) {
     return res.status(403).json({ error: "这条对话不属于你" });
   }
+  // 终端里这会儿正跑着同一条（放在归属检查之后：不是你的会话，连「它在跑」也不该告诉你）：两头各拿一份内存副本，后存的那头会把另一头这一轮整段盖掉
+  {
+    const row = cliLive.get(sessionId);
+    if (row && row.live) return res.status(409).json({ error: "这条会话正在终端里跑。要补充说明可以在「工程」里插话，跑完再接着聊。" });
+  }
 
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache");

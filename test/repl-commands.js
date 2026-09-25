@@ -531,7 +531,7 @@ console.log("\n⑰之四 /resume 换完真的换过去了");
   // 两条会话当场互相污染，而且要等下次打开才发现
   ok(/sessionId = row\.id/.test(hand), "★换 sessionId★");
   ok(/sessFile = f/.test(hand), "★sessFile 跟着换★ 不换的话新会话的内容会写回旧文件，两条当场互相污染");
-  ok(/sess = \{ history: \[\], transcript: \[\], title: "", \.\.\.loaded \}/.test(hand),
+  ok(/(?:sess = |adoptSess\()\{ history: \[\], transcript: \[\], title: "", \.\.\.loaded \}/.test(hand),
      "★sess 整个换掉，并且补齐三个字段★ 老会话文件缺 transcript 的话，下一轮 push 就炸在 undefined 上");
 
   ok(/store\.readJson\(f, null\)/.test(hand), "从盘上读，读不出来给 null");
@@ -539,8 +539,8 @@ console.log("\n⑰之四 /resume 换完真的换过去了");
      "★读不出来就当场停★ 绝不「接了一个空的」——那等于把旧对话悄悄换成白纸，而他下一句是冲着旧对话说的");
   ok(/contextLine\(\)/.test(hand),
      "★接完印一行上下文占用★ 一条跑过二十轮的会话接过来，下一句就带着那二十轮发出去，不印只能在账单上发现");
-  ok(/桌面/.test(hand) && /盖掉/.test(hand),
-     "★接桌面那条要提醒一句★ 两边写同一个文件，后写的盖掉先写的，不说的话人以为会自动同步");
+  ok(/桌面/.test(hand) && /同时跑/.test(hand),
+     "★接桌面那条要提醒一句★ 轮流聊每轮开跑前会重读，剩下的风险是两头同时跑，不说的话人以为怎么用都行");
   ok(/\/resume \$\{leaving\}/.test(hand), "★把刚离开那条的 id 打出来★ 不打的话它就掉出十二行之外，再也找不回来");
   ok(/fs\.existsSync\(sessFileOf\(raw\)\)/.test(hand),
      "★按 id 接不受选单十二行限制★ 选单只是给记不住 id 的人看的，记得住的不该被它挡住");

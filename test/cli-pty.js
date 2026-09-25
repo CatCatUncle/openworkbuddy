@@ -12,6 +12,7 @@
  *   5. 任务跑着时敲了、没回车的字，跑完接着打是接在后面，不是插到前头
  *   6. 正文跨过工具那一行：上一步没换行的半句先吐干净，下一步的 ## 标题照样渲染
  *   7. 弹了提问单子，就不再印「● Ask(题目)」和「└ 回答」：单子上已经有了
+ *   8. 交互模式闲着的时候，网页 / 手机在同一条会话上聊了一轮：下一句开跑前先接上，存盘也不把那一轮盖掉
  * 没有 python3 / pty 的机器跳过。
  */
 const assert = require("assert");
@@ -111,6 +112,7 @@ async function ptyRun({ args, reply }, drive) {
 
   const t = {
     ws,
+    home,
     users,
     out: () => out,
     /** 一块送进终端 */
@@ -302,6 +304,38 @@ async function run() {
     assert.ok(!/##/.test(out), "## 不许原样上屏\n" + out);
     assert.ok(lines.includes("文件里有 一行。"), "标题下面那句照常渲染\n" + out);
     assert.ok(!lines.some((l) => /先看一眼./.test(l)), "上一步那半句单独成行，不跟后面的东西粘在一起\n" + out);
+  }
+
+  // ---- ⑤ 交互模式闲着的时候，网页 / 手机在同一条会话上聊了一轮：下一句开跑前先接上，不把那一轮盖掉 ----
+  {
+    const seen = []; // 每次发给模型的整段消息
+    await ptyRun({
+      args: [],
+      reply: (msgs) => { seen.push(msgs.map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content || ""))).join("\n")); return "好的。"; },
+    }, async (t) => {
+      await t.until(/openworkbuddy> /, "提示符");
+      await t.type("第一句\r");
+      const done1 = await t.until(/好的。/, "第一轮回答");
+      await t.until(/openworkbuddy> /, "提示符回来", done1);
+      const dir = path.join(t.home, "data", "sessions");
+      const f = fs.readdirSync(dir).filter((x) => x.endsWith(".json")).map((x) => path.join(dir, x))[0];
+      const disk = JSON.parse(fs.readFileSync(f, "utf8"));
+      disk.history.push({ role: "user", content: "网页那句WEBMARK" }, { role: "assistant", text: "网页的回答" });
+      disk.transcript.push({ type: "user", text: "网页那句WEBMARK" }, { type: "assistant", events: [{ type: "text", delta: "网页的回答" }] });
+      fs.writeFileSync(f, JSON.stringify(disk));
+      const n = seen.length;
+      const mark = t.out().length;
+      await t.type("第二句\r");
+      await t.waitFor(() => seen.length > n, "第二句发给模型");
+      assert.ok(seen[n].includes("网页那句WEBMARK"), "★闲着时网页聊的那一轮，下一句开跑前没接上★ 模型压根不知道那边说过什么\n" + seen[n].slice(-600));
+      await t.until(/已经接上/, "说一声接上了", mark);
+      const done2 = await t.until(/好的。/, "第二轮回答", mark);
+      await t.until(/openworkbuddy> /, "提示符回来", done2);
+      const users = JSON.parse(fs.readFileSync(f, "utf8")).transcript.filter((x) => x.type === "user").map((x) => x.text);
+      assert.deepStrictEqual(users, ["第一句", "网页那句WEBMARK", "第二句"], "★网页那一轮被终端存盘盖掉了★");
+      assert.ok(!fs.existsSync(path.join(dir, ".conflicts")), "轮流聊不算冲突，不该另存一份");
+      await t.type("/exit\r");
+    });
   }
 
   console.log("cli-pty：通过");

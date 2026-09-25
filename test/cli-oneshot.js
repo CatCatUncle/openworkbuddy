@@ -8,6 +8,9 @@
  *   ④ 列会话先按时间截、再读内容：sessions 2 只读两个文件，-c 只读最新那一个
  *   ⑤ --version / --help 不加载 agent、express 这些大件
  *   ⑥ --json 下依赖里的 console.log（「MCP 已连接」）不许混进 stdout，不然 | jq 第一行就炸
+ *   ⑦ 跑到一半被 kill / 关了终端窗口：这一轮落盘、网页上那条标成结束、按信号给退出码，不是悄无声息地没了
+ *   ⑧ 跑着的时候网页 / 手机也写了这条会话：两边的对话记录都在，那边的上下文另存一份，不整份盖掉
+ *   ⑨ 网页端记着这条正在跑：开跑前提醒一句（只提醒不拦：服务端崩了没清的话这条记录是过期的）
  *
  * 模型是本地假的，不出网。
  *   node test/cli-oneshot.js
@@ -68,11 +71,13 @@ async function setup({ mcp = false } = {}) {
   const ws = path.join(home, "ws");
   fs.mkdirSync(ws);
   const bodies = [];
+  let hold = null; // 让模型「想」多久：设成一个 Promise，回话前先等它
   const llm = http.createServer((req, res) => {
     let raw = "";
     req.on("data", (c) => (raw += c));
-    req.on("end", () => {
+    req.on("end", async () => {
       bodies.push(raw);
+      if (hold) await hold;
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: "做完了。" }, finish_reason: "stop" }], usage: { prompt_tokens: 5, completion_tokens: 2 } }));
     });
@@ -98,13 +103,15 @@ async function setup({ mcp = false } = {}) {
   fs.mkdirSync(sessDir, { recursive: true });
   return {
     home, ws, bodies, sessDir,
-    /** 起一趟 cli.js。stdin：ignore（不接）/ open（开着不关）/ 字符串（写完就关）/ { later, ms }（隔 ms 毫秒才写） */
-    run(args, { stdin = "ignore", ms = 30000 } = {}) {
+    setHold(p) { hold = p; },
+    /** 起一趟 cli.js。stdin：ignore（不接）/ open（开着不关）/ 字符串（写完就关）/ { later, ms }（隔 ms 毫秒才写）。
+     *  onSpawn(kid)：进程起来之后测试要对它做点什么（发信号、趁它跑着改文件） */
+    run(args, { stdin = "ignore", ms = 30000, env: extraEnv = {}, onSpawn } = {}) {
       const hookOut = path.join(home, `hook-${Math.random().toString(36).slice(2)}.json`);
       return new Promise((resolve) => {
         const t0 = Date.now();
         const kid = spawn(process.execPath, ["--require", hook, CLI, ...args], {
-          env: { ...process.env, OPENWORKBUDDY_HOME: home, NO_COLOR: "1", OWB_HOOK_OUT: hookOut },
+          env: { ...process.env, OPENWORKBUDDY_HOME: home, NO_COLOR: "1", OWB_HOOK_OUT: hookOut, ...extraEnv },
           stdio: [stdin === "ignore" ? "ignore" : "pipe", "pipe", "pipe"],
           cwd: ws,
         });
@@ -114,6 +121,7 @@ async function setup({ mcp = false } = {}) {
         if (typeof stdin === "string" && stdin !== "open" && stdin !== "ignore") kid.stdin.end(stdin);
         if (stdin && typeof stdin === "object") setTimeout(() => kid.stdin.end(stdin.later), stdin.ms);
         const t = setTimeout(() => { hung = true; kid.kill("SIGKILL"); }, ms);
+        if (onSpawn) Promise.resolve(onSpawn(kid)).catch((e) => { err += "\n[onSpawn] " + e.message; });
         kid.on("close", (code) => {
           clearTimeout(t);
           if (kid.stdin) kid.stdin.destroy();
@@ -130,6 +138,8 @@ async function setup({ mcp = false } = {}) {
   };
 }
 
+const until = async (fn, ms = 15000) => { const end = Date.now() + ms; while (Date.now() < end) { if (fn()) return true; await new Promise((r) => setTimeout(r, 30)); } return false; };
+const readSess = (f) => { try { return JSON.parse(fs.readFileSync(f, "utf8")); } catch { return {}; } };
 const jsonLines = (s) => s.split("\n").filter((l) => l.trim()).map((l) => { try { return JSON.parse(l); } catch { return { $bad: l }; } });
 const seedSession = (dir, id, mtimeSec, title) => {
   const f = path.join(dir, id + ".json");
@@ -214,6 +224,74 @@ async function run() {
       ok(r.code === 0 && r.out.trim(), `${flag} 照常打印到 stdout`, r.err);
       const heavy = r.loaded.filter((m) => /^(\.\/)?(agent|mcp|llm|tools|account)$|^express$/.test(m));
       ok(!heavy.length, `★${flag} 不加载 agent / express 这些大件★`, heavy);
+    }
+
+    console.log("\n— ⑦ 跑到一半被 kill / 关终端 —");
+    for (const [sig, code] of [["SIGTERM", 143], ["SIGHUP", 129]]) {
+      for (const f of fs.readdirSync(env.sessDir)) fs.rmSync(path.join(env.sessDir, f), { recursive: true, force: true });
+      let release;
+      env.setHold(new Promise((r) => (release = r)));
+      const before = env.bodies.length;
+      const r = await env.run(["慢活" + sig, "--no-mcp"], {
+        env: { OPENWORKBUDDY_CLI_LIVE: "1" },
+        onSpawn: async (kid) => { await until(() => env.bodies.length > before); kid.kill(sig); },
+      });
+      release();
+      env.setHold(null);
+      ok(r.code === code && !r.hung, `★${sig}：按信号给退出码 ${code}★ 以前直接被信号带走、什么都不收`, { code: r.code, err: r.err.slice(-300) });
+      const files = fs.readdirSync(env.sessDir).filter((f) => f.endsWith(".json"));
+      const tr = files.length === 1 ? readSess(path.join(env.sessDir, files[0])).transcript || [] : [];
+      ok(tr.some((t) => t.type === "user" && t.text === "慢活" + sig) && tr.some((t) => t.type === "assistant" && JSON.stringify(t.events || []).includes("任务被中断")),
+        `★${sig}：这一轮落盘了★ 以前用户那句话连同说到一半的全没了`, { files, tr });
+      const meta = files.length === 1 ? readSess(path.join(env.home, "data", "cli-live", files[0])) : {};
+      ok(meta.endedAt > 0, `${sig}：网页 / 手机上那条标成结束，不会一直挂着「在跑」`, meta);
+    }
+
+    console.log("\n— ⑧ 跑着的时候网页也写了这条会话 —");
+    for (const f of fs.readdirSync(env.sessDir)) fs.rmSync(path.join(env.sessDir, f), { recursive: true, force: true });
+    const MID = "cli_20260925_121212_mrg";
+    const mf = path.join(env.sessDir, MID + ".json");
+    seedSession(env.sessDir, MID, now, "合并");
+    {
+      const r = await env.run(["--session", MID, "先来一句", "--no-mcp"]);
+      ok(r.code === 0 && !fs.existsSync(path.join(env.sessDir, ".conflicts")) && !/别处也写过/.test(r.err), "反向对照：没人动过这条，就不另存、不多嘴", r.err.slice(-300));
+    }
+    {
+      let release;
+      env.setHold(new Promise((r) => (release = r)));
+      const before = env.bodies.length;
+      const r = await env.run(["--session", MID, "终端这句TERM", "--no-mcp"], {
+        onSpawn: async () => {
+          await until(() => env.bodies.length > before);
+          // 网页那头这时候跑完了一轮、存了盘
+          const disk = readSess(mf);
+          disk.transcript.push({ type: "user", text: "网页那句WEB" }, { type: "assistant", events: [{ type: "text", delta: "网页的回答" }] });
+          disk.history.push({ role: "user", content: "网页那句WEB" }, { role: "assistant", text: "网页的回答" });
+          fs.writeFileSync(mf, JSON.stringify(disk));
+          release();
+        },
+      });
+      env.setHold(null);
+      const users = (readSess(mf).transcript || []).filter((t) => t.type === "user").map((t) => t.text);
+      ok(r.code === 0 && users.includes("网页那句WEB") && users.includes("终端这句TERM") && users.includes("先来一句"),
+        "★两边的对话记录都在★ 以前终端存盘整份盖回去，网页那一轮凭空消失", users);
+      ok(users.indexOf("网页那句WEB") < users.indexOf("终端这句TERM"), "网页那轮排在前面（它先存的）", users);
+      const kept = fs.existsSync(path.join(env.sessDir, ".conflicts")) ? fs.readdirSync(path.join(env.sessDir, ".conflicts")) : [];
+      ok(kept.length === 1 && fs.readFileSync(path.join(env.sessDir, ".conflicts", kept[0]), "utf8").includes("网页那句WEB"), "网页那边的上下文另存了一份，没悄悄丢", kept);
+      ok(/别处也写过/.test(r.err), "说了一声", r.err.slice(-300));
+      const listed = await env.run(["sessions", "--json"]);
+      ok(jsonLines(listed.out).length === 1, "另存的那份不会被当成一条会话列出来", listed.out);
+    }
+
+    console.log("\n— ⑨ 网页端记着这条正在跑 —");
+    {
+      const running = path.join(env.home, "data", "running.json");
+      fs.writeFileSync(running, JSON.stringify([MID]));
+      const r = await env.run(["--session", MID, "再来一句", "--no-mcp"]);
+      ok(r.code === 0 && /网页端记着这条会话有任务在跑/.test(r.err), "★开跑前提醒：两头同时跑会互相盖★（只提醒，照跑）", r.err.slice(-300));
+      fs.writeFileSync(running, JSON.stringify(["s_别的会话"]));
+      const r2 = await env.run(["--session", MID, "又一句", "--no-mcp"]);
+      ok(r2.code === 0 && !/网页端记着/.test(r2.err), "反向对照：网页在跑的是别的会话，不提醒", r2.err.slice(-300));
     }
   } finally {
     env.close();

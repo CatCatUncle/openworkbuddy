@@ -7775,6 +7775,22 @@ async function testChatShownLive() {
     const same = ((await call(port, "GET", "/api/session/s_same")).json.transcript || []).find((e) => e.type === "user") || {};
     assert(plain.text === "写个周报" && !("shown" in plain) && !("shown" in same), "普通对话多出了 shown 字段：" + JSON.stringify([plain, same]).slice(0, 200));
     console.log("✓ 画布发起的任务：记录里整段说明照存，历史/标题只认人说的那句，重新生成不丢");
+
+    // 终端里正跑着同一条：网页这头不许同时开跑——两头各拿一份副本，后存完的那头会把另一头这一轮整段盖掉。
+    // 借这台已经起好的 server 顺路验，不再单独起一台
+    const liveDir = path.join(home, "data", "cli-live");
+    fs.mkdirSync(liveDir, { recursive: true });
+    const meta = { pid: process.pid, title: "终端那条", cwd: home, mode: "craft", user: "", startedAt: Date.now(), beatAt: Date.now(), endedAt: 0 };
+    fs.writeFileSync(path.join(liveDir, "s_term_busy.json"), JSON.stringify(meta));
+    const busy = await call(port, "POST", "/api/chat", { sessionId: "s_term_busy", message: "网页这头也来一句", mode: "craft", lang: "zh" });
+    assert(busy.code === 409 && /终端/.test((busy.json && busy.json.error) || ""),
+      "★终端正跑着这条，网页照样开跑★ 后存完的那头会把另一头这一轮整段盖掉：" + busy.code + " " + busy.body.slice(0, 200));
+    const untouched = (await call(port, "GET", "/api/session/s_term_busy")).json || {};
+    assert(!(untouched.transcript || []).length, "409 了会话里却多出了东西：" + JSON.stringify(untouched).slice(0, 200));
+    fs.writeFileSync(path.join(liveDir, "s_term_busy.json"), JSON.stringify({ ...meta, endedAt: Date.now() }));
+    const after = await call(port, "POST", "/api/chat", { sessionId: "s_term_busy", message: "网页这头也来一句", mode: "craft", lang: "zh" });
+    assert(after.code === 200 && /"type":"done"/.test(after.body), "反向对照：终端那趟跑完了，网页照常接着聊：" + after.code + " " + after.body.slice(0, 200));
+    console.log("✓ 终端正在跑的会话，网页端回 409 不同时开跑；终端跑完照常接着聊");
   } finally {
     try { boot.child.kill(); } catch {}
     llm.close();

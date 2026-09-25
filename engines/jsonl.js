@@ -23,6 +23,16 @@ const win = require("./win");
 const STDERR_KEEP = 8000;
 
 /**
+ * 眼下还活着的引擎进程。平时用不上，给硬退出用：第二次 Ctrl+C、关终端窗口、被 kill 的时候，
+ * 进程下一刻就没了，等不到各自的 close 回调——不在 exit 之前一把收掉，引擎连同它派生的
+ * bash/python 就成了孤儿，接着改文件，时限也没人管了。
+ */
+const LIVE = new Set();
+function killAll(signal = "SIGTERM") {
+  for (const c of LIVE) { try { win.killTree(c, signal); } catch {} }
+}
+
+/**
  * @param {object}   o
  * @param {string}   o.bin           可执行文件路径
  * @param {string[]} o.args
@@ -31,7 +41,7 @@ const STDERR_KEEP = 8000;
  * @param {string}   [o.stdin]       要写进 stdin 的内容（写完即关）
  * @param {function} o.onLine        每解析出一条 JSON 调一次
  * @param {number}   [o.deadline]    墙上时间截止（Date.now() 口径），到点杀进程
- * @param {object}   [o.stopSignal]  { aborted: boolean } —— 轮询式，和 agent.js 里那套一致
+ * @param {object}   [o.stopSignal]  AbortSignal 当场生效；只有 { aborted: boolean } 的老式对象按 2 秒轮询
  * @returns {Promise<{code:number, killed:string|null, stderr:string, junk:string[]}>}
  *          killed: null=正常退出 | "deadline" | "stopped"
  */
@@ -56,6 +66,7 @@ function runJsonl({ bin, args, cwd, env, stdin, onLine, deadline, stopSignal }) 
     }
     // 兜底那条路参数超长时先把话说在前头：失败了报出来的会是 cmd 的乱码错，跟真实原因对不上
     if (plan.warn) junkWarn = plan.warn;
+    LIVE.add(child);
 
     let killed = null;
     let stderr = "";
@@ -71,11 +82,25 @@ function runJsonl({ bin, args, cwd, env, stdin, onLine, deadline, stopSignal }) 
       setTimeout(() => win.killTree(child, "SIGKILL"), 3000).unref();
     };
 
-    // 时限与手动停止都靠这一个轮询：2 秒一次，比起给每种情况各挂一套定时器更好收尾
+    // 时限靠这一个轮询：2 秒一次，比起给每种情况各挂一套定时器更好收尾。
+    // 手动停止不能等这一跳：是真 AbortSignal 就直接挂监听，一按就杀——以前最多晚 2 秒，
+    // 而人按完第一下 Ctrl+C 没见动静，第二下紧跟着就来了。纯 { aborted } 对象挂不上监听，照旧靠轮询
     const tick = setInterval(() => {
       if (stopSignal && stopSignal.aborted) killTree("stopped");
       else if (deadline && Date.now() >= deadline) killTree("deadline");
     }, 2000);
+    const onAbort = () => killTree("stopped");
+    const listens = !!stopSignal && typeof stopSignal.addEventListener === "function";
+    if (listens) {
+      if (stopSignal.aborted) onAbort();
+      else stopSignal.addEventListener("abort", onAbort, { once: true });
+    }
+    // 收尾要拆干净：同一个信号一趟任务里可能跑好几次引擎，不拆的话监听越堆越多
+    const unhook = () => {
+      clearInterval(tick);
+      LIVE.delete(child);
+      if (listens) stopSignal.removeEventListener("abort", onAbort);
+    };
 
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk) => {
@@ -100,14 +125,14 @@ function runJsonl({ bin, args, cwd, env, stdin, onLine, deadline, stopSignal }) 
     child.on("error", (e) => {
       if (settled) return;
       settled = true;
-      clearInterval(tick);
+      unhook();
       reject(new Error(`${bin} 跑不起来：${e.message}`));
     });
 
     child.on("close", (code) => {
       if (settled) return;
       settled = true;
-      clearInterval(tick);
+      unhook();
       // 最后一行可能没有换行符结尾，收尾时补一次解析，别把 result 那行丢了
       const tail = buf.trim();
       if (tail) {
@@ -198,4 +223,4 @@ function firstVersionLine(raw) {
   return line.slice(0, 80);
 }
 
-module.exports = { runJsonl, probeVersion, probeOption, probeHelp };
+module.exports = { runJsonl, killAll, probeVersion, probeOption, probeHelp };

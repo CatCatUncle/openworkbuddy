@@ -16,6 +16,7 @@
  *   user.content[].tool_result     → tool_result
  *   result(subtype=success)        → finalText + usage
  *   result(subtype=error_max_turns)→ stopped="已达最大步数"，交给 task-verdict 判红
+ *   result(is_error=true)          → 抛异常，报错原文交给 explain（这种时候 stderr 多半是空的）
  *
  * 提示词走 stdin 不走 argv：任务描述可能上万字，argv 有长度上限，
  * 而且里面带引号和换行时，拼命令行迟早出事。
@@ -191,6 +192,9 @@ async function run({
   let sessionId = null;
   let stopped = null;
   let resultSeen = false;
+  // result 里报的错。未登录、限流、API 报错，claude 是写在这里的：stderr 空着、退出码 1。
+  // 不捞的话 explain 只看得见空 stderr，用户拿到的是「退出码 1 且没有任何输出」
+  let errText = "";
   let step = 0;
   // tool_result 块只带 tool_use_id 不带名字；名字在前面那条 tool_use 里。这里存一张 id→名字 的表——
   // 以前一律填空串，复盘挖掘器看到的就是「（空名）报错 49 次」：最大的一类信号却说不出是哪个工具
@@ -244,9 +248,15 @@ async function run({
       usage.completion = Number(u.output_tokens || 0);
       usage.cached = Number(u.cache_read_input_tokens || 0);
       if (m.num_turns > 0) usage.calls = m.num_turns;
-      if (typeof m.result === "string" && m.result.trim()) finalText = m.result.trim();
+      const said = typeof m.result === "string" ? m.result.trim() : "";
       if (m.subtype === "error_max_turns") stopped = `已达最大步数（${maxTurns || m.num_turns} 步）`;
-      else if (m.is_error) stopped = null; // 真错误走抛异常那条路，不假装"跑满了"
+      else if (m.is_error) {
+        // 真错误走抛异常那条路，不假装"跑满了"，也不把报错当成回答交出去
+        stopped = null;
+        errText = [said, ...(Array.isArray(m.errors) ? m.errors.map(String) : [])].filter(Boolean).join("\n");
+        return;
+      }
+      if (said) finalText = said;
     }
   };
 
@@ -255,9 +265,9 @@ async function run({
 
   if (r.killed === "stopped") return { finalText, usage, stopped: "已手动停止", sessionId };
   if (r.killed === "deadline") return { finalText, usage, stopped: "已达最大运行时间", sessionId };
-  if (!resultSeen || r.code !== 0) {
-    if (finalText && r.code === 0) return { finalText, usage, stopped, sessionId }; // 有正文、干净退出，只是没吐 result
-    throw new Error(explain(r.stderr, r.code));
+  if (!resultSeen || r.code !== 0 || errText) {
+    if (finalText && r.code === 0 && !errText) return { finalText, usage, stopped, sessionId }; // 有正文、干净退出，只是没吐 result
+    throw new Error(explain([r.stderr, errText].filter(Boolean).join("\n"), r.code));
   }
   return { finalText, usage, stopped, sessionId };
 }

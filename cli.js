@@ -609,9 +609,47 @@ if (opts.session && !fs.existsSync(sessFile)) {
 }
 // 跟网页端是同一批文件，写法也得一样：原子改名 + .bak，坏了先回退别直接覆盖
 let sess = store.readJson(sessFile, { history: [], transcript: [], title: "" });
+// 手里这份是什么时候从盘上拿的。网页、手机、另一个终端都会写同一个文件：
+// 以前一直拿着开跑时读进来的副本，存盘整份盖回去，人家中间写进去的那几轮就被抹掉了
+const sessStatOf = (f) => { try { const st = fs.statSync(f); return st.mtimeMs + ":" + st.size; } catch { return ""; } };
+let sessStamp = sessStatOf(sessFile);
+let sessBase = (sess.transcript || []).length; // 拿到手时对话记录有几条：后面多出来的才是这边自己记的
+/** 换成另一份会话（/new、/resume）时一起换掉上面两笔账 */
+function adoptSess(next) {
+  sess = next;
+  sessStamp = sessStatOf(sessFile);
+  sessBase = (sess.transcript || []).length;
+}
+/** 闲着的时候别处写过这条会话：开跑前重读，这一轮的上下文里才有人家那几轮 */
+function reloadSessIfChanged() {
+  const now = sessStatOf(sessFile);
+  if (!now || now === sessStamp) return false;
+  const disk = store.readJson(sessFile, null);
+  if (!disk || typeof disk !== "object") return false;
+  adoptSess({ history: [], transcript: [], title: "", ...disk });
+  return true;
+}
 function saveSess() {
+  const now = sessStatOf(sessFile);
+  if (now && now !== sessStamp) {
+    // 跑着的这一轮当中别处也写了。对话记录只追加，两边各自多出来的接在一起不会错；
+    // 喂给模型的 history 两边各改各的（压缩会改写前段）拼不回去：按这边的存，那边那份另存一份，不悄悄丢
+    const disk = store.readJson(sessFile, null);
+    if (disk && Array.isArray(disk.transcript)) {
+      sess.transcript = disk.transcript.concat((sess.transcript || []).slice(sessBase));
+      try {
+        const dir = path.join(path.dirname(sessFile), ".conflicts"); // 不以 .json 结尾，列会话的地方都不会把它当成一条会话
+        fs.mkdirSync(dir, { recursive: true });
+        const keep = path.join(dir, `${path.basename(sessFile, ".json")}-${Date.now()}.json`);
+        store.writeJsonAtomic(keep, disk);
+        process.stderr.write(yellow(`\n这条会话在这一轮跑着的时候别处也写过：对话记录两边都留着；模型的上下文按终端这边存，那边那份另存在 ${keep}\n`));
+      } catch {}
+    }
+  }
   sess.updated_at = new Date().toISOString();
   store.writeJsonAtomic(sessFile, sess);
+  sessStamp = sessStatOf(sessFile);
+  sessBase = (sess.transcript || []).length;
 }
 
 // ---------- 事件渲染 ----------
@@ -1301,6 +1339,15 @@ async function runOnceIn(runtime, text, mode, interactive) {
     process.stderr.write(red(`积分不足（${owner.username} 余额 0）：去 Web 端「账号 · 用量」里充值，或者把「积分限额」关掉。\n`));
     return "error";
   }
+  if (reloadSessIfChanged()) prog(dim("（这条会话在网页 / 手机 / 另一个终端上有新内容，已经接上）\n"));
+  // 反过来那头：网页端正跑着这条的话，它跑完存盘会把这边这一轮盖掉。服务端开跑时记在 running.json 里；
+  // 服务端要是崩了没清，这条记录会过期，所以只提醒不拦
+  {
+    const busy = store.readJson(dataPath("data", "running.json"), []);
+    if (Array.isArray(busy) && busy.includes(sessionId)) {
+      process.stderr.write(yellow("网页端记着这条会话有任务在跑：两头同时跑，后存完的那头会盖掉另一头这一轮。等那边跑完再发更稳妥\n"));
+    }
+  }
   sess.history.push({ role: "user", content: text });
   if (!sess.title) sess.title = text.slice(0, 24);
   // 在终端里起的活儿归「工程」线。网页/手机上切到那个标签就能看见这条会话——
@@ -1319,13 +1366,35 @@ async function runOnceIn(runtime, text, mode, interactive) {
   if (beatTimer && beatTimer.unref) beatTimer.unref();
   const ctrl = new AbortController();
   let aborted = false;
+  // 硬退出：第二次 Ctrl+C、关终端窗口（SIGHUP）、被 kill（SIGTERM）。进程下一刻就没了，等不到各自的 close 回调。
+  // 引擎和 run_shell 都在自己的进程组里，不先收掉就成了孤儿，接着改文件、时限也没人管；
+  // 这一轮也得落盘，不然用户那句话和这一轮说到一半的话全没了。
+  // 剩下的（后台任务、浏览器、引擎的临时配置目录）挂在 exit 钩子上，process.exit 会走到
+  let exiting = false;
+  const hardExit = (code) => {
+    if (exiting) return;
+    exiting = true;
+    try { ctrl.abort(); } catch {}        // run_shell / run_node 的进程组当场收（bindStop），引擎也是（jsonl 挂了监听）
+    try { require("./engines/jsonl").killAll("SIGTERM"); } catch {}
+    try {
+      const said = state.finalParts.join("");
+      sess.transcript.push({ type: "user", text, mode, at: new Date().toISOString() });
+      sess.transcript.push({ type: "assistant", events: [{ type: "text", delta: (said ? said + "\n\n" : "") + "（任务被中断，进程已退出）" }], at: new Date().toISOString() });
+      saveSess();
+    } catch {}
+    try { live.finish({ error: "进程被中断", title: sess.title }); } catch {}
+    try { mcpManager.stopAll(); } catch {}
+    process.exit(code);
+  };
+  const onHup = () => hardExit(129);
+  const onTerm = () => hardExit(143);
   const onSigint = () => {
     if (aborted) {
       // 第二次：不等了。收尾还是要做——MCP 那几个子进程是 spawn 出来的，
       // 不收就留在系统里，下次启动还会再起一批
       process.stderr.write(yellow("\n（不等了，直接退出）\n"));
-      try { mcpManager.stopAll(); } catch {}
-      process.exit(130);
+      hardExit(130);
+      return;
     }
     aborted = true;
     prog(yellow("\n（收到 Ctrl+C，正在停止任务…再按一次直接退出）\n"));
@@ -1334,6 +1403,8 @@ async function runOnceIn(runtime, text, mode, interactive) {
   // 单发模式走信号；交互模式下 readline 在终端里把 Ctrl+C 自己截住了，进程根本收不到，
   // 所以那边改从 stopCurrent 这个把手调进来——改写前那条路在交互模式下从来没通过
   process.on("SIGINT", onSigint);
+  process.on("SIGHUP", onHup);
+  process.on("SIGTERM", onTerm);
   stopCurrent = onSigint;
   // 等回答的那几处（提问、审批）要用到这一趟的 Ctrl+C 信号和实时句柄
   askCtx = { ctrl, onSigint, interactive: !!interactive };
@@ -1440,6 +1511,8 @@ async function runOnceIn(runtime, text, mode, interactive) {
     process.stderr.write(red(`\n出错了：${e.message}\n`));
   }
   process.removeListener("SIGINT", onSigint);
+  process.removeListener("SIGHUP", onHup);
+  process.removeListener("SIGTERM", onTerm);
   stopCurrent = null;
   offApproval();
   askCtx = null;
@@ -2118,7 +2191,7 @@ function splitFiles(text) {
       const oldId = sessionId;
       sessionId = newSessionId();
       sessFile = sessFileOf(sessionId);
-      sess = { history: [], transcript: [], title: "" };
+      adoptSess({ history: [], transcript: [], title: "" });
       prog(dim(`开了新会话 ${sessionId}（刚才那段还在：/resume ${oldId}）\n`));
       return;
     }
@@ -2134,6 +2207,7 @@ function splitFiles(text) {
     }
     if (v.name === "compact") {
       if (!runtime.compactHistory) { prog(yellow("这个引擎不支持手动压缩\n")); return; }
+      if (reloadSessIfChanged()) prog(dim("（这条会话在别处有新内容，先接上再压）\n"));
       const before = require("./agent").historyChars(sess.history || []);
       const n = (sess.history || []).length;
       if (n < 4) { prog(dim("才聊了几句，没什么可压的\n")); return; }
@@ -2236,7 +2310,7 @@ function splitFiles(text) {
       const leaving = sessionId;
       sessionId = row.id;
       sessFile = f;
-      sess = { history: [], transcript: [], title: "", ...loaded };
+      adoptSess({ history: [], transcript: [], title: "", ...loaded });
       const turns = (sess.transcript || []).filter((t) => t && t.type === "user").length;
       prog(dim(`接上了${row.from}会话 ${sessionId}${sess.title ? "：" + sess.title : ""}（${turns} 轮）\n`));
       // 接过来的上下文是要花钱的：一条跑过二十轮的会话接过来，下一句话就带着那二十轮一起发出去。
@@ -2245,9 +2319,9 @@ function splitFiles(text) {
       const last = (sess.transcript || []).filter((t) => t && t.type === "user").pop();
       if (last && last.text) prog(dim(`上次问到：${String(last.shown || last.text).replace(/\s+/g, " ").slice(0, 60)}\n`));
       if (sess.goal && sess.goal.status === "active") printGoalCard(sess.goal);
-      // 桌面那边可能正开着同一条。文件是原子改名写的，坏不了，但后写的那次会盖掉前一次——
-      // 这事不说出来，人会以为两边自动同步
-      if (row.from === "桌面") prog(yellow("这条是桌面端开的；桌面要是同时开着它，两边写同一个文件，后写的会盖掉先写的\n"));
+      // 两边轮流接着聊没事：每一轮开跑前都会重读盘上那份。剩下的风险只有「两头同时在跑」——
+      // 网页那头已经会拒（终端在跑它回 409），这边开跑时也会提醒；这里先把规矩说在前头
+      if (row.from === "桌面") prog(yellow("这条是桌面端开的：两边轮流接着聊没问题，别让两头同时跑\n"));
       prog(dim(`刚才那条还在：/resume ${leaving}\n`));
       return;
     }

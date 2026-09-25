@@ -2190,8 +2190,10 @@ function modePrompt(mode) {
     // 工具一跑完就对一次账，长任务中途就能看到产物，不用等收尾。
     // CLI 这条路是**每个**工具结果来一次（不像内置引擎是一批一次），所以走节流的那个口子：
     // 一串结果连着回来时合并成一次走树，而不是一个结果扫一遍 500 个文件
+    let toolUses = 0; // 续跑失败后能不能重来一次，看的就是它：一个工具都没动过，重来才不会把事做两遍
     const wrapped = (ev) => {
       emit(ev);
+      if (ev && ev.type === "tool_use") toolUses++;
       if (ev && ev.type === "tool_result") { try { filesOut.push(); } catch {} }
     };
 
@@ -2218,14 +2220,15 @@ function modePrompt(mode) {
     if (guard.note) emit({ type: "status", text: guard.note, depth: 0 });
 
     try {
-      const r = await backend.run({
-        prompt: enginePrompt(history, engineSession),
+      const systemPrompt = await engineSystemPrompt(cwd, mode, user, bridged, { projectContext, history, lang });
+      const runWith = (resumeId) => backend.run({
+        prompt: enginePrompt(history, resumeId),
         cwd,
         emit: wrapped,
         deadline,
         stopSignal,
-        systemPrompt: await engineSystemPrompt(cwd, mode, user, bridged, { projectContext, history, lang }),
-        resumeId: engineSession || null,
+        systemPrompt,
+        resumeId: resumeId || null,
         // 工作目录之外还要让它读的地方：整个工作区（别的对话的产出、资料库）和技能库正文。
         // 只对 claude 有意义（-p 模式读 cwd 外的文件要审批）；codex 的沙箱读是不限的，它忽略这项
         addDirs: engineAddDirs(),
@@ -2239,6 +2242,18 @@ function modePrompt(mode) {
         ...(bridged ? bridged.runOpts : {}),
         ...opts, // 用户在设置里给这个引擎填的 model / bin / extraArgs 等，最后覆盖
       });
+      let r;
+      try {
+        r = await runWith(engineSession);
+      } catch (e) {
+        // 引擎那头的线程没了（Claude Code 默认只留 30 天记录、换了台机器、记录被清过）。以前这个 id 一直留在会话里，
+        // 之后每一轮都带着它去续，每一轮都失败。现在：一个工具都还没动过的话，把对话历史摊平重新带过去开一根新的，
+        // 新线程的 id 由调用方照常记下，盖掉那个失效的。动过工具就不重来——重来等于把事做两遍
+        const gone = /No conversation found|session .{0,40}not found|no (such )?(thread|rollout|session)/i.test(String((e && e.message) || ""));
+        if (!engineSession || !gone || toolUses > 0 || (stopSignal && stopSignal.aborted)) throw e;
+        emit({ type: "status", text: "引擎那头上次的会话线程已经不在了，这次把对话历史重新带过去，开一根新的", depth: 0 });
+        r = await runWith(null);
+      }
       try { filesOut.push(true); } catch {} // 收尾这一下必须立刻发：产出得赶在这一轮结束前落到界面上
       const rawFinal = (r.finalText || "").trim();
       // 调用方（Web / IM / 定时任务）都指望 runTask 就地把回复追加进 history。
