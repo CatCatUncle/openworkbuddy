@@ -13039,7 +13039,8 @@ function testI18n() {
   assert(/function langBlock\(lang\)/.test(ag) && /\n\s*const stableSystem = [^\n]*\+ langBlock\(lang\) \+ modePrompt\(mode\);/.test(ag)
     && /\n\s*const system = stableSystem \+ \(await volatileSystemBlock\(\{[^}]*projBlock/.test(ag), "agent 系统提示词没拼 langBlock");
   assert(/if \(extra\.lang\) parts\.push\(langBlock\(extra\.lang\)\)/.test(ag) && /\{ projectContext, history, lang \}/.test(ag), "本机引擎（claude/codex）的系统提示词没接 lang");
-  assert((ag.match(/askUser, lang[,}]/g) || []).length === 2 && (ag.match(/^        lang,\n/gm) || []).length === 2, "专家子任务没继承 lang");
+  // 三处子任务：专家、专家团、explore（只读探索）。少一处，英文界面下那个子任务就回中文了
+  assert((ag.match(/askUser, lang[,}]/g) || []).length === 2 && (ag.match(/^        lang,\n/gm) || []).length === 3, "专家 / 专家团 / explore 子任务没继承 lang");
   const fnSrc = ag.slice(ag.indexOf("function langBlock(lang) {"), ag.indexOf("\n}\n", ag.indexOf("function langBlock(lang) {")) + 3);
   const langBlock = new Function(fnSrc + "\nreturn langBlock;")();
   assert(langBlock("zh") === "" && langBlock(undefined) === "" && langBlock("xx") === "", "langBlock 只在 en 生效，其它值一律不加话");
