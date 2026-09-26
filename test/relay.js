@@ -38,6 +38,8 @@ const http = require("http");
 // 必须先于任何 require：这几个模块在加载的那一刻就把 DATA_DIR 定死了。
 // 不隔离的话，这套测试会往用户真正的 vkeys.json、账号表和流水账里写东西。
 const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "owb-relay-"));
+// 只设 DATA_DIR 不够：log.js / 工作区这些按 OPENWORKBUDDY_HOME 找，鉴权、计费的告警会进仓库的 logs/
+process.env.OPENWORKBUDDY_HOME = HOME;
 process.env.OPENWORKBUDDY_DATA_DIR = path.join(HOME, "data");
 fs.mkdirSync(process.env.OPENWORKBUDDY_DATA_DIR, { recursive: true });
 

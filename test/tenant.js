@@ -974,11 +974,12 @@ async function login(username, password) {
   // 这一节挂的是**真的 im.js 路由 + 真的 im-store**，只把 runtime 换成能拦住的替身。
   const imSessions = createImSessionStore({ dir: path.join(TMP, "im-sessions") });
   const seen = [];
-  const hooks = { onStart: null, hold: null };
+  const hooks = { onStart: null, hold: null, changed: null };
   const fakeRuntime = {
     runTask: async (args) => {
       seen.push(args);
       if (args.emit) args.emit({ type: "tool_use", name: "read_file", purpose: "翻资料" });
+      if (hooks.changed && args.emit) args.emit({ type: "files", changed: hooks.changed });
       if (hooks.onStart) hooks.onStart();
       if (hooks.hold) await hooks.hold;
       return { finalText: "跑完了" };
@@ -1094,6 +1095,28 @@ async function login(username, password) {
   eq(unhandled.length, 0, "全程没有漏出去的 rejection（回复之后再抛会二次写响应头）", unhandled);
   delete imConfig.im.wecom_bot_webhook;
   await new Promise((res2) => hookSrv.close(res2));
+
+  // 产出写在第四层往下：outputFiles() 只走三层，以前 files 里就没有它，附件悄悄不发
+  console.log("\n【28c】/im/task 回的 files 里有深层产出（第五层也不漏）");
+  {
+    const wsDir = tools.getWorkspaceDir();
+    const deep = "任务_im/site/assets/img/新.png";
+    fs.mkdirSync(path.join(wsDir, path.dirname(deep)), { recursive: true });
+    fs.writeFileSync(path.join(wsDir, deep), "png");
+    fs.writeFileSync(path.join(wsDir, "任务_im/说明.md"), "md");
+    hooks.changed = ["任务_im/说明.md", deep, "任务_im/早删了.md"];
+    try {
+      r = await call("POST", "/im/task", { body: { message: "做个页面", session: "s3" } });
+      const names = ((r.json && r.json.files) || []).map((f) => f.name);
+      ok(names.includes(deep), "第五层的产出在 files 里（以前只剩浅的那个）", names);
+      ok(names.includes("任务_im/说明.md"), "浅层的照旧在", names);
+      ok(!names.includes("任务_im/早删了.md"), "盘上已经没有的不冒充产出", names);
+      eq(names.length, 2, "不多不少两个", names);
+    } finally {
+      hooks.changed = null;
+      fs.rmSync(path.join(wsDir, "任务_im"), { recursive: true, force: true });
+    }
+  }
 
   const IMSRC = fs.readFileSync(path.join(ROOT, "im.js"), "utf8");
   ok(!/(^|[^.\w])pushWecom\(/m.test(IMSRC), "im.js 里不再调那个不存在的 pushWecom（要推送走同文件的 pushBots）");

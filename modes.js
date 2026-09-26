@@ -71,7 +71,23 @@ function modeHint(bad) {
  * 由 `/api/modes` 发给前端，而不是让前端再抄一遍。
  */
 
+/**
+ * Plan 跑完之后的「接下来」：终端里是一张两行的单子（repl-commands.js 的 planNextRows），
+ * 桌面端是计划卡底下两颗按钮。两边说的得是同一句话、发出去的得是同一条消息——
+ * 不然同一份计划在终端里开干和在界面上开干，模型收到的是两套要求，收尾汇报的口径也对不上。
+ * go 跟 repl-commands.js 的 PLAN_GO_TEXT 一字不差，test/desktop-ux.js 钉着，漂了就红。
+ * 前端从 /api/modes 取，不在 app-0x.js 里抄第二份。
+ */
+const PLAN_HANDOFF = Object.freeze({
+  go: "按上面这份计划开始做。做完逐条对照计划说清楚：哪几步做了，哪几步没做、为什么。",
+  goLabel: "按这份计划开干",
+  moreLabel: "接着改计划",
+  morePlaceholder: "哪一步要改？",
+  doneLabel: "已开干",
+});
+
 module.exports = {
   EXEC_MODES, AGENT_MODES, MODE_IDS, MODE_ARG, DEFAULT_MODE,
   modeOf, normalizeMode, isMode, agentMode, isGoalMode, modeLabel, modeHint,
+  PLAN_HANDOFF,
 };

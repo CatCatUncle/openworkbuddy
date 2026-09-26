@@ -312,6 +312,7 @@ function record(cap, { n = 1, provider = "", model = "", meta = "", units = 0, h
   if (billable(cap)) {
     try { cost = pricing.costOfUnits({ cap, model: key, units: u }, (who && who.price) || {}); } catch {}
   }
+  try { if (cost || !(CAPS[cap] && CAPS[cap].paid === false)) require("./run-spend").note({ cap, model: key, yuan: cost ? cost.yuan : 0, unknown: !cost || !!cost.unknown }); } catch {} // 这一趟花了多少（飞书卡片那一行），没在 track 里就是空操作；付费但表里没单价的（判断模型）记成一项「单价未知」，不当没花；paid:false 的（抓网页）不算
   try { budget.settle(hold, cost && !cost.unknown ? cost.yuan : 0); } catch {}
 
   try {

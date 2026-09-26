@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "name": "OpenWorkBuddy",
+  "slug": "openworkbuddy",
+  "aliases": ["OWB"],
+  "one_liner": {
+    "zh": "装在桌面上的 AI 同事：写文档、做图、剪视频、跑定时任务",
+    "en": "An AI coworker on your desktop: docs, images, videos and scheduled tasks"
+  },
+  "audience": "要天天产出内容、又不想在十个工具之间来回切的人",
+  "selling_points": [
+    { "text": "源码公开，个人使用免费", "source": "https://github.com/CatCatUncle/openworkbuddy", "checked_at": "2026-09-26" },
+    { "text": "模型用你自己的账号，数据留在你的电脑上" },
+    { "text": "改文件、跑命令前先弹卡问你" }
+  ],
+  "links": [{ "label": "GitHub", "url": "https://github.com/CatCatUncle/openworkbuddy" }],
+  "colors": [
+    { "name": "主紫", "hex": "#5B5FF7", "role": "primary" },
+    { "name": "墨", "hex": "#17181C", "role": "text" },
+    { "name": "白", "hex": "#FFFFFF", "role": "bg" }
+  ],
+  "voice": { "speed": 1 },
+  "tone": "像靠谱的同事说话：先说能帮你做成什么，再说怎么做，不喊口号",
+  "signature": "开发者猫叔",
+  "cta": "去 GitHub 下载试试",
+  "banned_words": ["颠覆", "吊打", "秒杀"],
+  "compliance_notes": ["不承诺具体的效率提升倍数"]
+}

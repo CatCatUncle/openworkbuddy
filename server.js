@@ -293,10 +293,13 @@ if (appPath("experts.json") !== EXPERTS_FILE) {
   try {
     const bundled = store.readJson(appPath("experts.json"), null);
     const hadSeen = Array.isArray(expertsMeta.seen_builtins);
-    const r = bundled ? mergeBuiltinExperts(expertsMeta, bundled) : { added: [], addedTeams: [] };
-    if (r.added.length || r.addedTeams.length || (bundled && !hadSeen)) {
+    // 技能那本「见过」账第一次记也要落盘：不记下来，下次启动又当第一次跑，用户删掉的技能会被补回去
+    const hadSeenSkills = !!(expertsMeta.seen_builtin_skills && typeof expertsMeta.seen_builtin_skills === "object");
+    const r = bundled ? mergeBuiltinExperts(expertsMeta, bundled) : { added: [], addedTeams: [], bound: [] };
+    if (r.added.length || r.addedTeams.length || r.bound.length || (bundled && (!hadSeen || !hadSeenSkills))) {
       store.writeJsonAtomic(EXPERTS_FILE, expertsMeta, { pretty: true });
       if (r.added.length || r.addedTeams.length) console.log(`[专家] 升级补入内置专家 ${r.added.length} 位、专家团 ${r.addedTeams.length} 个：${[...r.added, ...r.addedTeams].join("、")}`);
+      if (r.bound.length) console.log(`[专家] 升级给内置专家补绑技能 ${r.bound.length} 个：${r.bound.join("、")}`);
     }
   } catch (e) { console.warn("[专家] 合并内置专家失败（不影响启动）:", e.message); }
 }
@@ -812,7 +815,9 @@ function recordingEmit(send, events, sessionId, { pet = true } = {}) {
       // partial 是给回放用的实话：存下来的这份 files 已经被裁成「这一批变更」了，不是全量清单。
       // 前端拿不到全量就不能判定谁没了——早先没这个标记，回放时每来一批就把上一批的产出
       // 全盖上「已删除」，用户看到的是四个文件全被划掉，其实一个都没删
-      if (chg.length) events.push({ type: "files", changed: chg, files: (ev.files || []).filter((f) => chg.includes(f.name)), partial: true, root: ev.root });
+      // 第 4 层往下、挤出最新 500 条的产出不在 files 里，在 turn_files 里（两份不重名）：并起来再裁，不然回放时那几张卡画不出来
+      const pool = (ev.files || []).concat(ev.turn_files || []);
+      if (chg.length) events.push({ type: "files", changed: chg, files: pool.filter((f) => chg.includes(f.name)), partial: true, root: ev.root });
     } else if (["tool_use", "tool_result", "parallel", "expert_start", "expert_done", "error", "limit", "auto_continue", "failover", "sleep", "trim", "compact", "usage", "interject", "worktree", "credits", "sources", "ask_user", "ask_answer", "milestones", "todos", "context", "trace"].includes(ev.type)) {
       // 工具事件盖个时间戳（send 已经发出去了，这里只影响存盘）：回放时轨迹条才算得出每步耗时
       if (ev.type === "tool_use" || ev.type === "tool_result") ev.at = ev.at || Date.now();
@@ -1172,6 +1177,21 @@ app.get("/api/update", async (req, res) => {
 });
 
 app.get("/api/files", (_req, res) => res.json(outputFiles()));
+
+// 资料库「工作区」那一栏：一次列一层，像访达那样一层层点进去。/api/files 是「最近动过的 500 个、
+// 最深 3 层」，拿它当全集的话，第 4 层往下和第 501 个往后的文件哪儿都找不到（细账在 lib/ws-browse.js 开头）。
+// 根跟 /api/files 是同一个：getWorkspaceDir() 已经被 tenantScope 绑到这个人所属组织、当前项目的工作区上。
+// dir 里的 ..、绝对路径、链接一律 400；文件夹已经没了回 404，前端据此退回根。
+const wsBrowse = require("./lib/ws-browse");
+app.get("/api/files/tree", (req, res) => {
+  try {
+    const root = getWorkspaceDir();
+    const out = wsBrowse.listDir(root, req.query.dir, { appDataDir: dataPath("data"), offset: req.query.offset });
+    res.json({ ...out, root: workspaceKeyOf(root) });
+  } catch (e) {
+    res.status((e && e.status) || 500).json({ error: (e && e.message) || "读不了这个文件夹" });
+  }
+});
 
 // 画布 / 短剧分镜表 / 一键合成三组路由在 routes/ 下，合成的任务队列在 lib/compose-jobs.js。
 // 挂在这个位置不挪：登录、租户根、平台权限、脱敏这几道闸都在前面，过完了 getWorkspaceDir 才认得出是谁的工作区。
@@ -2440,6 +2460,8 @@ app.get("/api/security/approvals", (req, res) => {
     session_allow: security.listSessionAllow(),
     // 界面照这个决定要不要画「一直允许」那颗按钮：会 403 的按钮不该摆在那儿
     can_always: scopeTo === undefined,
+    // 服务器此刻的钟：界面按 deadline - now 算还剩多久，两边的钟差多少都不影响倒计时
+    now: Date.now(),
   });
 });
 /**
@@ -2482,7 +2504,8 @@ app.post("/api/security/approvals/:id", (req, res) => {
 // 执行模式表。界面上那个下拉不再自己写四行 HTML，从这儿取——
 // 「网页四个、命令行三个」就是抄出来的：goal 是后加的，抄到第三份就漏了。
 // 这里没有任何机密，也不按人区分，所以不设门禁：没登录的首屏也得画得出模式菜单。
-app.get("/api/modes", (_req, res) => res.json({ modes: modes.EXEC_MODES, default: modes.DEFAULT_MODE }));
+// plan：Plan 跑完那两颗按钮的字和「开干」时真正发出去的那句（跟终端 /mode 单子同一份，见 modes.js）
+app.get("/api/modes", (_req, res) => res.json({ modes: modes.EXEC_MODES, default: modes.DEFAULT_MODE, plan: modes.PLAN_HANDOFF }));
 
 /**
  * 哪条媒体渠道正被熔断闸停着。
@@ -2694,7 +2717,8 @@ app.get("/api/cli/pending", (req, res) => {
     const ids = sid ? [sid] : cliLive.list({ prune: false }).filter((r) => r.live).map((r) => r.id);
     const rows = [];
     for (const id of ids) for (const a of cliLive.pending(id)) rows.push({ ...a, sessionId: id });
-    res.json({ rows, allowed: true });
+    // now 同审批列表：手机和电脑的钟对不齐，倒计时按服务器的钟校正
+    res.json({ rows, allowed: true, now: Date.now() });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -3584,9 +3608,15 @@ function statLookup(roots) {
 }
 
 app.get("/api/library/outputs", (req, res) => {
-  const now = outputFiles();
-  const meta = new Map(now.map((f) => [f.name, f]));
-  const scope = filesScope(now);
+  // 认领和「未归属」都拿**整个**工作区比，不拿 outputFiles()：那份只有最近的 500 个、最深 3 层，
+  // 拿它比的话，第 4 层往下的文件既不算任务产出、也不进「未归属」，整页哪儿都找不到它。
+  // full 仍按 outputFiles() 算：它说的是「files 事件那份快照截没截断」，老调用方靠它判「已删除」
+  const walk = wsBrowse.walkAllCached(getWorkspaceDir(), { appDataDir: dataPath("data") });
+  const meta = new Map(walk.files.map((f) => [f.name, f]));
+  const scope = filesScope(outputFiles());
+  // 未归属回多少条：默认 200（文件夹视图、搜索只借这份数据反查「出自哪次任务」，用不着全量）；
+  // 「按任务」视图要翻完全部，会自己带上一个大数
+  const lim = Math.max(0, Math.min(wsBrowse.WALK_CAP, parseInt(String((req.query || {}).orphan_limit || ""), 10) || 200));
   const statOf = statLookup(knownRoots().slice(0, 12)); // 根的条数不设限的话，一次请求能把 stat 乘成几万次
   const claimed = new Set();
   const tasks = [];
@@ -3613,9 +3643,11 @@ app.get("/api/library/outputs", (req, res) => {
   }
   // 「未归属」：工作目录里确实有、但没有任何一条任务认领过的文件——手动拷进来的素材、
   // 更早版本产出的东西、别的工具写的。不列出来的话这一页就成了半份清单，用户会以为文件丢了。
-  const orphans = now.filter((f) => !claimed.has(f.name))
+  const orphans = walk.files.filter((f) => !claimed.has(f.name))
     .map((f) => ({ name: f.name, size: f.size, mtime: f.mtime, gone: false }));
-  res.json({ tasks, orphans: orphans.slice(0, 200), orphan_total: orphans.length, ...scope });
+  // ws_total / ws_capped：工作区里一共多少个文件、数没数全（撞了两万个或十二层的线就是没数全）。
+  // 文件夹视图的「全部 N 个」和这里的 orphan_total 都照这个说，数不全就明说数不全
+  res.json({ tasks, orphans: orphans.slice(0, lim), orphan_total: orphans.length, ws_total: walk.files.length, ws_capped: walk.capped, ...scope });
 });
 
 // 能当正文搜的类型。二进制（图片/压缩包/PDF）只搜文件名——把 PDF 当 utf8 读进来
@@ -3734,8 +3766,11 @@ app.get("/api/library/search", (req, res) => {
   // 可那正是 TEXTY 和 SEARCH_MAX_BYTES 两道闸在管的事。真实后果是：这台机器上资料库一个文件
   // 都没有，东西全在工作区，于是「全文搜索」实际上一次都没真正跑起来过，搜「上个月那份复盘里
   // 提到的那家供应商」永远是空的。搜的是内容，不是文件名。
+  // 名字按整个工作区搜（不是 outputFiles() 那最近 500 个、最深 3 层）；新的在前，
+  // 所以正文预算先花在最近的文件上，翻不完照旧报 capped
   const wsRoot = getWorkspaceDir();
-  const wsAll = outputFiles();
+  const wsWalk = wsBrowse.walkAllCached(wsRoot, { appDataDir: dataPath("data") });
+  const wsAll = wsWalk.files;
   const ws = [];
   for (const f of wsAll) {
     let hit;
@@ -3749,6 +3784,14 @@ app.get("/api/library/search", (req, res) => {
     .slice(0, 50).map((n) => ({ id: n.id, text: n.text, at: n.at }));
 
   const wsMeta = new Map(wsAll.map((f) => [f.name, f])); // 上面已经遍历过一次，别再走一趟全树
+  // 全量那趟撞了线（两万个、十二层）或者文件被收进了「以前的文件_」，不在 wsMeta 里≠没了：跟 outputs 一样再 stat 一眼
+  const statOf = statLookup(knownRoots().slice(0, 12));
+  const taskFile = (n) => {
+    const f = wsMeta.get(n);
+    if (f) return { name: n, size: f.size, mtime: f.mtime, gone: false };
+    const st = statOf(n);
+    return st ? { name: st.at || n, size: st.size, mtime: st.mtime, gone: false } : { name: n, size: 0, mtime: "", gone: st === false };
+  };
   const tasks = [];
   for (const row of listTaskOutputs()) {
     if (!ownSession(req.user, row)) continue;
@@ -3758,12 +3801,13 @@ app.get("/api/library/search", (req, res) => {
     tasks.push({
       id: row.id, title: row.title, at: row.at, project: row.project, lane: row.lane,
       by: titleHit ? "title" : "file",
-      files: files.slice(0, 20).map((n) => { const f = wsMeta.get(n); return { name: n, size: f ? f.size : 0, mtime: f ? f.mtime : "", gone: !f }; }),
+      files: files.slice(0, 20).map(taskFile),
     });
     if (tasks.length >= 50) break;
   }
 
-  res.json({ q, lib, ws, notes, tasks, scanned: budget.scanned, capped: budget.capped });
+  // ws_capped：工作区文件多到全量那趟没走完，名字也没搜全。跟 capped（正文预算用完）是两回事，分开报
+  res.json({ q, lib, ws, notes, tasks, scanned: budget.scanned, capped: budget.capped, ws_capped: wsWalk.capped });
 });
 
 // ---------- 长期记忆 ----------

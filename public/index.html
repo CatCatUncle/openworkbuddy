@@ -626,6 +626,8 @@
   .ev-fb-down a { color: var(--owb-brand-text); text-decoration: none; white-space: nowrap; }
   .proc-wrap.open .proc-body { display: block; }
   .proc-body .a-text { color: var(--owb-text-2); font-size: 14px; }
+  /* 挪出去又收回折叠区的那段正文，原地留一块同高的空壳缩成 0：下面的内容是滑上来的，不是一下子窜上来 */
+  .a-text-ghost { overflow: hidden; pointer-events: none; transition: height 150ms var(--owb-ease), opacity 150ms var(--owb-ease); }
   /* 本次产出：把成果文件直接摆在对话里，点开就看，不用去右侧文件面板翻 */
   .out-block { margin: 12px 0 4px; }
   .out-hd { font-size: 13px; color: var(--owb-text-3); margin-bottom: 8px; }
@@ -643,6 +645,8 @@
   .out-grid:empty { display: none; }
   /* 变更清单：紧凑行，不是一堆方框卡片 */
   .out-list { display: flex; flex-direction: column; gap: 2px; margin-top: 4px; }
+  /* 数不全时的那句实话（「N+」后面的原因）：跟清单同字号、压暗，不抢成果的版面 */
+  .out-note { margin-top: 4px; padding: 0 8px; font-size: 12px; color: var(--owb-text-3); }
   .out-row { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: var(--radius-md); font-size: 13px; color: var(--owb-text-2); cursor: pointer; }
   .out-row:hover { background: var(--owb-bg-hover); }
   /* 目录省略、文件名保全：一行放不下时先吃掉前面的目录，文件名是用来认东西的那半截 */
@@ -742,6 +746,12 @@
   .hist-item .hsrc .i { width: 12px; height: 12px; }
   .hist-item:hover .hsrc, .hist-item.active .hsrc { color: var(--owb-text-2); }
   @keyframes hrun-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+  /* 注意力点（app-01-attention.js）：跟「在跑」同一个位置同一个大小，只换颜色、不闪——
+     闪的只有正在跑的那颗，等你的这几颗是静止的，一眼就分得出「它在忙」和「它在等你」 */
+  .hist-item .hdot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; }
+  .hist-item .hdot.ask { background: var(--owb-warn-text); }
+  .hist-item .hdot.error { background: var(--owb-err); }
+  .hist-item .hdot.unseen { background: var(--owb-brand); }
   .hist-item .hx { display: inline-flex; align-items: center; border: 0; background: none; font: inherit; cursor: pointer; opacity: 0; pointer-events: none; color: var(--owb-text-3); padding: 0 3px; border-radius: var(--radius-xs); flex: none; }
   .hist-item:hover .hx, .hist-item:focus-within .hx { opacity: 1; pointer-events: auto; }
   .hist-item .hx:hover { color: var(--owb-err-text); }
@@ -890,10 +900,16 @@
   .quick-bar .picker-btn { font-size: 13px; }
   .plan-list { border: 1px solid var(--owb-border); border-radius: var(--radius-lg); padding: 10px 14px; margin: 8px 0; background: var(--owb-bg-side); }
   .plan-list .pl-head { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
-  .plan-list .pl-item { display: flex; align-items: flex-start; gap: 8px; padding: 4px 0; font-size: 14px; cursor: pointer; }
-  .plan-list .pl-item input { margin-top: 3px; accent-color: var(--owb-brand-text); }
-  .plan-list .pl-item input:checked + span { color: var(--owb-text-3); text-decoration: line-through; }
-  .plan-list .pl-run { margin-top: 8px; border: none; background: var(--owb-brand); color: #fff; border-radius: var(--radius-md); padding: 6px 14px; font-size: 13px; cursor: pointer; }
+  /* 步骤是给人读的编号列表，不是勾选框：勾了模型也收不到，只会让人以为「勾掉的那步它就不做了」 */
+  .plan-list .pl-steps { margin: 0; padding-left: 1.4em; font-size: 14px; color: var(--owb-text-2); }
+  .plan-list .pl-steps li { padding: 2px 0; }
+  .plan-list .pl-acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+  .plan-list .pl-acts:first-child { margin-top: 0; }
+  .plan-list .pl-acts button { display: inline-flex; align-items: center; gap: 4px; border-radius: var(--radius-md); padding: 6px 12px; font-size: 13px; cursor: pointer; }
+  .plan-list .pl-run { border: 1px solid transparent; background: var(--owb-brand); color: #fff; }
+  .plan-list .pl-more { border: 1px solid var(--owb-border); background: transparent; color: var(--owb-text); }
+  .plan-list .pl-more:hover:not(:disabled) { background: var(--owb-bg-hover); }
+  .plan-list .pl-acts button:disabled { opacity: .6; cursor: default; }
   /* ---------- 引用：输入框上钉的那张卡 ----------
      和飞书/ChatGPT 一样，引用是压在输入框上方的一件东西，不是塞进框里的一段字。
      左边一道品牌色竖条 = 「这是别人说的话」；正文最多两行，再多就该去看原文了，
@@ -1161,6 +1177,9 @@
   /* 状态提示不该像系统报错的黑条压住输入框。放右下角、用当前主题的表面色，信息是“发生了什么”，不是另一个弹窗。 */
   #owb-toast { position: fixed; left: auto; right: 18px; bottom: 18px; max-width: min(420px, calc(100vw - 36px)); transform: translateY(8px); background: color-mix(in srgb, var(--owb-card) 94%, transparent); backdrop-filter: saturate(140%) blur(16px); -webkit-backdrop-filter: saturate(140%) blur(16px); color: var(--owb-text); border: 1px solid var(--owb-border); box-shadow: var(--owb-shadow-md); padding: 9px 12px; border-radius: var(--radius-lg); font-size: 13px; line-height: 1.45; opacity: 0; pointer-events: none; transition: opacity var(--owb-t) var(--owb-ease); z-index: 999; }
   #owb-toast.show { opacity: 1; }
+  /* 带去处的提示（「某某在等你回答，点这里过去」）要能点；普通提示照旧点穿 */
+  #owb-toast.act.show { pointer-events: auto; cursor: pointer; }
+  #owb-toast.act:focus-visible { outline: 2px solid var(--owb-brand); outline-offset: 2px; }
   #chat-search { display: none; position: absolute; top: 50px; right: 20px; z-index: 50; background: var(--owb-bg); border: 1px solid var(--owb-border); border-radius: var(--radius-lg); box-shadow: var(--shadow-menu); padding: 6px 8px; gap: 6px; align-items: center; }
   #chat-search input { margin: 0; width: 200px; border: none; outline: none; background: none; font-size: 14px; }
   #chat-search button { border: none; background: none; cursor: pointer; color: var(--owb-text-2); padding: 3px 6px; border-radius: var(--radius-sm); }
@@ -1186,6 +1205,8 @@
      是用户决定点允许还是拒绝的唯一依据，不该是最淡的那一档。提到第二级 5.03:1 */
   .ap-row .ap-why { color: var(--owb-text-2); }
   .ap-row .ap-src { color: var(--owb-brand-text); font-weight: normal; }
+  .ap-row .ap-left { margin-left: 8px; font-weight: normal; font-size: 12px; color: var(--owb-text-3); font-variant-numeric: tabular-nums; }
+  .ap-row .ap-left.hot { color: var(--owb-err-text); }
   .ap-row .ap-cmd { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: Consolas, monospace; font-size: 13px; color: var(--owb-text-2); }
   /* 改文件的 diff 摆在审批条里：批的是这几行，不是文件名 */
   .ap-row .ap-diff { margin: 6px 0 0; max-height: 160px; overflow: auto; font-family: var(--owb-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace); font-size: 12px; line-height: 1.5; color: var(--owb-code-text); background: var(--owb-code-bg); border-radius: var(--radius-md); padding: 8px 10px; white-space: pre; }
@@ -1681,6 +1702,41 @@
   /* 答完就缩成一行：问题留着（回头看得懂当时在纠结什么），选项和输入框收走 */
   .ask-card.done { border-left-color: var(--owb-border); background: var(--owb-bg-side); }
   .ask-card.done .ask-opts, .ask-card.done .ask-free, .ask-card.done .ask-timer { display: none; }
+  /* 内容配方的开头表单：跟 ask-card 同一个壳，一项一行。
+     选项是分段按钮（单选）或胶囊（多选），用不了的照样摆出来、标灰，底下一行写原因——
+     藏起来的话用户不知道「AI 生成画面」这条路存在，更不知道去哪儿补 */
+  .ask-form .rf-blurb { font-size: 13px; color: var(--owb-text-2); line-height: 1.5; margin: -8px 0 8px; }
+  .ask-form .rf-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 12px; color: var(--owb-text-3); margin-bottom: 8px; }
+  .ask-form .rf-notes { list-style: none; margin: 0 0 12px; padding: 8px 12px; border-radius: var(--radius-lg); background: var(--owb-bg-side); display: flex; flex-direction: column; gap: 4px; }
+  .ask-form .rf-notes li { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; color: var(--owb-text-2); line-height: 1.5; }
+  .ask-form .rf-notes li .i { flex: none; margin-top: 2px; }
+  .ask-form .rf-fields { display: flex; flex-direction: column; gap: 12px; }
+  .ask-form .rf-row { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 8px 12px; align-items: start; }
+  .ask-form .rf-lb { font-size: 13px; font-weight: 500; color: var(--owb-text); padding-top: 4px; }
+  .ask-form .rf-req { margin-left: 4px; font-size: 12px; font-weight: 400; color: var(--owb-err-text); }
+  .ask-form .rf-ctl { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+  .ask-form .rf-seg, .ask-form .rf-chips, .ask-form .rf-suggest { display: flex; flex-wrap: wrap; gap: 8px; }
+  .ask-form .rf-opt, .ask-form .rf-chip { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 0; padding: 4px 12px; border: 1px solid var(--owb-border); border-radius: var(--radius-lg); background: var(--owb-bg); color: var(--owb-text-2); font-size: 13px; text-align: left; cursor: pointer; }
+  .ask-form .rf-chip { border-radius: var(--radius-full); }
+  .ask-form .rf-opt .dt { font-size: 12px; color: var(--owb-text-3); }
+  .ask-form .rf-opt:hover, .ask-form .rf-chip:hover, .ask-form .rf-opt:focus-visible, .ask-form .rf-chip:focus-visible { border-color: var(--owb-brand-text); outline: none; }
+  .ask-form .rf-opt.on, .ask-form .rf-chip.on { border-color: var(--owb-brand-text); background: var(--owb-brand-weak); color: var(--owb-brand-text); }
+  .ask-form .rf-opt.off, .ask-form .rf-chip.off { opacity: .5; cursor: not-allowed; border-style: dashed; }
+  .ask-form .rf-why { font-size: 12px; color: var(--owb-text-3); line-height: 1.5; }
+  .ask-form .rf-text { width: 100%; min-width: 0; box-sizing: border-box; border: 1px solid var(--owb-border); border-radius: var(--radius-lg); padding: 4px 12px; font-size: 13px; line-height: 20px; background: var(--owb-bg); color: var(--owb-text); }
+  .ask-form .rf-text:focus { outline: none; border-color: var(--owb-brand-text); }
+  .ask-form .rf-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 16px; }
+  .ask-form .rf-go { display: inline-flex; align-items: center; gap: 4px; border: none; background: var(--owb-brand-grad); color: #fff; border-radius: var(--radius-lg); padding: 8px 16px; font-size: 13px; cursor: pointer; }
+  .ask-form .rf-def { border: 1px solid var(--owb-border); background: var(--owb-bg); color: var(--owb-text-2); border-radius: var(--radius-lg); padding: 8px 16px; font-size: 13px; cursor: pointer; }
+  .ask-form .rf-def:hover { border-color: var(--owb-brand-text); color: var(--owb-brand-text); }
+  .ask-form .rf-err { font-size: 12px; color: var(--owb-err-text); }
+  .ask-form .rf-sum { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--owb-text-2); line-height: 1.5; }
+  .ask-card.ask-form.done .rf-acts, .ask-card.ask-form.done .rf-fields, .ask-card.ask-form.done .rf-notes { display: none; }
+  /* 手机宽度：标签挪到上面，选项占满一整行 */
+  @media (max-width: 560px) {
+    .ask-form .rf-row { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+    .ask-form .rf-lb { padding-top: 0; }
+  }
 
   /* 收尾问一句：这次顺手造的中间文件要不要清掉。
      摆在正文流里而不是弹个 toast：toast 三秒就没，而这件事需要用户看清单、逐组决定。
@@ -2096,7 +2152,9 @@
   .lib-note-tip { font-size: 12px; color: var(--owb-text-3); padding: 0 8px 6px; line-height: 1.5; }
   /* 视图切换：文件夹 = 东西放在哪，按任务 = 东西是哪次做出来的。段落式按钮而不是下拉，
      因为这两种找法用户是来回换着用的，藏进下拉每次都要多点一下 */
-  .lib-tabs { display: flex; gap: 2px; flex: none; margin: 10px 0 6px; padding: 2px; background: var(--owb-bg-side); border-radius: var(--radius-lg); }
+  /* 四个找法（文件夹 / 按任务 / 工作区 / 笔记）排成两行两列：232px 挤一排的话每格五十来像素，
+     「工作区」「Workspace」连图标带字放不下，字被裁掉半截还看不出来 */
+  .lib-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; flex: none; margin: 10px 0 6px; padding: 2px; background: var(--owb-bg-side); border-radius: var(--radius-lg); }
   .lib-tab { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 4px; padding: 5px 4px; border: none; background: none; border-radius: var(--radius-md); font-size: 12px; color: var(--owb-text-2); cursor: pointer; white-space: nowrap; min-width: 0; }
   .lib-tab .i { width: 13px; height: 13px; flex: none; }
   .lib-tab:hover { color: var(--owb-text); }
@@ -2134,6 +2192,18 @@
   /* 扫描预算到顶时的实话。搜不全可以，让人以为搜全了不行——一条灰底提示比一份沉默的半截清单诚实 */
   .lib-capped { display: flex; align-items: flex-start; gap: 6px; margin: 10px 2px 4px; padding: 8px 10px; background: var(--owb-bg-side); border-radius: var(--radius-md); font-size: 12px; line-height: 1.6; color: var(--owb-text-3); }
   .lib-capped .i { width: 13px; height: 13px; flex: none; margin-top: 3px; color: var(--owb-warn, var(--owb-text-3)); }
+  /* 「再显示 300 个（还剩 N 个）」：整行宽的虚线框，一眼看得出不是一个文件。
+     图标视图里要独占一行，画廊里跟着胶片横排在最后 */
+  .lib-more { display: block; width: 100%; height: var(--owb-ctl-h, 32px); margin: 8px 0 4px; padding: 0 12px; border: 1px dashed var(--owb-border); border-radius: var(--radius-md); background: none; font-size: 12px; color: var(--owb-text-2); cursor: pointer; }
+  .lib-more:hover { color: var(--owb-brand-text); border-color: var(--owb-brand-text); }
+  .lib-list.as-icon .lib-more { grid-column: 1 / -1; }
+  .lib-list.as-gallery .lib-more { flex: none; width: auto; align-self: center; margin: 0 4px; white-space: nowrap; }
+  /* 工作区一层超过一页时的上一页 / 下一页：两颗并排，翻到头的那颗置灰 */
+  .lib-pager { display: flex; gap: 8px; }
+  .lib-pager .lib-more { flex: 1; width: auto; }
+  .lib-pager .lib-more:disabled { opacity: .45; cursor: default; color: var(--owb-text-3); border-color: var(--owb-border); }
+  .lib-list.as-icon .lib-pager { grid-column: 1 / -1; }
+  .lib-list.as-gallery .lib-pager { flex: none; align-self: center; }
 
   /* 预览栏 */
   .lib-prev { border: 1px solid var(--owb-border); border-radius: var(--radius-xl); min-height: 420px; max-height: calc(100vh - 150px); padding: 18px 20px; overflow: auto; }
@@ -2954,11 +3024,13 @@
 <!-- 应用脚本：原单块内联 script 按顶层语句边界拆成顺序加载的经典脚本（非 ESM，共享全局作用域，语义与内联时完全一致）。改代码直接改 js/ 下的分片，刷新即生效。 -->
 <script src="js/app-00-ui.js"></script>
 <script src="js/app-01.js"></script>
+<script src="js/app-01-attention.js"></script>
 <script src="js/app-02.js"></script>
 <script src="js/app-03.js"></script>
 <script src="js/app-04.js"></script>
 <script src="js/app-05.js"></script>
 <script src="js/app-06.js"></script>
+<script src="js/app-08-recipe.js"></script>
 <!--
   无限画布那三个文件（joint 463KB + dagre 95KB + 画布本体 128KB）不在这儿加载了。
 

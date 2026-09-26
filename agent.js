@@ -4,7 +4,7 @@
  * 主 Agent 是"协调者"：可直接干活，也可通过 delegate_to_expert 把子任务委派给专家子智能体。
  */
 
-const { TOOL_DEFS, executeTool, outputFiles, isUserInput, filesScope, getWorkspaceDir, orgPolicy, badToolArgs } = require("./tools");
+const { TOOL_DEFS, executeTool, outputFiles, turnSnapshot, statOutputs, isUserInput, filesScope, getWorkspaceDir, orgPolicy, badToolArgs } = require("./tools");
 const { loadSkills, SKILLS_DIR } = require("./skills");
 const awake = require("./awake"); // 睡眠治理：任务期间防睡 + 睡了顺延时限
 const engines = require("./engines"); // 底层引擎：内置循环 / 本机 Claude Code / 本机 Codex
@@ -22,6 +22,7 @@ const systemOne = require("./systemone"); // 判断模型的纯逻辑：排版�
 const continueGate = require("./continue-gate"); // 续跑之前那道闸的纯判据（只出题、读答案，一个字的网络不发）
 const askGate = require("./ask-gate");   // 弹给用户那一问之前那道闸的纯判据（同上，不发网络）
 const skillGate = require("./skill-gate"); // 开工之前「该照哪个技能做」的纯判据，以及已加载技能挂进系统提示词那一段（同上，不发网络）
+const recipes = require("./recipes"); // 内容配方：开头一张表单定岔路、答案钉进系统提示词、按配方放宽上限
 
 const DELEGATE_TOOL = {
   name: "delegate_to_expert",
@@ -76,11 +77,13 @@ const EXPLORE_TOOL = {
 const ASK_USER_TOOL = {
   name: "ask_user",
   description:
-    "向用户提一个关键问题并等待回答（前端会弹出选项卡片，用户点选或输入后你才继续，等待时间不算任务时长）。两类时机要主动用：①开工前——需求含糊到可能白干一场，或风格/范围/平台/受众/篇幅这类选择会让交付物完全不同（典型：封面图是 AI 生图还是 HTML 排版截图、报告交 Word 还是 PDF 还是飞书文档、视频出横版还是竖版），先问一题再动手，比做完返工强；②执行中——要花钱、不可逆动作、覆盖/删除已有内容、对外发布，或只有用户本人知道的偏好（预算/口味/时间安排）。纯技术细节自己定，别拿它当聊天；一次只问一个问题，给 2~4 个具体可点的选项。用户可能不在电脑前：超时没人答就按你认为最合理的默认继续，并在汇报里注明。",
+    "向用户提一个关键问题并等待回答（前端会弹出选项卡片，用户点选或输入后你才继续，等待时间不算任务时长）。两类时机要主动用：①开工前——需求含糊到可能白干一场，或风格/范围/平台/受众/篇幅这类选择会让交付物完全不同（典型：封面图是 AI 生图还是 HTML 排版截图、报告交 Word 还是 PDF 还是飞书文档、视频出横版还是竖版），先问一题再动手，比做完返工强；②执行中——要花钱、不可逆动作、覆盖/删除已有内容、对外发布，或只有用户本人知道的偏好（预算/口味/时间安排）。纯技术细节自己定，别拿它当聊天；一次只问一个问题，给 2~4 个具体可点的选项（不带 form 时 options 必填）。用户可能不在电脑前：超时没人答就按你认为最合理的默认继续，并在汇报里注明。",
   input_schema: {
     type: "object",
     properties: {
       question: { type: "string", description: "要问的问题，一句话说清，别夹多个问题" },
+      form: { type: "string", enum: ["promo-video", "xhs-carousel", "multi-post"], description: "内容配方的开头表单：技能说明书第 0 步让你带它时才带。带了就一次摆出这个配方的全部岔路，不用给 options" },
+      defaults: { type: "object", description: "带 form 时：用户原话里明确说过的项（如 {product:\"云朵枕\", duration:\"15\"}），没说的别填" },
       options: {
         type: "array",
         description: "2~4 个选项。用户也可以两个都不选、自己输入",
@@ -94,7 +97,7 @@ const ASK_USER_TOOL = {
         },
       },
     },
-    required: ["question", "options"],
+    required: ["question"],
   },
 };
 
@@ -280,6 +283,8 @@ const path = require("path");
 const { dataPath, DATA_DIR } = require("./paths");
 const os = require("os");
 const memory = require("./memory");
+const brandKit = require("./brand-kit"); // 产品品牌档案：提到哪个产品才把 ≤300 字摘要放进易变段
+let brandRuntimeSeq = 0; // 见 createAgentRuntime 里的 brandRunPrefix
 const evolve = require("./evolve");
 const mediaModels = require("./media-models"); // 各路媒体模型：把「默认那条 + 还能选谁」一起交给工具
 const scheduler = require("./scheduler"); // 排期表：只取那个插座（activeScheduler），实例是 server 插上来的
@@ -508,6 +513,7 @@ const REDO_SAFE_TOOLS = new Set([
   "read_file", "read_document", "list_files", "search_files", "find_files", "fetch_url", "render_page",
   "web_search", "library_list", "library_read", "look_at_image", "check_page", "shell_output",
   "list_schedules", "ask_user", "todo_write", "use_skill",
+  "brand_kit_read", // 只读档案、只查成稿，不落盘
 ]);
 const hasSideEffect = (name) => !REDO_SAFE_TOOLS.has(String(name || ""));
 
@@ -807,6 +813,11 @@ function timeBlock() {
   return `\n\n## 当前时间\n- 现在是 ${envToday()}。`;
 }
 
+// 配方表单落盘的目录：没设工作目录、没有任务子目录时给 null，表单照常用，只是不落盘
+function taskDirAbs(baseDir) {
+  try { return baseDir ? path.join(getWorkspaceDir(), baseDir) : null; } catch { return null; }
+}
+
 function safeWorkspaceDir(baseDir) {
   try { return baseDir ? path.join(getWorkspaceDir(), baseDir) : getWorkspaceDir(); } catch { return "（未设置）"; }
 }
@@ -982,6 +993,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
 - web_search：联网搜索（标题/链接/摘要），查资料先搜索定位来源
 - fetch_url：抓取网页全文或直接调 JSON 接口（带真实浏览器请求头；配合 web_search 的结果 URL 用）${hasRenderer() ? "。正文全靠 JS 的动态站点（B 站、微博、单页应用）加 render:\"force\"，用内置浏览器真打开一遍再取正文" : ""}
 - check_page：验收做好的网页（静态体检 + 真浏览器打开一遍看有没有报错、是不是白屏）。交付 HTML 之前必须跑
+- chrome_cdp：真 Chrome 里点按、输入、跑页面 JS。最重，只在要交互时用，用完发 close
 - gen_diagram：文本描述 → 专业图（mermaid 流程/时序/甘特、dot 架构图、echarts 数据图表、plantuml UML），一次生成 SVG+PNG 文件。文档/PPT/飞书文档要配图一律用它，不要手写 SVG 文件
 - use_skill：加载技能包（做对应任务前先加载）
 - library_list / library_read / library_import：查看用户的资料库与灵感笔记（跨项目共享的长期参考资料，任务涉及用户偏好/素材时先查）。资料库可能有子目录，library_list 列出来的名字自带子目录前缀，后面读取/取用要一字不差地照抄；当前项目可能只挂载了其中一块，列出来的就是你能看到的全部。库里的 PDF/图片/Word/压缩包不是文本，用 library_import 复制到工作目录后再按类型处理${hasRenderer() ? "" : "\n- **当前没有内置浏览器**（纯命令行/服务端模式）：html_to_image、桌面宠物都不可用（fetch_url 本身照常用，只是它的 render 参数没了），技能文档里提到它们的步骤一律跳过。要做排版图就把 HTML 写出来交付，告诉用户在桌面版里截；要出图表用 gen_diagram（它有云端兜底）。"}`;
@@ -1022,6 +1034,7 @@ ${hasRenderer() ? "   - fetch_url 拿回来是空壳 → 原样再发一次 fetc
 5.2 **不许用文字问句结束回合**：严禁用「请告诉我你的选择：1... 2... 3...」「需要我尝试哪种方式？」这类话收尾，那是把活推回给用户。**技术路线**（用哪个库、抓哪条接口、跑几轮、代码怎么组织）的优劣你自己判断得了——挑最可能成的那个直接动手，失败了再换。这一条禁的是把选择题写在**回复正文**里，**不是禁 ask_user 工具**——规范 1 那三类该问就问，它弹的是可点的选项卡片，用户点一下就继续。同理，严禁把代码贴在回复里说"我能这样做"——能跑就 run_node / run_shell 真跑，回复里只放结论。
 5.3 **只读的活一次性并发发出去**：要查 5 个关键词、要抓 6 个链接、要读 3 个文件时，在同一轮里一口气发多个工具调用（web_search / fetch_url / read_file / read_document / list_files / find_files / search_files / library_read），系统会并发执行，只花最慢那一个的时间；一个一个来是把等待时间叠加。会写文件、跑命令、委派专家的调用不要和别的混在一轮里发——那些的先后顺序有意义，混在一起会被退回串行。
 5.4 **出图/出片/出声也一起发**：generate_image / generate_video / text_to_speech 这三个同样可以在一轮里连着发多条，系统会并发执行（比只读那档保守，默认同时 2 条，因为每条都花钱）。这三个跟只读工具不要混在同一轮里发。**每条都给一个不一样的 filename**（voice_01.mp3 / voice_02.mp3 这样）：并发下同名就是互相覆盖，而两条都会报成功，出事了看不出来。
+5.5 **挑最轻的工具，够用就停**：有专用工具的事别用 run_node / run_shell 手搓，尤其别自己起浏览器、连调试端口（跑完没人收）。验收干净就收手，别反复截图、反复体检。
 6. 完成后简要总结做了什么、生成了哪些文件。
 7. 始终用中文交流——包括报错说明、失败复盘、自我纠正这些中途叙述，任何时候都不许切成英文。工具返回的英文报错要翻成人话讲给用户听（原始报错可以放进代码块，但结论必须是中文）。
 8. 用户消息里的「@某文件名」指工作目录中的文件（用 read_file 读取）；「/某技能名」表示要求使用该技能（先 use_skill 加载）；「【任务类型：X】」是场景标签，按该场景的最佳实践来做。
@@ -1196,7 +1209,7 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
     return contextWindowOf(null, model);
   }
 
-  const READ_ONLY_TOOLS = ["read_file", "read_document", "list_files", "search_files", "find_files", "fetch_url", "render_page", "web_search", "library_list", "library_read", "look_at_image"];
+  const READ_ONLY_TOOLS = ["read_file", "read_document", "list_files", "search_files", "find_files", "fetch_url", "render_page", "web_search", "library_list", "library_read", "look_at_image", "brand_kit_read"];
 
   /** 配没配群机器人。两个通道任一有地址就算配了——notify.pushBots 本来就是有哪个推哪个 */
   function botWebhookOn() {
@@ -1223,10 +1236,13 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
     // 用 shell 的方案、调一次、吃一条拒绝、再重想——白烧一轮，还容易被它当成偶发失败去重试
     const shellOff = orgPolicy() && orgPolicy().allow_shell === false;
     const noGui = !hasRenderer();
+    // render_motion 不算桌面专属：没有内置浏览器时它走本机 Chrome。两样都没有才摘，理由同上
+    const motionOff = !require("./htmlvideo").available().ok;
     let base = TOOL_DEFS.filter(
       (t) =>
         !(shellOff && (t.name === "run_shell" || t.name === "run_node")) &&
-        !(noGui && DESKTOP_ONLY_TOOLS.includes(t.name))
+        !(noGui && DESKTOP_ONLY_TOOLS.includes(t.name)) &&
+        !(motionOff && t.name === "render_motion")
     );
     if (noGui) base = dropRendererParams(base);
     const tools = [...base, USE_SKILL_TOOL, ASK_USER_TOOL, ...mcpManager.toolDefs()];
@@ -1307,6 +1323,15 @@ function modePrompt(mode) {
       return { content: badToolArgs(tc.name, tc.input._raw, tc.input._parseError, tc.input._rawLen), isError: true };
     }
     if (tc.name === "ask_user") {
+      // 带 form 的是内容配方的开头表单：一次摆出全部岔路，答案钉在 stats.recipe 上
+      if (tc.input.form) {
+        let cwd;
+        try { cwd = getWorkspaceDir(); } catch { cwd = undefined; }
+        return await recipes.askForm(tc.input, { emit, depth, askUser, stats, saveDir: taskDirAbs(baseDir), config, hasRenderer: hasRenderer(), cwd });
+      }
+      // 表单定过的岔路再问一遍：直接把表单上的答案还回去，不弹
+      const covered = recipes.coveredAsk(stats && stats.recipe, String(tc.input.question || ""), tc.input.options);
+      if (covered) return { content: covered, isError: false };
       const question = String(tc.input.question || "").trim().slice(0, 500);
       // 选项现在是 {label, detail}，但字符串也照收：老会话回放、以及模型偷懒直接给短语的情况
       const options = (Array.isArray(tc.input.options) ? tc.input.options : [])
@@ -1767,7 +1792,7 @@ function modePrompt(mode) {
           // 它撞了自己的步数上限，收的只是这一个探索，不是整个任务。原样发出去界面会喊「任务强制收尾」
           if (ev.type === "limit") return emit({ type: "status", text: `${label} 没查完就收了：${ev.note || ""}`, depth: ev.depth, expert: label });
           // 调用 id 加上父调用的前缀：几个探索并发，各自的 call_0 会撞号，界面就把 A 的结果贴到 B 的卡上
-          const id = ev.id && (ev.type === "tool_use" || ev.type === "tool_result") ? { id: `${tc.id}/${ev.id}` } : {};
+          const id = ev.id && (ev.type === "tool_use" || ev.type === "tool_result" || ev.type === "tool_progress") ? { id: `${tc.id}/${ev.id}` } : {};
           emit({ ...ev, expert: label, ...id });
         },
         systemPrompt:
@@ -1803,6 +1828,7 @@ function modePrompt(mode) {
         return { content: `专家不存在: ${tc.input.expert}。可用: ${experts.map((e) => e.name).join(", ")}`, isError: true };
       }
       emit({ type: "expert_start", expert: expert.name, task: tc.input.task });
+      const ext0 = (stats && stats.extendedMs) || 0; // 专家等表单、按配方放宽挪的时间，回来还给委派方
       const sub = await runTask({
         projectContext,
         lang,
@@ -1824,7 +1850,7 @@ function modePrompt(mode) {
         traceNode, // 追踪上：专家这一整趟挂在「委派」这次工具调用底下，层级跟界面上看到的一致
       });
       emit({ type: "expert_done", expert: expert.name });
-      return { content: `【专家 ${expert.name} 的汇报】\n${sub.finalText || "(无文字汇报)"}`, isError: false };
+      return { content: `【专家 ${expert.name} 的汇报】\n${sub.finalText || "(无文字汇报)"}`, isError: false, extendMs: ((stats && stats.extendedMs) || 0) - ext0 };
     }
     if (tc.name === "delegate_to_team") {
       if (depth > 0) return { content: "专家不能再委派他人，请直接完成任务。", isError: true };
@@ -1837,11 +1863,14 @@ function modePrompt(mode) {
 
       emit({ type: "team_start", team: team.name, members: members.map((m) => m.name), task: tc.input.task });
       const reports = [];
+      // 前面同事等表单、按配方放宽挪出来的时间，顺延给后面的人，收尾时也还给委派方
+      const ext0 = (stats && stats.extendedMs) || 0;
+      const grown = () => ((stats && stats.extendedMs) || 0) - ext0;
       for (let i = 0; i < members.length; i++) {
         const m = members[i];
         if (stopSignal && stopSignal.aborted) break;
         // 时间预算是全队共享的一份，兜不住就诚实收尾，不要让后面的人空跑一轮再超时
-        if (Date.now() >= deadline) {
+        if (Date.now() >= deadline + grown()) {
           reports.push({ name: m.name, text: "（未执行：全队已达最大运行时间）" });
           break;
         }
@@ -1865,7 +1894,7 @@ function modePrompt(mode) {
           sessionId,
           runToken,
           baseDir,
-          deadline,
+          deadline: deadline + grown(),
           stats,
           stopSignal,
           sec,
@@ -1882,9 +1911,10 @@ function modePrompt(mode) {
           `【专家团「${team.name}」的全队汇报】（${reports.length}/${members.length} 棒完成）\n\n` +
           reports.map((r) => `— ${r.name}：\n${r.text}`).join("\n\n"),
         isError: false,
+        extendMs: grown(),
       };
     }
-    return await executeTool(tc.name, tc.input, execOpts({ depth, deadline, stopSignal, taskLabel, user, baseDir, sec, sessionId, callId: tc.id }));
+    return await executeTool(tc.name, tc.input, execOpts({ depth, deadline, stopSignal, taskLabel, user, baseDir, sec, sessionId, callId: tc.id, name: tc.name, emit }));
   }
 
   /**
@@ -1892,8 +1922,9 @@ function modePrompt(mode) {
    * 各写各的早晚会漂：少传一个 media，generate_image 连模型都点不了名；
    * 少传一个 actor，审批卡片就跑去问了别人。
    */
-  function execOpts({ depth = 0, deadline, stopSignal, signal, taskLabel, user, baseDir, sec, sessionId, callId }) {
+  function execOpts({ depth = 0, deadline, stopSignal, signal, taskLabel, user, baseDir, sec, sessionId, callId, name, emit }) {
     return {
+      onProgress: emit ? progressSink(emit, { id: callId, name, depth }) : undefined, // 长工具（渲染 / 配音 / 合成）往回报进度；只直播不存盘
       knownTools: toolList(depth, "craft").map((t) => t.name), // 拼错工具名时用来给出最接近的真名
       timeoutMs: config.agent.tool_timeout_ms,
       search: config.search,
@@ -1916,6 +1947,36 @@ function modePrompt(mode) {
       sessionId, // 文件检查点记在哪个会话名下：回退只认自己这个会话动过的文件
       callId, // 这一步的工具调用 id，检查点账本上和过程卡对得上号
       hooks: hooksCfg(), // 用户在 config.json 里配的钩子（hooks.js）
+    };
+  }
+
+  /**
+   * tool_progress 的出口。字段挑着拿：工具随手递来的对象不许盖掉 type / id / depth，
+   * 不是有限数的数目不带（界面拿到 NaN 会原样印出来）。整个包在 try 里——进度只是给人看的，
+   * 界面那头抛了错也不能把正在渲染的那一单打断，所以工具那边可以直接 onProgress?.() 裸调
+   */
+  // label 常带文件名：换行 / 颜色码原样出去，命令行和工作流面板原地重画的那一行会折成两行擦不干净，
+  // 所以在源头洗一遍，三个界面都不用各自防。按字切，别把表情切成半个
+  function cleanLabel(s) {
+    const t = s.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").replace(/[\x00-\x1f\x7f\s]+/g, " ").trim();
+    return Array.from(t).slice(0, 60).join("") || undefined;
+  }
+  function progressSink(emit, { id, name, depth }) {
+    const num = (x) => (typeof x === "number" && Number.isFinite(x) ? x : undefined);
+    return (p) => {
+      try {
+        const o = p && typeof p === "object" ? p : {};
+        const pct = num(o.pct);
+        const ev = {
+          type: "tool_progress", id, name, depth,
+          stage: typeof o.stage === "string" ? o.stage : undefined,
+          done: num(o.done), total: num(o.total),
+          pct: pct === undefined ? undefined : Math.max(0, Math.min(100, pct)),
+          label: typeof o.label === "string" ? cleanLabel(o.label) : undefined,
+        };
+        for (const k of Object.keys(ev)) if (ev[k] === undefined) delete ev[k];
+        emit(ev);
+      } catch {}
     };
   }
 
@@ -2157,6 +2218,9 @@ function modePrompt(mode) {
   const ownership = makeOwnership();
   const { claimBaseDir } = ownership;
   let runSeq = 0;
+  // brand-kit 按 runToken 记「这趟任务选了哪份档案」，那张表全进程共用；runSeq 每个运行时都从 1 数起，
+  // 不加运行时前缀，另一个运行时的第 1 趟会把这边第 1 趟提过的产品串进去
+  const brandRunPrefix = `rt${++brandRuntimeSeq}:`;
 
   /**
    * 把整趟任务交给本机 agent CLI 跑。
@@ -2372,6 +2436,8 @@ function modePrompt(mode) {
     const hint = currentAsk(extra.history || []).slice(0, 500);
     try { const mb = await memory.promptBlock(user, hint); if (mb) parts.push(mb.trim()); } catch {}
     if (extra.projectContext) parts.push(`\n## 当前项目的背景与规范（用户在项目设置里写的，必须遵守）\n${extra.projectContext}`);
+    // 品牌档案摘要：外部 CLI 没借到 brand_kit_* 工具，所以块里给的是档案文件路径（viaTool: false）
+    try { const bb = brandKit.safePromptBlock({ history: extra.history || [], lang: extra.lang, cwd: getWorkspaceDir(), viaTool: false }); if (bb) parts.push(bb.trim()); } catch {}
     if (extra.lang) parts.push(langBlock(extra.lang));
     parts.push(engineSkillsBlock(bridged));
     // 读文件范围：工作区里别的对话的产出、资料库都可以读；写只写本次工作目录
@@ -2427,6 +2493,13 @@ function modePrompt(mode) {
       cliBlock,
       `这次借给你的工具：${toolNames}。`,
       "要图就自己生，别在交付里写「我没有生图工具，请你把图放进去」——你有。",
+      // 实测（2026-09-26）：codex 的 workspace-write 沙箱（macOS seatbelt）里 Chrome 一起就 Abort trap: 6，
+      // 模型自己写脚本跑无头 Chrome 截图/自测只会白跑一圈再报「环境问题」。借出去的这几样在沙箱外跑，照样好使
+      (has("check_page") || has("html_to_image") || has("render_page")) &&
+        "网页自测、截图、看渲染效果，一律用 " + ["check_page", "html_to_image", "render_page"].filter(has).join(" / ") +
+        "，不要自己在命令行里起 Chrome / Playwright / Puppeteer 无头浏览器、也不要自己开调试端口连 CDP——沙箱里浏览器起不来（macOS 上报 Abort trap: 6），" +
+        "起得来的环境里它跑完也没人收，会一直挂在后台吃 CPU。这几个工具在沙箱外跑，用完即走。",
+      "工具挑最轻、最对口的那个，拿到结果就停：别为同一个问题反复截图、反复体检，也别拿到了再换个工具重拿一遍。",
       "调用失败了就把失败原因如实写进交付（比如「图像模型未配置」），那是用户能动手解决的信息；不要假装图已经有了。",
     ].filter(Boolean).join("\n");
   }
@@ -2539,6 +2612,8 @@ function modePrompt(mode) {
     if (!runToken) runToken = ++runSeq; // 专家子任务从父任务继承，同一任务树内不互相抢认领
     // 项目指令：用户在「项目」里写的背景/规范。不进提示词的话，那个输入框就是个摆设
     const projBlock = projectContext ? `\n\n## 当前项目的背景与规范（用户在项目设置里写的，必须遵守）\n${projectContext}` : "";
+    // 品牌档案摘要跟项目块一起进易变段：进稳定段的话，提没提到产品就是两份前缀，缓存每轮都作废
+    const brandBlock = brandKit.safePromptBlock({ history, runToken: brandRunPrefix + runToken, lang, cwd: (() => { try { return getWorkspaceDir(); } catch { return ""; } })() });
     // 记忆召回的线索：用户这次要的事（currentAsk）的前 500 字。记忆超预算时按它挑相关条目
     const memHint = currentAsk(history).slice(0, 500);
     // system 分两段拼：稳定段在前（角色、工具规则、技能目录、语言、模式），易变段在后（记忆、项目块、
@@ -2546,7 +2621,7 @@ function modePrompt(mode) {
     // 记忆和项目块夹在中间，换一句话问、换一个项目，后面的语言/模式连同前缀缓存一起作废。
     // stableSystem 的长度一路带给 L.chat（systemStableLen），Anthropic 通道在这里打缓存断点
     const stableSystem = (systemPrompt || (await coordinatorSystemPrompt(user, memHint, baseDir))) + langBlock(lang) + modePrompt(mode);
-    const system = stableSystem + (await volatileSystemBlock({ user, memHint, projBlock, mediaReopened }));
+    const system = stableSystem + (await volatileSystemBlock({ user, memHint, projBlock: projBlock + brandBlock, mediaReopened }));
     const systemStableLen = stableSystem.length;
     const tools = toolList(depth, mode);
     // 这一轮真摆给模型的工具名。只读档（ask/plan）清单外的一律不执行（见 runOne）：以前全靠「不摆写工具」，
@@ -2621,15 +2696,26 @@ function modePrompt(mode) {
     }
     // 按次覆盖步数上限：评测里的长任务题要 40 步以上，但不能因此把全局上限抬高——
     // 那等于给所有任务多开一倍预算，钱和基线可比性一起没了
-    const maxSteps = maxStepsOverride || config.agent.max_steps || 25;
+    let maxSteps = maxStepsOverride || config.agent.max_steps || 25;
+    const stepsLocked = !!maxStepsOverride; // 用户这次明确限过步数：配方不许替他放宽
+    let runtimeMs = config.agent.max_runtime_ms || 1800000;
     // 整个任务（含所有专家子代理）共享一个墙上时间预算，防止无限执行
-    if (!deadline) deadline = Date.now() + (config.agent.max_runtime_ms || 1800000);
+    if (!deadline) deadline = Date.now() + runtimeMs;
     // 整个任务（含专家）共享一份 token 账本，任务结束时汇总上报
     if (!stats) stats = { prompt: 0, completion: 0, cached: 0, calls: 0, startedAt: Date.now() };
     // 用户原话记一份在账本上：弹给用户那道闸在 runToolCall 里，够不着 history，
     // 而「这一问该不该打断人」离了「他本来让你干什么」判不了。只在顶层记，
     // 专家子任务的 history 是临时的，记下来反而把真正的那句话盖掉
     if (depth === 0 && !stats.asked) stats.asked = String(currentAsk(history) || taskLabel || "").slice(0, 400);
+    // 配方表单：消息里预填的（命令行 / IM 流程）或任务目录里上一趟填过的，开跑前就钉住
+    // ask：消息里的预填只认这一轮要做的那条；更早那趟流程留下的，技能不挂着就不绑
+    if (depth === 0 && !stats.recipe) stats.recipe = recipes.restore({ history, dir: taskDirAbs(baseDir), loaded: [...loadedSkills.keys()], ask: currentAsk(history) });
+    // 同一棵任务树里已经按配方放宽过（上一层或前面的同事填的表）：这一趟的步数、时长也照放。
+    // 截止时间不在这儿挪——委派方传进来的那个已经顺延过了
+    if (depth > 0 && stats.limitRaise) {
+      const L0 = recipes.applyLimits({ maxSteps, runtimeMs, deadline, locked: stepsLocked }, stats.limitRaise);
+      maxSteps = L0.maxSteps; runtimeMs = L0.runtimeMs;
+    }
     let finalText = "";
     let stopNote = "";
     let honestyRetries = 0;
@@ -2771,7 +2857,7 @@ function modePrompt(mode) {
         }
       }
       if (Date.now() >= deadline) {
-        stopNote = `已达最大运行时间（${Math.round((config.agent.max_runtime_ms || 1800000) / 60000)} 分钟）`;
+        stopNote = `已达最大运行时间（${Math.round(runtimeMs / 60000)} 分钟）`;
         break;
       }
       // token 预算护栏：步数和时间都挡不住「小步快跑」式烧钱，按用量再设一道闸（0 = 不限）。
@@ -2828,7 +2914,7 @@ function modePrompt(mode) {
         ? AbortSignal.any([stallCtl.signal, budgetSignal, ...(stopSignal ? [stopSignal] : [])])
         : stallCtl.signal;
       // 每一步现拼：技能可能在上一步刚 use_skill 进来
-      const sys = system + skillGate.skillBlock(loadedSkills);
+      const sys = system + skillGate.skillBlock(loadedSkills) + recipes.pinBlock(stats.recipe);
       const gen = tr.generation({
         name: `第 ${step + 1} 步`,
         model: L.model,
@@ -3091,7 +3177,17 @@ function modePrompt(mode) {
           // 工具报错在本项目里是**正常返回**（模型要看见错才知道换条路），所以不能靠 catch 判——
           // 得看 isError。不这么写的话 trace 上满屏绿色，真正出问题的那几步一个都标不出来
           sp.end({ output: String(r.content || ""), error: r.isError ? String(r.content || "").slice(0, 500) : "" });
+          const dl0 = deadline;
           if (r.extendMs) deadline += r.extendMs; // 等用户回答的时间不算任务运行时间
+          if (r.raiseLimits) {
+            const L2 = recipes.applyLimits({ maxSteps, runtimeMs, deadline, locked: stepsLocked }, r.raiseLimits);
+            maxSteps = L2.maxSteps; runtimeMs = L2.runtimeMs; deadline = L2.deadline;
+            emit({ type: "status", text: L2.note, depth });
+            // 放宽记在整棵任务树上：同队后面的人、之后委派的专家开跑时照样放宽（用户限过步数的，步数照旧不放）
+            if (stats) stats.limitRaise = stepsLocked ? { ...r.raiseLimits, max_steps: 0 } : r.raiseLimits;
+          }
+          // 专家在子任务里等表单、按配方放宽挪出来的时间：委派方和后面的同事都得跟着顺延
+          if (depth > 0 && stats && deadline > dl0) stats.extendedMs = (stats.extendedMs || 0) + (deadline - dl0);
           const sig = String(r.content).slice(0, 2000);
           loopHist.set(loopKey, { sig, streak: seen && seen.sig === sig ? seen.streak + 1 : 1 });
         }
@@ -3228,7 +3324,7 @@ function modePrompt(mode) {
     const gateNote = await askContinueGate(stopNote, finalText);
     if (gateNote) { stopNote = gateNote; break; }
     roundsUsed++;
-    deadline = Date.now() + (config.agent.max_runtime_ms || 1800000); // 新一轮把时间预算重新拉满
+    deadline = Date.now() + runtimeMs; // 新一轮把时间预算重新拉满
     emit({ type: "auto_continue", round: roundsUsed, total: autoRounds, note: stopNote, depth });
     // stopNote 本身就说明了「没做完」时别再重复一遍，撞上限的才需要补这半句
     const contWhy = stopNote.startsWith("任务还有") ? `上一轮${stopNote}` : `上一轮${stopNote}，任务还没做完`;
@@ -3418,6 +3514,11 @@ const TOOL_VERB = {
   schedule_task: "排期", list_schedules: "看排期", send_email: "发邮件",
   delegate_to_expert: "委派专家", delegate_to_team: "委派专家团", explore: "探索",
   find_files: "找文件", multi_edit: "改", shell_output: "看后台输出", shell_kill: "停后台", todo_write: "进度",
+  brand_kit_read: "查品牌档案", brand_kit_save: "存品牌档案",
+  render_motion: "出片",
+  record_web_demo: "录演示",
+  compose_video: "合成视频",
+  delivery_page: "交付页",
 };
 
 /** 太长的路径/命令只留尾巴：前面那截目录对人没信息量，文件名才有 */
@@ -3442,8 +3543,26 @@ function toolHeadline(name, input) {
   switch (name) {
     case "canvas_manage":
       obj = `${i.operation || "get"}${i.kind ? " · " + i.kind : ""}${i.node_id ? " · " + i.node_id : ""}`; break;
-    case "read_file": case "write_file": case "edit_file": case "multi_edit": case "html_to_image": case "look_at_image":
+    case "read_file": case "write_file": case "edit_file": case "multi_edit": case "look_at_image":
       obj = tailText(i.path, 46); break;
+    case "html_to_image": case "render_motion": {
+      // 这俩的入参叫 html_file / html_files，没有 path。批量拿第一个当对象，后面几个用 (+N) 标上（数字不用翻译）
+      const hs = Array.isArray(i.html_files) ? i.html_files : [];
+      obj = hs.length ? tailText(hs[0], 38) + (hs.length > 1 ? ` (+${hs.length - 1})` : "") : tailText(i.html_file || "", 46);
+      break;
+    }
+    case "compose_video": {
+      // 时间轴常是一整段 JSON，原样截出来全是括号引号：查 / 停报任务号，路径报尾巴，JSON 报片名
+      const tl = i.timeline;
+      const inline = typeof tl === "string" && tl.trim().startsWith("{");
+      let title = "";
+      if (tl && typeof tl === "object") title = String(tl.title || "");
+      else if (inline) { try { title = String(JSON.parse(tl).title || ""); } catch {} }
+      obj = i.job ? String(i.job) : tailText(title || (typeof tl === "string" && !inline ? tl : ""), 46);
+      break;
+    }
+    case "delivery_page":
+      obj = tailText(i.out || "交付.html", 46); break;
     case "list_files": case "search_files":
       obj = (i.query ? q(i.query) + " " : "") + tailText(i.path || "", 30); break;
     case "run_shell":
@@ -3464,8 +3583,13 @@ function toolHeadline(name, input) {
       const u = String(i.url || i.path || "");
       obj = tailText(u.replace(/^https?:\/\//, "").replace(/\/$/, ""), 46); break;
     }
-    case "generate_image": case "generate_video": case "gen_diagram": case "text_to_speech":
-      obj = tailText(i.prompt || i.text || i.spec || "", 46); break;
+    case "generate_image": case "generate_video": case "gen_diagram": case "text_to_speech": {
+      // 按句配音没有 text：拿第一句当对象，后面还有几句用 (+N) 标上——数字不用翻译，英文界面也不会漏中文
+      const sg = Array.isArray(i.segments) ? i.segments : [];
+      const s0 = sg.length ? (typeof sg[0] === "string" ? sg[0] : String((sg[0] && sg[0].text) || "")) : "";
+      obj = s0 && !i.text ? tailText(s0, 38) + (sg.length > 1 ? ` (+${sg.length - 1})` : "") : tailText(i.prompt || i.text || i.spec || "", 46);
+      break;
+    }
     case "ask_user": case "explore":
       obj = tailText(i.question || "", 46); break;
     case "delegate_to_expert":
@@ -3489,6 +3613,11 @@ function toolHeadline(name, input) {
       obj = tailText([mailer.parseAddrs(i.to).join("、"), i.subject || ""].filter(Boolean).join(" · "), 46); break;
     case "use_skill": case "save_skill":
       obj = String(i.name || ""); break;
+    // 品牌档案：哪份档案、查哪个文件才是信息；list/get/check 这种动作词对人没用，只在啥都没给时兜底
+    case "brand_kit_read":
+      obj = tailText([i.slug, i.file].filter((v) => typeof v === "string" && v.trim()).join(" · ") || String(i.action || ""), 46); break;
+    case "brand_kit_save":
+      obj = tailText((i.kit && typeof i.kit === "object" && i.kit.name) || String(i.scope || ""), 46); break;
     case "remember": case "forget":
       obj = tailText(i.text || i.key || "", 40); break;
     default: {
@@ -3528,6 +3657,12 @@ function resultOutcome(name, content, isError) {
   }
   if (name === "list_files" || name === "search_files") {
     return `${text.split("\n").filter((l) => l.trim()).length} 项`;
+  }
+  if (name === "brand_kit_read") {
+    // check 第一行只是「按哪份档案查」，结论在后面那行；get 回的是整份 JSON，第一行是个「{」，报量
+    const v = text.split("\n").find((l) => l.startsWith("结论："));
+    if (v) return v.length > 70 ? v.slice(0, 70) + "…" : v;
+    if (first === "{") return `${text.split("\n").length} 行`;
   }
   if (DATA_RESULT_TOOLS.has(name)) {
     const lines = text.split("\n").length;
@@ -3627,21 +3762,32 @@ function collectSources(name, input, content) {
  * 漏报一个搬运来的旧文件，比把几百个陈年文件冒充成今天的成果要好得多。
  */
 const MTIME_SLACK_MS = 2000;
+/**
+ * 「本回合改了哪些」拿 turnSnapshot()（整棵树）做差，不拿 outputFiles()（最深 3 层、最新 500 条）。
+ * 拿后者做差时，agent 写到第 4 层往下的成品前后两份里都没有，「本回合产出」一张卡都不挂。
+ * files 仍是 outputFiles() 那份——右侧面板和 @ 补全的口径不动；本回合报过、却不在那份里的
+ * 另放进 turn_files，前端拿 files ∪ turn_files 画卡、判「已删除」。
+ * 整树走一趟比 3 层贵（2 万个文件约 0.1 秒），所以节流间隔跟着上一趟的耗时放宽，占不到事件循环的四分之一。
+ */
+const TURN_FILES_CAP = 500;   // turn_files 最多带几条；截了就 full:false，前端不拿它判「已删除」
+const WALK_GAP_MAX_MS = 5000; // 耗时放宽节流的上限：产出最多晚这么久上屏，收尾那一下照样同步
 function makeFilesEmitter({ emit, ownership, baseDir, runToken, gapMs = 300, after = null, since = null }) {
   const baseline = new Map();
-  for (const f of outputFiles()) baseline.set(f.name, f.mtime);
+  for (const f of turnSnapshot(baseDir).files) baseline.set(f.name, f.mtime);
+  const reported = new Set(); // 这一回合报过的产出，跨事件累计：后面每条事件都得带上它们还在不在
   // 这回合的起点。可注入是为了能测（测试里造的文件 mtime 就在当下这一两毫秒内）
   const startedAt = (since == null ? Date.now() : Number(since)) - MTIME_SLACK_MS;
   const bornAfterStart = (f) => {
     const t = Date.parse(f && f.mtime);
     return Number.isFinite(t) ? t >= startedAt : true; // 时间戳读不出来就别拿它当拒绝的理由
   };
-  let lastAt = 0, timer = null, lastSig = "", dead = false;
+  let lastAt = 0, lastCost = 0, timer = null, lastSig = "", dead = false;
   const walk = () => {
     lastAt = Date.now();
     const files = outputFiles();
+    const snap = turnSnapshot(baseDir);
     const changed = [];
-    for (const f of files) {
+    for (const f of snap.files) {
       const known = baseline.get(f.name);
       baseline.set(f.name, f.mtime);
       if (known === f.mtime) continue;
@@ -3653,13 +3799,42 @@ function makeFilesEmitter({ emit, ownership, baseDir, runToken, gapMs = 300, aft
       if (!bornAfterStart(f)) continue;
       if (ownership.mine(f, baseDir, runToken)) changed.push(f.name);
     }
+    for (const n of changed) reported.add(n);
+    // 报过、但面板那份里没有的（第 4 层往下、挤出最新 500 条的）：带上它们此刻的样子。快照里
+    // 找不着的（删了，或撞了上限没走到）逐个 stat，确实没了的从账上划掉——前端据此撤卡
+    const inFiles = new Set(files.map((f) => f.name));
+    const bySnap = new Map(snap.files.map((f) => [f.name, f]));
+    const extra = [], unseen = [];
+    for (const n of reported) {
+      if (inFiles.has(n)) continue;
+      const f = bySnap.get(n);
+      if (f) extra.push(f); else unseen.push(n);
+    }
+    if (unseen.length) {
+      const alive = statOutputs(unseen);
+      const live = new Set(alive.map((f) => f.name));
+      for (const n of unseen) if (!live.has(n)) reported.delete(n);
+      extra.push(...alive);
+    }
+    extra.sort((a, b) => (a.mtime < b.mtime ? 1 : a.mtime > b.mtime ? -1 : 0));
+    const turnFiles = extra.slice(0, TURN_FILES_CAP);
     // 指纹带 size：同一秒内原地改写、mtime 精度不够时，长度变了照样能认出来
-    let sig = String(files.length);
+    let sig = String(files.length) + "/" + turnFiles.length + (snap.capped ? "+" : "");
     for (const f of files) sig += "\u0000" + f.name + "|" + f.mtime + "|" + f.size;
-    if (!changed.length && sig === lastSig) return; // 盘上一个字节没动：这条事件对界面是纯噪音
+    for (const f of turnFiles) sig += "\u0000" + f.name + "|" + f.mtime + "|" + f.size;
+    if (!changed.length && sig === lastSig) { lastCost = Date.now() - lastAt; return; } // 盘上一个字节没动：这条事件对界面是纯噪音
     lastSig = sig;
     // root/full 是这份清单的作用域：前端靠它判断能不能拿这份列表给旧产出盖「已删除」
-    emit({ type: "files", files, changed, ...filesScope(files) });
+    const scope = filesScope(files);
+    if (turnFiles.length < extra.length) scope.full = false; // turn_files 截过：缺的那些不能当成删了
+    emit({
+      type: "files", files, changed,
+      ...(turnFiles.length ? { turn_files: turnFiles } : {}),
+      // 整树那趟撞了上限：更深处的改动可能没差出来，照实告诉前端，别让它当成看全了
+      ...(snap.capped ? { scan_capped: true } : {}),
+      ...scope,
+    });
+    lastCost = Date.now() - lastAt;
     if (after) after(changed);
   };
   return {
@@ -3667,7 +3842,7 @@ function makeFilesEmitter({ emit, ownership, baseDir, runToken, gapMs = 300, aft
     push(now) {
       if (dead) return;
       if (timer) { clearTimeout(timer); timer = null; }
-      const wait = gapMs - (Date.now() - lastAt);
+      const wait = Math.max(gapMs, Math.min(WALK_GAP_MAX_MS, lastCost * 4)) - (Date.now() - lastAt);
       if (now || wait <= 0) { walk(); return; }
       timer = setTimeout(() => { timer = null; if (!dead) walk(); }, wait);
       if (timer.unref) timer.unref(); // 别为了一条产出事件把进程吊着不退

@@ -111,6 +111,9 @@ function codexArgs(servers) {
       const body = Object.entries(s.env).map(([k, v]) => `${k} = ${JSON.stringify(String(v))}`).join(", ");
       out.push("-c", `mcp_servers.${name}.env={ ${body} }`);
     }
+    // codex exec 的审批策略是 never：要审批的 MCP 工具不会问人，直接判拒绝，
+    // 模型看得见工具却一次也调不成。跟 Claude Code 那边 --allowed-tools mcp__<name> 对齐，整台放行。
+    out.push("-c", `mcp_servers.${name}.default_tools_approval_mode="approve"`);
   }
   return out;
 }

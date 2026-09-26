@@ -560,6 +560,24 @@ app.whenReady().then(async () => {
   win.on("focus", syncTrayLang);
   win.on("blur", syncTrayLang);
 
+  // Dock 角标跟着网页标题走：标题前缀「(n) 」就是「有 n 件事在等你」，网页那边只维护这一个数。
+  // 不 preventDefault：窗口标题照旧跟网页走。Windows / 多数 Linux 上 setBadgeCount 是空操作，那边靠下面的闪烁
+  win.on("page-title-updated", (_e, title) => {
+    const m = /^\((\d+)\) /.exec(String(title || ""));
+    try { app.setBadgeCount(m ? Math.min(99, +m[1]) : 0); } catch {}
+  });
+  // 审批没有宠物那条提醒线（宠物只管 ask_user，而且已经 critical 弹过了），这里补一下轻的。
+  // 标题变化时不弹：那会把 ask_user 再弹一遍。跟 server.js 用的是同一个 security 模块实例
+  try {
+    require(path.join(__dirname, "security.js")).watchApprovals((m) => {
+      if (!m || m.type !== "open" || !win || win.isDestroyed() || win.isFocused()) return;
+      try {
+        if (process.platform === "darwin" && app.dock) app.dock.bounce("informational");
+        else win.flashFrame(true);
+      } catch {}
+    });
+  } catch {}
+
   // 桌面宠物：常驻角落显示 agent 在干什么，agent 要提问时跳给你看。
   // 放在窗口之后创建，这样它一出生 global.__wbWin 就是齐的（点它要唤起主窗口）。
   const pet = require(path.join(__dirname, "pet.js"));

@@ -31,10 +31,10 @@ let assistant = { name: "OpenWorkBuddy", avatar: ASSISTANT_MARK }; // 助理的�
 let isReplaying = false; // 回放历史任务中：事件照走一遍渲染，但不许它去动"当前"的文件面板和预览
 let replayFeedback = null; // 回放时：turn 下标 → 之前点过的 👍👎，操作条据此把高亮亮回来
 // 轨迹条上的工具短名：一枚小徽章顶一行字，扫一眼就知道这轮走了哪几步
-const TOOL_SHORT = { read_file: "读", read_document: "读文档", write_file: "写", edit_file: "改", multi_edit: "改", list_files: "列", search_files: "找", find_files: "找文件", run_shell: "命令", shell_output: "后台输出", shell_kill: "停后台", todo_write: "进度", run_node: "node", web_search: "搜", fetch_url: "抓", render_page: "渲染", check_page: "查页", html_to_image: "截图", look_at_image: "看图", generate_image: "生图", generate_video: "视频", gen_diagram: "图表", text_to_speech: "配音", transcribe_audio: "转文字", remember: "记", forget: "忘", library_list: "库", library_read: "读库", library_import: "取素材", save_skill: "存技能", desktop_pet: "宠物", notify_user: "推群", schedule_task: "排期", list_schedules: "看排期", send_email: "发邮件", explore: "探索" };
+const TOOL_SHORT = { read_file: "读", read_document: "读文档", write_file: "写", edit_file: "改", multi_edit: "改", list_files: "列", search_files: "找", find_files: "找文件", run_shell: "命令", shell_output: "后台输出", shell_kill: "停后台", todo_write: "进度", run_node: "node", web_search: "搜", fetch_url: "抓", render_page: "渲染", check_page: "查页", html_to_image: "截图", render_motion: "出片", record_web_demo: "录屏", compose_video: "成片", delivery_page: "交付页", look_at_image: "看图", generate_image: "生图", generate_video: "视频", gen_diagram: "图表", text_to_speech: "配音", transcribe_audio: "转文字", remember: "记", forget: "忘", library_list: "库", library_read: "读库", library_import: "取素材", save_skill: "存技能", desktop_pet: "宠物", notify_user: "推群", schedule_task: "排期", list_schedules: "看排期", send_email: "发邮件", explore: "探索", brand_kit_read: "品牌", brand_kit_save: "存品牌" };
 // 图标跟短名分家，各归各的表：短名要进翻译字典（英文界面得是 "Read"），图标是 sprite 里的 symbol id。
 // 以前两者揉成一句 "📄 读"，翻译表得连图一起抄一遍，加个工具就要改两处还容易抄漏。
-const TOOL_ICON = { read_file: "file-text", read_document: "book-open-text", write_file: "file-pen-line", edit_file: "pencil", multi_edit: "pencil", list_files: "folder", search_files: "file-search", find_files: "folder-tree", run_shell: "terminal", shell_output: "scroll-text", shell_kill: "square", todo_write: "list-checks", run_node: "code", web_search: "globe", fetch_url: "link", render_page: "monitor", check_page: "circle-check", html_to_image: "image", look_at_image: "eye", generate_image: "palette", generate_video: "film", gen_diagram: "chart-column", text_to_speech: "volume-2", transcribe_audio: "file-audio", remember: "brain", forget: "brain", library_list: "book-open", library_read: "book-open", library_import: "download", save_skill: "puzzle", desktop_pet: "app-window", notify_user: "send", schedule_task: "timer", list_schedules: "calendar-days", send_email: "mail", explore: "compass" };
+const TOOL_ICON = { read_file: "file-text", read_document: "book-open-text", write_file: "file-pen-line", edit_file: "pencil", multi_edit: "pencil", list_files: "folder", search_files: "file-search", find_files: "folder-tree", run_shell: "terminal", shell_output: "scroll-text", shell_kill: "square", todo_write: "list-checks", run_node: "code", web_search: "globe", fetch_url: "link", render_page: "monitor", check_page: "circle-check", html_to_image: "image", render_motion: "clapperboard", record_web_demo: "video", compose_video: "clapperboard", delivery_page: "package", look_at_image: "eye", generate_image: "palette", generate_video: "film", gen_diagram: "chart-column", text_to_speech: "volume-2", transcribe_audio: "file-audio", remember: "brain", forget: "brain", library_list: "book-open", library_read: "book-open", library_import: "download", save_skill: "puzzle", desktop_pet: "app-window", notify_user: "send", schedule_task: "timer", list_schedules: "calendar-days", send_email: "mail", explore: "compass", brand_kit_read: "shield-check", brand_kit_save: "shield-check" };
 // 过程区每一步只挂一个图标，动词写在正文里（`读 报告.md`，不是 `run read_file`）
 const toolIcon = (n) => TOOL_ICON[n] || "settings";
 const shortTool = (n) => TOOL_SHORT[n] || String(n || "").replace(/^mcp[_:]/, "").replace(/_/g, " ").slice(0, 12);
@@ -539,6 +539,8 @@ function displayName(u) { return (u && (u.nickname || u.username)) || ""; }
 /** 助理身份变了，把界面上所有露脸的地方一次性刷新（品牌位、侧栏、历史气泡头像） */
 function applyAssistantIdentity() {
   document.title = assistant.name;
+  // 上面那行把「(n) 」前缀一起冲掉了，Dock 角标跟着清零；补回来（注意力那页在 app-01 之后加载）
+  if (typeof syncTitleCount === "function") syncTitleCount();
   document.querySelector(".brand .name").textContent = assistant.name;
   paintAvatar(document.querySelector(".brand .mark"), assistant.avatar, assistant.name);
   const abIc = document.getElementById("ab-ic");
@@ -1335,6 +1337,52 @@ function createTurnUI(userText, turnMode, forSid, shown) {
     host.appendChild(box);
   };
 
+  // ---- 结论在折叠区外面长 ----
+  // 过程区一出现，后面的正文先进折叠区：这时候说的大多是「我先看下配置」这种旁白，说完就去调工具。
+  // 可结论要是也在折叠区里写完、等 finish() 才提出来，用户盯着一行「运行中…」干等，
+  // 回复写完了才整段蹦出来——流式等于白做。所以最新那段写够 TAIL_MIN_CHARS 字、又持续了 TAIL_MIN_MS
+  // 还没停，就当它是结论，挪到过程区下面接着流；猜错了（后面又去调工具）由 foldTail 收回原位。
+  // 两道门槛缺一不可：只看字数，一口气吐出来的一句旁白也会蹦出去再缩回来，一闪一闪
+  let tailText = null;
+  const TAIL_MIN_CHARS = 80, TAIL_MIN_MS = 1200;
+  const reducedMotion = () => !!(window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches);
+  const promoteTail = (el) => {
+    // 回放不挪：回放是一口气同步跑完的，结论本来就由 finish() 提出来，直播和回放得是同一个 DOM
+    if (el !== tailText || el._folded || isReplaying || !procBody || el.parentNode !== procBody) return;
+    if (el._raw.length < TAIL_MIN_CHARS || Date.now() - el._t0 < TAIL_MIN_MS) return;
+    // 原位留个注释节点当记号，收回去时插回同一个位置，过程区的先后顺序不乱。
+    // 注释不算 childElementCount，finish() 判「过程区空了没」不受影响
+    el._anchor = document.createComment("tail");
+    el.before(el._anchor);
+    body.appendChild(el);
+  };
+  /** 挪出去的那段其实是旁白（后面又有真活要干了）：收回折叠区原位。收回过的不再挪，免得来回跳 */
+  const foldTail = () => {
+    const el = tailText;
+    if (!el || !procBody || el.parentNode !== body) return;
+    el._folded = true;
+    // 直接收走，下面的东西会一下子往上窜一大截。留一块同高的空壳原地缩成 0，看着是「收进去了」。
+    // 空壳不许带 .a-text：复制 / 导出 / finish() 都按 .a-text 找正文，混进来就是一段空回复
+    let ghost = null;
+    if (turn.isConnected && !reducedMotion()) {
+      ghost = document.createElement("div");
+      ghost.className = "a-text-ghost";
+      ghost.setAttribute("aria-hidden", "true");
+      ghost.setAttribute("translate", "no");
+      ghost.style.height = el.offsetHeight + "px";
+      el.before(ghost);
+    }
+    if (el._anchor && el._anchor.parentNode === procBody) el._anchor.replaceWith(el);
+    else procBody.appendChild(el);
+    el._anchor = null;
+    if (ghost) {
+      ghost.getBoundingClientRect(); // 先让浏览器把起始高度排出来，不然下一行直接落定、过渡不播
+      ghost.style.height = "0px";
+      ghost.style.opacity = "0";
+      setTimeout(() => ghost.remove(), 200);
+    }
+  };
+
   const ensureText = () => {
     if (!currentText) {
       currentText = document.createElement("div");
@@ -1342,8 +1390,14 @@ function createTurnUI(userText, turnMode, forSid, shown) {
       currentText.setAttribute("translate", "no"); // AI 正文是内容不是界面，语言开关不碰
       currentText._raw = "";
       currentText._split = null;
-      // 过程区一旦出现，后续文字都算"过程叙述"进折叠区；finish() 会把最后一段（最终结论）提出来
-      (procBody || body).appendChild(currentText);
+      currentText._t0 = Date.now();
+      // 过程区还没出现：这段是开场白，留在正文里。出现了：先进折叠区当旁白，
+      // 写长了由 promoteTail 挪出去；上一段挪出去的这时该回原位——结论只能是最新那段
+      if (procBody) {
+        foldTail();
+        procBody.appendChild(currentText);
+        tailText = currentText;
+      } else body.appendChild(currentText);
     }
     return currentText;
   };
@@ -1355,6 +1409,7 @@ function createTurnUI(userText, turnMode, forSid, shown) {
     el._pend = true;
     el._timer = setTimeout(() => {
       el._pend = false; el._timer = null;
+      promoteTail(el); // 挪位置跟着渲染帧走，不在逐 chunk 的路上判
       paintStream(el);
       if (turnSid === sessionId) scrollBottom(); // 后台并行会话的增量不许滚动当前看的对话
     }, 100);
@@ -1419,6 +1474,8 @@ function createTurnUI(userText, turnMode, forSid, shown) {
   };
 
   function handleEvent(ev) {
+    // 进度只认还开着的卡：收过尾的那一步晚到一条（或 id 对不上），不能把卡和折叠条拉回「渲染 899/900」
+    if (ev.type === "tool_progress" && !(ev.id && (body._openCards || []).some((c) => c._tid === ev.id))) return;
     // 折叠条上那行「此刻在干什么」：每条事件都先过一遍它，再走各自的渲染分支
     const act = liveActivity(ev, actNarr);
     actNarr = act.narr;
@@ -1434,6 +1491,8 @@ function createTurnUI(userText, turnMode, forSid, shown) {
       hint.className = "thinking-hint";
       hint.style.cssText = "font-size: 13px;color:var(--owb-text-3);margin:6px 0;display:flex;align-items:center;gap:6px";
       hint.innerHTML = `<span class="spinner"></span> 第 ${ev.step} 步 · 思考规划中…`;
+      // 又开了一步 = 刚才挪出去的那段不是结论，收回折叠区（下面几处 foldTail 同理：后面有真活要干）
+      foldTail();
       // 首步的提示放正文（此时还没有过程区，别为它建一个）；后续步的提示进过程区
       (procBody || body).appendChild(hint);
       endText();
@@ -1485,6 +1544,7 @@ function createTurnUI(userText, turnMode, forSid, shown) {
       appendText(ev.delta);
     } else if (ev.type === "expert_start") {
       endText();
+      foldTail();
       const banner = document.createElement("div");
       banner.className = "step-card";
       banner.innerHTML = `<div class="head"><span class="tag">${ic("users")}${esc(ev.expert)}</span><span class="desc">专家接手子任务：${esc((ev.task || "").slice(0, 60))}</span></div>`;
@@ -1493,6 +1553,7 @@ function createTurnUI(userText, turnMode, forSid, shown) {
       // 这一批同时开跑。说一句，免得用户看到好几张卡一起转以为卡住了。
       // 两类分开讲：搜索抓页面是「等网络」，出图出片是「等上游出货还要花钱」，
       // 用户看到三张图一起转，第一反应是「这是不是要收我三份钱」——得当场说明白各写各的。
+      foldTail();
       ensureProc().appendChild(procNote("zap", ev.kind === "gen"
         ? `${ev.count} 条生成任务一起跑（各写各的文件，互不影响）`
         : `${ev.count} 个只读工具并发执行（搜索/抓页面互不影响，一起跑更快）`));
@@ -1500,6 +1561,7 @@ function createTurnUI(userText, turnMode, forSid, shown) {
       endRetry(); // 重试成功、模型直接调工具不说话：没有正文来撤它，这里撤
       body.querySelector(".thinking-hint")?.remove();
       endText();
+      foldTail();
       const card = document.createElement("div");
       card.className = "step-card";
       const who = ev.expert ? `${esc(ev.expert)} · ` : "";
@@ -1540,6 +1602,8 @@ function createTurnUI(userText, turnMode, forSid, shown) {
         // 结果一行说清：成功报「拿回来多少」，失败直接把原因摆在行上——
         // 只写个红色「失败」不说为什么，用户还得展开一张张点，那就是没用的过程
         const out = card.querySelector(".out");
+        // 跑着时那格是进度（「渲染 899/900」），收尾了就撤：结果有话由结果接手，没话就空着，别停在半截的数上
+        if (out && out.classList.contains("prog")) { out.classList.remove("prog"); out.textContent = ""; out.title = ""; }
         if (out && ev.outcome) { out.textContent = "· " + ev.outcome; out.title = ev.outcome; if (ev.isError) out.classList.add("err"); }
         const tag = document.createElement("span");
         tag.className = "tag " + (ev.isError ? "err" : "ok");
@@ -1569,6 +1633,12 @@ function createTurnUI(userText, turnMode, forSid, shown) {
         if (durEl) durEl.textContent = card._dur ? fmtStep(card._dur) : "";
         trailMark(card, ev.isError ? "err" : "ok", ev.at || Date.now());
       }
+    } else if (ev.type === "tool_progress") {
+      // 进度写在卡上结果那一格：跟「· 120 行」同一个位置，收尾时原地被结果换掉。
+      // 只直播不存盘，回放里没有这条；id 对不上的上面已经挡掉了
+      const out = (body._openCards || []).find((c) => c._tid === ev.id)?.querySelector(".out");
+      const txt = progressText(ev);
+      if (out && txt) { out.textContent = "· " + txt; out.title = ev.label || txt; out.classList.add("prog"); }
     } else if (ev.type === "limit") {
       endText();
       // 手动停止是用户自己按的，别再跟着说一句「任务强制收尾」——那是撞上限才有的话
@@ -1578,6 +1648,7 @@ function createTurnUI(userText, turnMode, forSid, shown) {
       turn._limited = true;
     } else if (ev.type === "auto_continue") {
       endText();
+      foldTail();
       liveRound = ev.round || 0; liveRoundTotal = ev.total || 0;
       ensureProc().appendChild(procNote("refresh-cw", `${ev.note || "已达执行上限"}，任务未完，自动续跑第 ${ev.round}/${ev.total} 轮（按进度接着做，不重跑）`));
       procWrap?.classList.add("open");
@@ -1600,6 +1671,7 @@ function createTurnUI(userText, turnMode, forSid, shown) {
     } else if (ev.type === "compact_start") {
       // 压缩要跟模型说一次话，长会话十几秒是常事，而它正卡在「他按下发送」和「第一个字」中间。
       // 只转圈不说话，他只能猜是模型卡了还是网断了——先把「在压什么、压多少、等了多久」摆出来
+      foldTail();
       const note = compactNote(ensureProc());
       note.classList.add("running");
       note._n = ev.entries || 0;
@@ -1677,9 +1749,12 @@ function createTurnUI(userText, turnMode, forSid, shown) {
         outFiles: liveOutFiles, root: ev.root || "",
         replaying: isReplaying, otherSession: turnSid !== sessionId,
       }));
+      // 回放里的题早就过期了，不进注意力的账
+      if (!isReplaying) attnAsk(turnSid, ev.ask_id, { text: ev.question, depth: ev.depth || 0 });
     } else if (ev.type === "ask_answer") {
+      attnAnswered(turnSid, ev.ask_id);
       const card = body.querySelector(`.ask-card[data-ask-id="${cssEsc(ev.ask_id || "")}"]`);
-      if (card && card._mark) card._mark(ev.answer, ev.timeout);
+      if (card && card._mark) card._mark(ev.answer, ev.timeout, ev.summary, ev.estimate);
       else if (card) card.classList.add("done");
     } else if (ev.type === "credits") {
       turn._credits = ev; // 结束时由操作条展示「扣 X 积分 · 余额 Y」
@@ -1687,13 +1762,14 @@ function createTurnUI(userText, turnMode, forSid, shown) {
     } else if (ev.type === "files") {
       // ev.changed 是服务端在任务开头打的快照上算出来的，历史回放也还原得出来；
       // 老版本存下来的记录里没有这个字段，退回本地 mtime 差异
+      const pool = outPool(ev); // files ∪ turn_files：第 4 层往下的产出只在后者里
       const turnOut = ev.changed
-        ? (ev.files || []).filter(f => ev.changed.includes(f.name))
+        ? pool.filter(f => ev.changed.includes(f.name))
         : changedFiles(ev.files);
       liveOuts += turnOut.length;
       for (const f of turnOut) if (!liveOutFiles.some((x) => x.name === f.name)) liveOutFiles.push(f);
       if (ev.root) outRoot = ev.root;
-      renderTurnOutputs(body, turnOut, ev.files, ev); // 先算差异，快照要等 applyOutputArrival 才推进
+      renderTurnOutputs(body, turnOut, pool, ev); // 先算差异，快照要等 applyOutputArrival 才推进
       // 回放历史任务时这些是当时的文件列表：拿它去刷右侧面板会把现在的状态盖成旧的。产出 chip 照摆，其余一律不动
       if (!isReplaying) { if (ev.root) filesRoot = ev.root; renderFiles(ev.files); }
       // 产出到了不抢版面：以前是「有产出就把右侧预览 / 成果文件面板弹出来」，又抢版面又难看。
@@ -1706,6 +1782,7 @@ function createTurnUI(userText, turnMode, forSid, shown) {
         pvOpen: pvPanel.classList.contains("show"),
         pvCurrent,
         filesOpen: document.getElementById("files-panel").classList.contains("show"),
+        listed: ev.files, // 角标只数面板里点得到的
       }), ev.files);
     } else if (ev.type === "sweep") {
       // 只在「刚跑完的这一趟」结束时出现一次；回放历史记录时不再问——
@@ -1745,6 +1822,7 @@ function createTurnUI(userText, turnMode, forSid, shown) {
       t.style.color = "var(--owb-err-text)";
       t.textContent = "出错了：" + (ev.message || "");
       body.appendChild(t); // 错误必须留在正文可见，不进折叠区
+      if (!isReplaying) attnFlag(turnSid, "error"); // 人不在这条上：侧栏那行亮红点
     }
     if (turnSid === sessionId) scrollBottom(); // 已切走的会话在后台跑，别拽当前视图的滚动条
   }
@@ -1776,9 +1854,10 @@ function createTurnUI(userText, turnMode, forSid, shown) {
     // 过程折叠区收尾：停计时、写「已完成 Xs」、默认折叠（出错/被截断则保持展开）
     if (procTimer) { clearInterval(procTimer); procTimer = null; }
     if (procWrap) {
-      // 最后一段正文是最终结论 → 提出折叠区保持可见（开场白在上、结论在下、过程收起）
-      const texts = procBody.querySelectorAll(":scope > .a-text");
-      if (texts.length) body.appendChild(texts[texts.length - 1]);
+      // 最后一段正文是最终结论 → 提出折叠区保持可见（开场白在上、结论在下、过程收起）。
+      // 流的时候已经挪出去了（promoteTail）就认它，再往最后挪一下，排到报错那行后面——跟回放出来的一样
+      const out = tailText && tailText.parentNode === body ? tailText : [...procBody.querySelectorAll(":scope > .a-text")].pop();
+      if (out) { out._anchor?.remove(); out._anchor = null; body.appendChild(out); }
       if (!procBody.childElementCount) {
         procWrap.remove();
       } else {
@@ -1967,26 +2046,50 @@ function createTurnUI(userText, turnMode, forSid, shown) {
     body.appendChild(bar);
   }
 
-  // Plan 模式：把执行计划解析成任务列表卡片
+  // Plan 模式：把执行计划解析成任务列表卡片（test/frontend.js 拿这一行当切片锚点，别改字）。
+  // 步骤摆成编号列表，底下两颗真按钮——「开干」当场切 Craft 发出去，「接着改」留在 Plan 等他说改哪步。
+  // 以前是一排勾选框加一颗「把整份计划抄进输入框」的按钮：勾了什么模型根本收不到，
+  // 抄进去的一大段还得他自己再按一次发送。两颗按钮的字、开干时发出去的那句，跟终端 Plan 跑完那张单子
+  // 是同一份（modes.js PLAN_HANDOFF，经 /api/modes 取回），不在这儿抄第二份
   function renderPlanChecklist() {
     const texts = body.querySelectorAll(".a-text");
     const raw = texts.length ? texts[texts.length - 1]._raw || "" : "";
+    if (!raw.trim()) return; // 只剩一行报错、一个字没写出来：没有计划可开干
     let steps = [...raw.matchAll(/^\s*\d+[.、)]\s+(.+)$/gm)].map(m => m[1]);
     if (steps.length < 2) steps = [...raw.matchAll(/^\s*[-*]\s+(.+)$/gm)].map(m => m[1]);
     steps = steps.map(s => s.replace(/\*\*/g, "").trim()).filter(s => s.length > 2).slice(0, 20);
-    if (steps.length < 2) return;
+    // 计划没写成编号列表也照样给按钮：开干发的是「按上面这份计划」，认的是整段回复，不靠这里解析出几步。
+    // /api/modes 没取到（planHandoff 为空）就只画步骤——按钮上没字、点了不知道发什么，不如不画
+    const hand = typeof planHandoff !== "undefined" && planHandoff ? planHandoff : null;
+    if (steps.length < 2 && !hand) return;
     const card = document.createElement("div");
     card.className = "plan-list";
-    card.innerHTML = `<div class="pl-head">${ic("list-checks")}计划任务列表（${steps.length} 步）</div>`
-      + steps.map(s => `<label class="pl-item"><input type="checkbox"> <span>${esc(s)}</span></label>`).join("")
-      + `<button class="pl-run">${ic("play")}切换 Craft 按此计划执行</button>`;
-    card.querySelector(".pl-run").onclick = () => {
-      setMode("craft");
-      inputEl.value = "请严格按照以下计划执行，每完成一步简要汇报：\n" + steps.map((s, i) => `${i + 1}. ${s}`).join("\n");
-      syncInputHl();
-      inputEl.focus();
-      scrollBottom(true);
-    };
+    card.innerHTML = (steps.length >= 2
+      ? `<div class="pl-head">${ic("list-ordered")}计划 ${steps.length} 步</div><ol class="pl-steps">${steps.map(s => `<li>${esc(s)}</li>`).join("")}</ol>`
+      : "")
+      + (hand ? `<div class="pl-acts"><button type="button" class="pl-run pl-go">${ic("play")}<span></span></button><button type="button" class="pl-more">${ic("pencil")}<span></span></button></div>` : "");
+    if (hand) {
+      const go = card.querySelector(".pl-go"), more = card.querySelector(".pl-more");
+      go.lastChild.textContent = hand.goLabel;
+      more.lastChild.textContent = hand.moreLabel;
+      go.onclick = () => {
+        // 「上面这份计划」指的是对话里最近那份。还在跑、或者后面已经聊过别的，这时候开干，
+        // 模型拿去执行的就不是他点的这张卡——宁可不发，说清楚为什么
+        if (curBusy()) { toast("这条还在跑，等它停了再开干"); return; }
+        if (turnSid !== sessionId || [...chatCol.querySelectorAll(":scope > .turn")].pop() !== turn) { toast("这份计划后面已经有新的对话了，按最新的来"); return; }
+        go.disabled = more.disabled = true; // 发出去了，再点一次就是同一份计划跑两遍
+        go.lastChild.textContent = hand.doneLabel;
+        setMode("craft");
+        // 模型收到的是 PLAN_HANDOFF.go 原话（跟终端一字不差）；英文界面下气泡里放它的译文。
+        // 气泡是 translate="no"，这儿不换的话，他会在自己的历史里看见一句自己没打过的中文
+        const lang = typeof I18N !== "undefined" ? I18N.getLang() : "zh";
+        doSend(hand.go, "craft", false, lang === "zh" ? undefined : I18N.lookup(hand.go, lang) || I18N.t(hand.goLabel));
+      };
+      more.onclick = () => {
+        setMode("plan");
+        planAskEdit(hand.morePlaceholder);
+      };
+    }
     body.appendChild(card);
     if (turnSid === sessionId) scrollBottom();
   }
@@ -2014,6 +2117,16 @@ function createTurnUI(userText, turnMode, forSid, shown) {
 // 所以另开一行常驻：过程区收着也照样播报当前动作，想看细节再点开。
 // 纯函数，好让前端测试直接喂事件验。narr 是上一次留下的旁白缓冲，随返回值一起往下传。
 const ACT_MAX = 60;
+// 长工具（渲染 / 配音 / 合成）跑着时报的进度：阶段词 + 做到第几 / 共几，没数目退回百分比，再没有才用工具写的那句。
+// 阶段词单独成词、后面只跟数字，英文界面按「词 + 数字」整句翻得动；工具自己写的 label 不保证翻得动，所以排最后
+const PROG_STAGE = { load: "加载", render: "渲染", encode: "编码", tts: "配音", shot: "截图", step: "步骤", compose: "合成", upload: "上传", transcode: "转码" };
+function progressText(ev) {
+  const w = ev && Object.prototype.hasOwnProperty.call(PROG_STAGE, ev.stage) ? PROG_STAGE[ev.stage] : ""; // stage 叫 constructor 也不能印出一段函数源码
+  const label = String((ev && ev.label) || "").replace(/\s+/g, " ").trim();
+  if (w && ev.total > 0 && ev.done >= 0) return `${w} ${Math.round(ev.done)}/${Math.round(ev.total)}`;
+  if (w && Number.isFinite(ev.pct)) return `${w} ${Math.round(ev.pct)}%`;
+  return label || w;
+}
 function liveActivity(ev, narr) {
   const cut = (s, n = ACT_MAX) => {
     const t = String(s == null ? "" : s).replace(/\s+/g, " ").trim();
@@ -2047,6 +2160,12 @@ function liveActivity(ev, narr) {
       return ev.isError
         ? say("triangle-alert", cut(shortTool(ev.name) + " 没成：" + (ev.outcome || ev.preview || "出错了")))
         : keep;
+    // 渲染十分钟，这行一直挂着「渲染 a.html」跟卡死了看不出区别；跟卡上那格说同一句话。
+    // 卡已经收尾（id 对不上）的那条由 handleEvent 挡掉，这里只管说什么
+    case "tool_progress": {
+      const t = progressText(ev);
+      return t ? say(toolIcon(ev.name), cut((ev.expert ? ev.expert + " · " : "") + t)) : keep;
+    }
     case "parallel": return say("zap", ev.kind === "gen" ? `${ev.count} 条生成任务一起跑` : `${ev.count} 个只读工具一起跑`);
     case "step_start": return (ev.depth || 0) > 0 ? keep : say("brain", `第 ${ev.step} 步 · 在想下一步怎么做`);
     case "expert_start": return say("users", `专家「${cut(ev.expert, 12)}」接手：` + cut(ev.task, 30));
@@ -2583,6 +2702,8 @@ function rewindButton(sid, ckptId) {
 }
 
 function makeAskCard(ev, turnSid, submit, ctx) {
+  // 内容配方的开头表单（带 fields）是多项一次定完的另一张卡，见 app-08-recipe.js
+  if (Array.isArray(ev.fields) && ev.fields.length && typeof makeRecipeFormCard === "function") return makeRecipeFormCard(ev, turnSid, submit, ctx);
   // 审批走同一张卡，但有三处必须不一样，见下面每一处的注释
   const isAp = ev.kind === "approval";
   const opts = isAp
@@ -2592,7 +2713,7 @@ function makeAskCard(ev, turnSid, submit, ctx) {
   card.className = "ask-card" + (isAp ? " ask-approve" : "");
   card.dataset.askId = ev.ask_id || "";
   card.innerHTML =
-    `<div class="ask-hd"><span class="ask-ic">${ic(isAp ? "shield-alert" : "circle-help")}</span><span class="ask-lb">${
+    `<div class="ask-hd"><span class="ask-ic">${ic(isAp ? "shield" : "circle-help")}</span><span class="ask-lb">${
       isAp ? `要你点头：${esc(ev.apKind || "危险操作")}` : (ev.expert ? `专家「${esc(ev.expert)}」拿不准，想问你一句` : "有个岔路，想让你定一下")
     }</span><span class="ask-timer"></span></div>` +
     // 命令原文整条印出来，不截断、不折进省略号：危险就危险在被截掉的那半截
@@ -2667,8 +2788,9 @@ function makeAskCard(ev, turnSid, submit, ctx) {
     card.classList.remove("sending");
     if (resp && resp.ok) markAnswered(text);
     else {
-      const j = resp ? await resp.json().catch(() => null) : null;
-      toast((j && j.error) || "没送出去：任务可能已经结束");
+      const j = resp && resp.json ? await resp.json().catch(() => null) : null;
+      // 只说查得到的：服务端说了原因（任务结束了、题过期了）就照它说，没说就不替人猜
+      toast((j && j.error) || (!resp ? "没送出去：连不上服务器，再点一次" : `没送出去${resp.status ? `（HTTP ${resp.status}）` : ""}，再点一次`));
     }
   };
 
@@ -2710,12 +2832,16 @@ function makeAskCard(ev, turnSid, submit, ctx) {
     // 历史回放里问题早就过期了，别让人白点，也别倒计时
     card.classList.add("done");
     card.querySelector(".ask-ans").innerHTML = `<span class="ic">·</span>这是历史记录里的提问`;
-  } else if (ev.timeout_ms > 0) {
-    const dead = Date.now() + Number(ev.timeout_ms);
+  } else if (ev.deadline > 0 || ev.timeout_ms > 0) {
+    // 审批带的是服务端定死的截止时刻（deadline + 服务器此刻的钟 now）：卡片晚几秒才画出来、
+    // 本机钟跟服务器差几分钟，都不该让倒计时多给人几秒——那几秒点下去已经被自动拒了
+    const dead = ev.deadline > 0
+      ? Number(ev.deadline) - (Number(ev.now) || Date.now()) + Date.now()
+      : Date.now() + Number(ev.timeout_ms);
     const paint = () => {
       const left = Math.max(0, Math.round((dead - Date.now()) / 1000));
-      if (!left) { stopTick(); timerEl.textContent = "已超时"; timerEl.classList.add("hot"); return; }
-      timerEl.textContent = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")} 后按默认继续`;
+      if (!left) { stopTick(); timerEl.textContent = isAp ? "已自动拒绝" : "已超时"; timerEl.classList.add("hot"); return; }
+      timerEl.textContent = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")} ${isAp ? "后自动拒绝" : "后按默认继续"}`;
       timerEl.classList.toggle("hot", left <= 30);
     };
     paint();
@@ -4162,6 +4288,20 @@ function reapDeletedOutputs(block, live, ev) {
   return n;
 }
 
+/**
+ * 一条 files 事件里，「本回合产出」该从哪份清单里挑、拿哪份判「已删除」。
+ * files 是右侧面板那份（最深 3 层、最新 500 条）；第 4 层往下、或挤出 500 条的本回合产出，
+ * 服务端另放在 turn_files 里。只看 files 的话，深处的成品画不出卡，画出来的也会因为
+ * 「清单里找不着」被盖成已删除。老记录没有 turn_files，原样就是 files。
+ */
+function outPool(ev) {
+  const files = (ev && ev.files) || [];
+  const extra = (ev && Array.isArray(ev.turn_files)) ? ev.turn_files : [];
+  if (!extra.length) return files;
+  const seen = new Set(files.map((f) => f.name));
+  return files.concat(extra.filter((f) => f && f.name && !seen.has(f.name) && seen.add(f.name)));
+}
+
 function renderTurnOutputs(body, changed, live, ev) {
   if (!body || !changed || !changed.length) return;
   let block = body.querySelector(":scope > .out-block");
@@ -4250,8 +4390,18 @@ function renderTurnOutputs(body, changed, live, ev) {
   foldBundleCards(grid, bundles, blkRoot);
   markDupBasenames(grid);
   hideCardedRows(block);
+  // 数不全就照实写「N+」：整树那趟撞了条数上限（scan_capped），
+  // 或者服务端报了改动、清单里却没带上（turn_files 截过）。底下补一句「可能没列全」，不装作列全了；
+  // 两种来由这一句都对得上，所以只说知道的，不替人讲是哪一种
+  if (ev && (ev.scan_capped || (Array.isArray(ev.changed) && new Set(ev.changed).size > changed.length))) block.dataset.capped = "1";
   const nRows = list.querySelectorAll(".out-row").length;
-  block.querySelector(".out-main .cn").textContent = `(${nRows})`;
+  block.querySelector(".out-main .cn").textContent = `(${nRows}${block.dataset.capped ? "+" : ""})`;
+  if (block.dataset.capped && !block.querySelector(".out-note")) {
+    const note = document.createElement("div");
+    note.className = "out-note";
+    note.textContent = "这回合的产出可能没列全";
+    block.querySelector(".out-body").appendChild(note);
+  }
   clipOutList(block);
 }
 
@@ -4824,7 +4974,11 @@ function outputArrivalPlan(o) {
   if (o.replaying) return { snapshot: false, badge: 0, refresh: null };                 // 回放历史：快照和角标都不动
   if (o.otherSession || !outs.length) return { snapshot: true, badge: 0, refresh: null }; // 后台回合 / 没产出：只推进基线
   const refresh = o.pvOpen && o.pvCurrent && outs.some((f) => f.name === o.pvCurrent) ? o.pvCurrent : null;
-  return { snapshot: true, badge: o.filesOpen ? 0 : outs.length, refresh };
+  // 角标点开的是「成果文件」面板，那边只列 listed（ev.files：最深 3 层、最新 500 条）。
+  // 第 4 层往下的产出在对话里有卡，面板里却没有——算进角标就成了「说有 3 件新的，点开只见 1 件」
+  const inPanel = Array.isArray(o.listed) ? new Set(o.listed.map((f) => f && f.name)) : null;
+  const n = inPanel ? outs.filter((f) => inPanel.has(f.name)).length : outs.length;
+  return { snapshot: true, badge: o.filesOpen ? 0 : n, refresh };
 }
 function applyOutputArrival(plan, files) {
   if (plan.snapshot) snapshotFiles(files);

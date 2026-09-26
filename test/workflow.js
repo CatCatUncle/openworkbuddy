@@ -41,6 +41,11 @@ const ok = (c, m, extra) => { if (c) { pass++; console.log("  ✓ " + m); } else
     ok(/第 6 步.*\{\{later\}\}.*自己/.test(bad), "指自己的也说");
     ok(bad.split("\n").length >= 7, "★错处一次全列出来★ 不让人改一条跑一次", bad.split("\n").length);
     ok(/最多/.test(WF.parse(JSON.stringify({ steps: Array(WF.MAX_STEPS + 1).fill("x") })).error), "步数有上限");
+    p = WF.parse(JSON.stringify({ name: "  发版前检查 ", description: "跑测试再写说明", steps: [{ name: "test", title: "跑测试", phase: "Build", prompt: "x" }, "y"] }));
+    ok(p.name === "发版前检查" && p.description === "跑测试再写说明", "顶层 name / description 给面板顶上用", p);
+    ok(p.steps[0].title === "跑测试" && p.steps[0].phase === "Build" && p.steps[1].title === "" && p.steps[1].phase === "", "title / phase 可写可不写", p.steps);
+    const long = WF.parse(JSON.stringify({ steps: [{ title: "字".repeat(25), phase: "阶".repeat(21), prompt: "x" }] })).error || "";
+    ok(/title.*24/.test(long) && /phase.*20/.test(long), "title、phase 太长直说", long);
   }
 
   console.log("\n【2】填模板");
@@ -52,6 +57,68 @@ const ok = (c, m, extra) => { if (c) { pass++; console.log("  ✓ " + m); } else
     ok(WF.fill("{{other}}", { plan: "x" }) === "{{other}}", "没有结果的名字原样留着");
     const long = WF.fill("{{plan}}", { plan: "字".repeat(WF.PASTE_MAX + 10) });
     ok(long.length < WF.PASTE_MAX + 100 && /没贴进来/.test(long), "太长截断并说明");
+  }
+
+  console.log("\n【2b】inputs：声明、校验、填值");
+  {
+    const flow = (inputs, steps) => JSON.stringify({ inputs, steps });
+    const IN = [
+      { name: "product", label: "产品", required: true },
+      { name: "dur", label: "时长", type: "select", options: ["15", "30"], default: "15" },
+      { name: "plats", label: "平台", type: "multi", options: ["抖音", "小红书", "B站"], default: ["抖音"] },
+    ];
+    const p = WF.parse(flow(IN, [{ name: "a", prompt: "做 {{input.product}}，{{ input.dur }} 秒，发 {{input.plats}}" }, "{{input.__json}}\n接着 {{a}}"]));
+    ok(!p.error && p.inputs.length === 3, "inputs 认了", p);
+    ok(p.inputs[0].type === "text" && p.inputs[0].required === true && p.inputs[1].type === "select" && p.inputs[1].required === false, "type / required 规整好", p.inputs);
+    ok(Array.isArray(WF.parse(JSON.stringify({ steps: ["x"] })).inputs) && WF.parse(JSON.stringify({ steps: ["x"] })).inputs.length === 0, "不写 inputs 就是空数组");
+    ok(WF.parse(JSON.stringify({ inputs: [{ name: "n", options: ["a"] }], steps: ["x"] })).inputs[0].type === "select", "写了 options 没写 type 当单选");
+    ok(WF.refs(p.steps[0].prompt).length === 0, "{{input.x}} 不算步骤引用（refs 不认它）");
+    ok(JSON.stringify(WF.inputRefs(p.steps[0].prompt)) === '["product","dur","plats"]', "inputRefs 按出现顺序", WF.inputRefs(p.steps[0].prompt));
+
+    const bad = WF.parse(flow([
+      { name: "Bad-name" }, { name: "x" }, { name: "x" }, { name: "s", type: "select" }, { name: "m", type: "multi", options: [] },
+      { name: "d", type: "select", options: ["1", "2"], default: "3" }, { name: "md", type: "multi", options: ["a", "b"], default: ["a", "c"] },
+      { name: "t", type: "radio" },
+    ], ["{{input.ghost}}", "{{input.x}} {{input.__json}}"])).error || "";
+    ok(/第 1 项.*Bad-name/.test(bad), "名字不合规（带 - 和大写都不行）", bad);
+    ok(/第 3 项.*重了/.test(bad), "重名");
+    ok(/第 4 项.*select 要给 options/.test(bad) && /第 5 项.*multi 要给 options/.test(bad), "单选/多选没给 options");
+    ok(/第 6 项.*默认值「3」不在 options/.test(bad) && /第 7 项.*默认值「c」不在 options/.test(bad), "默认值不在选项里（单选、多选都查）");
+    ok(/第 8 项.*radio/.test(bad), "type 写错");
+    ok(/第 1 步用了 \{\{input\.ghost\}\}，inputs 里没有 ghost/.test(bad), "★步骤里用了没声明的 input★", bad);
+    ok(!/第 2 步/.test(bad), "（反向对照）声明了的 x、保留的 __json 不报");
+    ok(bad.split("\n").length >= 8, "★inputs 的错也一次全列★", bad.split("\n").length);
+    const both = WF.parse(JSON.stringify({ inputs: "nope", steps: [{ prompt: "" }] })).error || "";
+    ok(/inputs 要写成数组/.test(both) && /没写 prompt/.test(both), "步骤的错和 inputs 的错一起列", both);
+    ok(/最多/.test(WF.parse(JSON.stringify({ inputs: Array.from({ length: WF.MAX_INPUTS + 1 }, (_, i) => ({ name: "a" + i })), steps: ["x"] })).error || ""), "inputs 有上限");
+    ok(/名字只能/.test(WF.parse(JSON.stringify({ steps: ["{{input.Foo}}"] })).error || ""), "{{input.Foo}} 这种写错的名字也逮到");
+    ok(WF.INPUT_RE.test("product_2") && !WF.INPUT_RE.test("a-b") && !WF.INPUT_RE.test("__json"), "INPUT_RE：字母数字和 _，保留名进不来");
+
+    let r = WF.resolveInputs(p.inputs, {});
+    ok(JSON.stringify(r.missing) === '["product"]' && r.values.dur === "15" && JSON.stringify(r.values.plats) === '["抖音"]', "★必填没给进 missing，其余补默认★", r);
+    r = WF.resolveInputs(p.inputs, { product: "水杯", plats: "B站,抖音" });
+    ok(!r.missing.length && !r.errors.length && JSON.stringify(r.values.plats) === '["抖音","B站"]', "多选 a,b：按选项的顺序排", r);
+    ok(JSON.stringify(WF.resolveInputs(p.inputs, { product: "x", plats: "小红书、b站" }).values.plats) === '["小红书","B站"]', "多选 a、b 顿号也认，大小写兜一次");
+    r = WF.resolveInputs(p.inputs, { product: "x", dur: "45", plats: "快手" });
+    ok(r.errors.some((e) => /时长（dur）.*15 \/ 30.*45/.test(e)) && r.errors.some((e) => /平台.*快手/.test(e)), "★选项外的值直说能选什么★", r.errors);
+    ok(WF.resolveInputs(p.inputs, { product: "x", dur: "30" }).errors.length === 0, "（反向对照）选项内的值不报");
+    ok(/没有叫「zz」/.test(WF.resolveInputs(p.inputs, { product: "x", zz: "1" }).errors.join()), "给了没声明的名字直说");
+    ok(/给了 2 次/.test(WF.resolveInputs(p.inputs, { product: ["a", "b"] }).errors.join()), "单值给了两次直说");
+    ok(JSON.stringify(WF.resolveInputs(p.inputs, { product: "x", plats: ["抖音", "B站"] }).values.plats) === '["抖音","B站"]', "多选分几次给也合起来");
+    ok(WF.resolveInputs(p.inputs, { product: "  " }).missing[0] === "product", "给了空值等于没给");
+
+    const a = WF.inputArgs(["product=a=b", "plats=抖音", "plats=B站", "oops"]);
+    ok(a.given.product === "a=b" && JSON.stringify(a.given.plats) === '["抖音","B站"]' && a.errors.length === 1, "inputArgs：值里带 = 照收，同名收成数组，没等号报错", a);
+
+    const vals = WF.resolveInputs(p.inputs, { product: "水杯", plats: "抖音,B站" }).values;
+    ok(WF.fillInputs(p.steps[0].prompt, vals) === "做 水杯，15 秒，发 抖音、B站", "多选用顿号连起来", WF.fillInputs(p.steps[0].prompt, vals));
+    ok(WF.fillInputs("{{input.product}}|{{input.plats}}", { product: "", plats: [] }) === "（没填）|（没填）", "空的写「（没填）」");
+    const js = WF.fillInputs("{{input.__json}}", { product: "多\n行", plats: ["抖音"] });
+    ok(!js.includes("\n") && JSON.parse(js).product === "多\n行", "★__json 是一行 JSON★（配方靠 PRESET_RE 认，不许换行）", js);
+    ok(WF.fillInputs("{{input.nope}}", vals) === "{{input.nope}}", "没有的名字原样留着");
+    const two = WF.fill(WF.fillInputs("{{input.product}} / {{a}}", vals), { a: "上一步说 {{input.product}}" });
+    ok(two === "水杯 / 上一步说 {{input.product}}", "★先填 inputs 再贴结果：贴进来的 {{input.x}} 不被填★", two);
+    ok(WF.fill("{{input.product}}", { input: "x" }) === "{{input.product}}", "fill 不碰 {{input.x}}");
   }
 
   console.log("\n【3】真跑一遍：真 cli.js + 假模型");
@@ -125,6 +192,86 @@ const ok = (c, m, extra) => { if (c) { pass++; console.log("  ✓ " + m); } else
       let err = ""; kid.stderr.on("data", (b) => (err += b)); kid.on("close", (code) => resolve({ code, err }));
     });
     ok(r.code === 2 && /读不了/.test(r.err), "文件不存在：直说，退出码 2", r);
+
+    console.log("\n【3b】inputs 真跑：-i 填值、缺了就停、内置配方");
+    const runArgs = (args) => new Promise((resolve) => {
+      const kid = spawn(process.execPath, [path.join(ROOT, "cli.js"), ...args, "-C", ws, "--no-mcp"], {
+        cwd: home, env: { ...process.env, OPENWORKBUDDY_HOME: home, NO_COLOR: "1" }, stdio: ["ignore", "pipe", "pipe"],
+      });
+      let err = "";
+      kid.stdout.on("data", () => {});
+      kid.stderr.on("data", (b) => (err += b));
+      const t = setTimeout(() => kid.kill("SIGKILL"), 60000);
+      kid.on("close", (code) => { clearTimeout(t); resolve({ code, err }); });
+    });
+    const INFLOW = { name: "文案", inputs: [
+      { name: "product", label: "产品", required: true },
+      { name: "plats", label: "平台", type: "multi", options: ["抖音", "小红书", "B站"], default: ["抖音"] },
+    ], steps: [{ name: "a", prompt: "给 {{input.product}} 写标题，发 {{input.plats}}" }, { prompt: "{{input.__json}}\n接着：{{a}}" }] };
+    asked.length = 0;
+    r = await run(INFLOW, ["-i", "product=智能水杯", "-i", "plats=B站、抖音"]);
+    ok(r.code === 0 && asked.length === 2, "带 -i 跑完两步", { code: r.code, err: r.err.slice(-400) });
+    ok(/给 智能水杯 写标题，发 抖音、B站/.test((asked[0] || {}).text || ""), "★-i 的值真填进了 prompt★（多选按选项顺序、顿号连）", (asked[0] || {}).text);
+    const j = /\{"product":"智能水杯"[^\n]*\}/.exec((asked[1] || {}).text || "");
+    ok(!!j && JSON.parse(j[0]).plats.length === 2 && /接着：收到：给 智能水杯/.test(asked[1].text), "{{input.__json}} 是一行 JSON，{{a}} 照样贴", (asked[1] || {}).text);
+
+    asked.length = 0;
+    r = await run(INFLOW, []);
+    ok(r.code === 2 && asked.length === 0 && /缺 -i product=/.test(r.err) && /一步都没跑/.test(r.err),
+      "★必填没给、终端前没人：退出码 2，说清缺哪个 -i★", { code: r.code, err: r.err.slice(-300) });
+    r = await run(INFLOW, ["-i", "product=x", "-i", "plats=快手"]);
+    ok(r.code === 2 && asked.length === 0 && /快手/.test(r.err) && /抖音 \/ 小红书 \/ B站/.test(r.err), "选项外的值：一步不跑，说能选什么", r.err.slice(-300));
+    r = await run(INFLOW, ["-i", "prodcut=x"]);
+    ok(r.code === 2 && /没有叫「prodcut」/.test(r.err), "名字拼错了直说", r.err.slice(-300));
+    r = await runArgs(["-i", "product=x", "随便问一句"]);
+    ok(r.code === 2 && asked.length === 0 && /-i 只配合/.test(r.err), "不是 workflow 却写了 -i：停下，不悄悄丢掉", r.err.slice(-300));
+
+    asked.length = 0;
+    r = await runArgs(["workflow", "promo-video", "-i", "product=智能水杯", "-i", "duration=15"]);
+    ok(r.code === 0 && asked.length === 3, "★内置配方直接写名字就能跑★ 三步", { code: r.code, n: asked.length, err: r.err.slice(-400) });
+    const pre = /【配方表单已填：promo-video】(\{[^\n]*\})/.exec((asked[0] || {}).text || "");
+    let preVals = null;
+    try { preVals = pre && JSON.parse(pre[1]); } catch {}
+    ok(!!preVals && preVals.product === "智能水杯" && preVals.duration === "15" && Array.isArray(preVals.aspects),
+      "★表单值一行 JSON 预填进了消息★ 模型那边不用再弹表单", ((asked[0] || {}).text || "").slice(0, 300));
+    ok(/【使用技能：promo-video】/.test((asked[0] || {}).text || ""), "技能标记也在");
+    asked.length = 0;
+    r = await runArgs(["workflow", "promo-video", "-i", "product=x", "-i", "cover=html"]);
+    ok(r.code === 2 && asked.length === 0 && /截不了图/.test(r.err), "★命令行用不了的选项直说为什么，不悄悄换一个★", r.err.slice(-300));
+    r = await runArgs(["workflow", "promo-video"]);
+    ok(r.code === 2 && asked.length === 0 && /缺 -i product=/.test(r.err), "配方的必填项没给也停", r.err.slice(-300));
+    r = await runArgs(["workflow", "promo-vidoe"]);
+    ok(r.code === 2 && /读不了/.test(r.err) && /promo-video/.test(r.err), "配方名写错：读不了，并列出有哪些配方", r.err.slice(-300));
+
+    // 终端前有人：当场问。「有没有人」看 stdin 是不是终端，管道冒充不了，得真开一个 pty
+    const { BRIDGE, havePty } = require("./lib/pty");
+    const ttyRun = (keys) => new Promise((resolve) => {
+      const f = path.join(home, "flow-tty.json");
+      fs.writeFileSync(f, JSON.stringify(INFLOW));
+      const kid = spawn("python3", ["-c", BRIDGE, process.execPath, path.join(ROOT, "cli.js"), "workflow", f, "-C", ws, "--no-mcp"], {
+        cwd: home, env: { ...process.env, OPENWORKBUDDY_HOME: home, NO_COLOR: "1" }, stdio: ["pipe", "pipe", "pipe"],
+      });
+      let out = "", k = 0;
+      kid.stdout.on("data", (b) => {
+        out += b;
+        // 每看到一次提示符就按下一个键：第一次回车空着，看它会不会再问
+        const seen = out.split("产品（product）：").length - 1;
+        while (k < keys.length && k < seen) kid.stdin.write(keys[k++]);
+      });
+      kid.stderr.on("data", (b) => (out += b));
+      const t = setTimeout(() => kid.kill("SIGTERM"), 60000);
+      kid.on("close", (code) => { clearTimeout(t); resolve({ code, out }); });
+    });
+    if (!havePty()) console.log("  （跳过 pty 那两条：这台机器没有 python3 的 pty）");
+    else {
+      asked.length = 0;
+      r = await ttyRun(["\r", "电动牙刷\r"]);
+      ok(r.code === 0 && /要填/.test(r.out) && /给 电动牙刷 写标题/.test((asked[0] || {}).text || ""),
+        "★终端前有人：当场问必填项，空着回车会再问一次★", { code: r.code, out: r.out.slice(-400) });
+      asked.length = 0;
+      r = await ttyRun(["\x04"]);
+      ok(r.code === 2 && asked.length === 0 && /没填产品/.test(r.out), "（反向对照）Ctrl+D 不答：一步不跑，退出码 2", { code: r.code, out: r.out.slice(-300) });
+    }
 
     llm.close();
     try { fs.rmSync(home, { recursive: true, force: true }); } catch {}

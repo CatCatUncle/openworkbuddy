@@ -15,6 +15,8 @@
 
 const fs = require("fs");
 const path = require("path");
+// 赶在 require agent 之前：不然单独跑时 trace 记进用户真在用的 workspace/（见 test/lib/own-home.js）
+require("./lib/own-home")("agent-loop");
 const ROOT = path.join(__dirname, "..");
 const { deadLoop, findCycle, stopNotice, DEAD_LOOP_LIMITS: L } = require(path.join(ROOT, "agent"));
 const AGENT_SRC = fs.readFileSync(path.join(ROOT, "agent.js"), "utf8");
@@ -1311,6 +1313,160 @@ const emptyAN = (m) => m.role === "assistant" && (!m.content || (Array.isArray(m
         ok(!adj(mc), "★压缩之后：摘要和保留的那句不再是两条 user 挨着★", mc.map((m) => m.role));
       } finally {
         fs.mkdirSync = realMkdir;
+      }
+    }
+
+    // ── ⑲ tool_progress：长工具跑着时往回报进度 ─────────────────────────────
+    // 渲染 900 帧、配音十几段，一个工具一跑几分钟，界面上只有一张转圈的卡，跟卡死了分不出来。
+    // 钉三件事：每条进度带着这一步的调用 id（界面按 id 找卡）；只夹在这一步的调用和结果之间；
+    // 界面那头抛了错，正在跑的工具也不许被打断——进度只是给人看的
+    console.log("\n⑲ tool_progress：带调用 id、夹在调用和结果之间、界面抛错不打断工具");
+    {
+      // agent.js 加载时就把 executeTool 解构走了，换不了现成那份：让 require 缓存临时吐一份换过 executeTool 的
+      // tools，重新加载一份 agent，再把两份缓存原样放回去（放回去之后别的测试拿到的还是真的）
+      const toolsPath = require.resolve(path.join(ROOT, "tools"));
+      const agentPath = require.resolve(path.join(ROOT, "agent"));
+      const realTools = require.cache[toolsPath].exports;
+      const realAgent = require.cache[agentPath];
+      const calls = [];
+      // 只换 list_files 一个：照真长工具的样子裸调 onProgress 三次，还故意夹带 type / id / depth 想盖掉事件自己的
+      const fakeExec = async (name, input, o) => {
+        if (name !== "list_files") return realTools.executeTool(name, input, o);
+        const sink = o && o.onProgress;
+        calls.push({ id: o && o.callId, hasSink: typeof sink === "function" });
+        if (o && o.callId === "junk1") {
+          // 工具写岔了的几种：不是对象、数目不是有限数、百分比出界、label 不是字
+          sink?.(null);
+          sink?.({ stage: "encode", done: NaN, total: Infinity, pct: 250, label: 123 });
+          // label 里夹着文件名带出来的换行、颜色码，还超长；只剩空白的等于没带
+          sink?.({ stage: "render", label: "  渲染\n\x1b[31ma.html\x1b[0m\t" + "帧".repeat(49) + "😀" + "帧".repeat(30) });
+          sink?.({ stage: "render", label: "\n\t \x1b[0m" });
+        } else {
+          for (let i = 1; i <= 3; i++) sink?.({ stage: "render", done: i, total: 3, label: `渲染帧 ${i}/3`, type: "伪造", id: "伪造", depth: 9 });
+        }
+        return { content: "三帧都渲染好了", isError: false };
+      };
+      let A2 = null;
+      require.cache[toolsPath].exports = { ...realTools, executeTool: fakeExec };
+      delete require.cache[agentPath];
+      try { A2 = require(agentPath); } finally { require.cache[toolsPath].exports = realTools; require.cache[agentPath] = realAgent; }
+      ok(A2 && A2.createAgentRuntime !== createAgentRuntime, "换上假工具的是新加载的一份 agent（不然下面测的还是真工具）");
+      ok(require(path.join(ROOT, "tools")).executeTool === realTools.executeTool && require(path.join(ROOT, "agent")).createAgentRuntime === createAgentRuntime,
+        "  └ 缓存原样放回去了：别的测试拿到的还是真的");
+      const runFake = async (llm, emit) => {
+        const dir = path.join(TMP, "run-" + (++runSeq));
+        fs.mkdirSync(dir);
+        const rt = A2.createAgentRuntime({ config: cfgOf({ max_steps: 4 }), llm, mcpManager: new McpManager(), experts: EXPERTS });
+        return tools.withWorkspace(dir, () => rt.runTask({ history: [{ role: "user", content: "把动效渲染出来" }], emit }));
+      };
+      const once = (id) => scripted([
+        { text: "渲染。", toolCalls: [{ id, name: "list_files", input: {} }], stopReason: "tool_use" },
+        { text: "好了。", toolCalls: [], stopReason: "end_turn" },
+      ]);
+
+      const evs = [];
+      const llm1 = once("rv1");
+      await runFake(llm1, (e) => evs.push(e));
+      const prog = evs.filter((e) => e.type === "tool_progress");
+      const iUse = evs.findIndex((e) => e.type === "tool_use" && e.id === "rv1");
+      const iRes = evs.findIndex((e) => e.type === "tool_result" && e.id === "rv1");
+      const iProg = evs.map((e, i) => (e.type === "tool_progress" ? i : -1)).filter((i) => i >= 0);
+      ok(calls.length === 1 && calls[0].hasSink && calls[0].id === "rv1", "工具拿到了 onProgress（opts 一路递到 executeTool，带着调用 id）", calls);
+      eq(prog.map((e) => e.done), [1, 2, 3], "三次进度一条不少、按顺序");
+      ok(prog.length === 3 && prog.every((e) => e.id === "rv1" && e.name === "list_files" && e.depth === 0),
+        "★每条都带这一步的调用 id 和工具名★ 工具夹带的 id: 伪造 / depth: 9 盖不掉", prog);
+      ok(iUse >= 0 && iRes > iUse && iProg.length === 3 && iProg.every((i) => i > iUse && i < iRes),
+        "★全夹在这一步的 tool_use 和 tool_result 之间★ 早一条界面找不到卡，晚一条就把收了尾的卡拉回「渲染 2/3」", { iUse, iProg, iRes });
+      eq(prog[0] && { stage: prog[0].stage, total: prog[0].total, label: prog[0].label }, { stage: "render", total: 3, label: "渲染帧 1/3" }, "阶段、总数、那句话原样带到");
+
+      // 界面那头每条进度都抛：工具照常跑完，结果照常交给模型
+      const evs2 = [];
+      let threw = 0;
+      const llm2 = once("rv2");
+      await runFake(llm2, (e) => { if (e.type === "tool_progress") { threw++; throw new Error("界面炸了"); } evs2.push(e); });
+      const res2 = evs2.find((e) => e.type === "tool_result" && e.id === "rv2");
+      ok(threw === 3, "界面那头三条进度都真抛了（不然下一条测的不是这个）", threw);
+      ok(res2 && res2.isError === false && /三帧都渲染好了/.test(res2.preview || ""), "★界面抛错也不打断工具★ 结果照常回来、不算失败", res2);
+      ok(JSON.stringify(llm2.seen[1] || []).includes("三帧都渲染好了"), "  └ 模型下一问里拿到的也是这份真结果");
+
+      // 工具写岔了的进度：不带 NaN / Infinity 出去（界面会原样印「NaN/Infinity」），百分比夹回 0~100
+      const evs3 = [];
+      await runFake(once("junk1"), (e) => evs3.push(e));
+      const p3 = evs3.filter((e) => e.type === "tool_progress");
+      eq(p3.map((e) => Object.keys(e).sort().join(",")), ["depth,id,name,type", "depth,id,name,pct,stage,type", "depth,id,label,name,stage,type", "depth,id,name,stage,type"],
+        "坏数目、不是字的 label、洗完只剩空白的 label 一律不带；不是对象的也只剩身份那几格");
+      ok(p3[1] && p3[1].pct === 100, "百分比出界夹回 100", p3[1]);
+      const lb = (p3[2] && p3[2].label) || "";
+      eq(lb, "渲染 a.html " + "帧".repeat(49) + "😀",
+        "★label 在源头洗过★ 换行、颜色码没了（命令行原地重画那行不会折成两行），按字截到 60，第 60 个是表情也不切成半个");
+
+      // 专家（子智能体）里的进度：跟专家别的事件一样往外流，带 depth 1 和专家名
+      const evs4 = [];
+      const llm4 = scripted([
+        { text: "交给文案写手。", toolCalls: [{ id: "dg1", name: "delegate_to_expert", input: { expert: "文案写手", task: "把动效渲染出来" } }], stopReason: "tool_use" },
+        { text: "我来渲染。", toolCalls: [{ id: "ex1", name: "list_files", input: {} }], stopReason: "tool_use" },
+        { text: "渲染好了。", toolCalls: [], stopReason: "end_turn" },
+      ]);
+      await runFake(llm4, (e) => evs4.push(e));
+      const p4 = evs4.filter((e) => e.type === "tool_progress");
+      ok(evs4.some((e) => e.type === "expert_start"), "委派真的走到了（不然下一条测的不是专家）", evs4.map((e) => e.type));
+      ok(p4.length === 3 && p4.every((e) => e.id === "ex1" && e.depth === 1 && e.expert === "文案写手"),
+        "★专家里的进度也往外流★ 带专家自己那一步的 id、depth 1、专家名", p4);
+
+      // 探索子智能体里的进度：它的 tool_use / tool_result 的 id 都加了父调用前缀（几个探索并发会撞 call_0），
+      // 进度要是漏了前缀，界面按 id 找不到卡，整条被丢掉——卡上永远只有转圈
+      const evs5 = [];
+      const llm5 = scripted([
+        { text: "开个探索去查。", toolCalls: [{ id: "xp1", name: "explore", input: { question: "目录里有什么" } }], stopReason: "tool_use" },
+        { text: "我先列目录。", toolCalls: [{ id: "call_0", name: "list_files", input: {} }], stopReason: "tool_use" },
+        { text: "目录是空的。", toolCalls: [], stopReason: "end_turn" },
+        { text: "查完了。", toolCalls: [], stopReason: "end_turn" },
+      ]);
+      await runFake(llm5, (e) => evs5.push(e));
+      const use5 = evs5.find((e) => e.type === "tool_use" && e.depth === 1 && e.name === "list_files");
+      const p5 = evs5.filter((e) => e.type === "tool_progress");
+      ok(use5 && use5.id === "xp1/call_0", "探索里那一步真跑到了，卡的 id 带着父调用前缀（不然下一条测的不是这个）", use5);
+      ok(p5.length === 3 && p5.every((e) => e.id === "xp1/call_0" && e.depth === 1 && e.expert === "探索1"),
+        "★探索子智能体里的进度 id 也带父调用前缀★ 跟它那张卡的 id 一字不差，界面才找得到", p5.map((e) => [e.id, e.depth, e.expert]));
+
+      // 只直播不存盘：两张「要存 / 要回放」的表里都没有它。一次渲染几百条，存进会话就是几百行噪音
+      const SERVER_SRC = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+      const APP02_SRC = fs.readFileSync(path.join(ROOT, "public", "js", "app-02.js"), "utf8");
+      const recList = (SERVER_SRC.match(/\[("tool_use", "tool_result",[^\]]*)\]\.includes\(ev\.type\)/) || [])[1] || "";
+      const keepList = (APP02_SRC.match(/const KEEP = \[([^\]]*)\]/) || [])[1] || "";
+      ok(recList.includes('"compact"') && keepList.includes('"compact"'), "两张表都找得到（找不到就是改名或挪窝了，下一条会失去意义）", { recList: recList.slice(0, 60), keepList: keepList.slice(0, 60) });
+      ok(!recList.includes("tool_progress") && !keepList.includes("tool_progress"), "★tool_progress 不进服务端存盘表、也不进回放表★");
+
+      // 终端走字那行：调用行后面挂进度，任何宽度都不许超出给的列数（超一格折行，原地重画就擦不干净）
+      const CLI_SRC = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
+      const c0 = CLI_SRC.indexOf("function toolTickLine(");
+      const c1 = CLI_SRC.indexOf("\n}\n", c0);
+      ok(c0 > 0 && c1 > c0, "cli.js 里找得到 toolTickLine（找不到就是改名了，下面几条会失去意义）");
+      if (c0 > 0 && c1 > c0) {
+        const { cols } = require(path.join(ROOT, "text-width"));
+        const toolView = require(path.join(ROOT, "cli-toolview"));
+        const line = new Function("cols", "toolView", CLI_SRC.slice(c0, c1 + 2) + "\nreturn toolTickLine;")(cols, toolView);
+        const ev = { type: "tool_use", name: "run_shell", input_preview: JSON.stringify({ command: "node render.js --fps 30 --out 成片/动效演示-最终版.mp4" }) };
+        const LONG = "渲染帧 432/900 · 30fps · 预计还要两分钟左右，别关窗口";
+        const strip = (s) => String(s).replace(/\x1b\[[0-9;]*m/g, "");
+        const paint = (s) => `\x1b[2m${s}\x1b[22m`;
+        const over = [];
+        for (const room of [29, 30, 31, 38, 40, 45, 52, 60, 80, 120, 200]) {
+          for (const label of ["", "渲染帧 432/900", LONG, "a\x1b[31mb\nc"]) {
+            for (const p of [undefined, paint]) {
+              const s = line(ev, label, room, p);
+              if (s != null && cols(strip(s)) > room) over.push({ room, label, got: strip(s) });
+            }
+          }
+        }
+        ok(over.length === 0, "★挂上进度的那行任何宽度都不超出给的列数★（中文按两列算、上色不算宽）", over.slice(0, 3));
+        ok(line(ev, "渲染帧 432/900", 120).endsWith(" · 渲染帧 432/900"), "放得下：整句挂在调用行后面", line(ev, "渲染帧 432/900", 120));
+        const mid = line(ev, LONG, 60);
+        ok(mid && mid.endsWith("…") && mid.includes(" · 渲染帧"), "放不下整句：截断补 …，调用行还在", mid);
+        ok(line(ev, "", 80) === toolView.callLine(ev, { width: 80 }), "没进度：跟原来那行一字不差");
+        ok(!/[\x00-\x1f]/.test(line(ev, "a\x1b[31mb\nc", 120)), "label 里的控制字符（ESC、换行）不进这一行", JSON.stringify(line(ev, "a\x1b[31mb\nc", 120)));
+        // 负对照：把 label 原样硬拼上去（旧的写法），同一把尺子当场量得出超宽
+        ok(cols(toolView.callLine(ev, { width: 60 }) + " · " + LONG) > 60, "负对照：不截直接拼，60 列就超了——这把尺子量得出");
       }
     }
 

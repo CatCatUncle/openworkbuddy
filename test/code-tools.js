@@ -179,6 +179,24 @@ async function until(fn, ms = 5000) {
     ok(!e8.isError, "没有会话 id 不拦（老调用方行为不变）", e8.content);
   }
 
+  console.log("\n④½ 自己拉常驻 Chrome 的一律退回，指到现成工具");
+  {
+    // 退回发生在执行之前：这几条哪怕真能跑，也一个 Chrome 都不会被拉起来
+    const node = await executeTool("run_node", {
+      code: "require('child_process').spawn('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', ['--headless=new','--remote-debugging-port=9333','about:blank'], {detached:true}).unref();",
+    }, S1);
+    ok(node.isError && /chrome_cdp/.test(node.content) && /check_page/.test(node.content), "run_node 里 spawn 带调试口的 Chrome → 退回并点名 chrome_cdp / check_page", node.content);
+    const sh = await executeTool("run_shell", { command: "google-chrome --headless=new --remote-debugging-port=9222 about:blank &" }, S1);
+    ok(sh.isError && /html_to_image/.test(sh.content), "run_shell 起无头调试 Chrome → 同样退回", sh.content);
+    const bare = await executeTool("run_shell", { command: "chromium --headless about:blank" }, S1);
+    ok(bare.isError, "只带 --headless、不是一次性导出，也会常驻 → 退回", bare.content);
+    // 反向对照：一次性导出干完就退，技能里在用，不能误伤
+    const pdf = await executeTool("run_shell", { command: "echo google-chrome --headless=new --print-to-pdf=out.pdf in.html" }, S1);
+    ok(!pdf.isError && /print-to-pdf/.test(pdf.content), "--print-to-pdf 这种一次性导出照常放行（反向对照）", pdf.content);
+    const lo = await executeTool("run_shell", { command: "echo soffice --headless --convert-to pdf a.docx" }, S1);
+    ok(!lo.isError, "LibreOffice 的 --headless 不是浏览器，照常放行（反向对照）", lo.content);
+  }
+
   console.log("\n⑤ 后台命令");
   {
     const r = await executeTool("run_shell", { command: "echo start; sleep 0.3; echo middle; sleep 30", background: true }, S1);

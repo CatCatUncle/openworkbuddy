@@ -12,12 +12,20 @@ const os = require("os");
 const path = require("path");
 
 const ROOT = path.join(__dirname, "..");
+// 要赶在 require tools 之前：开发态数据目录就是仓库根，run_shell 的审计（security.js）
+// 会落进用户正在用的 data/audit.json，里面就多出「touch ran.txt」这类测试命令
+const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "owb-hooks-home-"));
+process.env.OPENWORKBUDDY_HOME = HOME;
+process.env.OPENWORKBUDDY_DATA_DIR = path.join(HOME, "data");
 const HK = require(path.join(ROOT, "hooks"));
 const tools = require(path.join(ROOT, "tools"));
 const { executeTool } = tools;
 
 let pass = 0, fail = 0, finished = false;
 process.on("exit", (code) => {
+  // 放在 exit 里收：审计是 500ms 防抖写盘，在 finally 里删早了会被它再建出来
+  if (code === 0 && finished) { try { fs.rmSync(HOME, { recursive: true, force: true }); } catch {} }
+  else console.log("留着现场（数据目录）：" + HOME);
   if (finished || code !== 0) return;
   console.log(`\n✗ 这套测试没跑完就退了（跑到第 ${pass + fail} 条）`);
   process.exitCode = 1;

@@ -491,7 +491,7 @@ if (mMap) {
     "反向对照：句子中间的 → 和 ＋ 是正文，不报");
 
   const FRONT_SRC = ["public/index.html", "public/pet.html", "public/js/app-00-ui.js", "public/js/app-01.js",
-    "public/js/app-02.js", "public/js/app-03.js", "public/js/app-04.js", "public/js/app-05.js",
+    "public/js/app-01-attention.js", "public/js/app-02.js", "public/js/app-03.js", "public/js/app-04.js", "public/js/app-05.js",
     "public/js/app-06.js", "public/js/admin.js"];
   const left = [];
   for (const rel of FRONT_SRC) {
@@ -513,7 +513,7 @@ if (mMap) {
 {
   const GLYPHS = "＋→↗↑↓›‹▸▾▶◀✕✓✗✦×";
   const SRC_FILES = ["public/index.html", "public/pet.html", "public/js/app-00-ui.js", "public/js/app-01.js",
-    "public/js/app-02.js", "public/js/app-03.js", "public/js/app-04.js", "public/js/app-05.js",
+    "public/js/app-01-attention.js", "public/js/app-02.js", "public/js/app-03.js", "public/js/app-04.js", "public/js/app-05.js",
     "public/js/app-06.js", "public/js/admin.js"];
   const corpus = SRC_FILES.map((rel) => fs.readFileSync(path.join(ROOT, rel), "utf8")).join("\n");
   const strip = (s) => Array.from(s).filter((c) => !GLYPHS.includes(c)).join("").replace(/\s+/g, " ").trim();
@@ -687,7 +687,7 @@ if (mMap) {
   eq(scanDollar("const r = str.split('${')[0];").length, 1,
     "反向对照：真在普通串里出现 ${ 就报——宁可让人去加个注释，也不留判不准的缝");
 
-  const JS = ["app-00-ui.js", "app-01.js", "app-02.js", "app-03.js", "app-04.js", "app-05.js", "app-06.js", "admin.js", "i18n.js"];
+  const JS = ["app-00-ui.js", "app-01.js", "app-01-attention.js", "app-02.js", "app-03.js", "app-04.js", "app-05.js", "app-06.js", "admin.js", "i18n.js"];
   const left = [];
   for (const f of JS) {
     const src = fs.readFileSync(path.join(ROOT, "public", "js", f), "utf8");

@@ -151,6 +151,9 @@ const modeMenu = setupPicker("mode-btn", "mode-menu");
 // 用户在网页上用了半年的 Goal 模式，到终端里 `openworkbuddy --mode goal` 说没有这个模式。
 // 现在四个模式只写在 modes.js 里一次，这三处都是它的读者。
 let execModes = [];   // [{id,label,sub,icon}]，/api/modes 回来的原样
+// Plan 跑完那两颗按钮（开干 / 接着改）的字和发出去的那句，也是 /api/modes 带回来的（modes.js PLAN_HANDOFF）。
+// 没取到就是 null：计划卡照画步骤、不画按钮——不在这儿留一份兜底文案，理由同上
+let planHandoff = null;
 function modeInfo(mode) { return execModes.find(m => m.id === mode) || null; }
 function setMode(mode) {
   currentMode = mode;
@@ -172,6 +175,7 @@ async function loadExecModes() {
     return;
   }
   execModes = d.modes;
+  planHandoff = d.plan && typeof d.plan.go === "string" ? d.plan : null;
   modeMenu.innerHTML = execModes.map(m =>
     `<div class="mi" data-mode="${esc(m.id)}">${ic(m.icon)} ${esc(m.label)} <span class="sub">${esc(m.sub)}</span></div>`).join("");
   modeMenu.querySelectorAll(".mi").forEach(mi => mi.onclick = () => {
@@ -775,6 +779,12 @@ async function pollCliLive() {
       if (cliWatch && cliWatch.live && !cliLiveRows.some((r) => r.id === cliWatch.id && r.live)) {
         finishCliWatch({ type: "cli_end", ok: true });
       }
+      // 没在跟的那几趟卡在题上，侧栏那行也得亮、标题也得算上——只有正在跟的那趟有 pollCliAsk 盯着。
+      // 一趟都不在跑就不问了，直接把终端那一路的账清掉
+      const p = cliLiveRows.some((r) => r.live)
+        ? await fetch("/api/cli/pending").then((r) => r.json()).catch(() => null)
+        : { rows: [] };
+      if (p && Array.isArray(p.rows)) attnSyncAsks("cli", p.rows);
     }
   } catch { next = 30000; } // 网断了别一秒一次地撞
   setTimeout(pollCliLive, next);
@@ -795,6 +805,7 @@ async function openCliLive(row) {
   if (ui.turn && !ui.turn.parentNode) chatCol.appendChild(ui.turn);
   cliWatch = { id: row.id, es: null, ui, live: !!row.live };
   cliAskSeen.clear();
+  attnSeen(row.id);
   if (row.live) pollCliAsk(); // 它可能此刻正卡在一道题上等人
   renderHistory();
   updateSendUI();
@@ -825,6 +836,7 @@ function finishCliWatch(ev) {
   w.es = null;
   if (ev && ev.error) w.ui.handleEvent({ type: "error", message: String(ev.error) });
   w.ui.finish();
+  attnRunEnded(w.id);
   const row = cliLiveRows.find((r) => r.id === w.id);
   if (!sessions.some((x) => x.id === w.id)) {
     sessions.unshift({ id: w.id, title: (row && row.title) || "终端里的任务", at: (row && row.startedAt) || Date.now(), lane: "cli" });
@@ -855,6 +867,7 @@ async function pollCliAsk() {
   if (!cliWatch || cliWatch !== w || !w.live) return; // 这期间人切走了
   if (d && d.allowed === false) return; // 不是这台机器的主人，不用再问了
   const rows = (d && Array.isArray(d.rows)) ? d.rows : [];
+  if (d) attnSyncAsks("cli", rows, w.id); // 这一趟的账以这里为准，比 pollCliLive 那 3~20 秒一轮快
   const now = new Set(rows.map((a) => a.id));
   // 题没了 = 终端那边答了或者超时了。把卡定格，别在屏幕上留一道点了没反应的题
   for (const el of w.ui.body ? w.ui.body.querySelectorAll(".ask-card[data-cli-ask]") : []) {
@@ -871,8 +884,8 @@ async function pollCliAsk() {
     const card = makeAskCard(
       a.type === "approval"
         // 审批：命令原文、拦它的规则、三档选择都从终端那边原样带过来，这一屏不自己编一套
-        ? { ask_id: a.id, kind: "approval", apKind: a.kind, text: a.text, rule: a.rule, detail: a.detail, choices: a.choices || [] }
-        : { ask_id: a.id, question: a.question, options: a.options || [] },
+        ? { ask_id: a.id, kind: "approval", apKind: a.kind, text: a.text, rule: a.rule, detail: a.detail, choices: a.choices || [], deadline: a.deadline, now: d && d.now }
+        : { ask_id: a.id, question: a.question, options: a.options || [], deadline: a.deadline, now: d && d.now },
       w.id,
       (value) => fetch("/api/cli/answer", {
         method: "POST",
@@ -997,8 +1010,11 @@ function renderHistory() {
   // 都不挂计数徽章，因为「我有几条任务」从来不是用户打开侧栏要问的问题，
   // 而它占掉的正是标题行里最显眼的位置。
   if (cnt) cnt.textContent = (!all.length || list.length === all.length) ? "" : list.length + "/" + all.length;
-  const rows = list.map(s =>
-    `<div class="hist-item ${s.id === sessionId ? "active" : ""}" data-id="${s.id}" title="${esc(stripSceneTag(s.title))}"><span class="ht">${esc(stripSceneTag(s.title))}</span>${runningSessions.has(s.id) ? '<span class="hrun" title="任务运行中"></span>' : ""}<button type="button" class="hx" title="删除该任务" aria-label="删除该任务">${ic("x")}</button></div>`);
+  // 卡着等你回答/批准的那几条顶到最上面，其余照原来的顺序（sort 是稳定的）。
+  // 人扫一眼侧栏最想知道的就是「哪条在等我」，它沉在第八行，点亮了也等于没亮
+  const askFirst = (id) => (attnPick(sessionAttn.get(id), false) === "ask" ? 0 : 1);
+  const rows = list.slice().sort((a, b) => askFirst(a.id) - askFirst(b.id)).map(s =>
+    `<div class="hist-item ${s.id === sessionId ? "active" : ""}" data-id="${s.id}" title="${esc(stripSceneTag(s.title))}"><span class="ht">${esc(stripSceneTag(s.title))}</span>${attnDotHtml(s.id)}<button type="button" class="hx" title="删除该任务" aria-label="删除该任务">${ic("x")}</button></div>`);
   // 终端里正在跑的那几条，直接排在同一张列表的最上面，不再单开一撮。
   // 以前这里是「任务历史 → 10 → 终端里（openworkbuddy 命令行） → 才轮到内容」，三行铺垫才见着第一条任务。
   // Claude Cowork 和 Codex 的做法是一张扁平列表：来路和状态用行内的小图标表示，
@@ -1010,13 +1026,13 @@ function renderHistory() {
     const known = new Set(all.map((s) => s.id));
     const live = cliLiveRows.filter((r) => !known.has(r.id) && histMatch(stripSceneTag(r.title) || "终端里的任务"));
     // 正在跑的排最前，其余按原顺序。翻列表的人要找的多半就是还在跑的那条
-    const ordered = [...live].sort((a, b) => Number(!!b.live) - Number(!!a.live));
+    const ordered = [...live].sort((a, b) => (askFirst(a.id) - askFirst(b.id)) || (Number(!!b.live) - Number(!!a.live)));
     head = ordered.map((r) => {
       const t = stripSceneTag(r.title) || "终端里的任务";
       const tip = r.live ? "正在跑——点开能看见它在干什么，也能插话" : (r.died ? "终端被关掉了，没跑完" : "刚跑完");
       return `<div class="hist-item ${r.id === sessionId ? "active" : ""}" data-cli="${esc(r.id)}" title="${esc(t + "\n" + (r.cwd || "") + "\n" + "来自终端（openworkbuddy 命令行）· " + tip)}">`
         + `<span class="hsrc" title="${esc("在终端里起的（openworkbuddy 命令行）")}" aria-label="${esc("来自终端")}">${ic("terminal")}</span>`
-        + `<span class="ht">${esc(t)}</span>${r.live ? '<span class="hrun" title="正在跑"></span>' : ""}</div>`;
+        + `<span class="ht">${esc(t)}</span>${attnDotHtml(r.id, !!r.live)}</div>`;
     }).join("");
   }
   const empty = histQuery.trim()
@@ -1060,6 +1076,7 @@ document.getElementById("history").addEventListener("click", async (e) => {
       fetch("/api/chat/stop", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: id }) }).catch(() => {});
     }
     sessionQueues.delete(id);
+    attnForget(id);
     fetch("/api/session/" + encodeURIComponent(id), { method: "DELETE" }).catch(() => {});
     if (sessionId === id) document.getElementById("new-task").click();
     else renderHistory();
@@ -1096,6 +1113,8 @@ async function openSession(id, opts) {
   closeAssistView();
   stopCliWatch(); // 换了会话就别再往上一趟里塞事件了
   sessionId = id;
+  planPlaceholder = ""; // 「哪一步要改？」问的是上一个会话那份计划
+  attnSeen(id); // 点开了就算看过：侧栏上那颗「出错了/跑完了」熄掉
   // 上个会话开着的预览/文件面板不带进来
   resetCtxMeter(); // 余量条也是：先收回去，下面回放到本会话自己的 context 事件再填
   pvPanel.classList.remove("show"); pvCurrent = null;
@@ -1164,6 +1183,7 @@ document.getElementById("new-task").onclick = () => {
   closeAssistView();
   stopCliWatch();
   sessionId = null;
+  planPlaceholder = "";
   pendingModel = defaultPendingModel();
   updateModelLabel();
   renderGoalCard();
@@ -1256,12 +1276,17 @@ const MODE_PLACEHOLDER = {
 const BUSY_PLACEHOLDER = "想补一句或改方向？直接打字，按 Enter 就插进来，我做完这一步就看";
 const QUEUE_PLACEHOLDER = "Enter 排到队尾；要立刻插进去，切到「插队」";
 const CLI_PLACEHOLDER = "这趟是在终端里跑的。打字按 Enter 能插一句给它；想让它停，回终端按 Ctrl+C";
+// 计划卡上点了「接着改计划」：输入框问一句「哪一步要改？」，直到下一次发出去 / 换会话才撤。
+// 不能直接写 inputEl.placeholder——updateSendUI / setMode 每次都会走 syncPlaceholder 把它盖回去，
+// 所以做成这里的一个一次性覆盖，只在还停在 Plan 时生效
+let planPlaceholder = "";
+function planAskEdit(ph) { planPlaceholder = ph || ""; syncPlaceholder(); inputEl.focus(); }
 /** 输入框的提示语跟着状态走：任务在跑时告诉用户「打字 + Enter 就能插话」，闲着时按模式提示 */
 function syncPlaceholder() {
   // 跟着终端里那趟活儿时只能插话，停不了——停它得回终端按 Ctrl+C。这里就照实说
   inputEl.placeholder = cliBusy() ? CLI_PLACEHOLDER
     : curBusy() ? (busySendMode === "queue" ? QUEUE_PLACEHOLDER : BUSY_PLACEHOLDER)
-    : (MODE_PLACEHOLDER[currentMode] || MODE_PLACEHOLDER.craft);
+    : (planPlaceholder && currentMode === "plan" ? planPlaceholder : (MODE_PLACEHOLDER[currentMode] || MODE_PLACEHOLDER.craft));
 }
 /** 框里有没有还没发出去的东西（文字或待发附件） */
 // 只挂了一张图、或者只引了一段还没打字，也算「有话要说」：按钮得是「发出」，Enter 也得送得出去
@@ -1433,6 +1458,7 @@ const sessionListed = () => !!sessionId && sessions.some((s) => s.id === session
 // regen=true 表示「重新生成」：服务端回滚最后一轮再重跑同一条消息
 async function doSend(text, mode, regen, shown) {
   if (curBusy()) return;
+  planPlaceholder = ""; // 「哪一步要改？」问的就是这一句，发出去了就收回
   closeAssistView();
   if (!sessionListed()) {
     ensureSessionId();
@@ -1528,6 +1554,8 @@ async function probeRunning(tries = 4) {
 function endRun(sid, ui, opts) {
   ui.finish();
   runningSessions.delete(sid);
+  attnRunEnded(sid); // 被停了、断了的那一轮，流里没等到回答的题一起作废
+  if (!(sessionQueues.get(sid) || []).length) attnFlag(sid, "unseen"); // 人正看着这条的话 attnFlag 自己不记
   updateSendUI();
   if (!(sessionQueues.get(sid) || []).length) notifyRunDone(sid, ui, opts); // 还有排队消息就不算完
   if (sid === sessionId) inputEl.focus();
@@ -1536,6 +1564,7 @@ function endRun(sid, ui, opts) {
 
 /** 并行任务多了得知道哪个跑完了：后台会话完成弹 toast；窗口失焦时发系统通知 */
 function notifyRunDone(sid, ui, opts) {
+  if (typeof attnGone !== "undefined" && attnGone.has(sid)) return; // 删掉了的会话收尾：不报「已完成」
   const s = sessions.find((x) => x.id === sid);
   const name = stripSceneTag(s && s.title) || "任务";
   // 长跑完成通知带上战报：用时/步数/产出件数，长任务离开视线也知道干了多少活
@@ -1562,19 +1591,33 @@ function notifyRunDone(sid, ui, opts) {
  * 回到页面再补一句人话，然后把标题还原。零依赖、零权限、不用联网。
  */
 let doneWhileAway = 0;
-let titleBase = "";
-function bumpDoneWhileAway(name) {
-  doneWhileAway++;
-  if (!titleBase) titleBase = document.title;
-  document.title = `(${doneWhileAway}) ${titleBase}`;
-  lastDoneName = name || lastDoneName;
-}
 let lastDoneName = "";
+function bumpDoneWhileAway(name) {
+  // 终端那趟收尾不看人在不在都会调进来；人正看着页面就不记，不然标题上挂个 (1) 没人来清
+  if (!document.hidden) return;
+  doneWhileAway++;
+  lastDoneName = name || lastDoneName;
+  syncTitleCount();
+}
+/**
+ * 标题前的「(n) 」只从这里写：n = 在等你的题数 + 你不在时跑完的个数。
+ * 桌面版主进程拿这个前缀挂 Dock 角标（electron-main.js 的 page-title-updated），
+ * 所以两处的数永远是同一个——别在别处直接往 document.title 上拼数字。
+ * 底下那段标题（助理名）谁改都行，这里每次都先把旧前缀剥掉再算。
+ */
+function syncTitleCount() {
+  const base = String(document.title || "").replace(/^\(\d+\) /, "");
+  const n = attnCount(sessionAttn) + doneWhileAway;
+  const want = n ? `(${n}) ${base}` : base;
+  if (document.title !== want) document.title = want;
+}
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden || !doneWhileAway) return;
+  if (document.hidden) return;
+  if (sessionId) attnSeen(sessionId); // 切回来眼前这条就算看过了
+  if (!doneWhileAway) return;
   const n = doneWhileAway;
   doneWhileAway = 0;
-  if (titleBase) { document.title = titleBase; titleBase = ""; }
+  syncTitleCount();
   toast(n === 1 ? `你不在的时候，「${lastDoneName || "任务"}」跑完了` : `你不在的时候跑完了 ${n} 个任务`);
   lastDoneName = "";
 });
@@ -1719,6 +1762,7 @@ const SHORTCUT_DEFS = [
   ["open-library", "打开资料库", "Shift+Mod+L"],
   ["open-sched", "打开定时任务", "Shift+Mod+T"],
   ["open-assistant", "打开本地助理", "Shift+Mod+A"],
+  ["next-attn", "跳到下一条等你的", "Alt+Mod+U"],
 ];
 /** 归一成「Ctrl+Alt+Shift+Meta+键」：Mod 和「mac|其他」在这里就按平台落成具体的键，比对、查冲突、存盘都只见具体的 */
 function canonAccel(a) {
@@ -1743,6 +1787,17 @@ function accelFromEvent(e) {
   parts.push(e.code.replace(/^Key/, "").replace(/^Digit/, ""));
   return parts.join("+");
 }
+/**
+ * Windows 上 AltGr 就是 Ctrl+Alt：波兰（程序员）、匈牙利布局 AltGr+U 打 €，德语 AltGr+Q 打 @，
+ * 跟 Ctrl+Alt+U / Ctrl+Alt+Q 是同一个按键事件。这一下打出了别的字（key 不是这颗键本来的字母、数字）就是在打字
+ */
+function scAltGrText(e) {
+  if (SC_MAC || !e.ctrlKey || !e.altKey || e.metaKey) return false;
+  const k = String(e.key || "");
+  if (Array.from(k).length !== 1) return false; // Dead、Unidentified、F1 这类不是在打字
+  const base = /^(?:Key|Digit)(.)$/.exec(e.code || "");
+  return base ? k.toLowerCase() !== base[1].toLowerCase() : !!(e.getModifierState && e.getModifierState("AltGraph"));
+}
 function accelDisplay(a) {
   const KEY = { Comma: ",", Period: ".", BracketLeft: "[", BracketRight: "]", Escape: "Esc", Enter: "⏎", Space: "空格", Minus: "-", Equal: "=", Slash: "/", Backslash: "\\", Semicolon: ";", Quote: "'", Backquote: "`" };
   const parts = canonAccel(a).split("+");
@@ -1764,9 +1819,10 @@ let toastTimer = null;
 /* emoji-数据区 起：这五个表情在这儿是要认的数据、不是界面文案，删了兼容层就认不出老写法 */
 const TOAST_ICON = { "❌": "circle-x", "⚠️": "triangle-alert", "⚠": "triangle-alert", "✅": "circle-check", "✓": "circle-check" };
 /* emoji-数据区 止 */
-function toast(msg, kind) {
+/** onAct 给了就是一条带去处的提示：整条能点，点了先收起再去（「某某在等你回答，点这里过去」） */
+function toast(msg, kind, onAct) {
   let t = document.getElementById("owb-toast");
-  if (!t) { t = document.createElement("div"); t.id = "owb-toast"; document.body.appendChild(t); }
+  if (!t) { t = document.createElement("div"); t.id = "owb-toast"; t.setAttribute("aria-live", "polite"); document.body.appendChild(t); }
   let text = String(msg == null ? "" : msg);
   let icon = kind || "";
   for (const [mark, name] of Object.entries(TOAST_ICON)) {
@@ -1778,10 +1834,21 @@ function toast(msg, kind) {
   t.innerHTML = (icon ? ic(icon) : "") + "<span></span>";
   t.lastChild.textContent = text;
   t.classList.toggle("err", icon === "circle-x" || icon === "triangle-alert");
+  // 每条都重设：上一条的去处不能挂到下一条普通提示上
+  const hide = () => { t.classList.remove("show"); t.removeAttribute("tabindex"); };
+  t.onclick = onAct ? () => { clearTimeout(toastTimer); hide(); onAct(); } : null;
+  t.classList.toggle("act", !!onAct);
+  // 带去处的那条当按钮用：Tab 停得住、回车能点、读屏念得出。普通提示摘掉，收起来的提示不许留个 Tab 站
+  if (onAct) markActivatable(t);
+  else { t.removeAttribute("tabindex"); t.removeAttribute("role"); delete t.dataset.activate; }
+  // 鼠标或焦点停在上面就不收，挪开再给 2.2 秒
+  t.onmouseenter = t.onfocus = onAct ? () => clearTimeout(toastTimer) : null;
+  t.onmouseleave = t.onblur = onAct ? () => { clearTimeout(toastTimer); toastTimer = setTimeout(hide, 2200); } : null;
   t.classList.add("show");
   clearTimeout(toastTimer);
-  // 长消息（多半是报错原因）多留一会儿，2.2 秒读不完一句「分字段「*/0」的步长必须 ≥ 1」
-  toastTimer = setTimeout(() => t.classList.remove("show"), Math.min(6000, Math.max(2200, text.length * 120)));
+  // 长消息（多半是报错原因）多留一会儿，2.2 秒读不完一句「分字段「*/0」的步长必须 ≥ 1」；
+  // 带去处的留 8 秒：2.2 秒够读字，不够伸手
+  toastTimer = setTimeout(hide, onAct ? 8000 : Math.min(6000, Math.max(2200, text.length * 120)));
 }
 async function toggleAppFullscreen() {
   const r = await fetch("/api/app/fullscreen", { method: "POST" }).then(x => x.json()).catch(() => ({ ok: false }));
@@ -1829,6 +1896,7 @@ const SHORTCUT_ACTIONS = {
   "open-library": () => openModal("library"),
   "open-sched": () => openModal("sched"),
   "open-assistant": () => openAssistView(),
+  "next-attn": () => nextAttn(),
 };
 document.addEventListener("keydown", (e) => {
   if (window.__scRebinding) return; // 设置页改绑捕获中，不触发动作
@@ -1836,6 +1904,7 @@ document.addEventListener("keydown", (e) => {
   if (!acc) return;
   const canon = canonAccel(acc);
   const inText = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName || "") || e.target.isContentEditable;
+  if (inText && scAltGrText(e)) return; // 输入框里 AltGr 打字：让字进框，不抢成快捷键
   const map = (settingsCache && settingsCache.shortcuts) || {};
   for (const [id, , def, fixed] of SHORTCUT_DEFS) {
     if (fixed || !SHORTCUT_ACTIONS[id]) continue;
@@ -1908,6 +1977,7 @@ async function pollApprovals() {
   if (d && d.mode) syncPermLabel(d.mode);
   if (d && "can_always" in d) apCanAlways = !!d.can_always;
   // 审批默认 120 秒超时按拒绝：窗口不在前台时必须把人喊回来，不然任务白等一场
+  if (d) attnSyncAsks("approval", list); // 请求失败别当成「全批完了」，标题上的数会闪一下没了又回来
   const fresh = list.filter(a => !apSeen.has(a.id));
   if (apSeen.size > 500) apSeen = new Set();
   list.forEach(a => apSeen.add(a.id));
@@ -1931,7 +2001,7 @@ async function pollApprovals() {
   bar.innerHTML = list.map(a => `
     <div class="ap-row">
       <div class="ap-main">
-        <div class="ap-head">${ic("shield")}${esc(a.kind)}待审批${a.source ? ` · <span class="ap-src" title="发起审批的任务">来自「${esc(a.source)}」</span>` : ""}${a.rule ? ` · <span class="ap-why">${esc(a.rule)}</span>` : ""}</div>
+        <div class="ap-head">${ic("shield")}${esc(a.kind)}待审批${a.source ? ` · <span class="ap-src" title="发起审批的任务">来自「${esc(a.source)}」</span>` : ""}${a.rule ? ` · <span class="ap-why">${esc(a.rule)}</span>` : ""}${a.deadline > 0 ? `<span class="ap-left" data-dl="${Number(a.deadline) - (Number(d.now) || Date.now()) + Date.now()}"></span>` : ""}</div>
         <code class="ap-cmd" style="white-space:pre-wrap;word-break:break-all;max-height:7.5em;overflow:auto">${esc(a.text)}</code>
         ${a.seg && a.seg !== a.text ? `<div class="ap-why" style="word-break:break-all">触发的是这一段：<code>${esc(a.seg)}</code></div>` : ""}
         ${a.detail ? `<pre class="ap-diff">${paintDiff(a.detail)}</pre>` : ""}
@@ -1943,6 +2013,8 @@ async function pollApprovals() {
         <button class="ap-no" data-id="${esc(a.id)}">拒绝</button>
       </div>
     </div>`).join("");
+  apTick();
+  if (!apTimer) apTimer = setInterval(apTick, 1000);
   bar.querySelectorAll("button").forEach(b => b.onclick = async () => {
     bar.querySelectorAll("button").forEach(x => (x.disabled = true));
     const allow = !b.classList.contains("ap-no");
@@ -1965,6 +2037,22 @@ async function pollApprovals() {
     else if (allow && r.scope === "session" && r.ruleKey) toast(`本次运行期间不再问「${r.ruleKey}」`);
     pollApprovals();
   });
+}
+/**
+ * 审批条每条后面那个「m:ss 后自动拒绝」。以前人只知道「会超时」，不知道还剩几秒——
+ * 去隔壁窗口查个路径回来，发现早就按拒绝收场了，任务白跑半截。
+ * 这里不自己去拒：钟在服务端，本机只照它给的截止时刻（已按服务器的钟校正过）倒着数。
+ * 条上一条都没有了，定时器自己停。
+ */
+let apTimer = null;
+function apTick() {
+  const els = document.querySelectorAll("#approval-bar .ap-left[data-dl]");
+  if (!els.length) { clearInterval(apTimer); apTimer = null; return; }
+  for (const el of els) {
+    const left = Math.max(0, Math.round((Number(el.dataset.dl) - Date.now()) / 1000));
+    el.textContent = left ? `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")} 后自动拒绝` : "已自动拒绝";
+    el.classList.toggle("hot", left <= 30);
+  }
 }
 
 // ================= 权限档位（参考 Claude Code：档位 + 记住的批准） =================

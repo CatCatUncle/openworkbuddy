@@ -844,12 +844,20 @@ async function htmlToImage(input, resolveFile, saveDir) {
   return { content: `已把 ${rel} 渲染成图片：${fname}（${input.width || 1242}x${input.full_page ? "整页" : input.height || 1656}）`, isError: false };
 }
 
+/** 没配语音合成时的那句话。按句配音（tts-batch.js）要一字不差地说同一句，所以提出来共用 */
+const TTS_UNSET = "语音合成未配置：请在 设置 → 模型 → 语音合成 填写接口地址 / API Key / 模型名后再用。";
+
+/** 这条渠道落盘的音频后缀：DashScope 回的是 wav 的下载地址，OpenAI 兼容那一路直接回 mp3 字节 */
+function ttsExtOf(cfg) {
+  return /dashscope/i.test(String((cfg || {}).base_url || "")) ? ".wav" : ".mp3";
+}
+
 /** 文字 → 语音（渠道协议：OpenAI 兼容 /audio/speech、DashScope 原生 qwen-tts） */
 async function textToSpeech(media, input, timeoutMs, saveDir, stop) {
   let cfg;
   try { cfg = mediaModels.pick(media, "tts", input.model); } catch (e) { return { content: e.message, isError: true }; }
   if (!cfg.base_url || !cfg.model) {
-    return { content: "语音合成未配置：请在 设置 → 模型 → 语音合成 填写接口地址 / API Key / 模型名后再用。", isError: true };
+    return { content: TTS_UNSET, isError: true };
   }
   const text = String(input.text || "").trim();
   if (!text) return { content: "缺少 text（要念的文字）", isError: true };
@@ -861,7 +869,7 @@ async function textToSpeech(media, input, timeoutMs, saveDir, stop) {
   let fname;
   if (/dashscope/i.test(base)) {
     // DashScope 原生（qwen-tts / qwen3-tts-flash 系）：multimodal-generation，返回音频 URL（wav）
-    fname = safeOutName(input.filename, ".wav", "speech");
+    fname = safeOutName(input.filename, ttsExtOf(cfg), "speech");
     const r = await fetch(`${base}/services/aigc/multimodal-generation/generation`, {
       method: "POST", headers, signal,
       body: JSON.stringify({ model: cfg.model, input: { text, ...(voice ? { voice } : {}) } }),
@@ -873,7 +881,7 @@ async function textToSpeech(media, input, timeoutMs, saveDir, stop) {
     await downloadToWorkspace(url, fname, saveDir, stop);
   } else {
     // OpenAI 兼容 /audio/speech（OpenAI、new-api 等聚合网关通用）：直接返回音频二进制
-    fname = safeOutName(input.filename, ".mp3", "speech");
+    fname = safeOutName(input.filename, ttsExtOf(cfg), "speech");
     const r = await fetch(`${base}/audio/speech`, {
       method: "POST", headers, signal,
       body: JSON.stringify({
@@ -1080,7 +1088,14 @@ function unitsFor(cap, input = {}, resolveFile, media) {
     else { try { cfg = mediaModels.pick(media, "video", input.model); } catch { cfg = null; } }
     return Math.max(1, mediaModels.videoPlan(cfg, input).seconds);
   }
-  if (cap === "tts") return Math.max(0.001, String(input.text || "").length / 1000);
+  if (cap === "tts") {
+    // 按句配音：一批里每句的字数加起来。预估接口（server.js）和额度闸都走这里，不这么算就只估了个 0
+    if (Array.isArray(input.segments)) {
+      const chars = input.segments.reduce((n, s) => n + String((s && typeof s === "object" ? s.text : s) || "").trim().length, 0);
+      return Math.max(0.001, chars / 1000);
+    }
+    return Math.max(0.001, String(input.text || "").length / 1000);
+  }
   if (cap === "asr") {
     try {
       const st = fs.statSync(resolveFile(String(input.path || input.file || "").trim()));
@@ -1104,5 +1119,6 @@ module.exports = {
   OUT_EXT_ALIAS, safeOutName, anySignal, within, sleepFor, stoppedError, fetchRetry, mediaKey, downloadToWorkspace,
   IMAGE_EXT, shrinkForVision, readImageInput, imageDataUri, mainCanSee, pickEye, lookAtImage, savedAt, postWantClean,
   refImageUris, I2V_RE, T2V_RE, generateImage, generateVideo, htmlToImage, textToSpeech, AUDIO_EXT, ASR_MAX_BYTES,
-  srtTime, transcribeAudio, withGenCache, unitsFor, mediaProviderOf, asrModelOf
+  srtTime, transcribeAudio, withGenCache, unitsFor, mediaProviderOf, asrModelOf,
+  TTS_UNSET, ttsExtOf
 };

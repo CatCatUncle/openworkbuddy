@@ -585,6 +585,59 @@ console.log("\n⑱ / 菜单：打一半就能看见有什么命令");
   eq(R.menu("/mode zzz"), null, "取值里没这个，也不出");
   eq(R.menu("帮我 /help 一下"), null, "★斜杠不在行首就不是命令★");
   eq(R.menu("/mode craft 再多一个词"), null, "★值后面还接着打字就不是在挑值了★");
+
+  // 默认选中、回车跑什么（跟 Claude Code 一样：亮着的那条就是回车会跑的）
+  eq(R.menu("/st").sel, 0, "★打命令名时第一条默认亮着★ 回车就跑它，不是把 /st 当打错的命令");
+  eq(R.menu("/st").items[0].run, "/status", "回车跑的是整条命令，不带尾空格");
+  eq(R.menu("/r").items[0].text, "/resume", "★一字不差的别名排最前★ /r 就是 /resume");
+  eq(R.menu("/c").items.slice(0, 3).map((i) => i.text).join(" "), "/compact /cd /clear", "名字打头的排在只有别名沾边的（/status 的 cost）前面");
+  eq(R.menu("/c").items[0].run, null, "★要花钱的命令打一半回车只补全★ /c 回车排第一的是 /compact，手滑一下就是一趟模型");
+  eq(R.menu("/compact").items[0].run, "/compact", "打全了名字才算是真要跑");
+  eq(R.menu("/in").items[0].run, null, "/init 同理");
+  eq(R.menu("/", { custom: [{ name: "weekly", description: "写周报" }] }).items.find((i) => i.text === "/weekly").run, null, "★自定义命令也是花钱的★ 打一半不开跑");
+  eq(R.menu("/mode ").sel, -1, "★挑取值那层一个字没打就不选★ /mode 不给值本身就是一种用法（弹选择器）");
+  eq(R.menu("/mode cr").sel, 0, "打了几个字就选第一条");
+  eq(R.menu("/mode cr").items[0].run, "/mode craft", "回车跑整行");
+  ok(R.menu("/").items.every((i) => i.run === null || /^\/[a-z-]+$/.test(i.run)), "run 要么空、要么是一整条不带参数的命令");
+}
+
+// ── ⑱之一 档位条和不给值时的选择器 ──────────────────────────────────────
+console.log("\n⑱之一 /perm 的档位条、/mode 和 /rewind 的选择器");
+{
+  const SEC = require("../security");
+  const stops = Object.entries(SEC.PERMISSION_MODES).map(([id, m]) => ({ id, ...m }));
+  const v = R.sliderView(stops, 2, { cur: "auto", width: 80 });
+  eq(v.track.filter((t) => t.kind === "on").length, 1, "★永远只有一档是亮的★");
+  ok(v.track.find((t) => t.kind === "on").text.includes("自动改文件"), "亮的是挪到的那档");
+  ok(v.desc.join("").includes("现在就是这档"), "现在这档标出来");
+  ok(R.sliderView(stops, 3, { width: 60 }).desc.join("").includes("确定它在干什么再开"), "★说明折行摆全不截★ 全自动那句最要紧的提醒就在句尾");
+  ok(/←\/→.*回车.*Esc/.test(v.foot), "脚注把能按的键写出来");
+  const { cols } = require("../text-width");
+  for (const w of [30, 44, 60, 80, 120]) {
+    const x = R.sliderView(stops, 3, { cur: "auto", width: w });
+    const line = x.track.map((t) => t.text).join("");
+    ok(cols(line) <= w - 1 && x.desc.every((l) => cols(l) <= w - 1), `宽 ${w}：档位条和说明都不折行（折了擦不干净）`, { line: cols(line), desc: x.desc.map(cols) });
+  }
+  const narrow = R.sliderView(stops, 1, { width: 30 }).track.map((t) => t.text).join("");
+  ok(narrow.includes("‹") && narrow.includes("›") && narrow.includes("2/4") && narrow.includes("每步都问"), "★窄到摆不下一排：只摆当前这档，‹ › 说还能往哪挪★", narrow);
+  eq(R.sliderView(stops, 99).at, 3, "越界夹回来");
+  eq(R.sliderView(stops, -5).at, 0, "越界夹回来");
+  ok(!R.sliderView(stops, 1, { cur: "auto" }).desc.join("").includes("现在就是这档"), "挪开了就不说「现在」");
+
+  const MODES = require("../modes");
+  const mr = R.modePickerRows(MODES.EXEC_MODES, "plan");
+  eq(mr.length, MODES.EXEC_MODES.length, "四个模式都列");
+  ok(mr.find((r) => r.id === "plan").meta.startsWith("现在这个"), "现在这个标出来");
+  ok(mr.every((r) => r.meta.length > 0), "每个都说一句干什么的");
+
+  const ck = [
+    { tool: "write_file", rel: "a.md", before: null, after: "x", ts: "2026-09-26T10:00:00Z" },
+    { tool: "edit_file", rel: "b.md", before: "x", after: "y", ts: "2026-09-26T10:05:00Z", current: "changed" },
+  ];
+  const cr = R.checkpointPickerRows(ck, Date.parse("2026-09-26T10:06:00Z"));
+  eq(cr.map((r) => r.n).join(","), "2,1", "★新的在上面★ 要退的十有八九是刚才那一步");
+  ok(cr[0].label === "修改 b.md" && /第 2 步/.test(cr[0].meta) && /之后又被改过/.test(cr[0].meta), "说清动了什么、第几步、之后又被改过", cr[0]);
+  eq(cr[1].label, "新建 a.md", "新建");
 }
 
 // ── ⑱之二 菜单和 Tab 补全不许各说各的 ───────────────────────────────────
@@ -630,7 +683,9 @@ console.log("\n⑱之三 菜单的画法：不许把人的输入搞乱");
   const iGuard = tty.indexOf("menuState.items.length");
   const iUp = tty.indexOf('k.name === "up"');
   ok(iGuard >= 0 && iUp > iGuard, "★↑↓ 只在菜单开着时才归菜单管★ 否则翻历史这个最常用的键就没了", { iGuard, iUp });
-  ok(/&& menuState\.sel >= 0\)/.test(tty), "★没挑过就不替人做主★ 打了 /mo 直接回车，该把 /mo 原样交上去，不是替他选第一条");
+  ok(/\(enter && menuState\.sel >= 0\)/.test(tty), "★亮着才接回车★ 没亮的（@ 补路径默认不亮）回车照常发走");
+  ok(/const go = enter && !!pick\.run && !multi\.length/.test(tty), "★回车跑 run，run 为空只补全★ 攒着几行的时候也不跑（那是多行消息里的一行）");
+  ok(/key !== menuState\.key/.test(src.split("function menuDraw")[1] || ""), "★人按过 ↑↓、候选没变就停在他挑的那条★ 每次重画都拉回第一条，等于 ↓ 按不动");
   ok(/k\.name === "escape"/.test(tty), "Esc 收菜单");
   ok(/ttyWriteOrig\(ch, key\);/.test(tty), "★其余按键原样交回 readline★ 拦下来自己处理，等于重写一个 readline");
   // 反向对照：这一节不是永远绿
@@ -1053,6 +1108,20 @@ console.log("\n⑲之四 多行输入");
   eq(R.tickSuffix({ secs: 75, stop: "Ctrl+C" }), " · 1m15s · Ctrl+C 停", "过一分钟写成 1m15s");
   eq(R.tickSuffix({ secs: 3, tokens: 0 }), " · 3s", "★token 没报上来就不写★ 不是 0，是还没记过；stop 空 = 收尾定格");
   eq(R.tickSuffix({}), " · 0s", "空的不崩");
+  // 打头那个字转起来
+  const { cols: wcols } = require("../text-width");
+  ok(R.SPIN_FRAMES.every((g) => wcols(g) === 1), "★转的每一帧都只占一格★ 占两格的话行长一帧一变，尾巴跟着左右抖");
+  eq(R.spinGlyph(0), "·", "第一帧就是定格时那个 ·：一开始转和没转长得一样，不跳");
+  eq(R.SPIN_FRAMES[R.SPIN_FRAMES.length - 1], R.SPIN_FRAMES[1], "★来回呼吸★ 最后一帧挨着第一帧，转回头不跳");
+  eq(R.spinGlyph(R.SPIN_FRAMES.length + 2), R.spinGlyph(2), "帧号一直往上加也循环");
+  ok(R.SPIN_MS >= 80 && R.SPIN_MS <= 200, "一秒五到十来帧：再快是白写终端，再慢看着像卡");
+  {
+    const cliSrc = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
+    const draw = cliSrc.split("function tickDraw()")[1].split("\nfunction ")[0];
+    ok(/if \(!tick\.anim && sec === tick\.lastSec\) return;/.test(draw), "★不转的行秒数没跳就不画★ 定时器一秒跑八次，工具那行不能跟着写八次终端");
+    ok(/if \(secs < 2\) \{ if \(glyph && tickPaint\(\{ bare: true, glyph \}\)\)/.test(draw), "★头两秒只转那个字、不挂尾巴★ 一眨眼就完的步骤照旧没有尾巴");
+    ok(/tick\.tailed \? \{ secs: [^}]+\} : \{ bare: true \}/.test(cliSrc), "★定格时转着的字落回 ·，没挂过尾巴的也不补一截「· 0s」★");
+  }
 
   const help = R.helpText();
   ok(/Ctrl\+J/.test(help) && /Option\+回车/.test(help) && /行尾 \\ 再回车/.test(help), "★/help 写着三种换行★ 不写 = 人只会以为回车就是发", help);
@@ -1109,7 +1178,8 @@ console.log("\n⑲之四 多行输入");
 
   const mk = (src.split("function makeEmit(")[1] || "").slice(0, 1800);
   ok(/if \(ev\.type === "step_usage"\) return;/.test(mk), "★--json 不多出 step_usage★ 那是终端走字用的，接 json 的脚本不认识");
-  ok(/const prog = \(s\) => \{ if \(!opts\.quiet && !opts\.json\) \{ tickSettle\(\);/.test(src) && /const answer = \(s\) => \{ if \(!opts\.json\) \{ tickSettle\(\);/.test(src), "★往终端写东西之前先把走字那行定格★ 不定格的话下一次重画会把正文盖掉");
+  // `&& !wfp.st`：workflow 面板开着的时候这两条都闭嘴，屏幕归面板（见 test/workflow-panel.js）
+  ok(/const prog = \(s\) => \{ if \(!opts\.quiet && !opts\.json(?: && !wfp\.st)?\) \{ tickSettle\(\);/.test(src) && /const answer = \(s\) => \{ if \(!opts\.json(?: && !wfp\.st)?\) \{ tickSettle\(\);/.test(src), "★往终端写东西之前先把走字那行定格★ 不定格的话下一次重画会把正文盖掉");
   const agentSrc = fs.readFileSync(path.join(ROOT, "agent.js"), "utf8");
   ok(/if \(depth === 0\) emit\(\{ type: "step_usage"/.test(agentSrc), "只报主线的用量：子任务的另算，混进来数字会跳");
 }

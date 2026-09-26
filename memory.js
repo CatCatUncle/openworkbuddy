@@ -578,6 +578,8 @@ module.exports = {
   manual,
   saveManual,
   promptBlock,
+  // 品牌档案存档/读档也要拦「像密钥的字符串」：同一把尺子，别各写一套正则各漏各的
+  looksSecret,
   setEmbedder,
   vectorStatus,
   ensureVectors,

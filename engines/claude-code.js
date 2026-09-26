@@ -23,6 +23,9 @@
  */
 
 const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const { execFile } = require("child_process");
 const { runJsonl, probeVersion, probeOption, probeHelp } = require("./jsonl");
 const thinking = require("./../thinking");
 const { resolveBin } = require("./which");
@@ -79,6 +82,34 @@ async function probeThinking(bin) {
 }
 
 /**
+ * 设置页「模型」栏的候选，全从本机读，不写死型号全名——写死的那张表每出一代新模型就过期一次。
+ *   · 别名（opus / sonnet / fable…）永远指向当代最新，从 `claude --help` 里 --model 那段的示例抠出来，
+ *     抠不到就用三个长期存在的兜底；
+ *   · 再加上用户 ~/.claude/settings.json 里真写过的 model 和 modelSettings 的键。
+ * Claude Code 没有列账号可用型号的命令，所以这里只给提示；用户手填什么照发什么。
+ */
+const ALIAS_FALLBACK = ["opus", "sonnet", "haiku"];
+const modelLists = new Map();
+function localModels(bin) {
+  if (modelLists.has(bin)) return modelLists.get(bin);
+  const p = new Promise((resolve) => {
+    execFile(bin, ["--help"], { timeout: 10000 }, (_err, stdout) => {
+      const seg = (/--model <model>([\s\S]*?)(?:\n\s*-{1,2}[a-z]|$)/.exec(String(stdout || "")) || [])[1] || "";
+      const aliases = [...seg.matchAll(/'([a-z][a-z0-9.\-\[\]]*)'/g)].map((m) => m[1]).filter((a) => !/^claude-/.test(a));
+      const set = [...aliases, ...ALIAS_FALLBACK];
+      try {
+        const cfg = JSON.parse(fs.readFileSync(path.join(os.homedir(), ".claude", "settings.json"), "utf8"));
+        if (typeof cfg.model === "string") set.push(cfg.model);
+        if (cfg.modelSettings && typeof cfg.modelSettings === "object") set.push(...Object.keys(cfg.modelSettings));
+      } catch {}
+      resolve([...new Set(set.map((m) => String(m).trim()).filter(Boolean))]);
+    });
+  });
+  modelLists.set(bin, p);
+  return p;
+}
+
+/**
  * 这版 claude 认不认 --add-dir？（老版没有；不认的选项它静默吞掉，发了等于没发）
  * 用 --help 探：--add-dir 给个不存在的目录也 exit 0，probeOption 那套假值法判不出来。
  */
@@ -120,8 +151,10 @@ async function detect(opts) {
   const r = await probeVersion(found.bin, ["--version"]);
   // 装上了才去探选项：没装的话探了也只是白花一个 spawn
   const thinkingFlag = r.installed ? await probeThinking(found.bin) : false;
+  const models = r.installed ? await localModels(found.bin) : [];
   return {
     id: ID, installed: r.installed, path: found.bin, version: r.version, how: found.how,
+    models, modelSource: models.length ? "claude_local" : "manual",
     caps: { thinkingFlag },
     error: r.installed ? "" : "找到了 " + found.bin + "，但 --version 跑不通（装坏了？）",
   };
@@ -133,6 +166,7 @@ async function detect(opts) {
 async function run({
   prompt, cwd, emit = () => {}, deadline, stopSignal,
   model, systemPrompt, resumeId, maxTurns, mcpConfigPath, mcpServerNames = [], shimBin = "", bin, permissionMode, guard = {}, env, extraArgs = [],
+  globalMcp = false,
   thinking: thinkingLevel, addDirs = [],
 }) {
   // 起进程也走同一套解析：detect 认出来的是绝对路径，run 却还 spawn 裸名字的话，
@@ -168,6 +202,11 @@ async function run({
   if (dirs.length && addDirOk) for (const d of dirs) args.push("--add-dir", d);
   if (mcpConfigPath) {
     args.push("--mcp-config", mcpConfigPath);
+    // 只挂本项目递过去的这几台，不再顺带连用户全局的 MCP / 插件 / claude.ai 连接器。
+    // 实测（2026-09-26）：带着全局那一串，每轮光启动就 7~8 秒（要等 Notion、Drive 这些远端握手），
+    // 加上这一条是 2~3 秒；而且那些工具这条路上本来就用不上（没登录的直接挂 needs-auth）。
+    // 和 codex 那条的隔离运行窝同一个取舍。确实要用全局那几台的，engine_options 里设 globalMcp: true
+    if (!globalMcp) args.push("--strict-mcp-config");
     // -p 是非交互的：MCP 工具默认要人点一下"允许"，而这里没有人。
     // 不放行的话工具挂上了也调不动，模型看见一堆用不了的名字反而更糟。
     // 真正危险的动作由本项目自己的安全中心把关（工具是从这台桥回流的）。
@@ -282,8 +321,8 @@ module.exports = {
   // 连不上时前端要给一句「接下来敲什么」。写在引擎自己身上，注册表那边就不用按 id 打补丁了
   login: "在终端里跑一次 claude 完成登录，再回来点一次",
   supportsResume: true,
-  // 设置页「模型」输入框的候选（只是提示，用户填什么就发什么；以这版 claude 认的名字为准）
-  models: ["opus", "sonnet", "haiku", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
+  // 真正的候选由 detect() 从本机 claude 和 ~/.claude/settings.json 读；这里只留永远有效的别名兜底
+  models: ALIAS_FALLBACK,
   thinkingLabel: "扩展思考（claude 只有开/关，低中高都算开）",
   detect, run, explain, pickAddDirs,
 };

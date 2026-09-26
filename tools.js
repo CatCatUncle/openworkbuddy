@@ -27,6 +27,7 @@ const MEDIA = require("./src/tools/media");
 const CANVAS = require("./src/tools/canvas");
 MEDIA.bindWorkspace(() => ws(), () => ensureDirs());
 CANVAS.bindWorkspace(() => ws());
+const TTSB = require("./src/tools/tts-batch"); // 按句配音（text_to_speech 的 segments 模式）
 const {
   OUT_EXT_ALIAS, safeOutName, anySignal, sleepFor, fetchRetry, mediaKey, IMAGE_EXT, shrinkForVision, readImageInput,
   mainCanSee, pickEye, lookAtImage, savedAt, refImageUris, I2V_RE, T2V_RE, generateImage, generateVideo, htmlToImage,
@@ -123,6 +124,33 @@ function orgBlocksShell() {
   const p = orgPolicy();
   return !!p && p.allow_shell === false;
 }
+/**
+ * 在 run_node / run_shell 里自己拉常驻的 Chrome（带调试口，或无头又不是一次性导出）→ 直接退回，指到现成工具上。
+ * 这不是安全闸，是分流：模型自己 spawn 的 Chrome 是 detached + unref 的，跑完没人收，
+ * 端口还写死，一个任务里试几次就在后台挂出好几个无头 Chrome。chrome_cdp 拉起的那个有闲置自关、
+ * 进程退出连带收，html_to_image / check_page 走内置渲染器根本不起新进程。
+ * 所以任何权限档位下都退回——全自动也不代表该绕开现成工具。
+ */
+const DIY_BROWSER_BIN = /google[ -]chrome|chromium|chrome\.exe|msedge|microsoft edge|brave browser|headless_shell/i;
+const DIY_BROWSER_DEBUG = /--remote-debugging-(?:port|pipe)/i;
+// --print-to-pdf / --screenshot / --dump-dom 是一次性的：干完自己退出，不会挂着，技能里正经在用
+const DIY_BROWSER_ONESHOT = /--(?:print-to-pdf|screenshot|dump-dom)\b/i;
+function diyBrowser(src) {
+  const s = String(src || "");
+  if (!DIY_BROWSER_BIN.test(s)) return null;
+  const lingers = DIY_BROWSER_DEBUG.test(s) || (/--headless\b/i.test(s) && !DIY_BROWSER_ONESHOT.test(s));
+  if (!lingers) return null;
+  security.audit("命令拦截", "自己拉无头/调试 Chrome，已指到 chrome_cdp", "拦截");
+  return {
+    content: "别自己起 Chrome（带 --remote-debugging-port / --headless 的那种）：这样拉起来的浏览器跑完没人收，会一直挂在后台吃 CPU。按用途换现成工具：\n" +
+      "- 网页截图、出长图/封面 → html_to_image\n" +
+      "- 验收做好的网页（报错、白屏、实际效果）→ check_page\n" +
+      "- 读 JS 渲染后的正文 → fetch_url 加 render:\"force\"\n" +
+      "- 要点按钮、输入、在页面里执行 JS、按时间采样页面状态 → chrome_cdp（navigate 后用 evaluate；用完发 action:\"close\"）",
+    isError: true,
+  };
+}
+
 function shellBlocked(tool) {
   security.audit("命令拦截", `${tool}（本组织已关闭「允许运行命令行」）`, "拦截");
   return {
@@ -512,8 +540,9 @@ const TOOL_DEFS = [
   {
     name: "chrome_cdp",
     description:
-      "用真 Chrome 打开网页并操作它。要截网页效果图、要看 JS 渲染完的样子、要点开某个交互再看结果，都用这个，不用先问用户开没开调试端口——端口上没人应答时会自己拉起一个专用 Chrome（独立 user-data-dir，不碰你日常浏览器的登录态），端口由它自己挑，不跟别的程序抢。只连 127.0.0.1/localhost/::1。\n" +
-      "action：list_tabs 列标签页；navigate 打开 URL（默认等页面加载完再返回）；screenshot 截图存到 workspace，full_page=true 截整页，width/height 指定视口；inspect 读页面文字；click/type 按 CSS 选择器操作；evaluate 执行页面内 JavaScript；close_tab 关标签页；close 把本工具拉起来的那个 Chrome 整个关掉（用完顺手发一条，不发也行，闲置十分钟自己会关）；status 看当前接的是哪个 Chrome。\n" +
+      "用真 Chrome 打开网页并**交互**：点按钮、输入、在页面里执行 JS、按时间采样动画状态、接管用户已开的浏览器。它要单独拉起一个 Chrome，比别的工具重得多，先看有没有更轻的：截图/出长图用 html_to_image，验收做好的网页用 check_page，读 JS 渲染后的正文用 fetch_url 加 render:\"force\"——这几件事别用它。\n" +
+      "端口上没人应答时会自己拉起一个专用 Chrome（独立 user-data-dir，不碰日常浏览器的登录态），端口由它自己挑。只连 127.0.0.1/localhost/::1。**别在 run_node / run_shell 里自己起 Chrome 再连调试口**，会被退回。\n" +
+      "action：list_tabs 列标签页；navigate 打开 URL（默认等页面加载完再返回）；screenshot 截图存到 workspace，full_page=true 截整页，width/height 指定视口；inspect 读页面文字；click/type 按 CSS 选择器操作；evaluate 执行页面内 JavaScript；close_tab 关标签页；close 把本工具拉起来的那个 Chrome 整个关掉（用完就发这一条；忘了的话闲置十分钟自己会关）；status 看当前接的是哪个 Chrome。\n" +
       "接手用户已经开着的浏览器要给 port；不给就用本工具自己那一个。WebGL/Canvas 页面照样能截。服务器部署时 Chrome 要跟 Agent 在同一台机器，别把调试端口暴露到公网。",
     input_schema: {
       type: "object",
@@ -649,30 +678,77 @@ const TOOL_DEFS = [
       type: "object",
       properties: {
         html_file: { type: "string", description: "HTML 文件路径（工作空间内的相对路径）" },
+        html_files: { type: "array", items: { type: "string" }, description: "一次截多张（最多 30 个 HTML，按顺序；与 html_file 二选一）。出图名跟 HTML 文件名走，给了 filename 就当前缀：xhs_01.png…" },
         filename: { type: "string", description: "输出 PNG 文件名（可选，默认 card_时间戳.png）" },
         width: { type: "number", description: "视口宽 px（默认 1242）" },
         height: { type: "number", description: "视口高 px（默认 1656。常用：小红书 3:4=1242x1656，公众号头图 2.35:1=1200x511，视频封面 16:9=1920x1080）" },
         full_page: { type: "boolean", description: "true 时按页面实际内容高度整页截（适合长图/万字长文截图）" },
         wait_ms: { type: "number", description: "加载后等待毫秒再截（默认 500；页面有网络字体/大图时加大到 2000+）" },
       },
-      required: ["html_file"],
+      required: [],
     },
   },
   {
-    name: "text_to_speech",
+    name: "render_motion",
     description:
-      "用用户配置的语音合成模型把文字念成音频文件，保存到工作空间。视频配音、播客旁白就用它。需要先在 设置 → 模型 → 语音合成 配置渠道，未配置时会明确报错。",
+      "把工作空间里的 HTML 动画逐帧渲成无声 H.264 mp4（虚拟时钟：CSS 动画 / setTimeout / rAF / Math.random 都按帧推，同一页渲两次逐帧一样；不花钱）。" +
+      "先 write_file 写 HTML：<body data-duration=\"秒\"> 定时长，元素上 data-start/data-duration 控制出场窗口。多个 HTML 按顺序接成一条，每段时钟各自从 0 开始。" +
+      "出片后会落一张封面 PNG，交付前用 look_at_image 看一眼。配音/配乐之后另外合成。",
     input_schema: {
       type: "object",
       properties: {
-        text: { type: "string", description: "要念的文字（上限 5000 字，超长请分段多次合成）" },
-        filename: { type: "string", description: "保存文件名（可选，默认 speech_时间戳.mp3）" },
+        html_file: { type: "string", description: "HTML 文件路径（工作空间内相对路径）" },
+        html_files: { type: "array", items: { type: "string" }, description: "多段按顺序接起来（最多 30 个；与 html_file 二选一）" },
+        durations: { type: "array", items: { type: "number" }, description: "每段秒数，和 html_files 一一对应；不给就读各页 <body data-duration>" },
+        duration: { type: "number", description: "单个 HTML 的秒数（0.5–120；不给就读 data-duration）" },
+        aspect: { type: "string", description: "画幅：9:16（默认 1080x1920）/ 16:9 / 1:1 / 3:4" },
+        width: { type: "number", description: "宽 px（和 height 都给时忽略 aspect）" },
+        height: { type: "number", description: "高 px" },
+        fps: { type: "number", description: "帧率 12–60，默认 30" },
+        seed: { type: "number", description: "Math.random 种子（默认固定值；想换一种随机就换个数）" },
+        stills: { type: "number", description: "落几张静帧 PNG（0–3，默认 1 张封面）" },
+        filename: { type: "string", description: "输出文件名（默认 motion_时间戳.mp4；只出 .mp4/.mov）" },
+      },
+      required: [],
+    },
+  },
+  ...require("./delivery-page").TOOL_DEFS, // 交付页：成片/封面/文案收成一页，本机出、不花钱
+  {
+    name: "text_to_speech",
+    description:
+      "用用户配置的语音合成模型把文字念成音频文件，保存到工作空间。视频配音、播客旁白就用它。需要先在 设置 → 模型 → 语音合成 配置渠道，未配置时会明确报错。" +
+      "要按句出时长和字幕（视频配音、镜头跟着声音走）就传 segments：一次调用逐句合成、实测每句时长，出整轨 + 句级 .srt + 时长清单 .json。",
+    input_schema: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "要念的文字（和 segments 二选一；上限 5000 字，超长请分段多次合成）" },
+        filename: { type: "string", description: "保存文件名（可选，默认 speech_时间戳.mp3）。segments 模式下是整轨名（.wav 或 .mp3，默认 旁白.wav），字幕和时长清单同名" },
         voice: { type: "string", description: "音色名（可选，默认用设置里配的；如 OpenAI 系的 alloy/nova、通义的 Cherry/Serena）" },
         speed: { type: "number", description: "语速 0.5~2.0（可选，仅 OpenAI 兼容渠道生效）" },
         model: { type: "string", description: "模型名（可选）。设置里这一路可能配了好几个，不写就用默认那个；想点名用哪个就照设置里的名字写。名字写错会直接报错并列出可选项，不会偷偷换成别的。" },
         no_cache: { type: "boolean", description: "强制重新生成（可选）。给了 filename 的调用，参数完全一样时会直接复用上一次的产物、不再花钱；确实要换一版不一样的，把这个设成 true。" },
+        segments: { type: "array", maxItems: 60, description: "按句配音（可选）：每句一项，逐句合成并实测时长，同时出整轨、句级字幕和时长清单。按声音定镜头时长就用它。", items: { type: "object", properties: { text: { type: "string", description: "这一句（≤600 字）" }, voice: { type: "string", description: "这一句的音色（可选，对白换人时用）" } }, required: ["text"] } },
+        gap_ms: { type: "number", description: "句间停顿毫秒（可选，默认 300，只在 segments 模式生效）" },
       },
-      required: ["text"],
+      // text 和 segments 二选一，谁都不能单独标必填；两样都没给由实现里的参数检查照实报
+      required: [],
+    },
+  },
+  {
+    name: "compose_video",
+    description:
+      "按时间轴把盘上已有的画面、配音、配乐拼成成片：一次出多个画幅（9:16 / 16:9 / 1:1 / 3:4），附 .srt 字幕、封面和一份清单。只用本机 ffmpeg，不调模型、不花钱。" +
+      "先用 dry_run 看会出几条、多长、有什么警告；正式跑时等得到就直接交成片，等不到先交任务号，再用 job 查、job + cancel 停。时间轴写法见 video-compose 技能。",
+    input_schema: {
+      type: "object",
+      properties: {
+        timeline: { type: "string", description: "时间轴：工作区里 timeline.json 的路径，或者直接写 JSON（segments 必填：每段一个 visual，可带 voice）" },
+        dry_run: { type: "boolean", description: "只排片不出片（可选）：交回画幅、时长、步数和警告，不写盘" },
+        job: { type: "string", description: "查一条已经开跑的合成（可选，填开跑时给的任务号）" },
+        cancel: { type: "boolean", description: "配合 job 叫停它（可选）；不给 job 就停这个对话正在跑的那条" },
+      },
+      // 查 / 停一条已经开跑的只给 job，没有 timeline；两样都没给由实现照实报
+      required: [],
     },
   },
   {
@@ -718,6 +794,8 @@ const TOOL_DEFS = [
       required: ["action"],
     },
   },
+  ...require("./brand-kit").TOOL_DEFS, // 产品品牌档案：读/查 + 存（存必须人点头）
+  require("./lib/web-demo-recorder").TOOL_DEF, // 网页产品演示录屏：隔离 Chrome + 打码闸门 + ffmpeg 合成
 ];
 
 // 图像 / 视频 / 配音 / 转写 / 看图 / HTML 截图：在 src/tools/media.js
@@ -3356,6 +3434,7 @@ async function executeToolCore(name, input, opts = {}) {
       owner: opts.actor || "",
       detail, // 改文件的 diff：看着改了哪几行批，而不是对着一个文件名下注
       seg: verdict.seg || "", // 长命令里到底是哪一段触发的：尾巴上藏一句 rm -rf，人得一眼看得见
+      sessionId: opts.sessionId || "",
     });
     security.audit(label + "审批", text, ok ? "已批准" : "已拒绝");
     if (ok) return null;
@@ -3456,6 +3535,8 @@ async function executeToolCore(name, input, opts = {}) {
           return { content: "内置 Node.js 运行时已在 设置 → 安全中心 停用，无法执行代码。", isError: true };
         }
         const code = String(input.code || "");
+        const diy = diyBrowser(code);
+        if (diy) return diy;
         // 给人批的是整段代码，不能只给前 500 字：危险的那句完全可以写在第 501 个字以后。
         // modeGated：只看不动/每步都问是用户当场选的档，闸门总开关关着也得照档办
         const blocked = await passGate(await judgeRisk(security.checkCode(sec, code), "代码", code), "代码", code, { force: modeGated() });
@@ -3466,6 +3547,8 @@ async function executeToolCore(name, input, opts = {}) {
         if (orgBlocksShell()) return shellBlocked("run_shell");
         const cmd = String(input.command || "");
         if (!cmd.trim()) return { content: "command 是空的：要跑什么命令写在 command 里。", isError: true };
+        const diy = diyBrowser(cmd);
+        if (diy) return diy;
         const blocked = await passGate(await judgeRisk(security.checkCommand(sec, cmd), "命令", cmd), "命令", cmd, { force: modeGated() });
         if (blocked) return blocked;
         const hookSays = await HK.beforeShell(opts.hooks, cmd, { cwd: fileBase, stopSignal: opts.stopSignal });
@@ -3752,6 +3835,27 @@ async function executeToolCore(name, input, opts = {}) {
         }
         return { content: JSON.stringify(r, null, 2), isError: false };
       }
+      case "record_web_demo": {
+        // 本机 Chrome + ffmpeg，不花钱：不过 quotaGate。先过写权限（录屏要落一整个目录），再开浏览器
+        const wd = require("./lib/web-demo-recorder");
+        let outRel;
+        try { outRel = wd.outDirRel(input); } catch (e) { return { content: e.message, isError: true }; }
+        const blocked = await passGate(security.checkWrite(sec, outRel), "写录屏", outRel, { force: true });
+        if (blocked) return blocked;
+        // 打开的地址、页面每次换页（含自己跳的）都过组织名单 + 安全中心，跟 fetch_url 同一道闸。
+        // 换页是落地之后才查（请求已经发出去了），查到就整条不交片；图片、fetch 这类子资源不查，跟 fetch_url 渲染模式一样
+        const checkNav = (u) => {
+          const org = hostAllowed(null, u);
+          if (!org.ok) { security.audit("网络拦截", u, "拦截"); return { ok: false, why: org.why }; }
+          const g = security.checkUrl(sec, u);
+          if (!g.allowed) { security.audit("网络拦截", u, "拦截"); return { ok: false, why: `安全中心拦下了：${g.reason}（设置 → 安全中心 → 网络安全）` }; }
+          security.audit("网络访问", `录屏打开：${u}`, "放行");
+          return { ok: true };
+        };
+        return await withStop(opts, (stop) => wd.runTool(input, {
+          outRel, outAbs: resolveFile(outRel), resolveFile, checkNav, stop, deadline: opts.deadline, onProgress: opts.onProgress,
+        }));
+      }
       case "remember": {
         // 先跑现成的那几道尺子（空/太长/像凭据/像能力断言）：本来就拒的，不必再花一道题的钱
         const pre = memory.preflight({ text: input.text, source: "agent" });
@@ -3818,6 +3922,11 @@ async function executeToolCore(name, input, opts = {}) {
         fs.writeFileSync(file, body, "utf8");
         return { content: `技能「${name}」已保存并生效（${rel}）`, isError: false };
       }
+      // 品牌档案认的是项目根（ws），不是本对话的成果子目录：档案跟着项目走，每个对话都该读到同一份；
+      // 要查的成稿、要带进档案的素材仍按 resolveFile 从成果子目录起算
+      case "brand_kit_read":
+      case "brand_kit_save":
+        return await require("./brand-kit").runTool(name, input, { root: ws(), resolveFile, passGate, readBefore, diffText, security, sec, onProgress: opts.onProgress });
       case "library_list":
         return { content: libraryList(), isError: false };
       case "library_read": {
@@ -3845,8 +3954,27 @@ async function executeToolCore(name, input, opts = {}) {
           () => generateVideo(opts.media, input, { ...opts, saveDir: fileBase, resolveFile, signal: stop }))));
       }
       case "html_to_image":
-        return await htmlToImage(input, resolveFile, fileBase);
+        // 单张原样交给 media.htmlToImage；html_files[] 批量一张张串行截，每张报一次进度
+        return await withStop(opts, (stop) => require("./src/tools/motion").htmlToImageBatch(input, resolveFile, fileBase, { signal: stop, onProgress: opts.onProgress }));
+      case "render_motion":
+        // 本机浏览器 + ffmpeg，不花钱：不过 quotaGate，也不进生成缓存（同一页渲两次本来就逐帧一样）
+        return await withStop(opts, (stop) => require("./src/tools/motion").renderMotionTool(input, resolveFile, fileBase, { signal: stop, onProgress: opts.onProgress, deadline: opts.deadline }));
+      case "compose_video":
+        // 本机 ffmpeg 拼盘上已有的文件，不花钱：不过 quotaGate、不进生成缓存。
+        // 不套 withStop：任务可能比这次调用活得久（先交任务号），停止信号 / 截止时间 / 进度 / 会话 id 由 compose.js 从 opts 里自己接
+        return await require("./src/tools/compose").composeVideo(input, { resolveFile, fileBase, opts, security, sec, passGate, root: ws() });
+      case "delivery_page":
+        // 本机读清单、ffprobe 量画幅、写一页 html，不花钱：不过 quotaGate、不进生成缓存。
+        // dir 用本对话的成果子目录：清单里的相对路径、页面里的 <video src> 都以它为根
+        return await withStop(opts, (stop) => require("./delivery-page").runTool(input, { dir: fileBase, signal: stop, onProgress: opts.onProgress }));
       case "text_to_speech": {
+        // 按句配音：额度按「要新买的句子」在里面问、缓存逐句记，不走下面整段那套 quotaGate / withGenCache
+        if (input && input.segments !== undefined) {
+          return await withStop(opts, (stop) => viaMedia("tts", opts, input, () => TTSB.ttsSegments({
+            media: opts.media, input, timeoutMs, saveDir: fileBase, resolveFile, wsRoot: ws(), stop,
+            gate: (c) => quotaGate("tts", c), onProgress: opts.onProgress,
+          })));
+        }
         const g = quotaGate("tts", { model: input.model, units: unitsFor("tts", input) });
         if (g.bad) return g.bad;
         return await withStop(opts, (stop) => viaMedia("tts", opts, input, () => withGenCache("text_to_speech", "tts", opts, input, fileBase, resolveFile, g.hold,
@@ -3986,6 +4114,9 @@ function filesScope(files) {
  * 所以现在先把整棵树走完（WALK_CAP 兜底），按 mtime 倒序排完再切 500：无论工作目录攒了多少
  * 历史文件，最新的那批一定在列表里。filesScope() 会把 full=false 带出去，前端据此知道
  * 「这份清单不完整」，不拿它给旧产出盖「已删除」的章。
+ *
+ * 「本回合产出」现在不拿它做差了（最深 3 层，第 4 层往下的成品照样差不出来），改走下面的
+ * turnSnapshot()；这份只管面板和 @ 补全。
  */
 /**
  * 用户自己传进来的那些文件（输入框里粘的图、拖进来的素材）是**输入**，不是产出。
@@ -4035,7 +4166,8 @@ function isUserInput(file) {
 function outputFiles() {
   ensureDirs();
   const all = [];
-  const SKIP = new Set([".tmp", ".openworkbuddy", "node_modules", ".git"]);
+  // 跳哪些跟资料库「工作区」那一栏共用一份规矩：两边各抄一份，早晚一边列得出、另一边找不到
+  const { skipEntry } = require("./lib/ws-browse");
   // 服务端自己的运行数据（im-log.json、audit.json、会话、审计、记忆向量…全在 data/ 下）不是
   // 用户的成果文件。工作目录指到工程上层时（workspace_dir 指到 ~/工程目录 这种层级），这批文件
   // 会被 walk 进「可交付列表」，两个后果：①IM 附件逻辑「回复里点名的文件自动附上」把内部日志
@@ -4053,9 +4185,8 @@ function outputFiles() {
     }
     for (const e of entries) {
       if (all.length >= WALK_CAP) return;
-      if (e.name.startsWith(".") || SKIP.has(e.name)) continue;
       const full = path.join(dir, e.name);
-      if (full + path.sep === APP_DATA_DIR) continue; // 服务端运行数据目录：不算交付物
+      if (skipEntry(e.name, full, APP_DATA_DIR)) continue; // 点开头的、临时区、依赖、版本库、服务端运行数据目录：不算交付物
       const r = rel ? `${rel}/${e.name}` : e.name;
       if (e.isDirectory()) {
         walk(full, r, depth + 1);
@@ -4068,6 +4199,69 @@ function outputFiles() {
   })(ws(), "", 1);
   all.sort((a, b) => b.mtime.localeCompare(a.mtime));
   return markDuplicates(all.slice(0, FILES_CAP));
+}
+
+/**
+ * 「本回合改了哪些文件」专用的快照，不拿 outputFiles() 做差。
+ *
+ * outputFiles() 是给右侧面板和 @ 补全的：最深 3 层、最新 500 条。agent 往
+ * 「任务_x/site/assets/img/」这种第 4 层往下写的成品，前后两份里都没有，差出来是空的——
+ * 文件明明写了，对话里那块「本回合产出」一张卡都不挂。
+ *
+ * 这里走整棵树：跟资料库同一个 walkAll、同一套跳过规矩（点开头的、.tmp、node_modules、.git、
+ * 应用自己的 data/）。只卡条数（WALK_CAP），不卡层数：资料库那条「最深 12 层」要是也用在这里，
+ * 工作区里随便躺着一条老 Java 工程那种十几层的目录链，每一回合都会报 capped，界面天天挂着
+ * 「可能没列全」，而这回合的产出其实一个没漏。链接不跟、成不了环，路径长度本身就封住了层数；
+ * 花多少时间由条数上限管。条数撞了线才 capped:true 照实往外报，不装作看全了。
+ *
+ * 故意不用 walkAllCached：那份有 3 秒记忆，开跑那一刻的基线和几百毫秒后的比对落在同一个
+ * 窗口里，第二份拿到的就是第一份，中间写的文件差不出来。
+ *
+ * 撞了上限、而这回合有自己的成果文件夹时，再单独把那个文件夹走一遍并进来：按层走的截断
+ * 丢的是深处，而本回合的产出几乎都在自己文件夹里。补走完 capped 仍是 true——文件夹外面
+ * 没走到的那部分照样可能有这回合写的东西。
+ * @param {string} [baseDir] 本对话的成果子目录（相对工作目录），没有就是空
+ * @returns {{ files: ReadonlyArray<{name:string,size:number,mtime:string}>, capped: boolean }}
+ */
+function turnSnapshot(baseDir) {
+  ensureDirs();
+  const { walkAll, skipEntry } = require("./lib/ws-browse");
+  const root = ws();
+  const appDataDir = dataPath("data");
+  const opts = { appDataDir, maxDepth: Infinity }; // 不卡层数，见上
+  const all = walkAll(root, opts);
+  const segs = String(baseDir || "").split("/").filter(Boolean);
+  if (!all.capped || !segs.length) return all;
+  let cur = root;
+  for (const s of segs) {
+    cur = path.join(cur, s);
+    if (s === ".." || skipEntry(s, cur, appDataDir)) return all; // 自己的文件夹本来就不列：不补，照实报 capped
+  }
+  const prefix = segs.join("/") + "/";
+  const byName = new Map(all.files.map((f) => [f.name, f]));
+  for (const f of walkAll(cur, opts).files) byName.set(prefix + f.name, { name: prefix + f.name, size: f.size, mtime: f.mtime });
+  return { files: [...byName.values()], capped: true };
+}
+
+/**
+ * 按名字查一批文件此刻的大小和 mtime，查不到的（删了、越界、不是文件）直接不要，新的在前。
+ * 给手上已经有「本回合产出」名单的地方用（IM 回传附件、产出卡片补全）：再拿 outputFiles()
+ * 过滤一遍的话，第 4 层往下、或者挤出最新 500 条的产出会被悄悄滤掉。
+ * @param {Iterable<string>} names 相对工作目录的路径
+ * @returns {{name:string,size:number,mtime:string}[]}
+ */
+function statOutputs(names) {
+  const out = [];
+  const seen = new Set();
+  for (const n of names || []) {
+    const name = String(n || "");
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    let st;
+    try { st = fs.statSync(safePath(name)); } catch { continue; }
+    if (st.isFile()) out.push({ name, size: st.size, mtime: st.mtime.toISOString() });
+  }
+  return out.sort((a, b) => (a.mtime < b.mtime ? 1 : a.mtime > b.mtime ? -1 : 0));
 }
 
 /**
@@ -4114,4 +4308,4 @@ function markDuplicates(out) {
 }
 
 module.exports = {
-  _internals: { searchBodyError, searchHttpError, toItems, pickHits, SEARCH_HTTP_HINT, searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, pickEye, mainCanSee, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, unitsFor, anySignal, sleepFor, videoPlan: mediaModels.videoPlan, editFile, planEdit, planMulti, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES, docToText, slidesToText, sheetsToText }, TOOL_DEFS, executeTool, badToolArgs, outputFiles, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withLibraryBase, libBase, notesFileOf, LIB_DIR, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage, canvasSafeName };
+  _internals: { searchBodyError, searchHttpError, toItems, pickHits, SEARCH_HTTP_HINT, searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, pickEye, mainCanSee, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, unitsFor, anySignal, sleepFor, videoPlan: mediaModels.videoPlan, editFile, planEdit, planMulti, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES, docToText, slidesToText, sheetsToText }, TOOL_DEFS, executeTool, badToolArgs, outputFiles, turnSnapshot, statOutputs, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withLibraryBase, libBase, notesFileOf, LIB_DIR, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage, canvasSafeName };

@@ -62,11 +62,13 @@ const LENDABLE = [
   "text_to_speech",   // 配音
   "transcribe_audio", // 录音转文字
   "html_to_image",    // 网页转长图/封面
+  "delivery_page",    // 交付页：成片/封面/文案收成一页（本机出，不要浏览器）
   "gen_diagram",      // mermaid / echarts / graphviz 出图
   "look_at_image",    // 看图（CLI 在无头管道里读不了本地图片）
   "read_document",    // 读 Office 文档/压缩包：CLI 只会按文本读，拿回去是一坨乱码
   "render_page",      // 带 JS 渲染后取正文（本项目自己的模型不用它，见下面 BRIDGE_ONLY）
   "check_page",       // 打开做好的网页，看控制台报错和实际效果
+  "record_web_demo",  // 网页产品演示录屏：CLI 沙箱里起不来 Chrome，借出去在沙箱外跑（要本机 Chrome + ffmpeg）
   "web_search",       // 走本项目配的搜索渠道
   "library_list",     // 技能库：有哪些
   "library_read",     // 技能库：把某个技能的正文读出来

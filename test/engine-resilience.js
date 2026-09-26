@@ -18,6 +18,8 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { spawnSync } = require("child_process");
+// 赶在 require 引擎 / agent 之前：不然单独跑时 trace 记进用户真在用的 workspace/（见 test/lib/own-home.js）
+require("./lib/own-home")("engine-resilience");
 
 const ROOT = path.join(__dirname, "..");
 

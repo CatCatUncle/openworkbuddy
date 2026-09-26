@@ -23,6 +23,8 @@ const fs = require("fs");
 const os = require("os");
 
 const ROOT = path.join(__dirname, "..");
+// 赶在 require 生产模块之前：不然单独跑时 trace 记进用户真在用的 workspace/（见 test/lib/own-home.js）
+require("./lib/own-home")("continue-gate");
 const { src } = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
 const cg = require(path.join(ROOT, "continue-gate"));
 const systemone = require(path.join(ROOT, "systemone"));

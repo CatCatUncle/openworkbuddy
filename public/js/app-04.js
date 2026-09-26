@@ -242,6 +242,14 @@ const LIB_IMG = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i;
  */
 const LIB_MODES = [["list", "列表", "list"], ["icon", "图标", "layout-grid"], ["gallery", "画廊", "gallery-horizontal"]];
 const LIB_GROUPS = [["none", "不分组"], ["kind", "按类型"], ["time", "按时间"]];
+/**
+ * 一层文件多、未归属多的时候先铺多少行。一个目录上千个文件一次全塞进 DOM，
+ * 图标视图每格还带一张缩略图，得卡上好几秒；先铺一截、底下给个「再显示」，
+ * 要往下找的人接着点，不找的人不用付这个钱。
+ */
+const LIB_CHUNK = 300;
+/** 「按任务」要未归属的全量（服务端两万封顶）：只拿前两百个的话，「再显示」翻到头就断了，类型筛选也只筛了那两百个 */
+const LIB_ORPHAN_ALL = 20000;
 /** 「今天 / 最近 7 天 / 本月 / 更早」——访达的「使用组」按日期就是这么分的 */
 function libTimeBucket(iso) {
   const t = typeof iso === "number" ? iso : Date.parse(iso || "");
@@ -394,18 +402,28 @@ async function renderLibPage() {
   // .as-undefined 这种谁也没写过样式的类名，整页就散了。
   if (!LIB_MODES.some((m) => m[0] === libState.mode)) libState.mode = "list";
   if (!LIB_GROUPS.some((g) => g[0] === libState.group)) libState.group = "none";
-  if (libState.view !== "task") libState.view = "dir";
-  // 四趟并发。产出索引（outputs）三种视图都要——不只是「按任务」那一栏：从文件夹里随手点开
+  if (libState.view !== "task" && libState.view !== "ws") libState.view = "dir";
+  if (typeof libState.wsDir !== "string") libState.wsDir = "";
+  if (!(libState.wsN >= LIB_CHUNK)) libState.wsN = LIB_CHUNK;
+  if (!(libState.wsOff >= 0)) libState.wsOff = 0; // 工作区那一层翻到第几页（从第几条起），换层/换视图归零
+  if (!(libState.orphanN >= LIB_CHUNK)) libState.orphanN = LIB_CHUNK;
+  // 并发几趟。产出索引（outputs）每种视图都要——不只是「按任务」那一栏：从文件夹里随手点开
   // 一个文件，右边也要说得出「这是哪次任务做的」。服务端按会话文件 mtime 增量缓存，
-  // 多这一趟不会真去重解析几百个 JSON。
-  const [lib, ws, out, found] = await Promise.all([
+  // 多这一趟不会真去重解析几百个 JSON。未归属的全量只有「按任务」那一栏要，别的视图不背这个包
+  const wantTree = libState.view === "ws" && !q;
+  const [lib, ws, out, found, tree] = await Promise.all([
     fetch("/api/library?dir=" + encodeURIComponent(libState.dir || "")).then(r => r.json()).catch(() => ({ files: [], notes: [] })),
     fetch("/api/files").then(r => r.json()).catch(() => []),
-    fetch("/api/library/outputs").then(r => r.json()).catch(() => ({ error: "读不到任务产出" })),
+    fetch("/api/library/outputs" + (libState.view === "task" && !q ? "?orphan_limit=" + LIB_ORPHAN_ALL : "")).then(r => r.json()).catch(() => ({ error: "读不到任务产出" })),
     q ? fetch("/api/library/search?q=" + encodeURIComponent(q)).then(r => r.json()).catch(() => ({ error: "搜不动了" })) : Promise.resolve(null),
+    wantTree ? libTreeOf(libState.wsDir, libState.wsOff) : Promise.resolve(null),
   ]);
   // 服务端把越界/不存在的 dir 规整成了 ""，界面跟着回到根，否则面包屑指着一个进不去的地方
   libState.dir = (lib && typeof lib.dir === "string") ? lib.dir : "";
+  // 工作区那一栏同理：那一层刚被任务清掉的话，libTreeOf 已经退回了根，这儿跟着记下来
+  if (tree && typeof tree.dir === "string") libState.wsDir = tree.dir;
+  if (tree && !tree.error) libState.wsOff = tree.offset >= 0 ? tree.offset : 0; // 服务端把翻过头的页退回了末页，跟着记
+  if (tree && tree.moved) toast("那个文件夹已经不在了，回到了工作区最外层", "circle-alert");
   // 接口回的是 { error } 而不是资料清单时别装作「还没有参考资料」——那是句瞎话，
   // 用户会当成自己没传过东西，而真相是这一趟根本没读成
   if (lib && lib.error) {
@@ -437,10 +455,17 @@ async function renderLibPage() {
   // 不是按 out/2026-09/report-final-v3.md 记的。搜索一开口就接管整块列表，
   // 因为搜的时候「我现在在哪一层」已经不重要了。
   const libFiles = (lib.files || []).filter(f => libKindOk(f.name));
-  const wsFiles = ws.filter(f => libKindOk(f.name)).slice(0, 120);
+  const wsKind = ws.filter(f => libKindOk(f.name));
+  const wsFiles = wsKind.slice(0, 120);
+  // 工作区一共多少个文件，服务端全量数出来的。下面那段只是最近动过的一截，
+  // 不说清楚的话，人会把这一百来个当成全部——「资料库没有显示我这个工作区下面的所有文件」就是这么来的
+  const wsTotal = out && typeof out.ws_total === "number" ? out.ws_total : null;
+  // 截没截，拿没筛过的那份跟全量比：wsTotal 不分类型，筛成「图片」后 5 张全在，也不该说成「最近动过的 5 个」
+  const wsPartial = wsTotal === null || wsTotal > ws.length || wsKind.length > wsFiles.length;
   let body = "";
   if (q) body = libSearchHtml(found, q, recents);
   else if (libState.view === "task") body = libTasksHtml(out);
+  else if (libState.view === "ws") body = libWsHtml(tree);
   // 两段分开摆，各带各的标题和各自的操作。合在一起的后果不是「乱」，是用户把两件事当成了一件：
   // 上面这段是**他放进去的**参考资料（AI 会来查），下面那段是**任务写出来的**产出。
   else body = `
@@ -453,7 +478,8 @@ async function renderLibPage() {
       ? groupedRows(libFiles, "lib", (f) => ({ full: f.path, label: f.name, dir: "", del: f.path }))
       : ((lib.dirs || []).length ? "" : `<div class="lib-none">${libState.dir ? "这个文件夹还是空的" : libEmptyWhy()}</div>`)}
     <div class="sec lib-sec">
-      <span class="lib-sec-l">本地产物<span class="n">${wsFiles.length}</span><em>当前项目的工作目录 · 任务自己写出来的</em></span>
+      <span class="lib-sec-l">本地产物<span class="n">${wsFiles.length}</span><em>${!wsPartial ? "当前项目的工作目录 · 任务自己写出来的" : `最近动过的 ${wsFiles.length} 个 · 任务自己写出来的`}</em></span>
+      ${wsTotal ? `<span class="lib-sec-acts"><a href="#" class="link" data-goto-ws title="在「工作区」里一层层点进去看">全部 ${wsTotal}${out.ws_capped ? "+" : ""} 个${ic("arrow-right")}</a></span>` : ""}
     </div>
     ${wsFiles.length ? groupedRows(wsFiles, "ws") : '<div class="lib-none">工作目录还没有成果文件</div>'}`;
 
@@ -468,6 +494,7 @@ async function renderLibPage() {
         <div class="lib-tabs" role="tablist">
           <button type="button" class="lib-tab ${libState.view === "dir" ? "on" : ""}" data-view="dir" role="tab" aria-selected="${libState.view === "dir"}">${ic("folder-tree")}文件夹</button>
           <button type="button" class="lib-tab ${libState.view === "task" ? "on" : ""}" data-view="task" role="tab" aria-selected="${libState.view === "task"}">${ic("sparkles")}按任务</button>
+          <button type="button" class="lib-tab ${libState.view === "ws" ? "on" : ""}" data-view="ws" role="tab" title="当前项目的工作目录，一层层点进去，每个文件都找得到" aria-selected="${libState.view === "ws"}">${ic("hard-drive")}工作区</button>
           <button type="button" class="lib-tab ${libState.pick && libState.pick.src === "notes" ? "on" : ""}" data-src="notes" role="tab" title="给助理留的长期备忘：不是文件，是几句话。每次任务它查资料库时都会连着读到" aria-selected="${!!(libState.pick && libState.pick.src === "notes")}">${ic("lightbulb")}笔记 ${(lib.notes || []).length || ""}</button>
         </div>
         <div class="lib-kinds">${LIB_KINDS.map(([k, label]) => `<button type="button" class="lib-kind ${(libState.kind || "all") === k ? "on" : ""}" data-kind="${k}">${esc(label)}</button>`).join("")}</div>
@@ -477,7 +504,8 @@ async function renderLibPage() {
       <div class="lib-main">
         <div class="lib-bar">
           ${q ? `<div class="lib-where">${ic("search")}搜「${esc(q)}」</div>`
-            : libState.view === "task" ? `<div class="lib-where">${ic("sparkles")}按任务看产出</div>` : crumbs}
+            : libState.view === "task" ? `<div class="lib-where">${ic("sparkles")}按任务看产出</div>`
+            : libState.view === "ws" ? libWsCrumbs(tree) : crumbs}
           <div class="lib-bar-acts">
             <div class="lib-seg" role="group" aria-label="分组方式">${LIB_GROUPS.map(([g, label]) =>
               `<button type="button" class="lib-gp ${(libState.group || "none") === g ? "on" : ""}" data-group="${g}" aria-pressed="${(libState.group || "none") === g}">${esc(label)}</button>`).join("")}</div>
@@ -513,6 +541,8 @@ async function renderLibPage() {
   if (qx) qx.onclick = (e) => { e.preventDefault(); libState.q = ""; renderLibPage(); };
   page.querySelectorAll(".lib-tab[data-view]").forEach(b => b.onclick = () => {
     libState.view = b.dataset.view;
+    // 换了视图，「再显示」攒下来的条数归位：回来时又是一上来铺满几千行，那一下卡顿没人想要
+    libState.wsN = LIB_CHUNK; libState.orphanN = LIB_CHUNK; libState.wsOff = 0;
     try { localStorage.setItem("owb_lib_view", libState.view); } catch {}
     renderLibPage();
   });
@@ -549,12 +579,61 @@ async function renderLibPage() {
   }
   // 面包屑和文件夹：往上跳 / 往下进。进去之前把选中的预览清掉，
   // 否则左边已经换了一层、右边还挂着上一层某个文件，看着像是没切成功
-  page.querySelectorAll(".lib-crumbs a, .lib-dir").forEach(el => el.onclick = (e) => {
+  // 只接带 data-dir 的：工作区那一栏的文件夹行和面包屑长得一样，走的却是另一个根（data-wsdir），
+  // 让这条也接走的话，在工作区里点一个文件夹会被拽回资料库
+  page.querySelectorAll(".lib-crumbs a[data-dir], .lib-dir[data-dir]").forEach(el => el.onclick = (e) => {
     e.preventDefault();
     libState.dir = el.dataset.dir || "";
     libState.pick = null;
     libState.view = "dir";
     renderLibPage();
+  });
+  // 工作区：进一层 / 从面包屑退回去。跟上面同一个道理，换层就把右边的预览清掉
+  page.querySelectorAll("[data-wsdir]").forEach(el => el.onclick = (e) => {
+    e.preventDefault();
+    libState.wsDir = el.dataset.wsdir || "";
+    libState.wsN = LIB_CHUNK;
+    libState.wsOff = 0;
+    libState.pick = null;
+    libState.view = "ws";
+    renderLibPage();
+  });
+  // 文件夹行是 div：鼠标点得进去，Tab 却不停、Enter 不理，纯键盘的人一层都下不去。
+  // 补上 Tab 停得住、Enter/空格等于点（面包屑本来就是 <a>）。不进方向键那条：
+  // 方向键挪到谁身上就 click 谁，挪到文件夹上等于一脚踩进去
+  page.querySelectorAll(".lib-dir[data-dir], .lib-dir[data-wsdir]").forEach(markActivatable);
+  // 「本地产物」那段标题上的「全部 N 个 →」：去工作区那一栏从最外层看起
+  page.querySelectorAll("[data-goto-ws]").forEach(a => a.onclick = (e) => {
+    e.preventDefault();
+    libState.view = "ws";
+    libState.wsDir = "";
+    libState.wsN = LIB_CHUNK;
+    libState.wsOff = 0;
+    libState.pick = null;
+    try { localStorage.setItem("owb_lib_view", "ws"); } catch {}
+    renderLibPage();
+  });
+  // 工作区一层超过一页：上一页 / 下一页。搜索撞了全量的线就搜不全，翻页是这一层每个文件都够得着的那条路
+  page.querySelectorAll("[data-wsoff]").forEach(b => b.onclick = async (e) => {
+    e.preventDefault();
+    libState.wsOff = Math.max(0, Number(b.dataset.wsoff) || 0);
+    libState.wsN = LIB_CHUNK;
+    await renderLibPage();
+    const ls1 = page.querySelector(".lib-list");
+    if (ls1) ls1.scrollTop = 0;
+  });
+  // 「再显示」：多铺一截，而且待在原地——重画整页会把列表滚回顶上，
+  // 人刚翻到第三百个，点一下又得从头往下划，那这颗按钮就白点了
+  page.querySelectorAll("[data-more]").forEach(b => b.onclick = async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const k = b.dataset.more === "orphan" ? "orphanN" : "wsN";
+    libState[k] = (libState[k] || LIB_CHUNK) + LIB_CHUNK;
+    const ls0 = page.querySelector(".lib-list");
+    const top = ls0 ? ls0.scrollTop : 0, left = ls0 ? ls0.scrollLeft : 0;
+    await renderLibPage();
+    const ls1 = page.querySelector(".lib-list");
+    if (ls1) { ls1.scrollTop = top; ls1.scrollLeft = left; }
   });
   if (page.querySelector("#lb-mkdir")) {
     page.querySelector("#lb-mkdir").onclick = async (e) => {
@@ -700,6 +779,10 @@ function libTasksHtml(data) {
   const nGone = all.reduce((n, t) => n + t.files.filter((f) => f.gone).length, 0);
   const tasks = (libState.gone ? all : all.map((t) => ({ ...t, files: t.files.filter((f) => !f.gone) }))).filter((t) => t.files.length);
   const orphans = (data.orphans || []).filter((f) => libKindOk(f.name));
+  // 总数照服务端全量数出来的说（不筛类型时）；筛了类型就数筛剩的——这时候服务端给的是全量清单，
+  // 数得准。只铺前 orphanN 个，其余靠「再显示」一截截往下翻，翻得到最后一个
+  const nOrphan = (libState.kind || "all") === "all" && typeof data.orphan_total === "number" ? data.orphan_total : orphans.length;
+  const nShow = Math.max(LIB_CHUNK, libState.orphanN || LIB_CHUNK);
   const group = (t) => {
     const shut = libTaskShut.has(t.id);
     return `<div class="lib-task">
@@ -723,9 +806,101 @@ function libTasksHtml(data) {
   return `<div class="sec">按任务看产出 <span style="font-weight:400;color:var(--owb-text-3)">${tasks.length} 个任务</span></div>
     ${tasks.map(group).join("") || `<div class="lib-none">${nGone ? "这些任务产出的文件都已经不在工作目录里了。" : "还没有任务产出过文件。跑一个任务，它写出来的东西会自动归到这儿。"}</div>`}
     ${goneTip}
-    ${orphans.length ? `<div class="sec">未归属 <span style="font-weight:400;color:var(--owb-text-3)">${data.orphan_total || orphans.length} 个</span></div>
+    ${orphans.length ? `<div class="sec">未归属 <span style="font-weight:400;color:var(--owb-text-3)">${nOrphan}${data.ws_capped ? "+" : ""} 个</span></div>
       <div class="lib-note-tip">这些文件不来自任何任务，多半是手动拷进来的。</div>
-      <div class="lib-fs">${orphans.slice(0, 80).map((f) => libRowHtml("ws", f)).join("")}</div>` : ""}`;
+      <div class="lib-fs">${orphans.slice(0, nShow).map((f) => libRowHtml("ws", f)).join("")}</div>
+      ${libMoreHtml("orphan", orphans.length - nShow)}` : ""}`;
+}
+
+/**
+ * 「再显示」那颗按钮。rest 是还没铺出来的条数，没有就什么都不画。
+ * 一句话里同时给「这下多几个」和「一共还剩几个」：只写「再显示 300 个」，
+ * 人不知道要点几下才到头，也就不知道该接着点还是换个法子找（搜索、筛类型）。
+ * @param {"ws"|"orphan"} kind
+ * @param {number} rest
+ */
+function libMoreHtml(kind, rest) {
+  if (!(rest > 0)) return "";
+  return `<button type="button" class="lib-more" data-more="${kind}">再显示 ${Math.min(LIB_CHUNK, rest)} 个（还剩 ${rest} 个）</button>`;
+}
+
+/**
+ * 工作区那一栏往服务端要一层。那一层要是刚被任务清掉/改了名（404），退回最外层再要一次，
+ * 并标上 moved 让界面说一声——停在一句「已经不在了」上，人得自己点面包屑找回去，
+ * 而 wsDir 又不记到本地，这种情况只会发生在同一次打开里、别的任务刚动过目录的时候。
+ * @param {string} dir 相对工作区根的路径，"" 是最外层
+ * @param {number} [off] 这一层从第几条起（翻页用），退回最外层时归零
+ */
+async function libTreeOf(dir, off) {
+  const get = (d, o) => fetch("/api/files/tree?dir=" + encodeURIComponent(d || "") + (o > 0 ? "&offset=" + o : ""))
+    .then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) }));
+  try {
+    let r = await get(dir, off);
+    let moved = false;
+    if (r.status === 404 && dir) { r = await get("", 0); moved = true; }
+    const b = r.body;
+    if (r.status >= 400 || !b || b.error) return { error: (b && b.error) || "读不了这个文件夹" };
+    return moved ? { ...b, moved: true } : b;
+  } catch {
+    return { error: "读不了工作区，稍后再点一次" };
+  }
+}
+
+/** 工作区那一栏的面包屑：第一截永远是「工作区」，点它回最外层 */
+function libWsCrumbs(tree) {
+  return `<div class="lib-crumbs">
+    <a href="#" data-wsdir="">${ic("hard-drive")}工作区</a>
+    ${((tree && tree.crumbs) || []).map((c) => `<span>/</span><a href="#" data-wsdir="${esc(c.path)}">${esc(c.name)}</a>`).join("")}
+  </div>`;
+}
+
+/**
+ * 「工作区」视图：当前项目的工作目录，像访达那样一层一层点进去。
+ *
+ * 这一栏是被「资料库没有显示我这个工作区下面的所有文件」逼出来的。「本地产物」那段
+ * 用的是给文件面板准备的清单：只走三层、只留最新的几百个——那是「最近动过什么」，
+ * 不是「这里都有什么」。这儿不设层数、不设总数：每一层现列，每一个文件都点得到。
+ *
+ * 文件行跟别处用同一个 libRowHtml、src 也是 "ws"、名字是完整的相对路径——
+ * 预览、打开、所在位置、复制全都现成能用，嵌套几层都一样。
+ * 类型筛选只筛文件：文件夹是往下走的路，筛掉了就到不了里面的图片了。
+ */
+function libWsHtml(tree) {
+  if (!tree) return `<div class="lib-none">读取中…</div>`;
+  if (tree.error) return `<div class="lib-none">${esc(tree.error)}</div>`;
+  const dirs = tree.dirs || [];
+  const files = (tree.files || []).filter((f) => libKindOk(f.name));
+  // 文件夹和文件一起算这一截：一层里三千个子文件夹也照样卡
+  const n = Math.max(LIB_CHUNK, libState.wsN || LIB_CHUNK);
+  const dShow = dirs.slice(0, n);
+  const fShow = files.slice(0, Math.max(0, n - dShow.length));
+  const rest = dirs.length + files.length - dShow.length - fShow.length;
+  const folderRow = (d) => `
+    <div class="lib-it lib-dir lib-wsdir" data-wsdir="${esc(d.path)}" title="${esc(d.path)}">
+      <span class="th">${ic("folder")}</span><span class="nm">${esc(d.name)}</span><span class="sz">${d.count || 0} 项</span><span class="tm">${esc(libWhen(d.mtime))}</span>
+    </div>`;
+  const groups = libGroupFiles(fShow).map((g) =>
+    (g.label ? `<div class="sec lib-grp">${esc(g.label)} <span class="n">${g.items.length}</span></div>` : "")
+    + g.items.map((f) => libRowHtml("ws", f, { label: f.base || String(f.name).split("/").pop(), dir: "" })).join("")).join("");
+  const here = tree.dir ? String(tree.dir).split("/").pop() : "工作区";
+  const empty = !dirs.length && !files.length
+    ? `<div class="lib-none">${(tree.files || []).length ? "这一层没有这类文件，换个类型或者进子文件夹看看" : tree.dir ? "这个文件夹还是空的" : "工作目录还没有文件。任务写出来的东西会落在这儿"}</div>`
+    : "";
+  // 服务端一页最多回几千条（文件夹在前、文件在后）。截了就照实说这页是第几到第几条、文件怎么排，
+  // 再给上一页/下一页——别指去搜索：工作区大到撞了全量的线，搜索也搜不全
+  const off = tree.offset || 0, shown = dirs.length + (tree.files || []).length, per = tree.cap || shown;
+  const pgBtn = (to, label, on) => `<button type="button" class="lib-more" data-wsoff="${to}"${on ? "" : " disabled"}>${label}</button>`;
+  const cut = tree.truncated
+    ? `<div class="lib-capped">${ic("circle-alert")}${tree.by_name
+      ? `这一层 ${tree.total} 项，这页第 ${off + 1}–${off + shown} 项，文件按名字排`
+      : `这一层 ${tree.total} 项，这页第 ${off + 1}–${off + shown} 项，文件新的在前`}</div>
+      <div class="lib-pager">${pgBtn(Math.max(0, off - per), "上一页", off > 0)}${pgBtn(off + per, "下一页", off + shown < tree.total)}</div>`
+    : "";
+  return `<div class="sec lib-sec">
+      <span class="lib-sec-l">${esc(here)}<span class="n">${tree.total || 0}</span><em>点文件夹进去，点文件看内容</em></span>
+    </div>
+    ${dShow.map(folderRow).join("")}${groups}${empty}
+    ${libMoreHtml("ws", rest)}${cut}`;
 }
 
 /**
@@ -742,7 +917,9 @@ function libSearchHtml(data, q, recents) {
   const notes = data.notes || [];
   const tasks = data.tasks || [];
   const total = lib.length + ws.length + notes.length + tasks.length;
-  if (!total) return `<div class="lib-none">没搜到「${esc(q)}」。<br>文件名、文件正文、任务名、灵感笔记都翻过了。${data.capped ? "<br>（这次正文没翻完，换个更短的词再试试）" : ""}</div>`;
+  // ws_capped：工作区文件多到全量那趟没走完，名字都没搜全——这时不能说「都翻过了」
+  const wsCut = "工作区文件太多，只搜了一部分。没找到的去「工作区」里翻";
+  if (!total) return `<div class="lib-none">没搜到「${esc(q)}」。<br>${data.ws_capped ? wsCut : "文件名、文件正文、任务名、灵感笔记都翻过了。"}${data.capped ? "<br>（这次正文没翻完，换个更短的词再试试）" : ""}</div>`;
   // 名字一列只放文件名本身、目录用小字挂在后面（工作区那边 name 是
   // 「任务_0916_xxx/配音文案.md」这样的相对路径，不切开的话目录会在一行里出现两遍）——
   // 这件事 libRowHtml 已经做好了。搜索这儿只多一样东西：命中的那几行正文。
@@ -765,6 +942,7 @@ function libSearchHtml(data, q, recents) {
       </div>`).join("")}` : ""}
     ${lib.length ? `<div class="sec">资料库 <span style="font-weight:400;color:var(--owb-text-3)">${lib.length}</span></div>${lib.map((f) => fileRow("lib", f)).join("")}` : ""}
     ${ws.length ? `<div class="sec">本地产物 <span style="font-weight:400;color:var(--owb-text-3)">${ws.length}</span></div>${ws.map((f) => fileRow("ws", f)).join("")}` : ""}
+    ${data.ws_capped ? `<div class="lib-capped">${ic("circle-alert")}${wsCut}</div>` : ""}
     ${data.capped ? `<div class="lib-capped">${ic("circle-alert")}正文只翻了前 ${data.scanned || 0} 个文件就到预算上限了，下面可能还有没露面的。词写长一点、或者先用左边的类型筛一下。</div>` : ""}
     ${notes.length ? `<div class="sec">灵感笔记 <span style="font-weight:400;color:var(--owb-text-3)">${notes.length}</span></div>
       ${notes.map((n) => `<div class="lib-it" data-src="notes" data-name=""><span class="th">${ic("lightbulb")}</span><span class="nm" title="${esc(n.text)}">${libMark(String(n.text).slice(0, 80), q)}</span><span class="sz"></span><span class="tm"></span></div>`).join("")}` : ""}`;
@@ -958,6 +1136,10 @@ const HUB_SCENES = [
   { icon: "presentation", tt: "把材料做成 PPT", dd: "整理要点 → 排版 → 输出 16:9 演示文稿", p: "把工作区里的材料整理成一份 16:9 的 PPT：每页一个主题，标题写结论不写标签，数据页配图表。" },
   { icon: "scale", tt: "竞品横向对比", dd: "定维度 → 逐条查证 → 出对比表和差异化建议", p: "帮我对比「A / B / C」这几个产品：先定出对比维度，逐个联网查证填表（查不到写「未公开」不许猜），最后出对比表 + 我方该走的差异化路线。" },
   { icon: "notebook-pen", tt: "会议记录变纪要", dd: "提炼决议、待办（谁/做什么/什么时候）、待议项", p: "把我贴的这段会议记录整理成纪要：分「结论与决议」「待办（谁·做什么·何时前）」「待议」三段，原文没说的不许推断。" },
+  // 内容配方：提示词里点名技能，开工第一步弹一张表单把时长、画幅这类岔路一次定完（见 app-08-recipe.js）
+  { icon: "clapperboard", tt: "产品宣传片 30 秒", dd: "开头一张表单定时长画幅，出竖横多版和交付页", p: "用 promo-video 技能给「」做一条宣传片。" },
+  { icon: "image", tt: "小红书图文 6–9 张", dd: "定好张数风格，出整组卡片、标题和正文", p: "用 xhs-carousel 技能做一组小红书图文，主题「」。" },
+  { icon: "repeat", tt: "一稿多投", dd: "一篇稿子改成各平台能直接贴的版本", p: "用 multi-post 技能把「」改成各平台版本。" },
 ];
 const HUB_TABS = [["experts", "专家"], ["skills", "技能"], ["mcp", "连接器"], ["plugins", "插件"]];
 const fmtBytes = n => !n ? "—" : n < 1024 ? n + " B" : n < 1024 * 1024 ? (n / 1024).toFixed(0) + " KB" : (n / 1048576).toFixed(1) + " MB";

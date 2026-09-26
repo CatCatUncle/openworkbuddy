@@ -931,6 +931,12 @@
       "还能用": "still works",
       "加进去": "Add it",
       "（无）": "(none)",
+      // 配方表单卡交了以后的摘要：值这一格单独成节点（app-08-recipe.js 的 lineHtml），没选/没填的兜底才翻得到
+      "（没选）": "(none picked)",
+      "这次不做": "Skip this time",
+      "（没填）": "(left blank)",
+      // 「本回合产出」没数全时的说明（app-01.js 的 renderTurnOutputs）
+      "这回合的产出可能没列全": "This turn's outputs may not all be listed",
       "未授权": "Not granted",
       "未检测": "Not checked",
       "去授权": "Grant",
@@ -1430,6 +1436,21 @@
       "记得手动重启应用，恢复才完全生效": "Restart the app manually to finish restoring",
       "驳回理由（会喂回给模型当负样本）": "Reason for rejecting (fed back as a negative example)",
       "切换 Craft 按此计划执行": "Switch to Craft and run this plan",
+      "跳到下一条等你的": "Jump to the next task waiting on you",
+      "跑完了，还没看": "Finished, not viewed yet",
+      "出错了，点开看看": "Failed, open it to see why",
+      "已自动拒绝": "Auto-denied",
+      "已超时": "Timed out",
+      "没有等你的会话": "Nothing is waiting on you",
+      "有一步要你批准": "A step needs your approval",
+      "有个问题要问你": "A task has a question for you",
+      "按这份计划开干": "Go with this plan",
+      "接着改计划": "Keep editing the plan",
+      "哪一步要改？": "Which step should change?",
+      "已开干": "Started",
+      "按上面这份计划开始做。做完逐条对照计划说清楚：哪几步做了，哪几步没做、为什么。": "Start on the plan above. When done, go through it step by step: what got done, what didn't, and why.",
+      "这条还在跑，等它停了再开干": "Still running. Start the plan once it stops",
+      "这份计划后面已经有新的对话了，按最新的来": "The chat has moved on since this plan. Work from the latest one",
       "想同时做别的，点左上「新建任务」。": "To work on something else at the same time, click \"New task\" top left.",
       "界面上显示的名字，留空就用登录名。": "Display name; leave empty to use the login name.",
       "文字存盘失败，已按普通粘贴处理": "Couldn't save text, pasted as plain text",
@@ -2152,6 +2173,8 @@
       "已开启，但地址不是 http(s):// 开头，不会发送。": "On, but the address isn't http(s)://, so nothing is sent.",
       "已开启，但 Key 没填全，不会发送。": "On, but keys are incomplete, so nothing is sent.",
       "已开启，重启后还没跑过任务，暂无记录。": "On; no tasks since restart, nothing sent yet.",
+      "列的是你这个 Codex 账号能用的模型；留空用默认。": "Models your Codex account can use; blank = default.",
+      "别名（opus / sonnet…）永远指向最新一代，外加你 Claude Code 配置里用过的；留空用默认。": "Aliases (opus / sonnet…) always track the latest, plus models from your Claude Code settings; blank = default.",
       "只列 Codex 配置里有的模型；留空用默认，也可手填。": "Lists models from your Codex config; blank = default, or type one.",
       "Codex 无模型目录可查。留空用默认，或手填模型名。": "Codex has no model list. Blank = default, or type a model name.",
       "（留空自动查找，找不到时再填绝对路径）": "(blank = auto-detect; set an absolute path only if not found)",
@@ -2265,6 +2288,17 @@
       [/^已退回这步之前，(\d+) 个文件恢复了$/, "Rewound to before this step, $1 file(s) restored"],
       [/^撤销了回退，(\d+) 个文件回到改完的样子$/, "Rewind undone, $1 file(s) back to their edited state"],
       [/^第 (\d+) 步$/, "Step $1"],
+      [/^计划 (\d+) 步$/, "Plan · $1 steps"],
+      // 注意力：倒计时、侧栏那颗点的提示、后台会话来题时那条能点的提示
+      [/^(\d+:\d\d) 后自动拒绝$/, "Auto-deny in $1"],
+      [/^(\d+:\d\d) 后按默认继续$/, "Default in $1"],
+      // 题面是空的时候那句兜底是界面自己写的中文：整句先认，$1 不会再查一遍词典
+      [/^在等你回答：一个岔路$/, "Waiting on your answer: a decision"],
+      [/^在等你批准：危险操作$/, "Waiting on your approval: a risky action"],
+      [/^在等你回答：(.*)$/, "Waiting on your answer: $1"],
+      [/^在等你批准：(.*)$/, "Waiting on your approval: $1"],
+      [/^「(.+)」在等你回答，点这里过去$/, "“$1” is waiting on your answer. Click to go there"],
+      [/^「(.+)」在等你批准，点这里过去$/, "“$1” is waiting on your approval. Click to go there"],
       // 过程区的进度卡：数目夹在中间
       [/^里程碑 (\d+)\/(\d+)\s*$/, "Milestones $1/$2"],
       [/^进度 (\d+)\/(\d+)\s*$/, "Progress $1/$2"],
@@ -2383,6 +2417,32 @@
       [/^连接工具中，一般 3~8 秒$/, "connecting tools, usually 3-8s"],
       [/^本机 Claude Code 正在启动（连接工具中，一般 3~8 秒），不消耗 API 额度$/, "Local Claude Code is starting (connecting tools, usually 3-8s) — no API quota used"],
       [/^本机 Codex 正在启动（连接工具中，一般 3~8 秒），不消耗 API 额度$/, "Local Codex is starting (connecting tools, usually 3-8s) — no API quota used"],
+      // 资料库「工作区」那一栏（app-04.js 的 libWsHtml / libMoreHtml / 本地产物标题 / 未归属），
+      // 连同 /api/files/tree 回的几句报错。带数字的只能放这儿；不带的几句也跟着放一处，
+      // 改这一栏的文案时只用找这一段
+      [/^工作区$/, "Workspace"],
+      [/^点文件夹进去，点文件看内容$/, "Open a folder to go in, a file to preview it"],
+      [/^当前项目的工作目录，一层层点进去，每个文件都找得到$/, "This project's working folder. Go in level by level; every file is here"],
+      [/^在「工作区」里一层层点进去看$/, "Browse it level by level under Workspace"],
+      [/^这一层没有这类文件，换个类型或者进子文件夹看看$/, "No files of this type here. Try another type or open a subfolder"],
+      [/^工作目录还没有文件。任务写出来的东西会落在这儿$/, "The working folder is empty. Whatever tasks write lands here"],
+      [/^读不了这个文件夹$/, "Couldn't read this folder"],
+      [/^读不了工作区，稍后再点一次$/, "Couldn't read the workspace. Try again in a moment"],
+      [/^那个文件夹已经不在了，回到了工作区最外层$/, "That folder is gone, so you're back at the top of the workspace"],
+      [/^这个文件夹已经不在了$/, "This folder no longer exists"],
+      [/^这个文件夹不在资料库里显示$/, "This folder isn't shown in the library"],
+      [/^这是一个链接，资料库不跟进去$/, "This is a link; the library doesn't follow links"],
+      [/^这不是文件夹$/, "This isn't a folder"],
+      [/^只能看工作区里面的文件夹$/, "Only folders inside the workspace can be opened"],
+      [/^最近动过的 (\d+) 个 · 任务自己写出来的$/, "$1 most recently changed · written by the tasks themselves"],
+      [/^全部 (\d+)(\+?) 个$/, "All $1$2"],
+      [/^(\d+)(\+?) 个$/, "$1$2"],
+      [/^再显示 (\d+) 个（还剩 (\d+) 个）$/, "Show $1 more ($2 left)"],
+      [/^这一层 (\d+) 项，这页第 (\d+)–(\d+) 项，文件新的在前$/, "This level has $1 items; showing $2–$3, newest files first"],
+      [/^这一层 (\d+) 项，这页第 (\d+)–(\d+) 项，文件按名字排$/, "This level has $1 items; showing $2–$3, files by name"],
+      [/^上一页$/, "Previous page"],
+      [/^下一页$/, "Next page"],
+      [/^工作区文件太多，只搜了一部分。没找到的去「工作区」里翻$/, "Too many workspace files; only some were searched. Browse Workspace for the rest"],
     ],
   };
 
@@ -2402,6 +2462,11 @@
     "发邮件": "Email",
     "委派专家团": "Delegate to team", "委派专家": "Delegate to", "探索": "Explore",
     "找文件": "Find files", "看后台输出": "Background output", "停后台": "Stop background", "进度": "Progress",
+    "查品牌档案": "Check brand kit", "存品牌档案": "Save brand kit",
+    "出片": "Render video",
+    "录演示": "Record demo",
+    "合成视频": "Compose video",
+    "交付页": "Delivery page",
   };
   // 轨迹条（折叠条上那排小徽章）用的是另一套更短的标，见 app-01.js 的 TOOL_SHORT
   // 短标现在只剩字，图标是 sprite 里另一张表（app-01.js 的 TOOL_ICON）。
@@ -2415,12 +2480,25 @@
     "读库": "Read lib", "取素材": "Import", "存技能": "Save skill", "宠物": "Pet", "推群": "Push",
     "看排期": "Schedules", "排期": "Schedule", "发邮件": "Email",
     "找文件": "Find files", "后台输出": "Output", "停后台": "Stop", "进度": "Progress", "探索": "Explore",
+    "品牌": "Brand kit", "存品牌": "Save brand",
+    "出片": "Motion",
+    "录屏": "Rec",
+    "成片": "Final cut",
+    "交付页": "Delivery",
   };
   for (const [zh, en] of Object.entries(TOOL_SHORT_EN)) if (!(zh in DICT.en)) DICT.en[zh] = en;
   for (const [zh, en] of Object.entries(TOOL_VERB_EN)) {
     const q = zh.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     PATTERNS.en.push([new RegExp("^" + q + "「(.+?)」(.*)$"), en + ' "$1"$2']);
     PATTERNS.en.push([new RegExp("^" + q + "( .*)?$"), en + "$1"]);
+  }
+  // 长工具跑着时的进度（app-01.js 的 PROG_STAGE）：「渲染 432/900」「编码 40%」。
+  // 折叠条那行是光秃秃的一句，卡上那格前头带「· 」；渲染 / 配音 / 截图 光秃秃那句上面的动词表已经翻了，
+  // 带点的那种和另外六个词在这补。英文取跟动词表同一口径的动词原形，两处说同一个词
+  const PROG_STAGE_EN = { "加载": "Load", "渲染": "Render", "编码": "Encode", "配音": "Voice", "截图": "Screenshot", "步骤": "Step", "合成": "Compose", "上传": "Upload", "转码": "Transcode" };
+  for (const [zh, en] of Object.entries(PROG_STAGE_EN)) {
+    if (!(zh in DICT.en)) DICT.en[zh] = en;
+    PATTERNS.en.push([new RegExp("^(· )?" + zh + "( \\d+\\/\\d+| \\d+%)$"), "$1" + en + "$2"]);
   }
 
   // 画布上「生成完了」那条提示：开头那个词是节点类型（图片 / 视频 / 声音 / 定妆照 / 场景图），
@@ -2474,6 +2552,28 @@
   PATTERNS.en.push([/^(\d+) 个节点和全部连线将被删除，素材文件保留。$/,
     "$1 node(s) and all edges will be deleted; media files stay."]);
   PATTERNS.en.push([/^镜头 (.+?) 还没有首帧，先重跑首帧$/, "Shot $1 has no first frame yet — re-run the first frame first"]);
+
+  // 内容配方的开头表单卡（app-08-recipe.js）。单列一段，改那张卡的文案时只用找这一处；
+  // 「按默认开工」本身不进词典：那是交回服务端的暗号，界面上不单独显示
+  for (const [zh, en] of Object.entries({
+    "开工前定几件事": "A few things before we start",
+    "按这样开工": "Start with these",
+    "都按默认": "Use defaults",
+    "必填": "Required",
+    "你补充了：": "You added:",
+    "没人填，按默认开工": "No answer, started with defaults",
+    "开工前的几件事定好了": "Kickoff choices are set",
+    "这是历史记录里的表单": "A form from history",
+    "没送出去：连不上服务器，再点一次": "Not sent: can't reach the server. Try again",
+    "没送出去，再点一次": "Not sent. Try again",
+    "发哪些平台": "Platforms", // 两个多选项之一（另一个「画幅」早有词条），「至少留一个」那句拿它拼
+  })) if (!(zh in DICT.en)) DICT.en[zh] = en;
+  PATTERNS.en.push([/^没送出去（HTTP (\d+)），再点一次$/, "Not sent (HTTP $1). Try again"]);
+  // 字段名能翻的一起翻（画幅 → Aspect ratio），翻不了的原样留着，跟这一行上面的标签一致
+  PATTERNS.en.push([/^(.+?)至少留一个$/, (m) => `${lookup(m[1], "en") || m[1]}: keep at least one`]);
+  // 「预估生成费：…」不翻：后半截是服务端拼的中文明细，只翻前缀会变成半中半英
+  PATTERNS.en.push([/^(\d+:\d\d) 后按默认开工$/, "Defaults in $1"]);
+  PATTERNS.en.push([/^专家「(.+)」开工前想定几件事$/, "Expert “$1” wants a few things settled first"]);
 
   // 连线改出场角色 → 回分镜表，这两句失败提示。带尾巴那条排在前面
   PATTERNS.en.push([/^(.+?) 的出场角色没写回分镜表（(.+?)），重跑时仍用旧参考图$/,

@@ -50,6 +50,7 @@
 | "Research AI companion apps in China, write a report" | searches → reads each page → Markdown / Word |
 | "Turn this material into a page I can read on my phone" | writes HTML → serves it locally → scan the QR |
 | "Every day at 9, collect industry news and send it to me on Feishu" | cron + IM push; missed runs catch up |
+| "Make a 30-second product promo, vertical and horizontal" | a form for length, aspect and sound → voice-over, motion, compositing → `.mp4` |
 
 <p align="center">
  <img src="docs/images/how-it-works.en.svg" width="1190" alt="Ask once; OpenWorkBuddy plans, executes and verifies, and hands back PPTX / DOCX / XLSX / HTML files">
@@ -225,16 +226,16 @@ The diagram doubles as a reading order: start at `server.js`, then see how `agen
 
 ## What's new
 
+- **Sep 27** Video: say "make a 30-second promo", pick length, aspect ratio and sound in a form, and get voice-over, motion and a finished mp4; paid steps stay off unless you tick them
+- **Sep 27** Ready-made recipes: promo video, product demo, Xiaohongshu carousel, multi-platform posting; web demos can be screen-recorded, with local details masked before anything is published
+- **Sep 27** The library gains a Workspace tab you can click through folder by folder, so every workspace file is findable; "this turn's output" lists deeply nested files too
+- **Sep 27** Feishu: mp4s go out as video, compressed first if too big; the card shows what the run cost, or "price unknown" when there is no official price; IM file errors no longer leak local paths
 - **Sep 25** Multi-line input in the CLI: pastes wait for Enter, `\` + Enter or `Ctrl+J` adds a line, `Ctrl+G` opens your editor, `Ctrl+R` searches history; the running line shows time and tokens, and Esc stops the run
 - **Sep 25** CLI: after a plan, pick "go" or "keep editing"; `!command` runs shell and hands the output to the agent; with nobody at the terminal approvals are denied at once (`--allow` approves ahead); AGENTS.md / CLAUDE.md read up to the repo root
 - **Sep 25** Any file an answer mentions is clickable if it exists in the workspace, not just the ones made in that turn
 - **Sep 24** CLI approvals are picked with ↑↓ and Enter; tool calls show as `● Shell(command)` with `└ output` beneath, like Claude Code
 - **Sep 24** Canvas video: a job the provider already accepted is no longer retried automatically, so you are not charged twice; it sends the card's length, aspect ratio and resolution
 - **Sep 24** Chatting on the canvas shows up in task history right away, marked running; the input box hints `@` to reference files and `/` for skills
-- **Sep 23** Editing a Windows (CRLF) or tab-indented file keeps the file's line endings and indentation; commands that wait for input no longer sit until the timeout
-- **Sep 23** CLI `/cost`: tokens, calls and an approximate cost for this session
-- **Sep 23** CLI gets `/review`, custom slash commands and `--model` & co.; hooks; `workflow` runs a multi-step file
-- **Sep 23** Better at code: find files by name, several edits to one file at once, edits blocked if the file changed since it was read, background shell commands, and a todo list it must tick off before finishing
 
 Older entries → **[Changelog](CHANGELOG.en.md)**.
 

@@ -767,8 +767,10 @@ function isPersistableRule(ruleKey) {
  *   没有归属就等于谁登录了都能看，还能替别人点「允许」。
  *   IM / 定时任务这类没有登录态的后台跑法留空，只有平台管理员看得见。
  */
-function requestApproval(kind, text, { timeoutMs = 120000, stopSignal, rule = "", ruleKey = "", source = "", owner = "", detail = "", seg = "" } = {}) {
+function requestApproval(kind, text, { timeoutMs = 120000, stopSignal, rule = "", ruleKey = "", source = "", owner = "", detail = "", seg = "", sessionId = "" } = {}) {
   const id = "ap_" + Date.now() + "_" + Math.floor(Math.random() * 1e6);
+  // 只算一次：列表、通知、计时器三处必须是同一个时刻，否则审批卡倒数到 0 了人还能点
+  const deadline = Date.now() + Math.max(5000, timeoutMs);
   return new Promise((resolve) => {
     let done = false;
     const finish = (ok) => {
@@ -780,7 +782,7 @@ function requestApproval(kind, text, { timeoutMs = 120000, stopSignal, rule = ""
       emitApproval({ type: "close", id, allow: !!ok });
       resolve(ok);
     };
-    const timer = setTimeout(() => finish(false), Math.max(5000, timeoutMs));
+    const timer = setTimeout(() => finish(false), Math.max(0, deadline - Date.now()));
     const onAbort = () => finish(false);
     if (stopSignal) stopSignal.addEventListener("abort", onAbort);
     approvals.set(id, {
@@ -796,10 +798,13 @@ function requestApproval(kind, text, { timeoutMs = 120000, stopSignal, rule = ""
       detail: String(detail || "").slice(0, 4000), // 改文件的 diff：审批卡上展开看，批的是具体改动不是文件名
       seg: clipForReview(seg, 400), // 触发审批的那一段：长命令里一眼找到是哪句被拦的
       ts: new Date().toISOString(),
+      // deadline 给界面用：不告诉人还剩多久，他就是在对着一个不知道会不会过期的按钮下注
+      deadline,
+      // 哪个会话在等：侧栏要把点亮在那一行上；空 = 不属于某个会话（只进标题计数）
+      sessionId: String(sessionId || ""),
       resolve: finish,
     });
-    // deadline 给界面用：不告诉人还剩多久，他就是在对着一个不知道会不会过期的按钮下注
-    emitApproval({ type: "open", entry: { ...approvals.get(id), resolve: undefined, deadline: Date.now() + Math.max(5000, timeoutMs) } });
+    emitApproval({ type: "open", entry: { ...approvals.get(id), resolve: undefined } });
   });
 }
 /**
@@ -811,7 +816,7 @@ function listApprovals(scopeTo) {
   const all = [...approvals.values()];
   const mine = scopeTo == null ? all : all.filter((e) => e.owner && e.owner === scopeTo);
   // persistable：这条能不能「一直允许」。不能的就别摆那个按钮，点了也写不进去
-  return mine.map(({ id, kind, text, rule, ruleKey, source, detail, seg, ts }) => ({ id, kind, text, rule, ruleKey, source, detail, seg, ts, persistable: isPersistableRule(ruleKey) }));
+  return mine.map(({ id, kind, text, rule, ruleKey, source, detail, seg, ts, deadline, sessionId }) => ({ id, kind, text, rule, ruleKey, source, detail, seg, ts, deadline, sessionId, persistable: isPersistableRule(ruleKey) }));
 }
 /**
  * @param scope once（默认，只放这一次）/ session（本会话同类不再问）/ always（由调用方写进永久放行名单）

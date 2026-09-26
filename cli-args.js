@@ -40,6 +40,7 @@ const PERM_ARG = PERM_IDS.join("|"); // 跟 MODE_ARG 一个写法：不带尖括
  *   optnum —— 可以跟一个正整数，不跟就用 fallback
  *   num    —— 必须跟一个正整数，不超过 max
  *   strs   —— 必须跟一个值，可以重复写几次，攒成一个数组
+ * 另外 kv: true 表示值必须长成 名字=值（-i product=智能水杯），没等号当场报错。
  */
 const FLAGS = [
   { long: "mode", type: "enum", key: "mode", arg: MODE_ARG, choices: MODE_IDS, desc: "执行模式（默认 craft）" },
@@ -58,6 +59,7 @@ const FLAGS = [
   { long: "no-mcp", type: "bool", key: "mcp", value: false, desc: "跳过 MCP 连接器，启动更快" },
   { long: "ask-remote", type: "bool", key: "askRemote", value: true, desc: "没人坐在终端前也允许 agent 提问，答案从手机上给" },
   { long: "allow", type: "strs", key: "allow", arg: "<规则>", desc: "这一趟预先点头的一类操作，可以写几次：npm test、write、code、danger:git-force-push" },
+  { long: "input", short: "i", type: "strs", key: "inputs", kv: true, arg: "<名字=值>", desc: "配合 workflow：给流程文件里的 inputs 填值，可以写几次" },
   { long: "off", type: "bool", key: "off", value: true, desc: "配合 openworkbuddy 2fa：真的把那个账号的二次验证关掉（不写就只看状态）" },
   { long: "score", type: "bool", key: "score", value: true, desc: "配合 openworkbuddy jev：把后面那几个选项当成从低到高的档位，问一道打分题" },
   { long: "version", short: "V", type: "bool", key: "version", value: true, desc: "打印版本号" },
@@ -75,13 +77,13 @@ const SUBS = [
   { name: "2fa", usage: "openworkbuddy 2fa <用户名> [--off]", desc: "看某个账号的二次验证状态；手机丢了用 --off 关掉" },
   { name: "owner", usage: "openworkbuddy owner [用户名]", desc: "看谁是超级管理员；给用户名就把这个位子指给他（唯一的超管进不去时的救场口）" },
   { name: "jev", usage: 'openworkbuddy jev ["材料" "问题" [选项…]]', desc: "问一下判断模型：它不写字，只回选项/分数/概率，外加一个「有多确定」。不给参数就测活" },
-  { name: "workflow", usage: "openworkbuddy workflow <流程.json>", desc: "按文件里写好的几步依次跑，{{名字}} 把前面某一步的结论贴进来；一步没成后面就停" },
+  { name: "workflow", usage: "openworkbuddy workflow <流程.json|配方名> [-i 名字=值]", desc: "按文件里写好的几步依次跑，{{名字}} 把前面某一步的结论贴进来；一步没成后面就停。也能直接跑内置配方，比如 promo-video" },
   { name: "review", usage: "openworkbuddy review [基准分支]", desc: "把改动当别人的代码挑一遍毛病，只审不改；不给基准就审还没提交的" },
   { name: "worktree", usage: "openworkbuddy worktree [清理]", desc: "看有哪些「分身」：两条任务同时改一个仓库时，后来那条会去自己的 git worktree 里改" },
   { name: "completion", usage: "openworkbuddy completion <shell>", desc: "生成 Tab 补全脚本（bash / zsh / fish）" },
 ];
 
-const DEFAULTS = { mode: "craft", session: null, mcp: true, workspace: null, files: [], cont: false, json: false, quiet: false, raw: false, list: 0, help: false, version: false, askRemote: false, allow: [], off: false, score: false, perm: null, model: null, maxSteps: null, appendSystem: null };
+const DEFAULTS = { mode: "craft", session: null, mcp: true, workspace: null, files: [], cont: false, json: false, quiet: false, raw: false, list: 0, help: false, version: false, askRemote: false, allow: [], inputs: [], off: false, score: false, perm: null, model: null, maxSteps: null, appendSystem: null };
 
 /** 编辑距离。只用来猜「你是不是想说 X」，不求快 */
 function editDistance(a, b) {
@@ -190,6 +192,11 @@ function parse(argv, spec) {
       const near = f.choices.reduce((b, c) => (editDistance(v, c) < editDistance(v, b) ? c : b), f.choices[0]);
       problems.push(problem("bad-choice", `${source} 只能是 ${f.choices.join(" / ")}，你写的是 ${v}。`,
         editDistance(v, near) <= 2 ? `是不是想说 ${near}？` : ""));
+      return;
+    }
+    // 名字=值 这类：少了等号现在就拦，不然要等流程读完文件、连上模型才发现这条对不上任何一项
+    if (f.kv && !/^[^=\s]+=/.test(v)) {
+      problems.push(problem("bad-kv", `${source} 要写成 名字=值，你写的是 ${v}。`, `比如 ${source} product=智能水杯。`));
       return;
     }
     if (f.type === "strs") { opts[f.key] = (opts[f.key] || []).concat(v); return; }

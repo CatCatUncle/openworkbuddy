@@ -18,7 +18,6 @@
  */
 
 const crypto = require("crypto");
-const fs = require("fs");
 const imMedia = require("./im-media");
 
 // ---------- WXBizMsgCrypt：AES-256-CBC + PKCS7，签名为 sha1(排序拼接) ----------
@@ -191,7 +190,7 @@ function createWecomApp({ getConfig, log = () => {} }) {
     const { corp_id, secret, agent_id } = cfg();
     const token = await getToken(`${corp_id}:${secret}`);
     const name = String(fileName || absPath.split(/[\\/]/).pop() || "文件");
-    const buf = fs.readFileSync(absPath);
+    const buf = imMedia.readForSend(absPath); // 读不到时报错里不带绝对路径：这句会进聊天
     if (!buf.length) throw new Error("文件是空的");
     if (buf.length > imMedia.MAX_INBOUND_BYTES) throw new Error(`文件超过 ${imMedia.MAX_INBOUND_BYTES / 1048576}MB 上限`);
     const detected = mediaKindOf(name);
@@ -297,7 +296,7 @@ function createWechatMp({ getConfig, log = () => {} }) {
     const { app_id, app_secret } = cfg();
     const token = await getToken(`${app_id}:${app_secret}`);
     const name = String(fileName || absPath.split(/[\\/]/).pop() || "文件");
-    const buf = fs.readFileSync(absPath);
+    const buf = imMedia.readForSend(absPath); // 读不到时报错里不带绝对路径：这句会进聊天
     if (!buf.length) throw new Error("文件是空的");
     if (buf.length > imMedia.MAX_INBOUND_BYTES) throw new Error(`文件超过 ${imMedia.MAX_INBOUND_BYTES / 1048576}MB 上限`);
     const detected = mediaKindOf(name);

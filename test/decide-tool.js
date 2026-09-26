@@ -16,6 +16,16 @@ const path = require("path");
 const http = require("http");
 
 const ROOT = path.join(__dirname, "..");
+// 要赶在 require agent / quota 之前：不隔离的话 ⑤⑥ 记的账（quota.record）会进用户真实的
+// data/api-usage/，用量面板上多出几笔「测试」。⑧ 要读 triage 技能，只拷这一门进来
+const HOME = require("fs").mkdtempSync(path.join(require("os").tmpdir(), "owb-decide-home-"));
+process.env.OPENWORKBUDDY_HOME = HOME;
+process.env.OPENWORKBUDDY_DATA_DIR = path.join(HOME, "data");
+require("fs").cpSync(path.join(ROOT, "skills", "triage"), path.join(HOME, "skills", "triage"), { recursive: true });
+process.on("exit", (code) => {
+  if (code === 0) { try { require("fs").rmSync(HOME, { recursive: true, force: true }); } catch {} }
+  else console.log("留着现场（数据目录）：" + HOME);
+});
 const { src } = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
 
 let pass = 0, fail = 0;

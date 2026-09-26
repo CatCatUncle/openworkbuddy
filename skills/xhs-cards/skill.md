@@ -20,15 +20,16 @@ description: 小红书图文卡片/封面图——3:4 竖版（封面+内页多�
 ## 走 HTML 排版这条路的流程
 1. 先出**文案结构**：1 张封面（大标题钩子）+ 3~6 张内页（每张一个要点）+ 1 张结尾（总结/行动号召）。
 2. 每张卡片写一个独立 HTML 文件（`card_01.html`、`card_02.html`…），用 write_file 存入工作空间。
-3. 逐张调用 `html_to_image`（html_file=card_01.html，width=1242，height=1656，filename=card_01.png）。
-4. 最后交付：全部 PNG + 一段发布文案（标题 20 字内带钩子、正文 100~300 字、5~8 个话题标签）。
+3. 一次调用 `html_to_image` 截整套：html_files=["card_01.html","card_02.html",…]（按顺序，最多 30 个），width=1242，height=1656；出图名跟 HTML 走（card_01.png…）。回执里列出没成的那几张，改完单张用 html_file 重截。
+4. 有品牌档案时，交付前 `brand_kit_read` check 一遍（文案、HTML、PNG 各查一次），按它列的问题改完再交。
+5. 最后交付：全部 PNG + 一段发布文案（标题 20 字内带钩子、正文 100~300 字、5~8 个话题标签）。
 
 ## 卡片 HTML 硬约束
 - `<style>` 内联全部样式；画布定死：`body{width:1242px;height:1656px;margin:0;overflow:hidden}`。
 - 字号要大：正文 ≥ 44px，标题 64~120px——手机上是缩略图，小字等于没写。
-- 只用系统字体栈：`-apple-system,"PingFang SC","Microsoft YaHei",sans-serif`（网络字体加载不稳定，截图会缺字）。
+- 只用系统字体栈：`-apple-system,"PingFang SC","Microsoft YaHei",sans-serif`（网络字体加载不稳定，截图会缺字）。有品牌档案时先 `brand_kit_read` get，把它返回的本地 @font-face 放在字体栈最前，系统字体垫底；仍然不许引网络字体。
 - 一套卡片一个视觉系统：同一主色、同一版式骨架，只换内容；页码放角落（如 02/06）。
-- 配色 ≤ 4 色（主色 + 深灰文字 + 浅背景 + 一个点缀色）；间距用 4 的倍数。
+- 配色 ≤ 4 色（主色 + 深灰文字 + 浅背景 + 一个点缀色）——有品牌档案就只用档案里的色；间距用 4 的倍数；中文不加字距（letter-spacing 0）。
 - 封面卡要「一眼钩子」：一句话大标题 + 一行副题，不要堆内容。
 - 可以塞 emoji 当视觉锚点，不要引用外链图片（截图时可能没加载完）；确需配图先 generate_image 生成到工作空间，再用相对路径引用并把 wait_ms 加到 2000。
 

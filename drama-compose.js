@@ -38,31 +38,24 @@
 /** @typedef {import("./types/drama").ComposePlan} ComposePlan */
 /** @typedef {import("./types/drama").Blocker} Blocker */
 
-/** 这些后缀才算视频 / 音频。字段里写着 video 但指的是一张 png，是真会发生的事 */
-const VIDEO_EXT = /\.(mp4|mov|m4v|webm|mkv|avi)$/i;
-const AUDIO_EXT = /\.(mp3|wav|m4a|aac|flac|ogg|opus)$/i;
+// 编码参数、起名、配乐混音图、缩放补边这些零件搬到了 lib/timeline-compose.js，和时间轴成片共用一套。
+// 搬家是逐字节搬的：test/fixtures/drama-compose-golden.json 钉着这边的全部输出，差一个字就红
+const {
+  VIDEO_EXT, AUDIO_EXT, AUDIO_ARGS, X264_ARGS, SLACK, MUSIC_GAIN,
+  baseOf, round, safeName, freeName, srtTime, evenUp, pickFps, musicLoops, musicMixParts, fitPadVf, concatListText,
+} = require("./lib/timeline-compose");
+
 /** 起手模板里的占位文字，原样没改 = 这一镜没有台词，不是「台词是这几个字」 */
 const PLACEHOLDERS = ["对白或旁白…", "镜头内容与运动…", "无人声", ""];
 
-const AUDIO_ARGS = ["-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2"];
-const X264_ARGS = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p"];
 /** 画幅探不出来时的兜底：短剧是竖屏，1080x1920 是各家生视频接口的默认出片尺寸 */
 const FALLBACK_SIZE = { w: 1080, h: 1920 };
-const FALLBACK_FPS = 30;
-/** 配音和画面差这么点以内就不折腾了。25 帧的片子一帧 40ms，0.2 秒是五帧，肉眼看不出接缝 */
-const SLACK = 0.2;
 
 /**
  * 配乐。短剧没有配乐就只是一串会说话的画面——它是这条产线上最后一件「人一听就知道差在哪、
  * 但没人知道该敲哪条命令」的事，所以也得写成代码，不能留给模型临场发挥。
- *
- * 音量 0.25（约 −12dB）：再大压台词，再小等于没放。
- * 注意 amix 默认会把每一路都除以 2（normalize=1），所以喂进去之前得先乘回来——
- * 不乘的话人声会**整条片子小一半**，而这种错听起来只是「有点闷」，没人会想到是混音写错了。
+ * 音量、淡入淡出和混音图在 lib/timeline-compose.js（musicMixParts），这里只管「哪段算配乐」。
  */
-const MUSIC_GAIN = 0.25;
-/** 淡入淡出。片尾硬切一下音乐最难听，而片子多长我们是知道的（每一镜都探到了时长才敢算） */
-const MUSIC_FADE_IN = 1.5, MUSIC_FADE_OUT = 2.5;
 /**
  * 哪些字眼算「这段音频是配乐」。
  * ⚠️ 声音节点「素材用途」的默认值就是**「对白/音乐」**——它两边都占。
@@ -75,18 +68,8 @@ const VOICE_HINT = /(对白|台词|旁白|配音|人声|voice|dialog|narrat)/i;
 
 /** @param {Partial<CanvasNode>|null|undefined} node @returns {CanvasPayload} */
 function payloadOf(node) { return (node && node.payload) || {}; }
-/** @param {unknown} p @returns {string} */
-function baseOf(p) { return String(p || "").split(/[\\/]/).pop() || ""; }
 /** @param {unknown} s @returns {boolean} */
 function isBlank(s) { const t = String(s == null ? "" : s).trim(); return !t || PLACEHOLDERS.includes(t); }
-/** @param {unknown} n @param {number} [d] @returns {number} */
-function round(n, d = 2) { const k = Math.pow(10, d); return Math.round(Number(n) * k) / k; }
-/**
- * 文件名里不能出现的东西换成下划线。镜头 ID 是用户自己敲的，什么都可能有
- * @param {unknown} s
- * @returns {string}
- */
-function safeName(s) { return String(s || "").replace(/[\\/:*?"<>|\s]+/g, "_").replace(/^_+|_+$/g, "") || "镜头"; }
 
 /**
  * 镜头顺序。
@@ -159,27 +142,6 @@ function pickFile(payload, keys, re, files, locate) {
 }
 
 /**
- * 已经有 成片.mp4 了就写成 成片_2.mp4。绝不覆盖上一条片子——那是用户可能已经发出去的东西
- * @param {string} stem
- * @param {string} ext 带点，如 ".mp4"
- * @param {Set<string>|null|undefined} onDisk
- * @returns {string}
- */
-function freeName(stem, ext, onDisk) {
-  const has = (n) => onDisk && typeof onDisk.has === "function" && onDisk.has(n);
-  if (!has(stem + ext)) return stem + ext;
-  for (let i = 2; i < 500; i++) if (!has(`${stem}_${i}${ext}`)) return `${stem}_${i}${ext}`;
-  return `${stem}_${Date.now()}${ext}`;
-}
-
-/** @param {unknown} sec @returns {string} 00:00:01,500 这种 */
-function srtTime(sec) {
-  const ms = Math.max(0, Math.round(Number(sec) * 1000));
-  const h = Math.floor(ms / 3600000), m = Math.floor((ms % 3600000) / 60000), s = Math.floor((ms % 60000) / 1000);
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")},${String(ms % 1000).padStart(3, "0")}`;
-}
-
-/**
  * 字幕。时间轴按**每段片子的真实时长**累加，不是按 payload 里写的「时长 4 秒」——
  * 那个 4 是下单时的期望值，生出来的视频是 4.2 还是 3.8 谁也说不准，
  * 拿它排字幕，到第十镜就能错出一秒多，整条字幕从此对不上嘴。
@@ -249,14 +211,10 @@ function musicPick(nodes, opts, files, voiceBases) {
 
 /**
  * 把配乐垫到整条片子底下。
- *
- * 三件容易写错、写错了又**听不出是哪一步错的**的事，都在这儿定死：
- *   ① amix 默认 normalize=1，会把每一路都除以 2 —— 不先把人声乘回 2，
- *      整条片子的台词会平白小一半，听起来只是「有点闷」；
- *   ② 两路的采样率/声道/采样格式对不上，sidechaincompress 会直接不干活（甚至报错），
- *      所以两路都先过一遍 aformat 归一化；
- *   ③ 音乐比片子短是常态（成品曲 60 秒，片子 3 分钟），所以短了就循环，
- *      再靠 amix 的 duration=first 在画面结束的地方收住。
+ * 混音图（amix 除 2 要乘回来、两路先归一化、淡入淡出按片长缩、有没有 sidechaincompress）
+ * 都在 musicMixParts 里定死；这里只管输入输出：
+ * 音乐比片子短是常态（成品曲 60 秒，片子 3 分钟），所以短了就循环，
+ * 再靠 amix 的 duration=first 在画面结束的地方收住。
  * 有 sidechaincompress 就做「一说话音乐自动压下去」，没有就按固定音量垫着——
  * 这台机器有没有，调用方开跑前就探好了传进来（跟 libass 是同一套规矩）。
  * @param {string} input 拼好、还没配乐的那一条
@@ -267,31 +225,8 @@ function musicPick(nodes, opts, files, voiceBases) {
  * @returns {string[]}
  */
 function musicArgv(input, music, film, opts, totalSeconds) {
-  const loop = !music.dur || !totalSeconds || music.dur < totalSeconds - 0.5 ? ["-stream_loop", "-1"] : [];
-  const fmt = "aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo";
-  // 淡入淡出要按片长缩：一条 4 秒的片子上来个 1.5 秒淡入 + 2.5 秒淡出，
-  // 音乐从头到尾没到过正常音量，听着像忘了放
-  const fin = totalSeconds ? Math.min(MUSIC_FADE_IN, round(totalSeconds * 0.25, 2)) : MUSIC_FADE_IN;
-  const fout = totalSeconds ? Math.min(MUSIC_FADE_OUT, round(totalSeconds * 0.35, 2)) : 0;
-  const fade = `afade=t=in:st=0:d=${fin}`
-    + (fout > 0.2 ? `,afade=t=out:st=${round(totalSeconds - fout, 2)}:d=${fout}` : "");
-  const gain = round(MUSIC_GAIN * 2, 3);
-  const parts = [];
-  if (opts.duck) {
-    parts.push(`[0:a]${fmt},asplit=2[v0][key]`);
-    parts.push(`[1:a]${fmt},volume=${gain},${fade}[bg]`);
-    // sidechaincompress 压的是**主输入**（这里是音乐），按第二路（人声）的大小去压
-    parts.push("[bg][key]sidechaincompress=threshold=0.05:ratio=8:attack=20:release=400[bgd]");
-    parts.push("[v0]volume=2[v2]");
-    parts.push("[v2][bgd]amix=inputs=2:duration=first:dropout_transition=0[mx]");
-  } else {
-    parts.push(`[0:a]${fmt},volume=2[v2]`);
-    parts.push(`[1:a]${fmt},volume=${gain},${fade}[bg]`);
-    parts.push("[v2][bg]amix=inputs=2:duration=first:dropout_transition=0[mx]");
-  }
-  // 人声乘了 2，峰值顶到头的素材会削顶。有限幅器就挂一个（level=0 = 别自动把整条拉到 0dB，
-  // 那会连没配乐的部分一起改音量）；没有就算了，宁可少一层保险也不要多一条会报错的滤镜
-  parts.push(opts.limiter ? "[mx]alimiter=limit=0.95:level=0[a]" : "[mx]anull[a]");
+  const loop = musicLoops(music.dur, totalSeconds) ? ["-stream_loop", "-1"] : [];
+  const parts = musicMixParts({ T: totalSeconds, duck: !!opts.duck, limiter: !!opts.limiter });
   return ["-y", "-i", input, ...loop, "-i", music.rel, "-filter_complex", parts.join(";"),
     "-map", "0:v:0", "-map", "[a]", "-c:v", "copy", ...AUDIO_ARGS, "-shortest", "-movflags", "+faststart", film];
 }
@@ -405,8 +340,8 @@ function composePlan(state, opts = {}) {
     ? { w: Math.max(...sized.map((r) => r.w)), h: Math.max(...sized.map((r) => r.h)) }
     : { ...FALLBACK_SIZE };
   // x264 要求偶数边长
-  target.w += target.w % 2; target.h += target.h % 2;
-  const fps = Math.min(60, Math.max(...rows.map((r) => r.fps || 0), FALLBACK_FPS));
+  target.w = evenUp(target.w); target.h = evenUp(target.h);
+  const fps = pickFps(rows.map((r) => r.fps || 0));
   if (sizes.length > 1) push("warn", `这些镜头的画幅不一样（${sizes.join("、")}），会统一缩放到 ${target.w}×${target.h} 再拼，比直拼慢，画质也会掉一点`, []);
   if (rates.length > 1) push("warn", `这些镜头的帧率不一样（${rates.join("、")}fps），会统一到 ${fps}fps 重新编码——直接拼会把后面几段的时间戳拼坏，出来的片子会短一大截`, []);
   if (pixes.length > 1) push("warn", `这些镜头的像素格式不一样（${pixes.join("、")}），会统一重新编码，不然拼出来颜色会在中途跳一下`, []);
@@ -485,9 +420,7 @@ function composePlan(state, opts = {}) {
         ? ["-y", "-i", r.video, "-i", r.audio, "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", ...AUDIO_ARGS, "-movflags", "+faststart", clip]
         : ["-y", "-i", r.video, ...silent, "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", ...AUDIO_ARGS, "-shortest", "-movflags", "+faststart", clip];
     } else {
-      const vf = `scale=${target.w}:${target.h}:force_original_aspect_ratio=decrease,pad=${target.w}:${target.h}:(ow-iw)/2:(oh-ih)/2:color=black`
-        + (r.pad > 0 ? `,tpad=stop_mode=clone:stop_duration=${r.pad}` : "")
-        + `,fps=${fps},format=yuv420p`;
+      const vf = fitPadVf(target.w, target.h, r.pad, fps);
       argv = r.audio
         ? ["-y", "-i", r.video, "-i", r.audio, "-filter_complex", `[0:v]${vf}[v]`, "-map", "[v]", "-map", "1:a:0", ...X264_ARGS, ...AUDIO_ARGS, "-movflags", "+faststart", clip]
         : ["-y", "-i", r.video, ...silent, "-filter_complex", `[0:v]${vf}[v]`, "-map", "[v]", "-map", "1:a:0", ...X264_ARGS, ...AUDIO_ARGS, "-shortest", "-movflags", "+faststart", clip];
@@ -537,7 +470,7 @@ function composePlan(state, opts = {}) {
     // 用户手动关掉配乐之后，勾还得在，不然他没地方再打开
     music: music ? { base: music.base, rel: music.rel, title: music.title, dur: music.dur, from: music.from, duck: !!opts.duck } : null,
     musicOn,
-    listText: rows.filter((r) => r.video).map((r) => `file '${baseOf(r.clip).replace(/'/g, "'\\''")}'`).join("\n") + "\n",
+    listText: concatListText(rows.filter((r) => r.video).map((r) => baseOf(r.clip))),
     totalSeconds,
     timelineIds: timelines.map((n) => String(n.id)),
     // 「大概多久」只在能算的时候给：重新编码按 1 秒片子 0.6 秒算（veryfast 的粗略经验值），

@@ -521,7 +521,8 @@ const DEFAULT_SKILLS = [
     repo: "anthropics/skills", branch: "main", subpath: "skills/brand-guidelines",
     license: "Apache-2.0", author: "Anthropic",
     bytes: 13 * 1024,
-    why: "把公司 VI 喂给它，之后所有交付物自动守规范",
+    // 这个包里写死的是 Anthropic 自家的配色字体，装了不会变成「你的」品牌；自己的产品走内置的品牌档案
+    why: "Anthropic 自家的品牌规范示例，配色字体都是 Anthropic 的；给自己的产品建档用内置的「品牌档案」",
   },
   {
     name: "web-artifacts-builder",

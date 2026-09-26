@@ -236,7 +236,12 @@ ok(/^seedDataDir\(\);/m.test(serverSrc), "server.js 启动时真的调了 seedDa
   const r2 = spawnSync(process.execPath, ["-e", `
     const p = require(${JSON.stringify(path.join(ROOT, "paths.js"))});
     console.log(p.DATA_DIR === p.APP_DIR ? "noop" : "seeded");
-  `], { encoding: "utf8" });
+  `], {
+    encoding: "utf8",
+    // 问的是「没人指定数据目录」那种开发态：all.js / e2e 给整轮测试设了临时 OPENWORKBUDDY_HOME，
+    // 顺着 env 传进来就成了「换了目录」，这条会冤枉地红。子进程只读 paths，不写盘
+    env: Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== "OPENWORKBUDDY_HOME")),
+  });
   ok((r2.stdout || "").includes("noop"), "反向对照：开发态两个目录本来就是同一个，seed 是空操作（行为一个字节不变）");
   fs.rmSync(tmp, { recursive: true, force: true });
 }

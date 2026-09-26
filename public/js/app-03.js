@@ -1858,7 +1858,12 @@ async function renderAutomRuns(page) {
 const libPrefer = (k, ok, dflt) => { try { const v = localStorage.getItem(k); return ok.includes(v) ? v : dflt; } catch { return dflt; } };
 const libState = {
   pick: null, q: "", dir: "",
-  view: libPrefer("owb_lib_view", ["dir", "task"], "dir"),
+  // ws = 「工作区」：把当前项目的工作目录一层层点进去看，每一层、每一个文件都到得了
+  view: libPrefer("owb_lib_view", ["dir", "task", "ws"], "dir"),
+  // 工作区那一栏当前在哪一层。不记到本地：下次打开时那个文件夹可能已经没了，从根开始最稳
+  wsDir: "",
+  // 一层文件太多时先铺多少个；「按任务」里未归属那一段先铺多少个。点「再显示」往上加，换层/换视图归位
+  wsN: 300, orphanN: 300,
   mode: libPrefer("owb_lib_mode", ["list", "icon", "gallery"], "list"),
   group: libPrefer("owb_lib_group", ["none", "kind", "time"], "none"),
   kind: "all",

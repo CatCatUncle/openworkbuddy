@@ -633,6 +633,8 @@ console.log("\n【8】仓库里不许有作者本人的痕迹，也不许有真 
     "sk-abcdefghijklmnopqrstuvwxyz123456",
     "sk-this-key-must-never-reach-the-index-9527",      // gen-cache：缓存键里不许带 Key
     "sk-or-fake-not-a-real-key",                        // e2e：只配了 OpenRouter 聊天渠道，判断模型不该自己开
+    "sk-abcdefghijklmnopqrstuvwx",                      // brand-kit：品牌资料里像密钥的整份不收
+    "ghp_abcdefghijklmnopqrstuvwxyz0123",               // brand-kit：藏在链接里的密钥也拦
   ]);
   const KEY_RE = new RegExp([
     "sk-ant-[A-Za-z0-9_-]{20,}", "sk-[A-Za-z0-9_-]{20,}", "ghp_[A-Za-z0-9]{30,}",

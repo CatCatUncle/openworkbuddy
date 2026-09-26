@@ -2555,7 +2555,11 @@ function engineExtraHtml(e) {
   const o = e.options || {};
   const listId = "eng-models-" + e.id;
   const models = Array.isArray(e.models) ? e.models : [];
-  const modelHint = e.modelSource === "codex_config"
+  const modelHint = e.modelSource === "codex_account"
+    ? "列的是你这个 Codex 账号能用的模型；留空用默认。"
+    : e.modelSource === "claude_local"
+    ? "别名（opus / sonnet…）永远指向最新一代，外加你 Claude Code 配置里用过的；留空用默认。"
+    : e.modelSource === "codex_config"
     ? "只列 Codex 配置里有的模型；留空用默认，也可手填。"
     : e.id === "codex"
       ? "Codex 无模型目录可查。留空用默认，或手填模型名。"

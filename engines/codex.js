@@ -25,6 +25,7 @@ const { resolveBin } = require("./which");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { execFile } = require("child_process");
 const { dataPath } = require("../paths");
 
 const ID = "codex";
@@ -34,6 +35,45 @@ function shorten(s, n = 80) {
 }
 
 const SKILL_CONTEXT_WARNING = /Skill descriptions were shortened to fit the skills context budget/i;
+// 续跑时模型和会话录下的不一样，Codex 发一条 error item 提醒，随后照常把这一轮跑完——不是失败
+const RESUME_MODEL_WARNING = /This session was recorded with model .* but is resuming with/i;
+
+/**
+ * 这条会话上一轮实际用的模型（从 CODEX_HOME/sessions 下的 rollout 文件里读最后一个 model 字段）。
+ *
+ * 为什么续跑要钉住它：用户任务做到一半在设置里换了模型，下一轮带着新 -m 去 resume，
+ * Codex 会报「recorded with model X but is resuming with Y」，而且提示缓存是跟模型走的——
+ * 实测换模型那一轮 4.3 万输入只命中 1.8 万缓存，又慢又贵。不传 -m 也不行：它会落到
+ * 自己的默认型号，而不是会话原来那个。所以新模型只对新任务生效，进行中的任务沿用原来的。
+ */
+function recordedModel(home, threadId) {
+  if (!home || !threadId || !/^[\w-]+$/.test(threadId)) return "";
+  const root = path.join(home, "sessions");
+  const find = (dir, depth) => {
+    let names = [];
+    try { names = fs.readdirSync(dir, { withFileTypes: true }); } catch { return ""; }
+    // 目录是 年/月/日，新的排在后面；倒着找，续跑的多半是最近的会话
+    for (const d of names.sort((a, b) => (a.name < b.name ? 1 : -1))) {
+      const full = path.join(dir, d.name);
+      if (depth < 3 && d.isDirectory()) { const hit = find(full, depth + 1); if (hit) return hit; }
+      else if (d.isFile() && d.name.endsWith(threadId + ".jsonl")) return full;
+    }
+    return "";
+  };
+  const file = find(root, 0);
+  if (!file) return "";
+  try {
+    // 只读尾部：长会话的 rollout 能有几十 MB，最后一个 model 字段一定在最近那几轮里
+    const fd = fs.openSync(file, "r");
+    const size = fs.fstatSync(fd).size;
+    const len = Math.min(size, 512 * 1024);
+    const buf = Buffer.alloc(len);
+    fs.readSync(fd, buf, 0, len, size - len);
+    fs.closeSync(fd);
+    const all = [...buf.toString("utf8").matchAll(/"model":"([^"]+)"/g)];
+    return all.length ? all[all.length - 1][1] : "";
+  } catch { return ""; }
+}
 
 /**
  * Codex 把登录态、插件开关、用户技能和会话全放在 CODEX_HOME。直接让桌面助理继承整份
@@ -55,6 +95,47 @@ function configuredModels(env = process.env) {
   // 只读 model 字段，不碰 auth，也不把整份个人 config 返回给前端。
   const values = [...text.matchAll(/^\s*model\s*=\s*["']([^"']+)["']\s*$/gm)].map((m) => m[1].trim()).filter(Boolean);
   return [...new Set(values)];
+}
+
+/**
+ * 这个账号此刻真能用的模型：`codex debug models` 吐的是服务端下发的目录（隐藏的内部槽位不算）。
+ *
+ * 为什么要有它：~/.codex/config.toml 里的 model 是用户在别处（Codex 应用、手改）写下的，
+ * 写的可能是 API 账号才有、订阅账号没有的名字。原样 -m 传过去，每个任务都 400，
+ * 而且错在用户的全局配置里，本项目的界面上根本看不出来。
+ * 拿不到目录（旧版 CLI 没这个子命令、没登录）就返回 null——此时不做任何判断，照旧行事。
+ */
+const ACCOUNT_MODELS_TTL = 10 * 60 * 1000;
+const accountModelsCache = new Map();
+function accountModels(bin, env) {
+  const key = bin + "\0" + (env.CODEX_HOME || "");
+  const hit = accountModelsCache.get(key);
+  if (hit && Date.now() - hit.at < ACCOUNT_MODELS_TTL) return Promise.resolve(hit.list);
+  return new Promise((resolve) => {
+    execFile(bin, ["debug", "models"], { env, timeout: 10000, maxBuffer: 16 * 1024 * 1024 }, (err, stdout) => {
+      let list = null;
+      if (!err) {
+        try {
+          const ms = JSON.parse(stdout).models;
+          if (Array.isArray(ms)) list = ms.filter((m) => m && m.slug && m.visibility !== "hide").map((m) => String(m.slug));
+        } catch {}
+      }
+      if (list && !list.length) list = null;
+      // 失败不缓存：刚登录完 / 刚升级完 CLI，下一次就该拿得到
+      if (list) accountModelsCache.set(key, { at: Date.now(), list });
+      resolve(list);
+    });
+  });
+}
+
+const MODEL_UNSUPPORTED = /model is not supported|model_not_found|does not exist or you do not have access|unsupported model/i;
+
+/** 模型名不被账号认可时的那句人话：点名是哪个、账号能用哪些、去哪改 */
+function explainModel(model, available) {
+  const which = model ? `「${model}」` : "当前设置的模型";
+  const can = available && available.length ? `这个账号能用的是：${available.join(" / ")}。` : "";
+  return `本机 Codex 不认${which}这个模型（ChatGPT 订阅账号只能用订阅里有的型号）。${can}` +
+    `在这里的「模型」栏改成其中一个或留空，或者把 ~/.codex/config.toml 里的 model 改掉。`;
 }
 
 function openWorkBuddyCodexHome(env = process.env) {
@@ -87,8 +168,9 @@ function toolOf(item) {
   }
 }
 
-function explain(stderr, code) {
+function explain(stderr, code, model, available) {
   const s = String(stderr || "");
+  if (MODEL_UNSUPPORTED.test(s)) return explainModel(model, available);
   if (/not logged in|codex login|401|Unauthorized/i.test(s))
     return "本机 Codex 还没登录。先在终端里跑一次 `codex login`，再回来重试。";
   if (/rate.?limit|429|quota/i.test(s))
@@ -104,14 +186,15 @@ async function detect(opts) {
   const found = await resolveBin("codex", explicit);
   if (!found.bin) return { id: ID, installed: false, path: explicit || "codex", version: "", how: "", error: found.why };
   const r = await probeVersion(found.bin, ["--version"]);
-  const models = configuredModels(process.env);
+  const fromAccount = r.installed ? await accountModels(found.bin, openWorkBuddyCodexHome(process.env).env) : null;
+  const models = fromAccount || configuredModels(process.env);
   return {
     id: ID, installed: r.installed, path: found.bin, version: r.version, how: found.how,
     error: r.installed ? "" : "找到了 " + found.bin + "，但 --version 跑不通（装坏了？）",
-    // 不再塞一张会过期的硬编码 GPT 名称表。Codex CLI 没有公开的本地 models 命令，
-    // 所以候选只来自用户当前 Codex 配置里真实出现过的 model 字段。
+    // 不塞会过期的硬编码 GPT 名称表：优先用 `codex debug models` 拿账号真实目录，
+    // 拿不到（旧版 CLI / 没登录）才退回用户 Codex 配置里出现过的 model 字段。
     models,
-    modelSource: models.length ? "codex_config" : "manual",
+    modelSource: fromAccount ? "codex_account" : models.length ? "codex_config" : "manual",
   };
 }
 
@@ -124,7 +207,15 @@ async function run({
   if (!found.bin) throw new Error(found.why + "。装一个（npm i -g @openai/codex），或在设置里填 codex 的绝对路径。");
   const exe = found.bin;
   const isolated = openWorkBuddyCodexHome({ ...process.env, ...(env || {}) });
-  const effectiveModel = model || isolated.defaultModel;
+  let effectiveModel = model || isolated.defaultModel;
+  // 这个模型不是用户在本项目里挑的，而是从全局 Codex 配置里捡来的：账号不认它就别硬塞，
+  // 让 Codex 用自己的默认型号。用户在这里手填的照传——填错了就该听到一句明白的报错。
+  const available = await accountModels(exe, isolated.env);
+  if (!model && effectiveModel && available && !available.includes(effectiveModel)) effectiveModel = "";
+  if (resumeId) {
+    const rec = recordedModel(isolated.env.CODEX_HOME, resumeId);
+    if (rec && (!available || available.includes(rec))) effectiveModel = rec;
+  }
   // 同 claude 那边：本机 CLI 冷启动那几秒界面本来全空，看着像发送没点上。
   // bin 一确认存在就先挂一枚「正在启动」的牌子占位，thread.started 一到原地换成带模型名的
   // 正式版（前端认的是同一个 .run-eng 节点）。
@@ -204,7 +295,7 @@ async function run({
         // 新版 Codex 会在技能描述被压缩时发一个 error item，但仍继续完成 turn 并给出答案。
         // 这不是任务失败；真正的修复是上面的隔离运行窝，这里只是保证旧会话/特殊环境不会
         // 因为一条可恢复告警把已经成功的任务误判为失败。
-        if (!SKILL_CONTEXT_WARNING.test(message)) failure = message;
+        if (!SKILL_CONTEXT_WARNING.test(message) && !RESUME_MODEL_WARNING.test(message)) failure = message;
       }
       return;
     }
@@ -234,10 +325,10 @@ async function run({
 
   if (r.killed === "stopped") return { finalText, usage, stopped: "已手动停止", sessionId };
   if (r.killed === "deadline") return { finalText, usage, stopped: "已达最大运行时间", sessionId };
-  if (failure) throw new Error(failure);
+  if (failure) throw new Error(MODEL_UNSUPPORTED.test(failure) ? explainModel(effectiveModel, available) : failure);
   if (!turnDone || r.code !== 0) {
     if (finalText && r.code === 0) return { finalText, usage, stopped: null, sessionId };
-    throw new Error(explain(r.stderr, r.code));
+    throw new Error(explain(r.stderr, r.code, effectiveModel, available));
   }
   return { finalText, usage, stopped: null, sessionId };
 }

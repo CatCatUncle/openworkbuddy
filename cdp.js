@@ -84,15 +84,34 @@ function close(why = "") {
   if (typeof t.unref === "function") t.unref();
   return { closed: true, pid, why: why || "显式关闭" };
 }
+/**
+ * spawnIsolated() 拉起的一次性 Chrome：pid → profile 目录。跟 OWN 是两本账——
+ * 它们不复用、不闲置计时、谁拉的谁在 finally 里 kill()；这里只是给「进程要退了」兜底。
+ * @type {Map<number, string>}
+ */
+const ISO = new Map();
+/** 进程要退了：自己拉起的浏览器全部带走，一次性的那些连 profile 目录一起删。 */
+function reapAll() {
+  if (OWN.pid) killTree(OWN.pid, "SIGKILL");
+  for (const [pid, dir] of ISO) {
+    killTree(pid, "SIGKILL");
+    try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }); } catch {}
+  }
+  ISO.clear();
+}
 let hooked = false;
-/** 第一次真的 spawn 出东西之后才挂钩子，没用过这条线的进程不受影响。 */
+/**
+ * 第一次真的 spawn 出东西之后才挂钩子，没用过这条线的进程不受影响。
+ * 专用的和一次性的共用这一个钩子：各挂各的话，同一个信号上就有两个监听，
+ * 下面「只有自己在听才替 Node 退出」的判断两边都不成立，Ctrl-C 就按不动了。
+ */
 function hookExit() {
   if (hooked) return;
   hooked = true;
-  process.on("exit", () => { if (OWN.pid) killTree(OWN.pid, "SIGKILL"); });
+  process.on("exit", reapAll);
   for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
     process.on(sig, () => {
-      if (OWN.pid) killTree(OWN.pid, "SIGKILL");
+      reapAll();
       // 只是搭个便车。原来没人管这个信号的话，得替 Node 把默认的「收到就退」补回来——
       // 一旦加了监听，默认行为就被顶掉了，不补的话 Ctrl-C 会变成按了没反应。
       if (process.listenerCount(sig) <= 1) process.exit(sig === "SIGINT" ? 130 : 143);
@@ -190,6 +209,167 @@ async function launch(input = {}) {
 }
 
 /**
+ * @typedef {{ port: number, pid: number, dir: string, bin: string, args: string[], browserWs: string, kill: () => Promise<void> }} IsolatedChrome
+ */
+/**
+ * 拉一个用完就扔的 Chrome：全新的临时 profile，没有 cookie、没有登录态、没有扩展。
+ *
+ * 为什么不复用 launch()：那个是给 chrome_cdp 用的**常驻**浏览器——它记在 OWN 上、闲置到点才关、
+ * profile 在 ~/OpenWorkBuddy/chrome-cdp 里存着你的登录态。录演示、渲动画要的正好相反：
+ * 干净（录出来的画面里不能冒出你的账号）、独占（不跟 chrome_cdp 抢同一个标签页）、
+ * 用完连目录一起删。所以这里一概不碰 OWN，也不碰那个 profile。
+ *
+ * 调用方必须在 finally 里 await kill()；进程被 Ctrl-C 或正常退出时 hookExit 也会兜底收走。
+ * @param {{ headless?: boolean, extraArgs?: string[], windowSize?: { w: number, h: number }, tmpRoot?: string, prefix?: string, timeoutMs?: number }} [opts]
+ * @returns {Promise<IsolatedChrome>}
+ */
+async function spawnIsolated(opts = {}) {
+  const bin = findChrome();
+  if (!bin) {
+    throw new Error("这台机器上没找到 Chrome（也没有 Chromium / Edge / Brave）。装一个，或者把浏览器可执行文件的完整路径写进环境变量 OWB_CHROME_PATH。");
+  }
+  // 前缀只收 owb- 开头的：测试收尾那把扫帚（e2e reapStaleTempHomes）只认这一族，别的前缀崩了没人收
+  const prefix = /^owb-[a-z0-9-]{1,40}$/i.test(String(opts.prefix || "")) ? String(opts.prefix) : "owb-webdemo-prof-";
+  const dir = fs.mkdtempSync(path.join(opts.tmpRoot || os.tmpdir(), prefix));
+  const portFile = path.join(dir, "DevToolsActivePort");
+  // --disable-features 只认最后一个：调用方再传一个就会把这里的整串顶掉，所以合成一个
+  const feats = new Set(["Translate", "AcceptCHFrame", "IsolateOrigins", "site-per-process"]);
+  const extra = [];
+  for (const a of opts.extraArgs || []) {
+    const m = /^--disable-features=(.*)$/.exec(String(a));
+    if (m) m[1].split(",").map((s) => s.trim()).filter(Boolean).forEach((f) => feats.add(f));
+    else extra.push(String(a));
+  }
+  const args = [
+    "--remote-debugging-port=0", `--user-data-dir=${dir}`,
+    "--no-first-run", "--no-default-browser-check", "--no-service-autorun", "--disable-background-networking",
+    "--hide-crash-restore-bubble", "--password-store=basic", "--mute-audio", "--hide-scrollbars",
+    // iframe 留在同一个进程里：遮罩脚本和泄漏扫描才够得着跨域 iframe 里的字
+    "--disable-site-isolation-trials", `--disable-features=${[...feats].join(",")}`,
+  ];
+  // 全新 profile 第一次碰钥匙串，macOS 会弹「要使用你的机密信息」——无头模式下没人点得了，就卡住了
+  if (process.platform === "darwin") args.push("--use-mock-keychain");
+  const ws = opts.windowSize;
+  if (ws && ws.w > 0 && ws.h > 0) args.push(`--window-size=${Math.round(ws.w)},${Math.round(ws.h)}`);
+  // 同 launch()：无头也要能跑 WebGL，别加 --disable-gpu。--no-sandbox 也不加：Linux 上起不来就如实报错。
+  if (opts.headless !== false) args.push("--headless=new", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--disable-dev-shm-usage");
+  args.push(...extra, "about:blank");
+
+  // stderr 落到 profile 目录里的一个文件：起不来时拿它的尾巴当报错；接管道的话没人读，
+  // 缓冲一满 Chrome 就卡在写日志上。文件随目录一起删。
+  const logFile = path.join(dir, "owb-chrome-stderr.log");
+  let errFd = -1;
+  try { errFd = fs.openSync(logFile, "w"); } catch {}
+  const child = spawn(bin, args, { detached: true, stdio: ["ignore", "ignore", errFd >= 0 ? errFd : "ignore"] });
+  if (errFd >= 0) { try { fs.closeSync(errFd); } catch {} }
+  // 压根没起来（没执行权限、路径是个目录）时只有 error、没有 exit，不记下来就会干等满超时
+  /** @type {Error | null} */
+  let spawnErr = null;
+  child.on("error", (e) => { spawnErr = e; });
+  child.unref();
+  const pid = child.pid || 0;
+  /** @type {{ code: number | null, sig: string | null } | null} */
+  let exited = null;
+  /** @type {Array<() => void>} */
+  const onExit = [];
+  child.on("exit", (code, sig) => { exited = { code, sig }; for (const f of onExit.splice(0)) f(); });
+  const waitExit = (ms) => new Promise((res) => {
+    if (exited || !pid) return res(true);
+    const t = setTimeout(() => res(false), ms);
+    onExit.push(() => { clearTimeout(t); res(true); });
+  });
+  if (pid) { ISO.set(pid, dir); hookExit(); }
+  let killed = false;
+  const kill = async () => {
+    if (killed) return;
+    killed = true;
+    if (pid) {
+      killTree(pid, "SIGTERM");
+      if (!(await waitExit(3000))) { killTree(pid, "SIGKILL"); await waitExit(1000); }
+      // 主进程退了不代表 GPU / 渲染器那几个也退了：连组再补一刀，组里没人了这一下什么也不做
+      killTree(pid, "SIGKILL");
+      ISO.delete(pid);
+    }
+    // Chrome 刚死的那一下还可能在往 profile 里写，删目录要带重试
+    try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch {}
+  };
+  const tail = () => { try { return fs.readFileSync(logFile, "utf8").trim().split("\n").slice(-6).join("\n").slice(-600); } catch { return ""; } };
+
+  const limit = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : 20000;
+  const deadline = Date.now() + limit;
+  while (Date.now() < deadline) {
+    await sleep(120);
+    if (spawnErr && !exited) {
+      const msg = /** @type {Error} */ (spawnErr).message;
+      await kill();
+      throw new Error(`${path.basename(bin)} 没能启动：${msg}`);
+    }
+    if (exited) {
+      const log = tail();
+      await kill();
+      const how = exited.sig ? `被信号 ${exited.sig} 结束` : `退出码 ${exited.code}`;
+      throw new Error(`${path.basename(bin)} 一启动就退出了（${how}）。${log ? "它最后说的是：\n" + log : "它什么也没说。"}`);
+    }
+    const port = readPortFile(portFile);
+    const v = port ? await probe(port, 1200) : null;
+    if (v) return { port, pid, dir, bin, args, browserWs: String(v.webSocketDebuggerUrl || ""), kill };
+  }
+  const log = tail();
+  await kill();
+  throw new Error(`拉起了 ${path.basename(bin)}，但 ${Math.round(limit / 1000)} 秒内没等到它的调试端口。${log ? "它最后说的是：\n" + log : ""}`);
+}
+
+/**
+ * 发一个 HTTP 请求，原样拿回状态码和正文。/json/close 回的是一句纯文本（"Target is closing"），
+ * 走 getJson 会被当成「不是 JSON」报错，所以单开一个不解析的。
+ * @param {string} url
+ * @param {{ method?: string, timeout?: number }} [opts]
+ * @returns {Promise<{ status: number, body: string }>}
+ */
+function httpText(url, opts = {}) {
+  return new Promise((resolve, reject) => {
+    const u = endpointHost(url), lib = u.protocol === "https:" ? https : http;
+    const req = lib.request(u, { method: opts.method || "GET", timeout: opts.timeout || 4000 }, (res) => {
+      let body = "";
+      res.setEncoding("utf8"); res.on("data", (x) => { body += x; });
+      res.on("end", () => resolve({ status: res.statusCode || 0, body }));
+    });
+    req.on("timeout", () => req.destroy(new Error("连接 Chrome CDP 超时")));
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+/**
+ * 在指定端口的 Chrome 里新开一个标签页。Chrome 111 起 /json/new 只收 PUT，老版本只认 GET，两个都试。
+ * @param {number} port
+ * @param {string} [url]
+ * @returns {Promise<{ id: string, webSocketDebuggerUrl: string, [k: string]: any }>}
+ */
+async function newPage(port, url = "about:blank") {
+  const at = `http://127.0.0.1:${Number(port)}/json/new?${encodeURIComponent(String(url || "about:blank"))}`;
+  /** @type {any} */
+  let t = null;
+  try { t = await getJson(at, { method: "PUT" }); } catch {}
+  if (!t || !t.webSocketDebuggerUrl) { try { t = await getJson(at); } catch {} }
+  if (!t || !t.id || !t.webSocketDebuggerUrl) throw new Error(`Chrome（端口 ${port}）没开出新标签页`);
+  return t;
+}
+
+/**
+ * 关掉一个标签页。已经不在了（404）也算关好了：清理代码里要的是「它不在了」，不是「这一下是我关的」。
+ * 连不上端口才抛——那说明浏览器本身没了，调用方自己决定要不要管。
+ * @param {number} port
+ * @param {string} id
+ * @returns {Promise<void>}
+ */
+async function closePage(port, id) {
+  if (!id) return;
+  const r = await httpText(`http://127.0.0.1:${Number(port)}/json/close/${encodeURIComponent(String(id))}`);
+  if (r.status !== 200 && r.status !== 404) throw new Error(`Chrome 没关掉标签页 ${id}（HTTP ${r.status}）：${r.body.slice(0, 120)}`);
+}
+
+/**
  * 找一个能用的 CDP 端口：显式指定的 → 本进程之前拉起的 → 默认 9222 → 自己拉一个。
  */
 async function ensure(input = {}) {
@@ -202,17 +382,47 @@ async function ensure(input = {}) {
   }
   return await launch(input);
 }
-function frame(data, mask = true) {
-  const body = Buffer.from(data), head = [0x81];
+/**
+ * 编一个 WebSocket 帧。客户端发出去的必须 mask（RFC 6455 §5.3）。
+ * @param {string | Buffer} data
+ * @param {boolean} [mask]
+ * @param {number} [opcode] 1 = 文本，10 = pong
+ */
+function frame(data, mask = true, opcode = 1) {
+  const body = Buffer.from(data), head = [0x80 | opcode];
   const n = body.length, key = mask ? crypto.randomBytes(4) : null;
   if (n < 126) head.push((mask ? 0x80 : 0) | n);
   else if (n < 65536) head.push((mask ? 0x80 : 0) | 126, n >> 8, n & 255);
-  else head.push((mask ? 0x80 : 0) | 127, 0, 0, 0, 0, (n / 2 ** 32) >> 0, (n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255);
-  if (!mask) return Buffer.concat([Buffer.from(head), body]);
+  // 64 KiB 以上：127 后面**恰好 8 个字节**的长度（大端）。以前这里多塞了一个 0，写成 9 个字节，
+  // Chrome 按 8 字节读长度，把真长度的最高位当成了载荷——70000 字节的帧被读成 273 字节，
+  // 后面整条流全错位。平时的 CDP 消息都很短所以一直没露馅，一发大脚本（遮罩、字幕 HTML）就炸。
+  else head.push((mask ? 0x80 : 0) | 127, 0, 0, 0, Math.floor(n / 2 ** 32) & 255, (n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255);
+  if (!key) return Buffer.concat([Buffer.from(head), body]);
   const out = Buffer.alloc(body.length); for (let i = 0; i < body.length; i++) out[i] = body[i] ^ key[i % 4];
   return Buffer.concat([Buffer.from(head), key, out]);
 }
-function connect(wsUrl) {
+/**
+ * @typedef {(params: any, msg: any) => void} CdpListener
+ * @typedef {{
+ *   call: (method: string, params?: object, timeoutMs?: number) => Promise<any>,
+ *   send: (method: string, params?: object, timeoutMs?: number) => Promise<any>,
+ *   on: (event: string, fn: CdpListener) => () => void,
+ *   off: (event: string, fn: CdpListener) => void,
+ *   close: () => void,
+ * }} CdpClient
+ */
+/**
+ * 连一条 CDP WebSocket。
+ * - 带 id 的回包交给对应的 call；不带 id 的是事件（Page.screencastFrame 之类），按 method 分给 on() 挂的回调。
+ *   另有一个伪事件 "close"：连接断了（Chrome 崩了、被关了）会通知一次，录屏这种只等事件、手里没有
+ *   未决调用的场景，靠它才知道别再干等。真 CDP 事件一定是「域.事件」的形状，不会和它撞名。
+ * - idleMs：多久一个字节都没有就断开，默认 10 秒（chrome_cdp 一直是这个值）。0 = 不因为安静而断：
+ *   录一个静止页面时 Chrome 一帧都不推，10 秒一到连接就被自己掐了。握手本身另有 10 秒上限，不受它影响。
+ * @param {string} wsUrl
+ * @param {{ idleMs?: number }} [opts]
+ * @returns {Promise<CdpClient>}
+ */
+function connect(wsUrl, opts = {}) {
   return new Promise((resolve, reject) => {
     const u = new URL(wsUrl), secure = u.protocol === "wss:", port = Number(u.port) || (secure ? 443 : 80);
     if (!/^(ws|wss):$/.test(u.protocol) || !isLocal(u.hostname)) {
@@ -224,39 +434,100 @@ function connect(wsUrl) {
       ? tls.connect({ host: u.hostname, port, servername: u.hostname })
       : net.connect({ host: u.hostname, port });
     const key = crypto.randomBytes(16).toString("base64");
-    let buf = Buffer.alloc(0), opened = false;
+    let opened = false, dead = false;
     const pending = new Map(); let seq = 0;
-    const fail = (e) => { for (const p of pending.values()) p.reject(e); pending.clear(); if (!opened) reject(e); };
-    socket.setTimeout(10000, () => socket.destroy(new Error("Chrome CDP 操作超时")));
+    /** @type {Map<string, Set<CdpListener>>} */
+    const listeners = new Map();
+    const emit = (method, params, msg) => {
+      for (const cb of [...(listeners.get(method) || [])]) { try { cb(params, msg); } catch {} }
+    };
+    const fail = (e) => {
+      for (const p of pending.values()) { if (p.timer) clearTimeout(p.timer); p.reject(e); }
+      pending.clear();
+      if (!opened) { clearTimeout(shakeTimer); reject(e); }
+      if (!dead) { dead = true; if (opened) emit("close", { reason: e && e.message || "" }, null); }
+    };
+    // 握手单独限时：idleMs=0 时 socket 本身不再超时，对面收了 TCP 却不回 101 的话会一直挂着
+    const shakeTimer = setTimeout(() => { if (!opened) socket.destroy(new Error("Chrome CDP 握手超时")); }, 10000);
+    if (typeof shakeTimer.unref === "function") shakeTimer.unref();
+    const idle = opts.idleMs === undefined || opts.idleMs === null ? 10000 : Math.max(0, Number(opts.idleMs) || 0);
+    if (idle > 0) socket.setTimeout(idle, () => socket.destroy(new Error("Chrome CDP 操作超时")));
     socket.on("error", fail); socket.on("close", () => fail(new Error("Chrome CDP 连接已关闭")));
         // 握手里**不许**带 Origin。Chrome 111 起，带 Origin 的 CDP WebSocket 一律 403，
     // 除非启动时把它写进 --remote-allow-origins。以前这里固定发 `Origin: http://localhost`，
     // 于是 /json/list 能列出标签页、真要操作就 403，报出来的却是「请确认用 --remote-debugging-port 启动」——
     // 一句指着错误方向的话，人照着去查启动参数，查一晚上也查不出问题。
     socket.on("connect", () => socket.write(`GET ${u.pathname}${u.search} HTTP/1.1\r\nHost: ${u.host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`));
+    // 收到的块先排队，攒够一整帧才拼一次。以前每来一块就 Buffer.concat 一次：一帧 300KB 的截图
+    // 分成几十块到，就是几十次越拼越长的拷贝（O(n²)），录屏每秒几十帧时全耗在这上面。
+    let buf = Buffer.alloc(0);
+    /** @type {Buffer[]} */
+    const queue = []; let queued = 0;
+    const need = (n) => {
+      if (buf.length >= n) return true;
+      if (buf.length + queued < n) return false;
+      buf = Buffer.concat([buf, ...queue], buf.length + queued); queue.length = 0; queued = 0;
+      return true;
+    };
     const consume = () => {
-      if (!opened) { const i = buf.indexOf("\r\n\r\n"); if (i < 0) return; const h = buf.slice(0, i).toString(); const line = (h.split("\r\n")[0] || "").trim();
+      if (!opened) { need(buf.length + queued); const i = buf.indexOf("\r\n\r\n"); if (i < 0) return; const h = buf.subarray(0, i).toString(); const line = (h.split("\r\n")[0] || "").trim();
         // 只认状态码 101。**不要**回去比对 "Switching Protocols" 那句原因短语：
         // 新版 Chrome 回的是「101 WebSocket Protocol Handshake」，字面比对会把一次
         // 成功的握手判成失败，于是除了 list_tabs 什么都做不了。
-        if (!/^HTTP\/1\.[01] 101\b/i.test(line)) return fail(new Error(`Chrome 拒绝了这条 CDP WebSocket：${line || "没给状态行"}。403 多半是握手里带了 Origin（Chrome 111 起不再接受），或者这个 Chrome 是拿 --remote-allow-origins 限制过的。`)); buf = buf.slice(i + 4); opened = true; resolve({ call, close }); }
-      while (buf.length >= 2) {
+        if (!/^HTTP\/1\.[01] 101\b/i.test(line)) return fail(new Error(`Chrome 拒绝了这条 CDP WebSocket：${line || "没给状态行"}。403 多半是握手里带了 Origin（Chrome 111 起不再接受），或者这个 Chrome 是拿 --remote-allow-origins 限制过的。`)); buf = buf.subarray(i + 4); opened = true; clearTimeout(shakeTimer); resolve(client); }
+      while (need(2)) {
         const b1 = buf[0], b2 = buf[1]; let len = b2 & 127, off = 2;
-        if (len === 126) { if (buf.length < 4) return; len = buf.readUInt16BE(2); off = 4; }
-        else if (len === 127) { if (buf.length < 10) return; len = Number(buf.readBigUInt64BE(2)); off = 10; }
-        if (b2 & 128) { if (buf.length < off + 4) return; off += 4; }
-        if (buf.length < off + len) return; let payload = buf.slice(off, off + len); buf = buf.slice(off + len);
+        if (len === 126) { if (!need(4)) return; len = buf.readUInt16BE(2); off = 4; }
+        else if (len === 127) { if (!need(10)) return; len = Number(buf.readBigUInt64BE(2)); off = 10; }
+        if (b2 & 128) { if (!need(off + 4)) return; off += 4; }
+        if (!need(off + len)) return; const payload = buf.subarray(off, off + len); buf = buf.subarray(off + len);
         if ((b1 & 15) === 8) { socket.end(); return; }
         // Chrome 可以在长任务里发 ping；不回 pong 连接会被它主动清掉，表现成偶发的
         // 「Chrome CDP 连接已关闭」。客户端发出的帧必须 mask，沿用同一个编码器即可。
-        if ((b1 & 15) === 9) { socket.write(frame(payload)); continue; }
+        if ((b1 & 15) === 9) { socket.write(frame(payload, true, 10)); continue; }
         if ((b1 & 15) !== 1) continue;
-        try { const msg = JSON.parse(payload.toString()); if (msg.id && pending.has(msg.id)) { const p = pending.get(msg.id); pending.delete(msg.id); msg.error ? p.reject(new Error(msg.error.message || "CDP 调用失败")) : p.resolve(msg.result || {}); } } catch {}
+        /** @type {any} */
+        let msg = null;
+        try { msg = JSON.parse(payload.toString()); } catch { continue; }
+        if (!msg) continue;
+        if (msg.id && pending.has(msg.id)) {
+          const p = pending.get(msg.id); pending.delete(msg.id); if (p.timer) clearTimeout(p.timer);
+          msg.error ? p.reject(new Error(msg.error.message || "CDP 调用失败")) : p.resolve(msg.result || {});
+        } else if (!msg.id && typeof msg.method === "string") emit(msg.method, msg.params || {}, msg);
       }
     };
-    socket.on("data", (d) => { buf = Buffer.concat([buf, d]); consume(); });
+    socket.on("data", (d) => { queue.push(d); queued += d.length; consume(); });
     const close = () => { if (!socket.destroyed) socket.end(); };
-    function call(method, params = {}) { return new Promise((res, rej) => { const id = ++seq; pending.set(id, { resolve: res, reject: rej }); socket.write(frame(JSON.stringify({ id, method, params }))); }); }
+    /**
+     * @param {string} method
+     * @param {object} [params]
+     * @param {number} [timeoutMs] 这一条最多等多久，0 = 不单独限时（仍受 idleMs 管）
+     * @returns {Promise<any>}
+     */
+    function call(method, params = {}, timeoutMs = 0) {
+      return new Promise((res, rej) => {
+        // 连接已经断了还往里写，这条调用就永远等不到回包——当场拒掉，别让调用方干等
+        if (dead || socket.destroyed) return rej(new Error("Chrome CDP 连接已关闭"));
+        const id = ++seq;
+        /** @type {{resolve: Function, reject: Function, timer: any}} */
+        const p = { resolve: res, reject: rej, timer: null };
+        if (timeoutMs > 0) {
+          p.timer = setTimeout(() => { if (pending.delete(id)) rej(new Error(`Chrome 没在 ${Math.round(timeoutMs / 100) / 10} 秒内回 ${method}`)); }, timeoutMs);
+        }
+        pending.set(id, p);
+        socket.write(frame(JSON.stringify({ id, method, params })));
+      });
+    }
+    /** @type {(event: string, fn: CdpListener) => void} */
+    const off = (event, fn) => { const s = listeners.get(event); if (s) { s.delete(fn); if (!s.size) listeners.delete(event); } };
+    /** @type {(event: string, fn: CdpListener) => () => void} */
+    const on = (event, fn) => {
+      let s = listeners.get(event); if (!s) { s = new Set(); listeners.set(event, s); }
+      s.add(fn);
+      return () => off(event, fn);
+    };
+    /** @type {CdpClient} */
+    const client = { call, send: call, on, off, close };
   });
 }
 async function withTab(tabId, fn, port = 9222) {
@@ -351,4 +622,4 @@ async function run(input = {}) {
     throw new Error(`不支持的 Chrome CDP 操作：${action}`);
   }, port);
 }
-module.exports = { run, ensure, probe, findChrome, launch, close, endpointHost };
+module.exports = { run, ensure, probe, findChrome, launch, close, endpointHost, connect, getJson, spawnIsolated, newPage, closePage, touchIdle };

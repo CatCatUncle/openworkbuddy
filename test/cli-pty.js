@@ -17,6 +17,10 @@
  *  10. Plan 出完计划摆「开干 / 接着改」：回车就切到 Craft 照计划做；选接着改、Esc 都留在 Plan；输入行上已经打了字就不弹
  *  11. 多行输入：行尾 \ 回车、Ctrl+J、Option+回车都是换行不是发出去；粘进来的多行不自己发；Ctrl+R 搜回来的还是原来那几行；
  *      Ctrl+G 用编辑器写（编辑器没正常退出就原样留着）；Ctrl+C 扔掉攒着的那段；跑着时那一行走字、Esc 停这趟不退出
+ *  12. workflow 在终端里：一块面板原地重画，每步一行；工具调用、中间几步的原话不上屏，最后只交最后一步的回答；
+ *      半路挂了就说停在哪一步，不拿前面某步的话充当结论
+ *  13. / 菜单：第一条默认亮着，打一半回车就跑亮着的那条；要花钱的命令打一半回车只补全不开跑；
+ *      /perm 不给值是一条 ←/→ 的档位条，/mode 不给值是选择器；Esc 什么都不换
  * 没有 python3 / pty 的机器跳过。
  */
 const assert = require("assert");
@@ -55,6 +59,11 @@ async function ptyRun({ args, reply, env: more }, drive) {
       const u = msgs.filter((m) => m.role === "user").pop();
       users.push(u ? String(typeof u.content === "string" ? u.content : JSON.stringify(u.content)) : "");
       const r = await reply(msgs, n++);
+      // 回 { httpStatus } 就当接口报错：模型那头挂了是什么样
+      if (r && typeof r === "object" && !Array.isArray(r) && r.httpStatus) {
+        res.writeHead(r.httpStatus, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ error: { message: r.message || "测试故意的" } }));
+      }
       // 也可以回 { text, tools }：这一轮先说一段话再调工具
       const tools = Array.isArray(r) ? r : r && typeof r === "object" ? r.tools : null;
       const message = tools
@@ -399,7 +408,9 @@ async function run() {
       assert.ok(!PICK.test(t.out().slice(t.out().lastIndexOf("照计划做完了。"))), "Craft 跑完不再问");
       mark = t.out().length;
       await t.type("/mode\r");
-      await t.until(/当前是 Craft/, "★切过去就留在 Craft★", mark);
+      await t.until(/> Craft · 执行 +现在这个/, "★切过去就留在 Craft★（/mode 弹选择器，默认停在现在这个上）", mark);
+      t.send("\x1b");
+      await t.until(/还是 Craft/, "Esc 不换", mark);
 
       // 选「接着改计划」：留在 Plan，不跑
       await t.type("/mode plan\r");
@@ -425,7 +436,9 @@ async function run() {
       assert.strictEqual(t.users.length, 4, "Esc 不找模型");
       mark = t.out().length;
       await t.type("/mode\r");
-      await t.until(/当前是 Plan/, "★Esc、接着改都留在 Plan★", mark);
+      await t.until(/> Plan · 规划 +现在这个/, "★Esc、接着改都留在 Plan★", mark);
+      t.send("\x1b");
+      await t.until(/还是 Plan/, "Esc 不换", mark);
 
       // 跑着的时候已经在输入行上打了字：他有下一句了，不弹单子抢键盘
       mark = t.out().length;
@@ -570,6 +583,113 @@ async function run() {
       fs.rmSync(edDir, { recursive: true, force: true });
     }
     assert.ok(t8 && t8.exited() === 0, "正常退出");
+  }
+
+  // 12. workflow 面板
+  {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-wfp-"));
+    const okFlow = path.join(dir, "ok.json");
+    const badFlow = path.join(dir, "bad.json");
+    fs.writeFileSync(okFlow, JSON.stringify({ name: "发版检查", steps: [
+      { name: "write", title: "写文件", phase: "Build", prompt: "写一个 WFMARK 文件" },
+      { name: "sum", title: "汇总", phase: "Release", prompt: "汇总一下 {{write}}" },
+    ] }));
+    fs.writeFileSync(badFlow, JSON.stringify({ steps: [
+      { name: "first", title: "第一步", prompt: "先做一步" },
+      { name: "boom", title: "会挂", prompt: "请失败" },
+      { name: "after", title: "后面", prompt: "不该跑" },
+    ] }));
+    const lastUser = (msgs) => { const u = msgs.filter((m) => m.role === "user").pop(); return u ? String(typeof u.content === "string" ? u.content : JSON.stringify(u.content)) : ""; };
+    const strip = (s) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+    try {
+      let code = null;
+      let out = await ptyRun({ args: ["workflow", okFlow], reply: async (msgs) => {
+        await sleep(1500); // 慢一点：面板至少重画一回
+        const text = lastUser(msgs);
+        if (/WFMARK/.test(text) && !toolsDone(msgs)) return { text: "我先写个文件MIDMARK", tools: [["write_file", { path: "wf.md", content: "x\n" }]] };
+        if (/汇总/.test(text)) return "## 最终结论FINALMARK";
+        return "第一步做完了STEP1MARK";
+      } }, async (t) => { await t.closed; code = t.exited(); });
+      let plain = strip(out);
+      assert.strictEqual(code, 0, "两步都成：退出码 0\n" + plain.slice(-1500));
+      assert.ok(/✔ 写文件/.test(plain) && /✔ 汇总/.test(plain) && /▰+ {2}2\/2 ·/.test(plain), "★每步一行 ✔，底下进度 2/2★\n" + plain.slice(-1500));
+      assert.ok(/\x1b\[\d+A\r\x1b\[J/.test(out), "★原地重画：往上挪、清到屏底★");
+      assert.ok(!/── 第 1\/2 步/.test(plain), "面板模式不再一步一个大标题");
+      assert.ok(!/MIDMARK/.test(plain) && !/STEP1MARK/.test(plain) && !/Write\(/.test(plain), "★工具调用、过场白、中间那步的原话都不上屏★\n" + plain.slice(-1500));
+      assert.ok(/FINALMARK/.test(plain) && plain.lastIndexOf("FINALMARK") > plain.lastIndexOf("✔ 汇总"), "★面板定格之后交最后一步的回答★");
+      assert.ok(/这趟写过：wf\.md/.test(plain) && /openworkbuddy resume cli_/.test(plain), "写过什么、过程去哪翻");
+
+      out = await ptyRun({ args: ["workflow", badFlow], reply: async (msgs) => {
+        await sleep(300);
+        return /请失败/.test(lastUser(msgs)) ? { httpStatus: 400, message: "坏请求BADMARK" } : "第一步的话STEP1MARK";
+      } }, async (t) => { await t.closed; code = t.exited(); });
+      plain = strip(out);
+      assert.strictEqual(code, 1, "半路挂了：退出码 1");
+      assert.ok(/✗ 会挂/.test(plain) && /⊘ 后面 +前面没成，没跑/.test(plain), "★挂的那步 ✗，后面的 ⊘★\n" + plain.slice(-1500));
+      assert.ok(/✗ 停在第 2 步「会挂」：.*BADMARK/.test(plain), "★说清停在哪一步、为什么★");
+      assert.ok(!/STEP1MARK/.test(plain), "★不拿第一步的话充当结论★");
+      assert.strictEqual((plain.match(/BADMARK/g) || []).length, 2, "报错只在那一行和收尾各说一次（原来还在面板上头再印一遍）");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  // 13. / 菜单默认选中 + 不给值的命令弹选择器 / 档位条
+  {
+    let t13 = null;
+    await ptyRun({ args: [], reply: async () => "不该找模型MODELMARK" }, async (t) => {
+      t13 = t;
+      await t.until(/openworkbuddy> /, "提示符");
+      let mark = t.out().length;
+      await t.type("/st");
+      await t.until(/› \/status/, "★打 /st：/status 亮着★", mark);
+      t.send("\r");
+      await t.until(/模式 \w+ · 模型/, "★回车就跑亮着的 /status，不当成打错的命令★", mark);
+      assert.ok(!/没有这个命令|是不是想说/.test(t.out().slice(mark)), "不再教训「/st 不是命令」\n" + t.out().slice(mark));
+
+      // 要花钱的：打一半回车只补全
+      mark = t.out().length;
+      await t.type("/comp");
+      await t.until(/› \/compact/, "/compact 亮着", mark);
+      t.send("\r");
+      await sleep(500);
+      assert.ok(!/压缩中|才聊了几句/.test(t.out().slice(mark)), "★/comp 回车不开跑 /compact★ 那是要过一趟模型的\n" + t.out().slice(mark));
+      t.send("\x15"); // 清掉补全出来的 /compact
+      await sleep(200);
+
+      // /perm：档位条，← 挪一档，回车定
+      mark = t.out().length;
+      await t.type("/perm\r");
+      await t.until(/←\/→ 调 · 回车定/, "★/perm 不给值：摆一条档位条★", mark);
+      assert.ok(/● 自动改文件/.test(t.out().slice(mark)) && /现在就是这档/.test(t.out().slice(mark)), "默认停在现在这档\n" + t.out().slice(mark));
+      t.send("\x1b[D");
+      await t.until(/● 每步都问/, "← 挪到每步都问", mark);
+      t.send("\r");
+      await t.until(/已经切到「每步都问」/, "★回车定★", mark);
+
+      // Esc：不换
+      mark = t.out().length;
+      await t.type("/perm\r");
+      await t.until(/● 每步都问/, "再开一次，停在刚切的那档", mark);
+      t.send("\x1b[C");
+      await t.until(/● 自动改文件/, "→ 挪一档", mark);
+      t.send("\x1b");
+      await t.until(/还是「每步都问」/, "★Esc 什么都不换★", mark);
+
+      // /mode：选择器，↓ 回车
+      mark = t.out().length;
+      await t.type("/mode\r");
+      await t.until(/换成哪个模式/, "★/mode 不给值：弹选择器★", mark);
+      t.send("\x1b[B");
+      await sleep(200);
+      t.send("\r");
+      await t.until(/已经切到 Goal/, "↓ 回车换到下一个", mark);
+
+      await sleep(300);
+      assert.strictEqual(t.users.length, 0, "★这一路没找过一次模型★");
+      await t.type("/exit\r");
+    });
+    assert.ok(t13 && t13.exited() === 0, "正常退出");
   }
 
   console.log("cli-pty：通过");

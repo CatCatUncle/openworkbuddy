@@ -17,6 +17,7 @@
 
 const crypto = require("crypto");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 
 const MAX_INBOUND_BYTES = 30 * 1024 * 1024; // 收进来的单个附件上限，超了只留一句说明
@@ -236,6 +237,63 @@ function inboundNote({ channel, saved = [], failed = [], text = "" }) {
   return parts.join("\n").trim();
 }
 
+// ---------- 报错进聊天之前：抹掉本机绝对路径 ----------
+// 各渠道发附件 / 收附件出错时，那句话会原样进聊天（或交给 agent 让它转告）。fs 的原文、ffmpeg 的 stderr
+// 都带绝对路径（/Users/<名字>/…）——聊天记录会被转发、截图，本机的用户名和目录结构不该跟着出去。
+// 所有渠道共用这一份，飞书那边（im-feishu-media.js）也从这儿拿。
+
+/**
+ * 读要发出去的那个文件出错：换成不带路径的一句，只说事实（找不到 / 没权限 / 错误码）。
+ * 不是 fs 的错（网络、接口拒绝）原样返回。
+ * @param {any} e @param {string} abs 要发的那个文件
+ * @param {boolean} [own] 报错一定出自读 abs 这一下（readFileSync 读到目录时报 EISDIR，不带 path）
+ */
+function fsFail(e, abs, own = false) {
+  if (!(e && typeof e.code === "string" && e.syscall)) return e;
+  const mine = own || e.path === abs;
+  if (mine && e.code === "ENOENT") return new Error("工作目录里找不到这个文件");
+  if (mine && (e.code === "EACCES" || e.code === "EPERM")) return new Error("没权限读这个文件");
+  return new Error(`${mine ? "读这个文件" : "读写临时文件"}出错（${e.code}）`);
+}
+
+/** 读要发的那个文件；出错换成 fsFail 那句 @param {string} abs @returns {Buffer} */
+function readForSend(abs) {
+  try { return fs.readFileSync(abs); } catch (e) { throw fsFail(e, abs, true); }
+}
+
+// 认得出的目录以外还剩的绝对路径：/a/b/c.pdf、C:\a\b\c.pdf。前面紧挨着字母数字、冒号、斜杠、点、
+// 「…」的不算——那是网址（https://x/y）、比例（1/2）或者已经抹过的相对名（…/报告.pdf）。
+// 目录名可以带空格（My Drive、Alice Smith、Program Files (x86)）：空格后面那截只要紧跟着下一个分隔符
+// 就算同一节目录，最多续 3 截；那截里不许有句读，免得把路径后面跟着的话吞进去。
+// 以前在空格处断开，前半截抹了、后半截目录原样漏进聊天。
+const ABS_POSIX = /(?<![\w:/.~\-…])\/(?:[^\s'"`()（）「」<>/\\]+(?: [^\s'"`()（）「」<>/\\,，。;；:：!！?？、]+){0,3}\/)+[^\s'"`()（）「」<>/\\,，。;；:：]*/g;
+const ABS_WIN = /(?<![\w…])[A-Za-z]:\\(?:[^\s'"`()（）「」<>\\/|?*:]+(?: [^\s'"`（）「」<>\\/|?*:,，。;；!！？、]+){0,3}\\)+[^\s'"`()（）「」<>\\/|?*:,，。;；]*/g;
+// 引号里的整段绝对路径（node 的 fs 报错就是 open '/x/y z/a.pdf' 这样）：引号就是边界，里面有空格也整段抹，文件名带空格也留得住
+const QUOTED_ABS = /'((?:\/|[A-Za-z]:\\)[^\s'\\/][^'\n]*?[\\/][^'\n]*)'|"((?:\/|[A-Za-z]:\\)[^\s"\\/][^"\n]*?[\\/][^"\n]*)"|`((?:\/|[A-Za-z]:\\)[^\s`\\/][^`\n]*?[\\/][^`\n]*)`|「((?:\/|[A-Za-z]:\\)[^\s」\\/][^」\n]*?[\\/][^」\n]*)」/g;
+/** 剩下的那段绝对路径：像文件名（带扩展名）的留名字，别的整段换成「…」——/home/<名字> 的最后一节就是用户名 */
+const tailOnly = (/** @type {string} */ m) => {
+  const last = m.split(/[\\/]/).filter(Boolean).pop() || "";
+  return /^[^.].*\.[A-Za-z0-9]{1,8}$/.test(last) ? `…/${last}` : "…";
+};
+
+/**
+ * 往聊天里送的话：先把 dirs（工作目录、临时目录）和家目录换成「…」，工作目录下的文件就剩相对名
+ * （…/out/报告.pdf），用户照样认得是哪个；再把剩下的绝对路径抹掉。不截断，长度由调用方定。
+ * @param {unknown} s @param {Array<string | null | undefined>} [dirs]
+ * @returns {string}
+ */
+function scrubPaths(s, dirs = []) {
+  let t = String(s == null ? "" : s);
+  // 长的先抹：工作目录在家目录底下，先抹家目录的话工作目录就认不出来了，剩一串 …/startup_get/…
+  const known = [...dirs, os.homedir()].filter((d) => typeof d === "string" && d.length > 1).sort((a, b) => b.length - a.length);
+  for (const d of known) t = t.split(d).join("…");
+  t = t.replace(QUOTED_ABS, (m, a, b, c, d) => {
+    const inner = a ?? b ?? c ?? d;
+    return m[0] + tailOnly(inner) + m[m.length - 1];
+  });
+  return t.replace(ABS_POSIX, tailOnly).replace(ABS_WIN, tailOnly);
+}
+
 module.exports = {
   MAX_INBOUND_BYTES,
   DEFAULT_CDN_BASE_URL,
@@ -255,4 +313,7 @@ module.exports = {
   buildCdnUploadUrl,
   uploadCdnCiphertext,
   inboundNote,
+  fsFail,
+  readForSend,
+  scrubPaths,
 };

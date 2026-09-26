@@ -9,8 +9,29 @@
 const fs = require("fs");
 // 单独跑这个文件时也别写进用户真账本（all.js 里已经设过一次，这里只兜底）
 if (!process.env.OPENWORKBUDDY_TRACE_FILE) {
-  process.env.OPENWORKBUDDY_TRACE_FILE =
-    require("path").join(require("fs").mkdtempSync(require("path").join(require("os").tmpdir(), "owb-test-trace-")), "traces.jsonl");
+  const dir = require("fs").mkdtempSync(require("path").join(require("os").tmpdir(), "owb-test-trace-"));
+  process.env.OPENWORKBUDDY_TRACE_FILE = require("path").join(dir, "traces.jsonl");
+  // 自己建的自己收：以前单独跑一次留一个 owb-test-trace-*，挂了才留着看
+  process.on("exit", (code) => {
+    if (code) { console.log("留着现场（trace）：" + dir); return; }
+    try { require("fs").rmSync(dir, { recursive: true, force: true }); } catch {}
+  });
+}
+// 数据目录也一样，而且要赶在下面 require agent 之前。开发态数据目录就是仓库根，不设的话
+// 审计、记忆命中数、用量账本、压缩存档、测试插件都会写进用户正在用的 data/ 和 plugins/。
+// all.js 给过一个就用它；单独跑就自己建一个，铺上技能（use_skill 那几条在进程里就要读）
+const E2E_OWN_HOME = process.env.OPENWORKBUDDY_HOME ? "" :
+  require("fs").mkdtempSync(require("path").join(require("os").tmpdir(), "owb-e2e-home-"));
+if (E2E_OWN_HOME) {
+  // 只设 HOME、不设 OPENWORKBUDDY_DATA_DIR，跟 all.js 一个口径：好些用例起 server 时只换 HOME，
+  // 这里设了 DATA_DIR 就会顺着 env 漏进去，把那台 server 的账本指回这个目录
+  process.env.OPENWORKBUDDY_HOME = E2E_OWN_HOME;
+  require("../paths").seedDataDir();
+  // 放在 exit 里收：审计、记忆命中数是防抖写盘，收早了会被它们再建出来
+  process.on("exit", (code) => {
+    if (code) { console.log("留着现场（数据目录）：" + E2E_OWN_HOME); return; }
+    try { require("fs").rmSync(E2E_OWN_HOME, { recursive: true, force: true }); } catch {}
+  });
 }
 const os = require("os");
 const path = require("path");
@@ -21,6 +42,45 @@ const { McpManager } = require("../mcp");
 const { parseCron, cronMatches } = require("../scheduler");
 const { getWorkspaceDir, setWorkspaceDir } = require("../tools");
 const mediaModels = require("../media-models");
+/**
+ * 画布那几条用例把 canvasGenerate 抠进沙箱跑。文件放上画布之后的步骤（回写分镜表、提示）出错时，
+ * 它只 console.warn 一句就按成功返回——页面上这样对：钱花了、图有了，不能按「没成」算。
+ * 可在测试里这句话的意思是后半段根本没跑到：testDramaCast ⑥ 的沙箱缺过 canvasBoardWriteback，
+ * 每回都 ReferenceError，回写和提示一行没测，套件照样绿。所以这句话在这里收起来，谁跑出来谁红。
+ */
+const canvasLateErrors = [];
+{
+  const realWarn = console.warn;
+  console.warn = (...a) => {
+    const s = a.map(String).join(" ");
+    if (/^\[canvas\] .*之后的步骤出错/.test(s)) canvasLateErrors.push(s);
+    return realWarn.apply(console, a);
+  };
+}
+/**
+ * 上面那句正则跟生产代码里那句 console.warn 是两处各写各的：生产那边改一个字，这里就一句也收不到，
+ * 悄悄退回「后半段没跑到也绿」。所以每轮先拿生产源码里「warn 完照样 return { ok: true }」的每一句
+ * 造一行样本，认不出来就红。
+ */
+let canvasTrapPinned = false;
+function assertCanvasTrapPinned() {
+  if (canvasTrapPinned) return;
+  const src = srcLib.src("canvas");
+  const lines = [...src.matchAll(/console\.warn\(\s*(`[^`]*`|"[^"]*"|'[^']*')[^;]*;?\s*return\s*\{\s*ok:\s*true\b/g)]
+    .map((m) => m[1].slice(1, -1).replace(/\$\{[^}]*\}/g, "样本"));
+  assert(lines.length > 0, "画布源码里找不到「console.warn 之后照样 return { ok: true }」那一句：生产代码改了写法，上面收警告的正则得跟着改");
+  const missed = lines.filter((s) => !/^\[canvas\] .*之后的步骤出错/.test(s));
+  assert(missed.length === 0, "画布「放上画布之后出错」的警告换了措辞，上面那句正则认不出来：\n  " + missed.join("\n  "));
+  canvasTrapPinned = true;
+}
+function assertNoCanvasLateErrors(where) {
+  assertCanvasTrapPinned();
+  if (!canvasLateErrors.length) return;
+  const got = [...new Set(canvasLateErrors.splice(0))];
+  throw new assert.AssertionError({
+    message: `${where}：画布生成在文件放上画布之后出错 ${got.length} 种，回写分镜表和提示那段没跑到：\n  ${got.join("\n  ")}`,
+  });
+}
 /**
  * 测试跑在一个临时工作区里，不碰用户真正的那个。
  *
@@ -68,6 +128,19 @@ function reapStaleTempHomes() {
   if (n) console.log("🧹 清掉 " + n + " 个上几轮留下的临时目录");
 }
 reapStaleTempHomes();
+
+/**
+ * 起真 server 的用例收自己的 home（seedDataDir 拷了整份 skills，一个 130–189M）。
+ * 上面那个收割只管 24 小时前的，一天跑几轮 e2e 光这些就能堆出几十 G。
+ * 过了：等 server 真退出再删，免得它退出前又写回一个文件把目录「救活」；挂了：留着现场，把路径打出来。
+ */
+async function dropTempHome(dir, passed, child) {
+  if (!passed) { console.log("  留着现场：" + dir); return; }
+  if (child && child.exitCode === null && child.signalCode === null) {
+    await new Promise((r) => { const t = setTimeout(r, 5000); child.once("exit", () => { clearTimeout(t); r(); }); });
+  }
+  try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 }); } catch {}
+}
 
 /**
  * 起一条真的 server.js 打端到端，端口交给系统分配。
@@ -3552,7 +3625,7 @@ async function testSchedulerRuntime() {
   assert(!sch.list().find((t) => t.id === daily.id).running, "跑完了 running 标记没清掉");
 
   await assert.rejects(() => sch.runOne("sch_不存在", "手动"), /任务不存在/, "不存在的任务应当报错");
-  fs.rmSync(storePath, { force: true });
+  fs.rmSync(path.dirname(storePath), { recursive: true, force: true }); // 连 .bak 带目录一起收
   console.log("✅ 定时任务运行时：睡过头补跑一次 / 不叠跑 / 结果真落盘");
 }
 
@@ -6416,6 +6489,7 @@ async function testScheduleRunTrace() {
     sched.remove(t.id);
     assert.deepStrictEqual(forgotten.sort(), ["s_fake_1", "s_fake_2"],
       "★删掉定时任务，它那几段执行过程成了孤儿★ 没有任何入口，却永远占着盘。实际清掉的：" + forgotten.join("/"));
+    sched.stop(); fs.rmSync(dir, { recursive: true, force: true }); // 先停 20 秒一次的 tick，不然它回头又把 schedules.json 写回来
   }
 
   // ---- 没插 recorder（CLI、老调用方）时一切照旧：不录、不报错、照常执行 ----
@@ -6429,6 +6503,7 @@ async function testScheduleRunTrace() {
     await sched.runOne(t, "手动");
     const r = sched.runs(10)[0];
     assert(r.ok === true && !("session_id" in r), "没录像时不该留下 session_id 字段（前端凭它决定画不画链接）：" + JSON.stringify(r));
+    sched.stop(); fs.rmSync(dir, { recursive: true, force: true }); // 先停 20 秒一次的 tick，不然它回头又把 schedules.json 写回来
   }
 
   // ---- ⑤ 端到端：真 server + 真 agent + 假模型，跑完能从 /api/session 里取回完整过程 ----
@@ -6489,6 +6564,7 @@ async function testScheduleRunTrace() {
   });
 
   const boot = bootRealServer({ OPENWORKBUDDY_HOME: home });
+  let passed = false;
   try {
     const { up, port, why } = await boot.wait();
     assert(up, "真 server.js 没起来，这条测试作废：" + why);
@@ -6538,9 +6614,11 @@ async function testScheduleRunTrace() {
     assert(gapMin === 5, "「+5m」该落在五分钟后，实际落在 " + gapMin + " 分钟后：" + once.json.at);
     const both = await call(port, "POST", "/api/schedules", { at: "+5m", cron: "0 14 * * *", task: "两个都给" });
     assert(both.code === 400, "反向对照：at 和 cron 同时给要被拒（HTTP " + both.code + "）：" + both.body.slice(0, 200));
+    passed = true;
   } finally {
     boot.child.kill("SIGKILL");
     llm.close();
+    await dropTempHome(home, passed, boot.child);
   }
   console.log("  ✓ 定时任务留下完整执行过程（运行记录点得进去看每一步）");
 }
@@ -7749,6 +7827,7 @@ async function testChatShownLive() {
   });
 
   const boot = bootRealServer({ OPENWORKBUDDY_HOME: home });
+  let passed = false;
   try {
     const { up, port, why } = await boot.wait();
     assert(up, "真 server.js 没起来，这条测试作废：" + why);
@@ -7791,9 +7870,11 @@ async function testChatShownLive() {
     const after = await call(port, "POST", "/api/chat", { sessionId: "s_term_busy", message: "网页这头也来一句", mode: "craft", lang: "zh" });
     assert(after.code === 200 && /"type":"done"/.test(after.body), "反向对照：终端那趟跑完了，网页照常接着聊：" + after.code + " " + after.body.slice(0, 200));
     console.log("✓ 终端正在跑的会话，网页端回 409 不同时开跑；终端跑完照常接着聊");
+    passed = true;
   } finally {
     try { boot.child.kill(); } catch {}
     llm.close();
+    await dropTempHome(home, passed, boot.child);
   }
 }
 
@@ -9326,6 +9407,7 @@ async function main() {
       assert(typeof fn === "function", "没有这个测试：" + name);
       console.log("— " + name);
       await fn();
+      assertNoCanvasLateErrors(name);
     }
     return;
   }
@@ -9507,6 +9589,7 @@ testCanvasEdgeVersion();
   for (const f of fs.readdirSync(WORKSPACE)) {
     if (f.startsWith("e2e-")) fs.rmSync(path.join(WORKSPACE, f), { force: true });
   }
+  assertNoCanvasLateErrors("整轮 e2e");
   console.log("=== 全部测试通过 ===");
 }
 
@@ -11308,6 +11391,9 @@ async function testEngineToolBridge() {
     assert.strictEqual(cx.shimIsPrimary, true, "codex 那边命令行必须是主路：MCP 在它上面挂不出工具");
     assert(cx.shim && fs.existsSync(cx.shim), "codex 没生成命令行入口脚本");
     assert(cx.runOpts.mcpArgs && cx.runOpts.mcpArgs.length, "codex 的 -c mcp_servers.* 参数没给");
+    // codex exec 审批策略是 never，没放行的 MCP 工具调用一律被判拒绝
+    assert(cx.runOpts.mcpArgs.includes('mcp_servers.openworkbuddy.default_tools_approval_mode="approve"'),
+      "codex 没放行桥上的工具，模型看得见却调不成：" + JSON.stringify(cx.runOpts.mcpArgs));
     // 脚本得挂进子进程 PATH：模型敲带绝对路径的命令，两个 CLI 的权限层都会判「需要审批」，
     // 非交互模式下没人能点同意 —— 挂了工具等于没挂。裸命令 + 一条放行规则才通得了。
     assert(cx.runOpts.env && String(cx.runOpts.env.PATH || "").split(path.delimiter)[0] === cx.shimDir,
@@ -13146,11 +13232,11 @@ function testConnectorsAndExperts() {
   assert(meta.teams.length >= 8, "专家团不足 8：" + meta.teams.length);
   const gz = meta.experts.find((e) => e.name === "公众号编辑");
   assert(gz && gz.skills.includes("wechat-article"), "公众号编辑没绑 wechat-article（写稿→排版→推草稿箱的技能一直闲着）");
-  for (const n of ["视频成片师", "小红书选题策划", "封面卡片师", "飞书助理", "技能沉淀师", "程序员", "代码审查员", "翻译校对师"]) {
+  for (const n of ["视频成片师", "小红书选题策划", "封面卡片师", "飞书助理", "技能沉淀师", "程序员", "代码审查员", "翻译校对师", "宣传片导演"]) {
     const e = meta.experts.find((x) => x.name === n);
     assert(e && e.builtin === true, `新专家「${n}」缺失或没标 builtin`);
   }
-  for (const n of ["短视频出片组", "小红书全案组", "飞书交付组", "代码交付组"]) assert(meta.teams.some((t) => t.name === n), `新专家团「${n}」缺失`);
+  for (const n of ["短视频出片组", "小红书全案组", "飞书交付组", "代码交付组", "宣传片出片组"]) assert(meta.teams.some((t) => t.name === n), `新专家团「${n}」缺失`);
   const cats = new Set(meta.experts.map((e) => e.category));
   assert(cats.has("开发协作") && cats.has("语言沟通"), "新分类没出现：" + [...cats].join("、"));
   // 体检要真能抓错（阴性对照）
@@ -16126,6 +16212,7 @@ async function testDramaAssets() {
 
   const booted = bootRealServer({ OPENWORKBUDDY_HOME: home });
   const { up, port, why } = await booted.wait();
+  let passed = false;
   try {
     assert(up, "真 server.js 没起来，这条测试作废：" + why);
     const r = await new Promise((resolve) => {
@@ -16160,7 +16247,8 @@ async function testDramaAssets() {
     assert(r.json.missing[0].usedBy.some((u) => u.id === "S1-02"), "没说清是哪一镜在等这个文件");
     assert(r.json.stat.total === 5 && r.json.stat.orphan === 1 && r.json.stat.missing === 1,
       "台账小结对不上：" + JSON.stringify(r.json.stat));
-  } finally { booted.child.kill(); }
+    passed = true;
+  } finally { booted.child.kill(); await dropTempHome(home, passed, booted.child); }
 
   // ⑤ 画布坏了，素材台账照样得能看。两件事互不相干，绑一起等于一处坏两处瞎
   const home2 = fs.mkdtempSync(path.join(os.tmpdir(), "owb-assets2-"));
@@ -16176,6 +16264,7 @@ async function testDramaAssets() {
   fs.writeFileSync(path.join(ws2, ".openworkbuddy", "canvas.json"), "{ 这不是 JSON");
   const b2 = bootRealServer({ OPENWORKBUDDY_HOME: home2 });
   const s2 = await b2.wait();
+  let passed2 = false;
   try {
     assert(s2.up, "第二台没起来：" + s2.why);
     const r2 = await new Promise((resolve) => {
@@ -16186,7 +16275,8 @@ async function testDramaAssets() {
     assert(r2.code === 200 && r2.json && r2.json.assets.length === 1,
       "★画布坏了就连素材也看不了★ 这两件事互不相干，绑一起等于一处坏两处瞎：HTTP " + r2.code + " " + String(r2.body).slice(0, 160));
     assert(r2.json.boardUnreadable, "画布读不出来这件事得说出来，不能默默当成「没人在用任何素材」");
-  } finally { b2.child.kill(); }
+    passed2 = true;
+  } finally { b2.child.kill(); await dropTempHome(home2, passed2, b2.child); }
 
   // ⑤-2 产物按画布分目录落盘之后：两集各有一张「镜头_S2-01_首帧.png」。
   // 以前按文件名取第一份，拼进片子、往下生视频用的是哪一集的画面全看目录遍历的先后，而且哪儿都不报错。
@@ -16355,6 +16445,7 @@ async function testDramaPipeline() {
   });
 
   let progressData = null;   // 下面 ⑩ 要拿这份真数据去渲染一遍
+  let passed = false;
   try {
     assert(up, "真 server.js 没起来，这条测试作废：" + why);
     const r = await get("/api/canvas/progress");
@@ -16431,7 +16522,8 @@ async function testDramaPipeline() {
     assert(d.eta.partial === true, "配音一次都没跑过，这个估时是不全的，得标出来：" + JSON.stringify(d.eta));
 
     assert(typeof d.percent === "number" && d.percent > 0 && d.percent < 100, "总进度不该是 0 或 100：" + d.percent);
-  } finally { boot.child.kill(); }
+    passed = true;
+  } finally { boot.child.kill(); await dropTempHome(home, passed, boot.child); }
 
   // ── ⑦ 反向对照：一次都没跑过的画布，宁可不给时间也不许编 ─────────────────
   const pipeline = require(path.join(__dirname, "..", "drama-pipeline.js"));
@@ -16470,6 +16562,7 @@ async function testDramaPipeline() {
   fs.writeFileSync(path.join(home2, "workspace", ".openworkbuddy", "canvas.json"), "{这不是 JSON");
   const boot2 = bootRealServer({ OPENWORKBUDDY_HOME: home2 });
   const b2 = await boot2.wait();
+  let passed2 = false;
   try {
     assert(b2.up, "第二台没起来：" + b2.why);
     const r2 = await new Promise((resolve) => {
@@ -16481,7 +16574,8 @@ async function testDramaPipeline() {
     assert(r2.code === 200, "画布坏了就连进度都 500 了（HTTP " + r2.code + "）：" + r2.body.slice(0, 160));
     const d2 = JSON.parse(r2.body);
     assert(d2.boardUnreadable, "画布读不出来却没说，界面会拿它当一张空画布：" + r2.body.slice(0, 160));
-  } finally { boot2.child.kill(); }
+    passed2 = true;
+  } finally { boot2.child.kill(); await dropTempHome(home2, passed2, boot2.child); }
 
   // ── ⑨ 界面那头真接上了 ────────────────────────────────────────────────
   const fe = srcLib.src("canvas");
@@ -17029,6 +17123,7 @@ async function testDramaCompose() {
   });
   const nap = (ms) => new Promise((r) => setTimeout(r, ms));
 
+  let passed = false;
   try {
     assert(up, "真 server.js 没起来，这条测试作废：" + why);
     const dry = await call("POST", "/api/canvas/compose", { subtitles: true });
@@ -17183,7 +17278,8 @@ async function testDramaCompose() {
     }
     const cut3 = ((await call("GET", "/api/canvas/progress")).body.stages || []).find((s) => s.key === "cut") || {};
     assert(cut3.done === 0, "这次没拼成，「成片」档不该是绿的：" + JSON.stringify(cut3));
-  } finally { boot.child.kill(); }
+    passed = true;
+  } finally { boot.child.kill(); await dropTempHome(home, passed, boot.child); }
 
   console.log("✅ 短剧一键合成：顺序按镜头 ID（不按数组/坐标）且开跑前摆到屏幕上 · 配音长了补画面绝不切台词 · 画幅不齐自动转重编码 · 没 ffmpeg/没 libass 开跑前就说清楚（还给装法，按钮点不动）· 探不到时长宁可不给字幕 · 配乐认得出来、量得到声、不压台词也不拉长片子 · 退出码 0 还得盘上真有字节 · 写回画布 + 进度按盘上文件翻绿 · 合成途中改的别的节点写回后还在、写回前那份再存回 409 · 只按 id 补剪辑节点、途中删掉的不变回来 · 不盖旧成片");
 }
@@ -17341,13 +17437,16 @@ async function testDramaCast() {
     const pFrom = fe.indexOf("const CANVAS_PROMPT_PLACEHOLDERS ="), pTo = fe.indexOf("\nasync function canvasLoadAssets(");
     assert(gFrom > 0 && gTo > gFrom && nFrom > 0 && nTo > nFrom && pFrom > 0 && pTo > pFrom, "抠不出生成那段代码（函数改名了？）");
 
-    let sent = null, toast = "", back = "素材/角色_阿岚_定妆.png";
+    let sent = null, toast = "", back = "素材/角色_阿岚_定妆.png", boardReply = "";
+    const boardWrites = []; // 回写分镜表那一步收到了什么（字段 → 文件）
     const mk = (kind, payload) => { const p = { ...payload }; return { id: "c1", kind, p, set(_k, v) { Object.keys(this.p).forEach((k) => delete this.p[k]); Object.assign(this.p, v); } }; };
     const sandbox = {
       canvasState: { busy: new Set(), selected: null },
       canvasKind: (n) => n.kind, canvasPayload: (n) => n.p,
       canvasUpstreamImages: () => [], canvasUpstreamInputs: () => [], canvasGenerationContext: () => "",
       canvasToast: (t) => { toast = String(t); },
+      // 真的那份在 testDramaBoardWriteback 里测；这里只看生成完有没有去回写、写的哪个字段、失败怎么说
+      canvasBoardWriteback: async (_payload, fields) => { boardWrites.push(fields); return boardReply; },
       canvasRefreshNode() {}, canvasRenderInspector() {}, canvasPersist() {}, canvasUpsertResult() {},
       canvasRecordGeneration: (n, k, input, file) => ({ ...n.p, generation: { output: file } }),
       canvasResolvedFileName: (v) => v, previewFile: null,
@@ -17378,6 +17477,9 @@ async function testDramaCast() {
       "★定妆照没写回 reference★ 图生出来了，进度条和素材台账认的是这个字段，写去别处等于白生："
       + JSON.stringify(real.p));
     assert(!real.p.path && !real.p.url, "别再顺手写一份 path/url，台账会把同一张图数两遍：" + JSON.stringify(real.p));
+    assert.deepStrictEqual(boardWrites, [{ ref: "素材/角色_阿岚_定妆.png" }],
+      "★定妆照没回写分镜表的 ref★ 画布上有了、表里还空着，短剧页会让人再买一遍：" + JSON.stringify(boardWrites));
+    assert.strictEqual(toast, "定妆照已生成：角色_阿岚_定妆.png", "生成成功那句提示没说到：" + toast);
 
     // 场景图写回 image
     back = "素材/场景_茶馆.png";
@@ -17385,6 +17487,18 @@ async function testDramaCast() {
     await ui(place, "image");
     assert(sent.body.input.filename === "场景_茶馆.png", "场景图落盘名字不对：" + JSON.stringify(sent.body.input));
     assert(place.p.image === "素材/场景_茶馆.png", "场景图该写回 image：" + JSON.stringify(place.p));
+    assert.strictEqual(boardWrites.length, 1, "分镜表里没有场景图那一格，不该去回写：" + JSON.stringify(boardWrites));
+    assert.strictEqual(toast, "场景图已生成：场景_茶馆.png", "场景图生成成功那句提示没说到：" + toast);
+
+    // 回写失败：图照样放上画布，但「已生成」和「没写进表」在同一条提示里说，不能只进控制台
+    back = "素材/角色_老陈_定妆.png";
+    boardReply = "分镜表里没有「老陈」，没写回";
+    const miss = mk("character", { name: "老陈", description: "五十岁，灰袄，右手旧手表" });
+    await ui(miss, "image");
+    assert(miss.p.reference === "素材/角色_老陈_定妆.png", "回写分镜表没成，画布上这一格也得留着图：" + JSON.stringify(miss.p));
+    assert.deepStrictEqual(boardWrites[1], { ref: "素材/角色_老陈_定妆.png" }, "老陈那张也该去回写：" + JSON.stringify(boardWrites));
+    assert.strictEqual(toast, "定妆照已生成：角色_老陈_定妆.png，但分镜表里没有「老陈」，没写回",
+      "★回写失败没跟「已生成」一起说★ 人以为表里有了：" + toast);
   }
 
   // ── ⑦ 真 server：进度条认、台账认、用途也认 ────────────────────────────
@@ -17414,6 +17528,7 @@ async function testDramaCast() {
       });
       req.on("error", (e) => resolve({ code: 0, body: e.message })); req.end();
     });
+    let passed = false;
     try {
       assert(up, "真 server.js 没起来，这条测试作废：" + why);
       const pr = JSON.parse((await get("/api/canvas/progress")).body);
@@ -17432,7 +17547,8 @@ async function testDramaCast() {
       assert(lan.role === "定妆照", "定妆照的用途认错了，在「用途」筛选里找不着：" + JSON.stringify(lan));
       assert(cha && !cha.orphan && cha.role === "场景图", "场景图也得认：" + JSON.stringify(cha));
       assert(!(as.stat || {}).orphan, "没人用的数量不该是 " + (as.stat || {}).orphan + "：" + JSON.stringify(as.stat));
-    } finally { boot.child.kill(); }
+      passed = true;
+    } finally { boot.child.kill(); await dropTempHome(home, passed, boot.child); }
   }
 
   console.log("✅ 短剧定妆照：「参考图」挑的图就算定妆（进度不再永远 0/N、也不再催你重跑花过的钱）· 镜头上喂进去的参考图绝不冒充首帧 · 定妆照在台账里算「有人在用」不进「没人用」那一栏 · 角色/场景节点真有生成按钮（跑着锁、有图变重生成）· 只有名字不开枪 · 客户端起的名字服务端认得出用途 · 定妆照写回 reference、场景图写回 image");
@@ -17481,6 +17597,8 @@ async function testDramaShotRefs() {
     canvasRecordGeneration: (n, k, input, file) => ({ ...n.p, generation: { output: file } }),
     canvasResolvedFileName: (v) => v, previewFile: null,
     fetch: async (url, opt) => { sent = { url, body: JSON.parse(opt.body) }; return { ok: true, json: async () => ({ ok: true, file: "素材/镜头_新_首帧.png" }) }; },
+    // 回写分镜表在 testDramaBoardWriteback 里测；缺了这个桩，canvasGenerate 放上画布之后每回都 ReferenceError
+    canvasBoardWriteback: async () => "",
   };
   const keys = Object.keys(sandbox);
   const gen = new Function(...keys, src + "\nreturn canvasGenerate;")(...keys.map((k) => sandbox[k]));
@@ -17641,6 +17759,8 @@ async function testDramaVoice() {
     canvasResolvedFileName: (v) => v, previewFile: null,
     canvasUpstreamImages: () => [],
     fetch: async (url, opt) => { sent = { url, body: JSON.parse(opt.body) }; return { ok: true, json: async () => ({ ok: true, file: "素材/配音_" + Math.random().toString(36).slice(2, 7) + ".mp3" }) }; },
+    // 回写分镜表在 testDramaBoardWriteback 里测；缺了这个桩，canvasGenerate 放上画布之后每回都 ReferenceError
+    canvasBoardWriteback: async () => "",
   };
   const keys = Object.keys(sandbox);
   const made = new Function(...keys, src + "\nreturn { canvasGenerate, canvasRunPending, canvasResolveVoice, canvasDefaultPayload };")(...keys.map((k) => sandbox[k]));
@@ -18092,6 +18212,8 @@ async function testDramaBoardExpand() {
     canvasUpstreamImages: () => [],
     canvasAddNode: null, canvasConnect: null,
     fetch: async (url, opt) => { sent = { url, body: JSON.parse(opt.body) }; return { ok: true, json: async () => ({ ok: true, file: "素材/out_" + (++seq) + ".bin" }) }; },
+    // 回写分镜表在 testDramaBoardWriteback 里测；缺了这个桩，canvasGenerate 放上画布之后每回都 ReferenceError
+    canvasBoardWriteback: async () => "",
   };
   // 建节点、连线都走真的那条路会用到 joint / DOM，这儿只记账；
   // 但 payload 必须按真的来：canvasDefaultPayload 打底 + 展开给的字段覆盖，

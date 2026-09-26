@@ -22,7 +22,9 @@ jobs:
         include:
           - os: ubuntu-latest
             label: 快跑（除 e2e 外全跑）
-            cmd: node test/all.js --only repo-hygiene,lint,typecheck,icons,lanes,md-tty,doctor,cli-args,cli-attach,cli-live,cli-ask,cli-approve,cli-toolview,cli-pty,cli-oneshot,engine-resilience,repl-commands,session-search,systemone,decide-tool,task-doubt,continue-gate,cmd-risk,cmd-gate,memory-gate,push-gate,ask-gate,skill-gate,perm-gate,ui-copy-length,memory-rules,prefs,chat-models,media-models,media-health,gen-cache,sweep,quota,relay,totp,auth-2fa,skill-guard,toolward,rbac,tenant,lifecycle,ops,deploy,trace,term-image,office-tools,remote,checkpoints,shot-history,cdp,agent-loop,explore,code-tools,slash-review,hooks,workflow,worktree,eval,stop,memory,search-providers,model-probe
+            # 这条腿装了 ffmpeg（见下面 apt 那步），真 ffmpeg 那几段找不到就算红，不许悄悄跳过
+            require_ffmpeg: "1"
+            cmd: node test/all.js --only repo-hygiene,lint,typecheck,data-guard,icons,lanes,md-tty,doctor,cli-args,cli-attach,cli-live,cli-ask,cli-approve,cli-toolview,im-card,im-feishu-media,cli-pty,cli-oneshot,engine-resilience,repl-commands,session-search,systemone,decide-tool,task-doubt,continue-gate,cmd-risk,cmd-gate,memory-gate,push-gate,ask-gate,skill-gate,perm-gate,desktop-ux,ui-copy-length,memory-rules,prefs,chat-models,media-models,media-health,gen-cache,tts-segments,sweep,quota,relay,totp,auth-2fa,skill-guard,toolward,rbac,tenant,lifecycle,ops,deploy,trace,term-image,office-tools,remote,checkpoints,shot-history,web-demo,cdp,agent-loop,explore,code-tools,slash-review,hooks,workflow,recipes,workflow-panel,worktree,eval,stop,memory,search-providers,model-probe,media-probe,library-ws,brand-kit,motion,timeline-compose,delivery-page
           - os: macos-latest
             label: 全套（含 e2e）
             cmd: npm test
@@ -49,5 +51,11 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # 只在 ubuntu 那条腿装发行版的 ffmpeg：它带 libass/drawtext，本机 Homebrew 那份不带，
+      # 烧字幕这类分支只有在这儿才真跑得到。中文字体给 libass 排字用。macOS 那条腿不装，照旧跳过真 ffmpeg 段。
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-noto-cjk
       # 测试用的是模拟 LLM，不需要任何 API Key（CONTRIBUTING.md 里写了）
       - run: ${{ matrix.cmd }}
+        env:
+          OWB_REQUIRE_FFMPEG: ${{ matrix.require_ffmpeg }}

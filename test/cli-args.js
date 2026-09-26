@@ -384,5 +384,24 @@ console.log("\n⑮ 文档里的选项表");
   ok(/退出码/.test(doc) && /`2`/.test(doc), "退出码 2（参数写错）写进文档了");
 }
 
+// ── ⑯ -i 名字=值 ───────────────────────────────────────────────────────
+// 流程文件的 inputs 从这儿来。少了等号要当场拦：等流程读完文件才发现对不上，人已经等了半天
+console.log("\n⑯ -i / --input 名字=值");
+{
+  const r = A.parse(["workflow", "f.json", "-i", "product=智能水杯", "--input=platforms=抖音,小红书", "--input", "tone=俏皮"]);
+  eq(r.problems.length, 0, "三种写法都认");
+  eq(JSON.stringify(r.opts.inputs), '["product=智能水杯","platforms=抖音,小红书","tone=俏皮"]', "★写几次攒几条，按顺序★");
+  eq(JSON.stringify(r.words), '["workflow","f.json"]', "值没被当成任务文本");
+  const bad = A.parse(["workflow", "f.json", "-i", "智能水杯"]);
+  ok(bad.problems.length === 1 && bad.problems[0].code === "bad-kv" && /名字=值/.test(bad.problems[0].message) && /product=/.test(bad.problems[0].hint),
+    "★没等号当场拦，并给出写法★", bad.problems);
+  ok(A.parse(["-i", "=值"]).problems.some((p) => p.code === "bad-kv"), "等号前面没名字也拦");
+  ok(A.parse(["-i"]).problems.some((p) => p.code === "missing-value"), "-i 后面啥也没有：缺值");
+  ok(clean(["-f", "没等号.txt", "x"]), "（反向对照）别的 strs 选项（-f）不要求等号");
+  A.parse(["-i", "a=1"]);
+  eq(A.parse([]).opts.inputs.length, 0, "上一次解析的 -i 不会留到下一次（DEFAULTS 没被改）");
+  ok(/-i, --input <名字=值>/.test(A.helpText()), "帮助里有这一行");
+}
+
 console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
 process.exit(fail === 0 ? 0 : 1);

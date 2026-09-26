@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>报表小助手 · {{HOME}}</title>
+<!--
+  test/web-demo.js【12】真录用的本地页面：{{HOME}} 由测试服务器换成本机 home 目录，
+  故意散在标题、路径条、title 属性、输入框 value、延迟 500ms 插进来的节点、点按钮才出现的结果里——
+  马赛克漏一处，录制器就该拒绝出片。不引任何外部资源：测试不许碰网络。
+-->
+<style>
+  :root { --bg: #f6f7f9; --fg: #1d2330; --muted: #5b6475; --card: #fff; --line: #dfe3ea; --brand: #2f6fed; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.6 -apple-system, "PingFang SC", "Noto Sans CJK SC", sans-serif; }
+  header { padding: 16px; background: var(--card); border-bottom: 1px solid var(--line); }
+  header h1 { margin: 0 0 4px; font-size: 20px; }
+  .path { color: var(--muted); font-size: 12px; word-break: break-all; }
+  main { padding: 16px; max-width: 720px; margin: 0 auto; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+  label { display: block; margin-bottom: 8px; color: var(--muted); font-size: 14px; }
+  input { width: 100%; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; font-size: 16px; }
+  button { margin-top: 12px; padding: 8px 16px; border: 0; border-radius: 8px; background: var(--brand); color: #fff; font-size: 16px; }
+  #result { display: none; margin-top: 12px; padding: 12px; border-radius: 8px; background: #eef4ff; }
+  #result.show { display: block; }
+  .filler p { margin: 0 0 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>报表小助手</h1>
+  <div class="path" id="where" title="数据目录：{{HOME}}/Documents/报表">当前目录：{{HOME}}/Documents/报表</div>
+</header>
+<main>
+  <section class="card">
+    <label for="q">想看什么数据</label>
+    <input id="q" type="text" placeholder="比如：本月销售" autocomplete="off">
+    <label for="dir" style="margin-top:12px">导出到</label>
+    <input id="dir" type="text" value="{{HOME}}/Desktop/导出">
+    <button id="go" type="button">生成报表</button>
+    <div id="result">报表已生成，保存在 {{HOME}}/Documents/报表/本月.csv</div>
+  </section>
+  <section class="card filler" id="more">
+    <p>第一段：这里是一段很长的说明文字，用来把页面撑高，好测往下滚。</p>
+    <p>第二段：报表按月汇总，按渠道拆开，按周对比。</p>
+    <p>第三段：导出的文件是 CSV，拿表格软件直接打开。</p>
+    <p>第四段：数据每天早上八点更新一次。</p>
+    <p>第五段：有问题点右上角的帮助。</p>
+    <p>第六段：再多写几行，保证手机竖屏也能滚。</p>
+    <p>第七段：最后一段。</p>
+  </section>
+  <footer class="card" id="end">页面到底了</footer>
+</main>
+<script>
+  document.getElementById("go").addEventListener("click", function () {
+    var q = document.getElementById("q").value || "（没填）";
+    var r = document.getElementById("result");
+    r.setAttribute("data-q", q);
+    r.className = "show";
+  });
+  // 延迟插进来的节点：马赛克观察者得接得住后来才出现的字
+  setTimeout(function () {
+    var p = document.createElement("p");
+    p.id = "late";
+    p.className = "path";
+    p.textContent = "缓存：{{HOME}}/Library/Caches/报表小助手";
+    document.querySelector("header").appendChild(p);
+  }, 500);
+</script>
+</body>
+</html>

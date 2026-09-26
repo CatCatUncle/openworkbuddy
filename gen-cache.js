@@ -191,6 +191,25 @@ function get(k, wsRoot) {
 }
 
 /**
+ * 只看不碰：这条在不在、指的文件还在不在。不记命中、不改 last、不写盘，悬空的也不清。
+ * 按句配音要在花钱**之前**数清楚有几句要新买，额度按这个数去问；
+ * 用 get 去数的话，一批被额度拦下来的调用也会把「命中」记上一笔，省钱统计就虚了。
+ * @param {string | null} k
+ * @param {string} wsRoot
+ * @returns {boolean}
+ */
+function peek(k, wsRoot) {
+  if (!k) return false;
+  const e = load().items[k];
+  if (!e || !e.file) return false;
+  try {
+    return fs.existsSync(path.join(wsRoot, e.file));
+  } catch {
+    return false;
+  }
+}
+
+/**
  * 记一条。只记成功的、只记产物真落在工作空间里的。
  * out.file 是工具报出来的产物文件名——没有它就没法记指针，静默跳过（这不是错，
  * html_to_image 这类本来就不进缓存）。
@@ -229,4 +248,4 @@ function clear() {
   save({ v: 1, items: {} });
 }
 
-module.exports = { key, get, put, stats, clear, endpointOf, FILE, MAX_ENTRIES, HIT_NOTE };
+module.exports = { key, get, peek, put, stats, clear, endpointOf, FILE, MAX_ENTRIES, HIT_NOTE };

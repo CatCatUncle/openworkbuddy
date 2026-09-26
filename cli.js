@@ -100,9 +100,10 @@ const bold = (s) => (ttyErr ? `\x1b[1m${s}\x1b[0m` : s);
 /** 进度/诊断：一律 stderr，且 --quiet / --json 下彻底闭嘴 */
 // 往终端印过几回。「● 工具」那行跟它的「└ 结果」之间只要插进过别的东西（审批单、提示、正文），结果前就得把调用行再印一遍
 let inkSeq = 0;
-const prog = (s) => { if (!opts.quiet && !opts.json) { tickSettle(); inkSeq++; process.stderr.write(s); } };
+// workflow 面板开着的时候这两样都闭嘴：过程进会话，屏幕归面板（见下面「workflow 面板」）
+const prog = (s) => { if (!opts.quiet && !opts.json && !wfp.st) { tickSettle(); inkSeq++; process.stderr.write(s); } };
 /** 模型的回答：stdout，--json 下改走事件流 */
-const answer = (s) => { if (!opts.json) { tickSettle(); inkSeq++; process.stdout.write(s); } };
+const answer = (s) => { if (!opts.json && !wfp.st) { tickSettle(); inkSeq++; process.stdout.write(s); } };
 /** 不走 prog 的那几处（-q / --json 下也得说的话、审批单、提问单）：照样先把走字那行定格、照样记一笔 */
 const inkRaw = (s) => { tickSettle(); inkSeq++; process.stderr.write(s); };
 
@@ -112,21 +113,27 @@ const inkRaw = (s) => { tickSettle(); inkSeq++; process.stderr.write(s); };
 // 原地重画靠的是「光标还在那一行上」：所以只认最后印的那一行（inkSeq 没动过），它自己重画不算印过；
 // 别的东西一来（prog / answer / inkRaw）先把这行定格成「· 12s」再让路。整行放不下、窗口改过宽、
 // 人在输入行上打着字、审批单摆着，一律不画——宁可不走字，也不能把别的行擦了
-const tick = { render: null, t0: 0, seq: -1, cols: 0, tokens: 0, stop: "Ctrl+C", drawn: false };
+// 「思考中」那行打头的 · 会转（✢✳✶✻✽，跟 Claude Code 一样）：秒数一秒才跳一下，人盯着一行一秒不动的字，
+// 前两秒根本分不出是在想还是卡了。转的只有这一个字符、行长不变，所以不算噪音；工具那行不转，照旧一秒一画
+const tick = { render: null, t0: 0, seq: -1, cols: 0, tokens: 0, stop: "Ctrl+C", drawn: false, tailed: false, anim: false, frame: 0, lastSec: -1 };
 /** 输入行上有没有人在打字（交互模式装上）。有的话那行就是他的字，别往上画 */
 let typingNow = () => false;
-/** 刚印完一行，从这会儿开始计时。render(可用列数) 给画好的那行，放不下给 null */
-function tickArm(render, fits) {
+/** 刚印完一行，从这会儿开始计时。render(可用列数, 打头那个字) 给画好的那行，放不下给 null；anim=打头那个字转不转 */
+function tickArm(render, fits, anim) {
   tick.render = fits ? render : null;
   tick.t0 = Date.now();
   tick.seq = inkSeq;
   tick.cols = process.stderr.columns || 80;
   tick.drawn = false;
+  tick.tailed = false;
+  tick.anim = !!anim;
+  tick.lastSec = -1;
 }
+/** opt.bare：只重画那行本身、不挂尾巴（头两秒转圈用）；opt.glyph：打头那个字，不给就是定格的样子 */
 function tickPaint(opt) {
   if (!tick.render || tick.seq !== inkSeq || (process.stderr.columns || 80) !== tick.cols) return false;
-  const suffix = replKit.tickSuffix(opt);
-  const head = tick.render(termWidth() - cols(suffix) - 1); // 再留一列：● 在有的终端里占两格
+  const suffix = opt.bare ? "" : replKit.tickSuffix(opt);
+  const head = tick.render(termWidth() - cols(suffix) - 1, opt.glyph); // 再留一列：● 在有的终端里占两格
   if (!head) return false;
   process.stderr.write("\r\x1b[2K" + head + dim(suffix));
   return true;
@@ -134,22 +141,101 @@ function tickPaint(opt) {
 function tickDraw() {
   if (!tick.render || tick.seq !== inkSeq || keyGrab || typingNow()) return;
   const secs = (Date.now() - tick.t0) / 1000;
-  if (secs < 2) return; // 一眨眼就完的步骤不挂尾巴，屏幕上少一半噪音
+  const sec = Math.floor(secs);
+  if (!tick.anim && sec === tick.lastSec) return; // 不转的行秒数没跳就不画：定时器一秒跑好几次，白写终端
+  tick.lastSec = sec;
+  const glyph = tick.anim ? replKit.spinGlyph(tick.frame++) : undefined;
+  // 一眨眼就完的步骤不挂尾巴，屏幕上少一半噪音——只转那个字
+  if (secs < 2) { if (glyph && tickPaint({ bare: true, glyph })) tick.drawn = true; return; }
   // 放不下就先丢 token、再丢「Esc 停」，最后只剩秒数
   for (const o of [{ secs, tokens: tick.tokens, stop: tick.stop }, { secs, stop: tick.stop }, { secs }]) {
-    if (tickPaint(o)) { tick.drawn = true; return; }
+    if (tickPaint({ ...o, glyph })) { tick.drawn = true; tick.tailed = true; return; }
   }
 }
-/** 定格：「Esc 停」那截只在跑着的时候有意义，留在翻上去的记录里就是句过期的话 */
+/** 定格：「Esc 停」那截只在跑着的时候有意义，留在翻上去的记录里就是句过期的话；转着的那个字落回 · */
 function tickSettle() {
   if (!tick.drawn) return;
   tick.drawn = false;
-  if (!typingNow()) tickPaint({ secs: (Date.now() - tick.t0) / 1000 });
+  if (!typingNow()) tickPaint(tick.tailed ? { secs: (Date.now() - tick.t0) / 1000 } : { bare: true });
 }
 /** 人开始在那一行上打字了：定格、这一行不再走字（下一步 / 下一个工具重新起） */
 function tickPause() {
   tickSettle();
   tick.render = null;
+}
+
+// ---------- workflow 面板 ----------
+// `openworkbuddy workflow` 在终端里跑的时候，屏幕上只有一块面板（画法见 workflow-panel.js）：
+// 每一步的工具、正文、diff 一概不印——过程全进会话，网页/手机上照样逐条看得见。
+// 面板钉在最底下、每秒原地重画：往上挪它占的那几行、清到屏底、再画一遍。
+// 两条输出流在面板开着时各包一层：不管谁要印东西（审批单、提问单、报错），先把面板擦掉再印，
+// 下一秒面板在它下面重新长出来。漏包一处也不会把面板画进别人的字里——擦的是面板自己记着的那几行。
+// 提问/审批摆着的时候（hold > 0）不重画：人正对着单子按键，底下不能有东西跳
+const wp = require("./workflow-panel");
+const wfp = { st: null, cur: -1, widths: [], hold: 0, timer: null, rawErr: null, rawOut: null, bol: true, blink: false };
+/** 这一趟 workflow 用不用面板：两条流都得是终端（重定向到文件的人要的是全过程），-q / --json 另有约定 */
+const panelWanted = () => !!process.stderr.isTTY && !!process.stdout.isTTY && !opts.quiet && !opts.json;
+const cyan = (s) => (ttyErr ? `\x1b[36m${s}\x1b[0m` : s);
+/** 转着的那个字：暖色，跟压暗的正文分得开 */
+function spinPaint(g) { return ttyErr ? `\x1b[38;5;209m${g}\x1b[39m` : g; }
+const PANEL_PAINT = { dim, ok: green, fail: red, run: cyan, title: bold, sel: (s) => bold(cyan(s)) };
+const stripAnsi = (s) => String(s).replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
+/** 擦掉上一次画的面板。窗口改窄过的话，老的一行现在折成了好几行，按现在的宽度算要往上挪几行 */
+function panelErase() {
+  if (!wfp.widths.length) return;
+  const w = Math.max(1, process.stderr.columns || 80);
+  const rows = wfp.widths.reduce((n, x) => n + Math.max(1, Math.ceil(x / w)), 0);
+  wfp.widths = [];
+  wfp.rawErr(`\x1b[${rows}A\r\x1b[J`);
+}
+function panelDraw(final) {
+  if (!wfp.st || (wfp.hold && !final)) return;
+  wfp.blink = !final && !wfp.blink;
+  let rows = wp.render(wfp.st, { width: (process.stderr.columns || 80) - 2, paint: (s, k) => (PANEL_PAINT[k] || String)(s), blink: wfp.blink, flat: !!final });
+  // 比屏幕还高就往上挪不回去了：留标题和最底下那几行（进度条、正在跑的步）
+  const max = Math.max(4, (process.stderr.rows || 40) - 2);
+  if (!final && rows.length > max) rows = [rows[0], ...rows.slice(rows.length - (max - 1))];
+  panelErase();
+  wfp.rawErr((wfp.bol ? "" : "\n") + rows.join("\n") + "\n");
+  wfp.bol = true;
+  wfp.widths = final ? [] : rows.map((r) => cols(stripAnsi(r)));
+}
+/** 包一层 write：先擦面板，再记下写完光标是不是在行首（面板要从行首画） */
+function panelWrap(raw) {
+  return (chunk, ...rest) => {
+    panelErase();
+    const s = typeof chunk === "string" ? chunk : Buffer.isBuffer(chunk) ? chunk.toString("utf8") : "";
+    if (s) wfp.bol = s.endsWith("\n");
+    return raw(chunk, ...rest);
+  };
+}
+function panelStart(state) {
+  wfp.st = state;
+  wfp.cur = -1;
+  wfp.rawErr = process.stderr.write.bind(process.stderr);
+  wfp.rawOut = process.stdout.write.bind(process.stdout);
+  process.stderr.write = panelWrap(wfp.rawErr);
+  process.stdout.write = panelWrap(wfp.rawOut);
+  panelDraw();
+  wfp.timer = setInterval(() => panelDraw(), 1000);
+  if (wfp.timer.unref) wfp.timer.unref();
+}
+/** 收起：最后画一遍定格的（不闪、不截），两条流还原 */
+function panelStop() {
+  if (!wfp.st) return;
+  clearInterval(wfp.timer);
+  panelDraw(true);
+  process.stderr.write = wfp.rawErr;
+  process.stdout.write = wfp.rawOut;
+  wfp.st = null;
+}
+/** 事件进面板：正文、用量、产出照记（落盘和收尾要用），屏幕上只动那一步的一行 */
+function panelFeed(state, ev) {
+  if (ev.type === "text" && !ev.depth) state.finalParts.push(callout.strip(ev.delta));
+  else if (ev.type === "usage") state.usage = ev;
+  else if (ev.type === "files") { state.files = ev.files || state.files; noteChanged(state, ev.changed); }
+  const s = wfp.st.steps[wfp.cur];
+  if (s) wp.feed(s, ev, { toolLine: (e) => e.title || toolView.callLine(e, { width: 60 }) });
 }
 /** 机器可读事件流 */
 const emitJson = (o) => { if (opts.json) process.stdout.write(JSON.stringify(o) + "\n"); };
@@ -719,6 +805,28 @@ const termWidth = () => Math.max(40, (process.stderr.columns || 80) - 2);
 /** 工具那几行的颜色：● 和名字亮一点，参数和输出压暗，出错的红 */
 const toolPaint = (s, k) => ({ bullet: (y) => (ttyErr ? `\x1b[36m${y}\x1b[39m` : y), name: bold, arg: dim, out: dim, more: dim, err: red }[k] || ((y) => y))(s);
 /**
+ * 走字那行的工具调用，后面挂上长工具报来的进度：「● Render(a.html) · 渲染帧 432/900」。
+ * 一行必须塞进 room 列（中文按两列算）：超一格就折行，原地重画会擦不干净。
+ * 先让参数那截缩到 30 列（callLine 的下限），还不够才截进度那句；连调用行都放不下给 null，这一趟不走字。
+ * label 里的控制字符一律换成空格——它是工具随手写的，混进一个 ESC 这一行的宽度就算不准了
+ */
+function toolTickLine(ev, label, room, paint) {
+  const fit = (w) => cols(toolView.callLine(ev, { width: w })) <= w;
+  const t = String(label || "").replace(/[\x00-\x1f\x7f]/g, " ").replace(/\s+/g, " ").trim();
+  let tail = "";
+  if (t) {
+    const sep = " · ", max = room - 30;
+    if (cols(sep + t) <= max) tail = sep + t;
+    else {
+      let cut = "";
+      for (const ch of t) { if (cols(sep + cut + ch + "…") > max) break; cut += ch; }
+      if (cut) tail = sep + cut + "…";
+    }
+  }
+  if (tail && fit(room - cols(tail))) return toolView.callLine(ev, { width: room - cols(tail), paint }) + (paint ? paint(tail, "more") : tail);
+  return fit(room) ? toolView.callLine(ev, { width: room, paint }) : null;
+}
+/**
  * 这些事件一来，上一段正文就算说完了：渲染器里压着的半行（还没等到换行的标题、列表、没配平的 **）先吐干净。
  * 不吐的话，工具那行先上屏、压着的半句后到，两步的话还会粘成一行；下一步的「## 标题」也会被当成上一段的续行，原样打出 ##。
  * status 不在里面：心跳、重试提示会插在一段话中间，在那儿吐等于把没配平的记号原样打出去
@@ -735,6 +843,7 @@ function makeEmit(state) {
   return (ev) => {
     // 先播给网页/手机，再管终端怎么显示：这两件事互不相干，哪边坏了都不该拖累另一边
     if (state.live) state.live.event(ev);
+    if (wfp.st) return panelFeed(state, ev);
     if (opts.json) {
       // step_usage 只是给终端那行走字用的，整趟的用量照旧在收尾那条 usage 里——--json 的事件表不多出一种
       if (ev.type === "step_usage") return;
@@ -745,6 +854,8 @@ function makeEmit(state) {
       if (ev.type === "files") { state.files = ev.files || state.files; noteChanged(state, ev.changed); }
       return;
     }
+    // 结果到了先撤进度：下面一印东西那行就定格，定格的样子该是「● Render(a.html) · 1m20s」，不停在半截的数上
+    if (ev.type === "tool_result" && state.toolProg && state.toolProg.id === ev.id) state.toolProg = null;
     if (MD_BREAKS.has(ev.type)) flushMd();
     if (ev.type === "text") {
       if (ev.depth > 0) return;
@@ -759,7 +870,8 @@ function makeEmit(state) {
       if (ev.depth === 0) {
         const head = `· 第 ${ev.step} 步 思考中…`;
         prog(dim("\n" + head));
-        tickArm((room) => (cols(head) <= room ? dim(head) : null), cols(head) <= termWidth());
+        const rest = head.slice(1);
+        tickArm((room, g) => (cols(head) > room ? null : g ? spinPaint(g) + dim(rest) : dim(head)), cols(head) <= termWidth(), true);
       }
       state.streamed = false;
     } else if (ev.type === "step_usage") {
@@ -782,7 +894,18 @@ function makeEmit(state) {
       // 主线上的工具才走字：专家那几行交错着来，挂在谁后面都说不清
       if (!ev.depth) {
         const fit = (w) => cols(toolView.callLine(ev, { width: w })) <= w;
-        tickArm((room) => (fit(room) ? toolView.callLine(ev, { width: room, paint: toolPaint }) : null), fit(termWidth()));
+        // 进度（tool_progress）来了只改 state.toolProg，下一次重画自己带上；认 id，别把上一个工具的进度挂到这一行
+        state.toolProg = null;
+        tickArm((room) => toolTickLine(ev, state.toolProg && state.toolProg.id === ev.id ? state.toolProg.label : "", room, toolPaint), fit(termWidth()));
+      }
+    } else if (ev.type === "tool_progress") {
+      // 不另起一行：渲染 900 帧印 900 行就把屏幕冲没了。只挂在还在走字的那行调用后面（主线、最后印的就是它），
+      // 别的（专家内层、已经被别的输出顶上去的）不说——结果回来照旧有「└」那行
+      const last = state.lastTool;
+      if (!ev.depth && last && last.id === ev.id && last.seq === inkSeq) {
+        const n = (x) => typeof x === "number" && Number.isFinite(x);
+        const label = ev.label || (n(ev.total) && ev.total > 0 && n(ev.done) ? `${ev.done}/${ev.total}` : n(ev.pct) ? `${Math.round(ev.pct)}%` : "");
+        if (label) { state.toolProg = { id: ev.id, label }; tick.lastSec = -1; } // lastSec 归零：秒数没跳也得把新进度画上去
       }
     } else if (ev.type === "ask_user") {
       // 单子马上要画了：记下是哪一次调用，它的结果回来时就不再印一遍。几个专家同时问的话按题目认
@@ -965,7 +1088,8 @@ let capHintShown = false;
 async function drawOutputs(files) {
   const cap = imgCap();
   const pick = termImage.pickDrawable(files, 3);
-  if (!pick.length || !cap.proto || opts.quiet || opts.json) return [];
+  // 面板开着的时候不贴：一张图顶掉半屏，面板就被挤没了。整趟跑完统一贴
+  if (!pick.length || !cap.proto || opts.quiet || opts.json || wfp.st) return [];
   const drawn = [];
   for (const name of pick) {
     let png = null;
@@ -1019,6 +1143,8 @@ let stopCurrent = null;
  * 不能拿 stopCurrent 顶：那是 Ctrl+C 的把手，第二下就是硬退——Esc Esc 连按一下子就把整个程序关了
  */
 let stopSoft = null;
+/** 最近一趟的现场（产出、报错）。workflow 一步跑完要从这儿取，runOnce 只回一个 ok/error @type {any} */
+let lastRun = null;
 /** 终端里打的插话，下一步交给 agent。跟网页/手机上补的那句合并成一份 */
 const termInterject = [];
 /**
@@ -1284,7 +1410,12 @@ function termPick(p, timeoutMs) {
  * 两头哪头先答都算数。推到手机上这件事不是锦上添花——人起了个长任务就去开会了，
  * 中途那道岔路要么等他回来（几十分钟白烧），要么模型替他赌一把。
  */
+/** 单子摆着的时候面板不重画：人正对着它按键，底下不能有东西跳 */
 async function askUserBoth(ask) {
+  wfp.hold++;
+  try { return await askUserBothIn(ask); } finally { wfp.hold--; }
+}
+async function askUserBothIn(ask) {
   const id = newId("ask");
   const timeoutMs = Math.max(30000, Number(ask && ask.timeoutMs) || 300000);
   const live = liveNow;
@@ -1316,6 +1447,10 @@ async function askUserBoth(ask) {
  * 在日志里长得一模一样，这是最糟的一种沉默。
  */
 async function handleApproval(entry) {
+  wfp.hold++;
+  try { return await handleApprovalIn(entry); } finally { wfp.hold--; }
+}
+async function handleApprovalIn(entry) {
   const live = liveNow;
   // 终端前没人、也没说要等手机（--ask-remote）：跟提问同一个规矩，当场拒掉。
   // 以前这儿照样摆卡片干等两分钟——cron、管道里跑的活儿每碰一条要批的就白卡 120 秒，最后照样是拒
@@ -1454,6 +1589,7 @@ async function runOnceIn(runtime, text, mode, interactive, shown) {
   // 这是两条线里唯一一条服务端替人填的：它确实是从命令行进来的，不是猜的。
   sess.lane = "cli";
   const state = { streamed: false, usage: null, files: null, changed: [], finalParts: [], error: null, md: newMdRenderer() };
+  lastRun = state; // workflow 那头要知道这一步写过什么、错在哪
   // 挂到实时目录上：网页端的「工程」标签就是靠它知道这台机器的终端里此刻在干什么
   const live = cliLive.announce({
     id: sessionId, title: sess.title || asked.slice(0, 60), cwd: getWorkspaceDir(),
@@ -1467,7 +1603,8 @@ async function runOnceIn(runtime, text, mode, interactive, shown) {
   // 那一行的走字：stderr 是终端才有；-q / --json 下没有进度行可挂
   tick.tokens = 0;
   tick.stop = interactive && replKeyHook ? "Esc" : "Ctrl+C";
-  const tickTimer = process.stderr.isTTY && !opts.quiet && !opts.json ? setInterval(tickDraw, 1000) : null;
+  // 转圈要一秒八九帧；不转的行在 tickDraw 里按秒数没跳就跳过，不会跟着多写终端
+  const tickTimer = process.stderr.isTTY && !opts.quiet && !opts.json ? setInterval(tickDraw, replKit.SPIN_MS) : null;
   if (tickTimer && tickTimer.unref) tickTimer.unref();
   const ctrl = new AbortController();
   let aborted = false;
@@ -1620,7 +1757,8 @@ async function runOnceIn(runtime, text, mode, interactive, shown) {
    }
   } catch (e) {
     state.error = e.message;
-    inkRaw(red(`\n出错了：${e.message}\n`));
+    // workflow 面板那一行会画 ✗ 和原因，收尾再完整说一遍；这儿再印就是一件事说三遍
+    if (!wfp.st) inkRaw(red(`\n出错了：${e.message}\n`));
   }
   process.removeListener("SIGINT", onSigint);
   process.removeListener("SIGHUP", onHup);
@@ -1805,16 +1943,79 @@ function splitFiles(text) {
   // openworkbuddy workflow 流程.json：文件先读、先校验，写错的地方一次列全，一步都不跑。
   // 放在 splitFiles 前面：文件名本身不是附件
   let flow = null;
+  // -i 只有流程认：单发任务里写了它，多半是把命令敲错了，悄悄丢掉等于让人以为自己填过了
+  if (sub !== "workflow" && (opts.inputs || []).length) {
+    process.stderr.write(red(`-i 只配合 openworkbuddy workflow 用，这里用不上：${opts.inputs.join(" ")}\n`));
+    process.exit(2);
+  }
   if (sub === "workflow") {
     const wf = require("./workflow");
     const file = oneShot;
     if (!file) { process.stderr.write(red("要给一个流程文件：openworkbuddy workflow 流程.json\n")); process.exit(2); }
+    const full = path.resolve(process.cwd(), file);
     let text;
-    try { text = fs.readFileSync(path.resolve(process.cwd(), file), "utf8"); }
-    catch (e) { process.stderr.write(red(`读不了 ${file}：${e.code || e.message}\n`)); process.exit(2); }
+    // 配方名当文件名用（openworkbuddy workflow promo-video）。当前目录真有这个文件时跑文件：
+    // 人明写的路径优先，配方名只是简写。配方模块懒加载，普通流程文件用不着它
+    let recipes = null, recipe = null;
+    if (!fs.existsSync(full)) {
+      try { recipes = require("./recipes"); } catch { recipes = null; }
+      recipe = recipes ? recipes.get(file) : null;
+      if (recipe) text = JSON.stringify(recipes.workflowOf(recipe.id, { config, hasRenderer: false }));
+    }
+    if (text === undefined) {
+      try { text = fs.readFileSync(full, "utf8"); }
+      catch (e) {
+        process.stderr.write(red(`读不了 ${file}：${e.code || e.message}\n`));
+        if (e.code === "ENOENT" && recipes) process.stderr.write(dim(`内置配方可以直接写名字：${recipes.BUILTIN.map((x) => x.id).join(" / ")}\n`));
+        process.exit(2);
+      }
+    }
+    const what = recipe ? `配方 ${recipe.id}` : file;
     const p = wf.parse(text);
-    if (p.error) { process.stderr.write(red(`${file} 有问题，一步都没跑：\n${p.error}\n`)); process.exit(2); }
+    if (p.error) { process.stderr.write(red(`${what} 有问题，一步都没跑：\n${p.error}\n`)); process.exit(2); }
+    // 配方里有的选项在命令行里用不了（截图要桌面版、生视频要先接模型）：选中了就直说为什么，
+    // 不悄悄换成另一个——换了的话跑完一看封面不是自己要的，钱和时间都花了
+    const blocked = (values) => {
+      if (!recipe) return [];
+      const out = [];
+      for (const f of recipes.formFor(recipe.id, { config, hasRenderer: false }).fields || []) {
+        const v = values[f.name];
+        for (const x of Array.isArray(v) ? v : v ? [v] : []) {
+          const o = (f.options || []).find((q) => String(q.v) === String(x));
+          if (o && o.disabled) out.push(`${f.label}（${f.name}）：「${o.l || x}」用不了，${o.reason || "这台机器上没配好"}`);
+        }
+      }
+      return out;
+    };
+    const given = wf.inputArgs(opts.inputs || []);
+    const iv = wf.resolveInputs(p.inputs, given.given);
+    const bad = given.errors.concat(iv.errors, blocked(iv.values));
+    if (bad.length) { process.stderr.write(red(`${what} 的 -i 有问题，一步都没跑：\n${bad.join("\n")}\n`)); process.exit(2); }
+    if (iv.missing.length) {
+      const miss = iv.missing.map((n) => p.inputs.find((x) => x.name === n));
+      const flags = miss.map((x) => `-i ${x.name}=…`).join(" ");
+      // 没人能答（管道、--json、脚本里跑）：直接停，告诉人缺哪几个 -i。别拿空值硬跑——模型会自己编一个产品出来
+      if (!somebodyHome()) {
+        process.stderr.write(red(`缺 ${flags}（${miss.map((x) => x.label).join("、")}），一步都没跑\n`));
+        process.exit(2);
+      }
+      for (const inp of miss) {
+        const choices = inp.options ? `，${inp.type === "multi" ? "可以选几个：" : ""}${inp.options.join(" / ")}` : "";
+        for (let tries = 1; ; tries++) {
+          const ans = await termReadLine(`${inp.label}（${inp.name}${choices}）：`, 600000);
+          if (ans === null) { process.stderr.write(red(`\n没填${inp.label}，一步都没跑。下次可以直接写 -i ${inp.name}=…\n`)); process.exit(2); }
+          const one = wf.resolveInputs([inp], { [inp.name]: ans });
+          const why = one.errors.concat(blocked(one.values));
+          if (!why.length && !one.missing.length) { iv.values[inp.name] = one.values[inp.name]; break; }
+          if (tries >= 3) { process.stderr.write(red(`${inp.label}问了三次都没填上，一步都没跑\n`)); process.exit(2); }
+          prog(yellow(`  ${why[0] || `${inp.label}要填，不能空着`}\n`));
+        }
+      }
+    }
     flow = p.steps;
+    flow.title = recipe ? recipe.title : p.name || path.basename(file).replace(/\.json$/i, "");
+    flow.desc = recipe ? recipe.blurb : p.description || ""; // 配方的 description 开头就是标题，面板上别印两遍
+    flow.inputs = iv.values;
     oneShot = "";
   }
   const shot = splitFiles(oneShot);
@@ -1881,13 +2082,26 @@ function splitFiles(text) {
 
   if (flow) {
     // 几步共用一个会话；{{名字}} 贴的是那一步落盘的最终回复。管道和 -f 带进来的材料跟着第一步走
+    // 终端里：一块面板，每步一行（见 workflow-panel.js）。输出重定向了就照老样子把全过程印出来——
+    // 那是给人事后翻、给别的程序接着加工的，一步一步的来龙去脉才是它要的
     const wf = require("./workflow");
+    const panel = panelWanted() ? wp.init({ name: flow.title, description: flow.desc, steps: flow }) : null;
+    if (panel) {
+      panel.model = engineBackend ? engineBackend.label : llm.model;
+      panelStart(panel);
+    }
     const results = {};
+    const made = [];
     let worst = "ok";
+    let lastSaid = "";
+    let stuck = null; // 停在哪一步（没成、后面不跑了）
     for (let i = 0; i < flow.length; i++) {
       const st = flow[i];
-      prog(yellow(`\n── 第 ${i + 1}/${flow.length} 步 · ${st.name} ──\n`));
-      let text = wf.fill(st.prompt, results);
+      const row = panel && panel.steps[i];
+      if (row) { wfp.cur = i; Object.assign(row, { status: "run", t0: Date.now(), lastAt: Date.now(), activity: "思考中" }); panelDraw(); }
+      else prog(yellow(`\n── 第 ${i + 1}/${flow.length} 步 · ${st.name} ──\n`));
+      // 先填 inputs 再贴前面几步的结果：反过来的话，上一步回复里碰巧写着 {{input.x}} 也会被当成空填掉
+      let text = wf.fill(wf.fillInputs(st.prompt, flow.inputs || {}), results);
       if (i === 0) {
         if (oneShot) text += `\n\n---\n材料：\n\n${oneShot}`;
         text = attach.withNote(text, attachNames);
@@ -1896,12 +2110,40 @@ function splitFiles(text) {
       const last = sess.transcript[sess.transcript.length - 1];
       const said = last && last.type === "assistant" ? (last.events || []).filter((e) => e.type === "text").map((e) => e.delta).join("") : "";
       results[st.name] = said;
-      if (r === "aborted") { mcpManager.stopAll(); process.exit(130); }
+      if (said.trim()) lastSaid = said;
+      if (lastRun) for (const n of lastRun.changed) if (!made.includes(n)) made.push(n);
+      if (row) {
+        row.t1 = Date.now();
+        row.status = r === "ok" ? "ok" : "fail";
+        if (r === "aborted") row.error = "按 Ctrl+C 停了";
+        else if (r !== "ok") row.error = String((lastRun && lastRun.error) || "没成").split("\n")[0].slice(0, 80);
+      }
+      if (r === "aborted") { panelStop(); mcpManager.stopAll(); process.exit(130); }
       if (r !== "ok") {
         worst = "error";
         const rest = flow.length - i - 1;
-        if (!st.continueOnError && rest) { process.stderr.write(red(`第 ${i + 1} 步没成，后面 ${rest} 步不跑了\n`)); break; }
+        if (!st.continueOnError || !rest) stuck = { i, name: (panel && row.name) || st.name, error: row ? row.error : "" };
+        if (!st.continueOnError && rest) {
+          if (panel) for (let k = i + 1; k < flow.length; k++) panel.steps[k].status = "skip";
+          else process.stderr.write(red(`第 ${i + 1} 步没成，后面 ${rest} 步不跑了\n`));
+          break;
+        }
       }
+    }
+    if (panel) {
+      panelStop();
+      // 面板上只有每步一行；真正要交出去的是最后一步说的那段话。中间几步的原话在会话里。
+      // 停在半路的不交：前面某一步的话当成整趟的结论摆出来，人会以为做完了
+      if (stuck) prog(red(`\n✗ 停在第 ${stuck.i + 1} 步「${stuck.name}」${stuck.error ? `：${stuck.error}` : ""}\n`));
+      else if (lastSaid.trim()) {
+        const md = newMdRenderer();
+        const body = callout.strip(lastSaid);
+        answer("\n" + (md ? md.write(body) + md.end() : body));
+        if (!/\n$/.test(body) && !md) answer("\n");
+      }
+      if (made.length) prog(dim(`\n▪ 这趟写过：${made.slice(0, 8).join("、")}${made.length > 8 ? ` 等 ${made.length} 个` : ""}\n`));
+      hintOutputs(made, await drawOutputs(made), false);
+      prog(dim(`${made.length ? "" : "\n"}每步的过程：openworkbuddy resume ${sessionId}\n`));
     }
     mcpManager.stopAll();
     process.exit(worst === "ok" ? 0 : 1);
@@ -1986,13 +2228,15 @@ function splitFiles(text) {
   // 画在输入行**下面**，每次按键擦掉重画。两条守则：
   //   1. **相对移动，不算绝对行号。** 先用换行把光标顶下去（顶到屏幕底会自然滚屏），
   //      再按同样的行数往回移——滚没滚都不会错位，这是终端里唯一稳的做法。
-  //   2. **没挑过就不替人做主。** 只弹不选：直接回车按原样发走，只有按过 ↑↓ 或 Tab
-  //      才算「我挑了这条」。不然人打了一半的字会被菜单悄悄换掉。
+  //   2. **亮着的就是回车会跑的。** 跟 Claude Code 一样第一条默认选中，回车直接跑它，Tab 只补全。
+  //      哪条默认亮、哪条回车只补全不开跑（要花钱的命令）由 repl.menu 定；@ 补路径不默认选——
+  //      一句话打到 @某文件 就回车，是想连这句话一起发走，不是想先补全。
+  //      人一旦按过 ↑↓，只要候选没变就停在他挑的那条；再打一个字候选变了，才回到第一条。
   // 任何一步出岔子（终端不认这些指令、Node 换了内部实现）就整场关掉菜单：
   // 宁可回到「按 Tab 补全」，也不能把人的输入行搅成一团。
   const tw = require("./text-width"); // 中文占两列，对齐一律走它
   const MENU_MAX = 6;
-  const menuState = { rows: 0, items: [], sel: -1, dead: false };
+  const menuState = { rows: 0, items: [], sel: -1, kind: "", key: "", dead: false };
   const menuUsable = () => !menuState.dead && !!process.stdout.isTTY && !!process.stdin.isTTY;
 
   function menuErase() {
@@ -2007,7 +2251,7 @@ function splitFiles(text) {
     } catch { menuState.dead = true; }
     menuState.rows = 0;
   }
-  function menuClose() { menuErase(); menuState.items = []; menuState.sel = -1; }
+  function menuClose() { menuErase(); menuState.items = []; menuState.sel = -1; menuState.kind = ""; menuState.key = ""; }
 
   // 模态选择器：/resume、/model 回车之后进这儿。↑↓ 挑、打字搜、回车定、Esc 走人。
   // 跟 / 菜单共用同一个 _ttyWrite 拦截点，也共用 menuState.dead 这个「这台终端不认」的开关：
@@ -2033,7 +2277,7 @@ function splitFiles(text) {
     if (!all.length) return Promise.resolve(null);
     return new Promise((done) => {
       let q = typeof opt.q === "string" ? opt.q : ""; // Ctrl+R：输入行上已经打的字直接当搜索词
-      let sel = 0;
+      let sel = Number(opt.sel) || 0; // 默认停在「现在这个」上：回车等于不换，手滑不会换掉
       const paint = () => {
         pickerErase();
         const v = repl.pickerView(all, { q, sel, title: opt.title, verb: opt.verb, hint: opt.hint, max: repl.PICKER_ROWS });
@@ -2071,6 +2315,38 @@ function splitFiles(text) {
         if (k.ctrl && k.name === "u") { if (q) { q = ""; sel = 0; paint(); } return; }
         if (k.ctrl || k.meta) return;                     // 别的组合键一律忽略，不要当搜索词吃进去
         if (typeof ch === "string" && ch && !/[\x00-\x1f\x7f]/.test(ch)) { q += ch; sel = 0; paint(); }
+      };
+      picker.on = true;
+      paint();
+    });
+  }
+
+  /** 横着的档位条：←/→ 挪、回车定（给那一档的 id）、Esc / Ctrl+C 给 null。跟 chooseFrom 共用一个按键拦截点 */
+  function slideFrom(stops, at, o) {
+    const opt = o || {};
+    if (!Array.isArray(stops) || !stops.length) return Promise.resolve(null);
+    return new Promise((done) => {
+      let i = Math.max(0, Math.min(Number(at) || 0, stops.length - 1));
+      const paint = () => {
+        pickerErase();
+        const v = repl.sliderView(stops, i, { cur: opt.cur, title: opt.title, width: (process.stdout.columns || 80) - 1 });
+        const track = v.track.map((t) => (t.kind === "on" ? `\x1b[1;36m${t.text}\x1b[22;39m` : dim(t.text))).join("");
+        const out = ["", dim(v.head), track, ...v.desc.map((l) => dim(l)), dim(v.foot)];
+        try {
+          process.stdout.write(out.join("\n") + "\n");
+          picker.lines = out.length;
+        } catch { menuState.dead = true; picker.lines = 0; }
+      };
+      const finish = (id) => {
+        picker.on = false; picker.key = null;
+        pickerErase();
+        done(id || null);
+      };
+      picker.key = (ch, k) => {
+        if ((k.ctrl && (k.name === "c" || k.name === "d")) || k.name === "escape") return finish(null);
+        if (k.name === "return" || k.name === "enter") return finish(stops[i].id);
+        const step = k.name === "left" || k.name === "h" ? -1 : k.name === "right" || k.name === "l" || k.name === "tab" ? 1 : 0;
+        if (step && i + step >= 0 && i + step < stops.length) { i += step; paint(); }
       };
       picker.on = true;
       paint();
@@ -2127,6 +2403,10 @@ function splitFiles(text) {
     if (!items.length || pos.rows > 0) { menuClose(); return; }
     menuErase();
     menuState.items = items;
+    const key = hit.kind + "\n" + items.map((it) => it.text).join("\n");
+    if (key !== menuState.key) menuState.sel = typeof hit.sel === "number" && !multi.length ? Math.min(hit.sel, items.length - 1) : -1;
+    menuState.kind = hit.kind;
+    menuState.key = key;
     if (menuState.sel >= items.length) menuState.sel = items.length - 1;
     const labelW = items.reduce((w, it) => Math.max(w, tw.cols(it.text)), 0);
     const room = Math.max(20, (process.stdout.columns || 80) - 1);
@@ -2411,13 +2691,16 @@ function splitFiles(text) {
           return;
         }
         if (k.name === "escape") { menuClose(); return; }
-        if (k.name === "tab" || ((k.name === "return" || k.name === "enter") && menuState.sel >= 0)) {
+        const enter = k.name === "return" || k.name === "enter";
+        if (k.name === "tab" || (enter && menuState.sel >= 0)) {
           const pick = menuState.items[menuState.sel < 0 ? 0 : menuState.sel];
+          const go = enter && !!pick.run && !multi.length;
           menuClose();
           rl.write(null, { ctrl: true, name: "e" });
           rl.write(null, { ctrl: true, name: "u" }); // 清掉这行，再把整条命令写回去
-          rl.write(pick.insert);
-          return;
+          rl.write(go ? pick.run : pick.insert);
+          if (!go) return;
+          // 回车跑亮着的那条：行已经换成整条命令了，下面照常当一次回车交出去
         }
       }
       const nk = repl.newlineKey(k, Date.now() - lastReturn.at);
@@ -2543,6 +2826,15 @@ function splitFiles(text) {
     }
     if (v.name === "clear") { process.stdout.write("\x1b[2J\x1b[3J\x1b[H"); return; }
     if (v.name === "mode") {
+      if (!v.arg && pickerUsable()) {
+        const list = modes.EXEC_MODES;
+        const picked = await chooseFrom(repl.modePickerRows(list, opts.mode), {
+          title: "openworkbuddy> 换成哪个模式？", verb: "换", hint: "打字就筛",
+          sel: Math.max(0, list.findIndex((m) => m.id === opts.mode)),
+        });
+        if (!picked || picked.id === opts.mode) { prog(dim(`还是 ${modes.modeLabel(opts.mode)}\n`)); return; }
+        v = { ...v, arg: picked.id };
+      }
       if (!v.arg) { prog(dim(`当前是 ${modes.modeLabel(opts.mode)}；换：/mode ${modes.MODE_ARG}\n`)); return; }
       // 这儿原来一个字的校验都没有。`/mode goal` 敲进去照收，状态行接着印「模式 goal」，
       // 而底下 `["ask","plan","craft"].includes("goal")` 判 false，安静地按 craft 跑完——
@@ -2554,6 +2846,14 @@ function splitFiles(text) {
     }
     if (v.name === "perm") {
       const cur = permNow();
+      if (!v.arg && pickerUsable()) {
+        const ids = Object.keys(security.PERMISSION_MODES);
+        const got = await slideFrom(ids.map((id) => ({ id, ...security.PERMISSION_MODES[id] })), ids.indexOf(cur), {
+          cur, title: "openworkbuddy> 这一趟放多少权？往右越放得开",
+        });
+        if (!got || got === cur) { prog(dim(`还是「${security.PERMISSION_MODES[cur].label}」\n`)); return; }
+        v = { ...v, arg: got };
+      }
       if (!v.arg) {
         // 不给值就把四档连同「这档到底意味着什么」一起摆出来。只印 id 的话，
         // plan / ask / auto / full 四个英文词谁也分不清哪个更放得开，只能去翻文档。
@@ -2640,6 +2940,13 @@ function splitFiles(text) {
       const ck = require("./checkpoints");
       const ws = getWorkspaceDir();
       const rows = ck.list(ws, sessionId);
+      if (!v.arg && rows.length && pickerUsable()) {
+        const picked = await chooseFrom(repl.checkpointPickerRows(rows, Date.now()), {
+          title: "openworkbuddy> 退回哪一步之前？那一步和它之后动过的文件一起退", verb: "退回这步之前", hint: "打字就筛文件名",
+        });
+        if (!picked) { prog(dim("没退，文件一个没动\n")); return; }
+        v = { ...v, arg: String(picked.n) };
+      }
       if (!v.arg) { prog(repl.checkpointListText(rows, Date.now())); return; }
       const pick = repl.pickCheckpoint(rows, v.arg);
       if (!pick) { prog(yellow(`没有第 ${v.arg} 步。/rewind 不带序号先看有哪些\n`)); return; }

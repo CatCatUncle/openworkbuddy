@@ -16,6 +16,15 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+// 要赶在任何 require 之前：cli-live 按 OPENWORKBUDDY_HOME 找目录（不看 OPENWORKBUDDY_DATA_DIR），
+// 不设的话 ⑤ 摆出去的题会落进用户真实的 data/cli-live/，开着的网页上就多一道测试题
+const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "owb-approve-home-"));
+process.env.OPENWORKBUDDY_HOME = HOME;
+process.env.OPENWORKBUDDY_DATA_DIR = path.join(HOME, "data");
+process.on("exit", (code) => {
+  if (code === 0) { try { fs.rmSync(HOME, { recursive: true, force: true }); } catch {} }
+  else console.log("留着现场（数据目录）：" + HOME);
+});
 const ap = require("../cli-approve");
 
 function fakeIO(inputs) {

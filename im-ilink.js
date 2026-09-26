@@ -27,7 +27,6 @@
  */
 
 const crypto = require("crypto");
-const fs = require("fs");
 const path = require("path");
 const imMedia = require("./im-media");
 
@@ -273,7 +272,7 @@ function createIlinkConnection({ getConfig, onMessage, onCursor = () => {}, log 
     const ct = contextTokens.get(userId);
     if (!ct) throw new Error("没有该用户的 context_token（需对方先发一条消息）");
     const name = String(fileName || path.basename(absPath));
-    const buf = fs.readFileSync(absPath);
+    const buf = imMedia.readForSend(absPath); // 读不到时报错里不带绝对路径：这句会进聊天
     if (!buf.length) throw new Error("文件是空的");
     if (buf.length > imMedia.MAX_INBOUND_BYTES) {
       throw new Error(`文件 ${(buf.length / 1048576).toFixed(1)}MB，超过微信 ${imMedia.MAX_INBOUND_BYTES / 1048576}MB 上限`);
@@ -353,7 +352,7 @@ function createIlinkConnection({ getConfig, onMessage, onCursor = () => {}, log 
       try {
         saved.push({ kind: m.kind, name: await downloadMedia(m) });
       } catch (e) {
-        failed.push({ kind: m.kind, name: m.name, why: String(e.message || e).slice(0, 120) });
+        failed.push({ kind: m.kind, name: m.name, why: imMedia.scrubPaths(e && e.message || e).slice(0, 120) }); // 要转告用户的，先抹路径再截
         log.error(`[微信iLink] ${KIND_CN[m.kind] || "附件"}没收下来: ${e.message}`);
       }
     }

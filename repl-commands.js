@@ -29,6 +29,7 @@ const PERM_ARG = PERM_IDS.join("|"); // 跟 MODE_ARG 一个写法：不带尖括
 
 /**
  * 命令表。`arg` 填了就是「吃一个参数」，不填就是「不吃参数」；`choices` 填了就连取值一起管。
+ * `paid` 是「一敲就要过一趟模型、花钱」的：菜单里打一半回车只补全不开跑（见 menu()）。
  * 帮助文本、Tab 补全、拼错建议全从这张表来——加一条命令只改这里，不会出现「实现了没写进帮助」。
  */
 const COMMANDS = [
@@ -39,9 +40,9 @@ const COMMANDS = [
   { name: "resume", aliases: ["r"], arg: "[序号或会话id]", desc: "接着之前那段往下聊；不给值就弹选择器，↑↓ 挑、打字搜" },
   { name: "session", desc: "当前会话的 id 和存盘位置" },
   { name: "status", aliases: ["cost", "usage"], desc: "模式、底层引擎、工作目录、这个会话跑了几轮、一共花了多少 token" },
-  { name: "init", desc: "让它把这个目录看一遍，写一份 AGENTS.md，以后每趟活儿都照着它来" },
-  { name: "compact", desc: "把前面聊过的压成一段摘要腾地方；原文照样归档，不删" },
-  { name: "review", arg: "[基准分支]", desc: "把改动当别人的代码挑一遍毛病，只审不改；不给基准就审还没提交的，给了就审这条分支从分叉起改的" },
+  { name: "init", paid: true, desc: "让它把这个目录看一遍，写一份 AGENTS.md，以后每趟活儿都照着它来" },
+  { name: "compact", paid: true, desc: "把前面聊过的压成一段摘要腾地方；原文照样归档，不删" },
+  { name: "review", paid: true, arg: "[基准分支]", desc: "把改动当别人的代码挑一遍毛病，只审不改；不给基准就审还没提交的，给了就审这条分支从分叉起改的" },
   { name: "diff", desc: "这个会话动过哪些文件；工作目录要是 git 仓库，顺带把 diff 也出了" },
   { name: "rewind", arg: "[序号]", desc: "把这个会话改过的文件退回某一步之前；不给序号就列出能退的步" },
   { name: "mcp", desc: "外部连接器接上了没有、各自带了几个工具、没接上是卡在哪儿" },
@@ -202,6 +203,17 @@ function complete(line, opt) {
  * 可没人会去按 Tab：一个记不住命令的人，第一反应是打个 `/` 然后等着看有什么。
  * 所以菜单得自己冒出来，Tab 只是「挑中这条」的快捷键之一。
  *
+ * 跟 Claude Code 一样**第一条默认就是选中的**（sel: 0），回车直接跑它：打 `/st` 看见
+ * `/status` 亮着，再按一下回车就该出状态，而不是把 `/st` 当成打错的命令教训一顿。
+ * 亮着的那条就是回车会跑的那条，人看得见，所以不算替他做主。例外两种：
+ *   - `paid` 的命令（/init /compact /review 和自定义命令，一跑就过一趟模型）没打全名就只补全、不开跑。
+ *     打 `/c` 回车，排第一的是 /compact——手滑一下花十几秒外加一笔 token，不值
+ *   - 挑取值那一层（`/mode ` 后面）一个字都没打的时候不选：不给值本身就是一种用法（弹选择器）
+ * 每条的 `run` 是回车要跑的那一整行；null 就是「回车只补全」。
+ *
+ * 排序：名字/别名一字不差的排最前（`/r` 就是 /resume），名字打头的其次，只有别名打头的最后
+ * ——`/c` 该先看见 /cd /clear，不是因为 /status 有个别名叫 cost 就排到最上面。
+ *
  * 跟 complete() 共用同一张 COMMANDS 表：补全给什么，菜单就列什么，不会出现
  * 「菜单里有、Tab 补不出来」这种两份清单对不上的事。
  *
@@ -212,28 +224,103 @@ function menu(line, opt) {
   const head = s.match(/^\/([a-z0-9-]*)$/);
   if (head) {
     const pre = head[1];
-    const items = [];
-    for (const c of COMMANDS.concat(customList(opt && opt.custom).map((c) => ({ name: c.name, arg: "[参数]", desc: c.description || "自定义命令" })))) {
-      if (![c.name, ...(c.aliases || [])].some((n) => n.startsWith(pre))) continue;
-      items.push({
+    const hits = [];
+    const own = customList(opt && opt.custom).map((c) => ({ name: c.name, arg: "[参数]", paid: true, desc: c.description || "自定义命令" }));
+    for (const c of COMMANDS.concat(own)) {
+      const names = [c.name, ...(c.aliases || [])];
+      if (!names.some((n) => n.startsWith(pre))) continue;
+      const exact = !!pre && names.includes(pre);
+      const rank = exact ? 0 : c.name.startsWith(pre) ? 1 : 2;
+      hits.push({
+        rank,
         text: "/" + c.name,
         // 吃参数的命令，插进去之后光标停在空格后面：接着打值就行，不用再补一个空格
         insert: "/" + c.name + (c.arg ? " " : ""),
+        run: c.paid && !exact ? null : "/" + c.name,
         desc: c.arg ? `${c.arg}　${c.desc}` : c.desc,
       });
     }
-    return items.length ? { kind: "cmd", prefix: pre, items } : null;
+    const items = hits.map((h, i) => ({ h, i })).sort((a, b) => a.h.rank - b.h.rank || a.i - b.i)
+      .map(({ h }) => ({ text: h.text, insert: h.insert, run: h.run, desc: h.desc }));
+    return items.length ? { kind: "cmd", prefix: pre, items, sel: 0 } : null;
   }
   const val = s.match(/^\/([a-z][a-z0-9-]*)[ \t]+(\S*)$/);
   if (val) {
     const c = find(val[1]);
     if (c && c.choices) {
       const items = c.choices.filter((x) => x.startsWith(val[2]))
-        .map((x) => ({ text: x, insert: `/${c.name} ${x}`, desc: "" }));
-      return items.length ? { kind: "choice", prefix: val[2], items } : null;
+        .map((x) => ({ text: x, insert: `/${c.name} ${x}`, run: `/${c.name} ${x}`, desc: "" }));
+      return items.length ? { kind: "choice", prefix: val[2], items, sel: val[2] ? 0 : -1 } : null;
     }
   }
   return null;
+}
+
+/**
+ * 横着的档位条：/perm 不给值时摆出来，←/→ 挪、回车定、Esc 算了（跟 Claude Code 调 effort 那条一样）。
+ * 档位是一条从紧到松的线，摆成一横排比列表更说得清「往右就是更放得开」。纯的：给档位、给挪到哪，吐几段字。
+ *
+ * @param {Array<{id: string, label: string, desc?: string}>} stops 从紧到松
+ * @param {number} at 挪到哪一档
+ * @param {{ cur?: string, title?: string, width?: number }} [o] cur 是开这条之前那一档（描述里标「现在」）
+ * @returns {{ head: string, track: Array<{text: string, kind: "on"|"off"|"line"}>, desc: string[], foot: string, at: number }}
+ */
+function sliderView(stops, at, o = {}) {
+  const list = Array.isArray(stops) ? stops : [];
+  const i = list.length ? Math.max(0, Math.min(Number(at) || 0, list.length - 1)) : -1;
+  const width = Math.max(20, Number(o.width) || 80);
+  const labels = list.map((s, k) => `${k === i ? "●" : "○"} ${s.label}`);
+  const used = labels.reduce((n, l) => n + cols(l), 0) + 1;
+  // 线段按宽度伸缩：宽了拉长好看，窄了缩到一格也不折行（折了行，擦的时候就擦不干净）
+  const seg = list.length > 1 ? Math.max(1, Math.min(6, Math.floor((width - used - 2) / (list.length - 1)) - 2)) : 0;
+  let track = [{ text: " ", kind: "line" }];
+  list.forEach((s, k) => {
+    if (k) track.push({ text: ` ${"─".repeat(seg)} `, kind: "line" });
+    track.push({ text: labels[k], kind: k === i ? "on" : "off" });
+  });
+  // 一格线段都塞不下：只摆当前这档，两头的 ‹ › 说明还能往哪边挪
+  if (i >= 0 && track.reduce((n, t) => n + cols(t.text), 0) > width - 1) {
+    track = [
+      { text: ` ${i > 0 ? "‹" : " "} `, kind: "line" }, { text: labels[i], kind: "on" },
+      { text: ` ${i < list.length - 1 ? "›" : " "}  ${i + 1}/${list.length}`, kind: "line" },
+    ];
+  }
+  const cur = i >= 0 ? list[i] : null;
+  const here = cur && o.cur === cur.id ? "（现在就是这档）" : "";
+  // 说明折成几行摆全，不截：全自动那档最要紧的「确定它在干什么再开」就在句尾，截掉的正是它
+  const desc = [];
+  let line = " ";
+  for (const ch of Array.from(cur ? `${cur.label}${here}：${cur.desc || ""}` : "")) {
+    if (cols(line + ch) > width - 1) { desc.push(line); line = " "; }
+    line += ch;
+  }
+  if (line.trim()) desc.push(line);
+  return { head: String(o.title || ""), track, desc: desc.slice(0, 4), foot: "  ←/→ 调 · 回车定 · Esc 算了", at: i };
+}
+
+/** /mode 的选择器：四个模式各一行，说清各自干什么；现在这个标出来、默认就选着它 */
+function modePickerRows(modes, cur) {
+  return pickerRowsOf(modes, (m) => m && m.id ? ({
+    id: m.id, label: m.label || m.id,
+    meta: [m.id === cur ? "现在这个" : "", m.sub || ""].filter(Boolean).join(" · "),
+    hay: [m.id, m.label || "", m.sub || ""].join(" "),
+    row: m,
+  }) : null);
+}
+
+/** /rewind 的选择器：新的在上面（要退的十有八九是刚才那一步），序号照旧跟着步走，/rewind 3 和选第 3 步是同一步 */
+function checkpointPickerRows(rows, now) {
+  const list = Array.isArray(rows) ? rows : [];
+  const t = Number(now) || 0;
+  return list.map((r, i) => {
+    const what = r.tool === "rewind" ? "回退" : r.before == null ? "新建" : r.after == null ? "删除" : "修改";
+    return {
+      id: String(i + 1), label: `${what} ${r.rel}`,
+      meta: [`第 ${i + 1} 步`, ago(Date.parse(r.ts), t || Date.parse(r.ts)), r.current === "changed" ? "之后又被改过" : ""].filter(Boolean).join(" · "),
+      hay: `${what} ${r.rel} ${i + 1}`,
+      row: r, n: i + 1,
+    };
+  }).reverse();
 }
 
 const GAP = 4;
@@ -956,14 +1043,24 @@ function tickSuffix(o) {
   return ` · ${t}${tok}${stop}`;
 }
 
+/** 「思考中」打头那个字转的几帧：来回呼吸，不是单向转圈（单向的话最后一帧跳回第一帧那下很扎眼） */
+const SPIN_FRAMES = ["·", "✢", "✳", "✶", "✻", "✽", "✻", "✶", "✳", "✢"];
+const SPIN_MS = 120;
+function spinGlyph(frame) {
+  const n = Math.abs(Math.floor(Number(frame) || 0));
+  return SPIN_FRAMES[n % SPIN_FRAMES.length];
+}
+
 module.exports = {
   COMMANDS, PASTE_GAP_MS, HISTORY_MAX, SHELL_NOTE_MAX, SHELL_NOTES_KEEP, shellNote, withShellNotes,
   parse, mergePaste, makeInbox, resolveCd, complete, menu, helpText, unknownText, badArgText,
   modelRows, modelListText, pickModelRow,
   RESUME_MAX, ago, sessionRows, sessionListText, pickSessionRow,
   PICKER_ROWS, pickerRowsOf, filterPickerRows, pickerWindow, pickerView, sessionPickerRows, modelPickerRows,
+  sliderView, modePickerRows, checkpointPickerRows,
   sizeText, sessionUsageText, changedFilesText, checkpointListText, pickCheckpoint, rewindResultText, mcpText, compactedText, initTask,
   PLAN_GO_TEXT, PLAN_NEXT_HINT, planNextRows, planNextMode,
   continuedLine, newlineKey, composeText, splitComposed, echoRows, historyLine, historyRows, kCount, tickSuffix,
+  SPIN_FRAMES, SPIN_MS, spinGlyph,
   sanitizeHistory, nearest, find,
 };
