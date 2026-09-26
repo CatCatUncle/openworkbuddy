@@ -20,6 +20,12 @@ process.env.OPENWORKBUDDY_DATA_DIR = path.join(HOME, "data");
 const HK = require(path.join(ROOT, "hooks"));
 const tools = require(path.join(ROOT, "tools"));
 const { executeTool } = tools;
+// Hooks 本身执行系统 shell 命令；测试行为用 Node 实现，避免依赖 pwd/sleep/touch 等 Unix 命令。
+const HOOK_RUNNER_PATH = path.join(__dirname, "hooks-runner.js");
+const HOOK_RUNNER = `"${process.execPath}" "${HOOK_RUNNER_PATH}"`;
+const hookCommand = (mode) => `${HOOK_RUNNER} ${mode}`;
+// tools.js 在 Windows 上通过 cmd /s /c 原样传整条命令；从 PATH 调 node，避免 /s 去掉命令首尾引号。
+const shellHookCommand = (mode) => `node "${HOOK_RUNNER_PATH}" ${mode}`;
 
 let pass = 0, fail = 0, finished = false;
 process.on("exit", (code) => {
@@ -56,50 +62,50 @@ const ok = (c, m, extra) => { if (c) { pass++; console.log("  ✓ " + m); } else
 
   console.log("\n【2】跑一条");
   {
-    let r = await HK.runOne({ run: "echo hi; exit 3", timeout: 10 }, { cwd: WS });
+    let r = await HK.runOne({ run: hookCommand("exit-3"), timeout: 10 }, { cwd: WS });
     ok(r.code === 3 && /hi/.test(r.out), "退出码和输出都拿到了", r);
     const t0 = Date.now();
-    r = await HK.runOne({ run: "sleep 5", timeout: 1 }, { cwd: WS });
+    r = await HK.runOne({ run: hookCommand("wait"), timeout: 1 }, { cwd: WS });
     ok(r.timedOut && Date.now() - t0 < 3000, "超时就掐，不干等", { r, ms: Date.now() - t0 });
-    await HK.runOne({ run: "sleep 1.5; touch late.txt", timeout: 1 }, { cwd: WS });
+    await HK.runOne({ run: hookCommand("write-late"), timeout: 1 }, { cwd: WS });
     await new Promise((res) => setTimeout(res, 1500));
     ok(!fs.existsSync(path.join(WS, "late.txt")), "超时是真杀掉了，不是不等它、让它在后台接着跑");
     const ac = new AbortController();
     setTimeout(() => ac.abort(), 200);
     const t1 = Date.now();
-    r = await HK.runOne({ run: "sleep 5", timeout: 30 }, { cwd: WS, stopSignal: ac.signal });
+    r = await HK.runOne({ run: hookCommand("wait"), timeout: 30 }, { cwd: WS, stopSignal: ac.signal });
     ok(r.code === null && Date.now() - t1 < 3000, "任务停了钩子一起停", { r, ms: Date.now() - t1 });
-    r = await HK.runOne({ run: "pwd", timeout: 10 }, { cwd: WS });
+    r = await HK.runOne({ run: hookCommand("cwd"), timeout: 10 }, { cwd: WS });
     ok(fs.realpathSync(r.out.trim()) === fs.realpathSync(WS), "在工作目录里跑", r.out);
-    r = await HK.runOne({ run: "yes 0123456789 | head -c 200000", timeout: 10 }, { cwd: WS });
+    r = await HK.runOne({ run: hookCommand("flood"), timeout: 10 }, { cwd: WS });
     ok(r.out.length <= HK.OUT_MAX + 100 && /省略/.test(r.out), "输出太长只留头尾", r.out.length);
   }
 
   console.log("\n【3】before_shell 拦命令");
   {
-    const hooks = HK.normalize({ before_shell: [{ match: "^git push", run: "echo 推送要人来做; exit 1" }] });
+    const hooks = HK.normalize({ before_shell: [{ match: "^git push", run: hookCommand("before-shell-fail") }] });
     const opts = { hooks, security: { permission_mode: "full" } };
     const r = await executeTool("run_shell", { command: "git push origin main; touch pushed.txt" }, opts);
     ok(r.isError && /before_shell/.test(r.content) && /推送要人来做/.test(r.content), "拦下了，钩子的话交给了它", r.content);
     ok(!fs.existsSync(path.join(WS, "pushed.txt")), "被拦的命令真没跑");
-    const r2 = await executeTool("run_shell", { command: "touch ran.txt" }, opts);
+    const r2 = await executeTool("run_shell", { command: shellHookCommand("write-ran") }, opts);
     ok(!r2.isError && fs.existsSync(path.join(WS, "ran.txt")), "对不上 match 的照常跑（反向对照）", r2.content);
-    const seen = HK.normalize({ before_shell: [{ run: "printf %s \"$OWB_COMMAND\" > cmd.txt" }] });
+    const seen = HK.normalize({ before_shell: [{ run: hookCommand("save-command") }] });
     await executeTool("run_shell", { command: "echo 你好" }, { hooks: seen, security: { permission_mode: "full" } });
     ok(fs.readFileSync(path.join(WS, "cmd.txt"), "utf8") === "echo 你好", "钩子从 OWB_COMMAND 拿到了原命令");
   }
 
   console.log("\n【4】after_edit 接在回执后面");
   {
-    const hooks = HK.normalize({ after_edit: [{ match: "\\.txt$", run: "printf 'saw:%s' \"$OWB_FILE\"" }] });
+    const hooks = HK.normalize({ after_edit: [{ match: "\\.txt$", run: hookCommand("print-file") }] });
     const r = await executeTool("write_file", { path: "a.txt", content: "hi" }, { hooks, security: { permission_mode: "full" } });
     ok(!r.isError && /after_edit/.test(r.content) && (r.content.includes("saw:" + path.join(fs.realpathSync(WS), "a.txt")) || r.content.includes("saw:" + path.join(WS, "a.txt"))), "钩子拿到了绝对路径，输出接进了回执", r.content);
     const r2 = await executeTool("write_file", { path: "b.md", content: "hi" }, { hooks, security: { permission_mode: "full" } });
     ok(!/after_edit/.test(r2.content), "对不上 match 的不跑（反向对照）", r2.content);
-    const evil = HK.normalize({ after_edit: [{ run: "echo \"$OWB_FILE\" > /dev/null" }] });
+    const evil = HK.normalize({ after_edit: [{ run: hookCommand("print-file") }] });
     await executeTool("write_file", { path: "x;touch pwned.txt;.txt", content: "hi" }, { hooks: evil, security: { permission_mode: "full" } });
     ok(!fs.existsSync(path.join(WS, "pwned.txt")), "文件名里的 ; 没变成第二条命令");
-    const bad = HK.normalize({ after_edit: [{ run: "echo lint 挂了 >&2; exit 1" }] });
+    const bad = HK.normalize({ after_edit: [{ run: hookCommand("edit-fail") }] });
     const r3 = await executeTool("edit_file", { path: "a.txt", old_text: "hi", new_text: "hello" }, { hooks: bad, security: { permission_mode: "full" } });
     ok(/改动已经写进去了/.test(r3.content) && /lint 挂了/.test(r3.content), "钩子失败：说清改动已写入，并把报错交给它", r3.content);
     ok(fs.readFileSync(path.join(WS, "a.txt"), "utf8") === "hello", "钩子失败不撤销改动");
@@ -148,7 +154,7 @@ const ok = (c, m, extra) => { if (c) { pass++; console.log("  ✓ " + m); } else
       return { calls: step, events, seen };
     };
     const w = (content) => ({ calls: [{ id: "w" + Math.random().toString(36).slice(2, 7), name: "write_file", input: { path: "ok.flag", content } }] });
-    const gate = { done: [{ run: "grep -q fixed ok.flag || { echo 测试没过：还是坏的; exit 1; }" }] };
+    const gate = { done: [{ run: hookCommand("check-fixed") }] };
     const a = await run([w("broken"), { text: "修好了。" }, w("fixed"), { text: "这回真修好了。" }], gate);
     ok(a.calls === 4, "钩子没过 → 打回去接着改，过了才停（模型调用 4 次）", a.calls);
     ok(a.seen.some((s) => /收尾钩子/.test(s) && /测试没过/.test(s)), "打回时把钩子的输出念给它听");
