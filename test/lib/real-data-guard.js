@@ -70,6 +70,11 @@ function canonical(abs) {
       const r = realpathRaw(head);
       return tail.length ? path.join(r, ...tail) : r;
     } catch {
+      // 悬空软链（指向的地方还没建，比如 CI 上的 data/ 不进 git）realpath 解不开；
+      // 往上退就把「这根是软链」丢了，/tmp/x/a.json 会被当成临时目录放过去。顺着链接读一跳接着解
+      let link = null;
+      try { if (fs.lstatSync(head).isSymbolicLink()) link = path.resolve(path.dirname(head), fs.readlinkSync(head)); } catch {}
+      if (link) { head = tail.length ? path.join(link, ...tail.splice(0)) : link; continue; }
       const up = path.dirname(head);
       if (up === head) return abs;
       tail.unshift(path.basename(head));
