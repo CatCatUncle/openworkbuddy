@@ -100,6 +100,7 @@ const SUITES = [
   ["im-feishu-media", "飞书发视频：mp4 走 media 带封面能直接播，超 30MB 先压 720p 预览并说原片在哪，发送超时不重发，没 ffmpeg 按文件发"],
   ["cli-pty", "真终端里敲键盘：单子出来前的键、粘贴、手机抢答、没回车的半句"],
   ["cli-oneshot", "一次性跑和脚本调用：stdin 开着不关、--session 打错、--json 列会话/引擎、--help 不加载大件、被 kill 时落盘、多端并写不丢"],
+  ["codex-detection", "Codex CLI 探测：Windows npm .cmd 垫片可启动，模型读取失败不误报未安装"],
   ["engine-resilience", "本机引擎出岔子：result 里的报错、按停止当场杀、临时目录退出即删、续跑 id 失效重开一根"],
   ["repl-commands", "REPL 命令表"],
   ["session-search", "任务历史检索：正文 / 产出文件名 / 意思相近"],
@@ -176,7 +177,7 @@ const SUITES = [
 // 临时家和 trace 账本，照单独跑的样子跑：哪天谁删了那一行，护栏当场拦下判红。
 // 给了的话整轮的临时家会替它兜住，漏洞只在单独跑时现身——写真账本的错还被吞掉，谁也看不见。
 // 名单是实测来的：不设 OPENWORKBUDDY_HOME / TRACE_FILE 单独跑、护栏拦到过的就是这八个。
-const SELF_ISOLATED = new Set(["hooks", "decide-tool", "relay", "cli-approve", "agent-loop", "continue-gate", "ask-gate", "engine-resilience"]);
+const SELF_ISOLATED = new Set(["hooks", "decide-tool", "relay", "cli-approve", "agent-loop", "continue-gate", "ask-gate", "engine-resilience", "codex-detection"]);
 const ISOLATION_ENV = ["OPENWORKBUDDY_HOME", "OPENWORKBUDDY_DATA_DIR", "OPENWORKBUDDY_TRACE_FILE"];
 {
   const typo = [...SELF_ISOLATED].filter((n) => !SUITES.some(([s]) => s === n));

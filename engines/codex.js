@@ -19,13 +19,12 @@
  *     这两条都会在设置页写明白，用户可以自己收紧。
  */
 
-const { runJsonl, probeVersion } = require("./jsonl");
+const { runJsonl, probeVersion, runCapture } = require("./jsonl");
 const thinking = require("./../thinking");
 const { resolveBin } = require("./which");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { execFile } = require("child_process");
 const { dataPath } = require("../paths");
 
 const ID = "codex";
@@ -111,20 +110,18 @@ function accountModels(bin, env) {
   const key = bin + "\0" + (env.CODEX_HOME || "");
   const hit = accountModelsCache.get(key);
   if (hit && Date.now() - hit.at < ACCOUNT_MODELS_TTL) return Promise.resolve(hit.list);
-  return new Promise((resolve) => {
-    execFile(bin, ["debug", "models"], { env, timeout: 10000, maxBuffer: 16 * 1024 * 1024 }, (err, stdout) => {
-      let list = null;
-      if (!err) {
-        try {
-          const ms = JSON.parse(stdout).models;
-          if (Array.isArray(ms)) list = ms.filter((m) => m && m.slug && m.visibility !== "hide").map((m) => String(m.slug));
-        } catch {}
-      }
-      if (list && !list.length) list = null;
-      // 失败不缓存：刚登录完 / 刚升级完 CLI，下一次就该拿得到
-      if (list) accountModelsCache.set(key, { at: Date.now(), list });
-      resolve(list);
-    });
+  return runCapture(bin, ["debug", "models"], { env, timeoutMs: 10000, maxBuffer: 16 * 1024 * 1024 }).then((r) => {
+    let list = null;
+    if (!r.error && r.code === 0) {
+      try {
+        const ms = JSON.parse(r.stdout).models;
+        if (Array.isArray(ms)) list = ms.filter((m) => m && m.slug && m.visibility !== "hide").map((m) => String(m.slug));
+      } catch {}
+    }
+    if (list && !list.length) list = null;
+    // 失败不缓存：刚登录完 / 刚升级完 CLI，下一次就该拿得到
+    if (list) accountModelsCache.set(key, { at: Date.now(), list });
+    return list;
   });
 }
 

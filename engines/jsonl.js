@@ -218,9 +218,67 @@ function probeHelp(bin, needle, timeoutMs = 8000) {
   });
 }
 
+/**
+ * Run a short CLI command and collect its output. Unlike execFile, this also
+ * understands npm's .cmd shims on Windows through the same launch plan used by
+ * the streaming engine runner.
+ *
+ * @returns {Promise<{code:number,stdout:string,stderr:string,error:Error|null,timedOut:boolean}>}
+ */
+function runCapture(bin, args = [], { env, timeoutMs = 10000, maxBuffer = 16 * 1024 * 1024 } = {}) {
+  return new Promise((resolve) => {
+    let child;
+    let timer = null;
+    let settled = false;
+    let stdout = "";
+    let stderr = "";
+    let outputBytes = 0;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve(result);
+    };
+    const failed = (error, timedOut = false) => ({ code: -1, stdout, stderr, error, timedOut });
+    let plan;
+    try {
+      plan = win.launchPlan(bin, args);
+      child = spawn(plan.bin, plan.args, {
+        stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, PATH: augmentedPath(), ...plan.env, ...(env || {}) },
+        ...plan.opts,
+      });
+    } catch (e) {
+      return finish(failed(e));
+    }
+    const collect = (which, chunk) => {
+      if (settled) return;
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+      outputBytes += buf.length;
+      if (outputBytes > maxBuffer) {
+        const error = new Error(`命令输出超过 ${maxBuffer} 字节上限`);
+        try { win.killTree(child, "SIGKILL"); } catch {}
+        finish(failed(error));
+        return;
+      }
+      if (which === "stdout") stdout += buf.toString("utf8");
+      else stderr += buf.toString("utf8");
+    };
+    child.stdout.on("data", (chunk) => collect("stdout", chunk));
+    child.stderr.on("data", (chunk) => collect("stderr", chunk));
+    child.on("error", (error) => finish(failed(error)));
+    child.on("close", (code) => finish({ code: code == null ? -1 : code, stdout, stderr, error: null, timedOut: false }));
+    timer = setTimeout(() => {
+      const error = new Error(`命令运行超过 ${timeoutMs}ms`);
+      try { win.killTree(child, "SIGKILL"); } catch {}
+      finish(failed(error, true));
+    }, timeoutMs);
+  });
+}
+
 function firstVersionLine(raw) {
   const line = String(raw || "").split("\n").map((s) => s.trim()).find(Boolean) || "";
   return line.slice(0, 80);
 }
 
-module.exports = { runJsonl, killAll, probeVersion, probeOption, probeHelp };
+module.exports = { runJsonl, killAll, probeVersion, probeOption, probeHelp, runCapture };
