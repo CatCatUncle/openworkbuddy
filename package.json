@@ -1,7 +1,7 @@
 {
   "name": "openworkbuddy",
   "version": "0.10.5",
-  "description": "OpenWorkBuddy — AI Agent 办公工作台（自然语言下任务，AI 自主规划执行，交付 PPT/Word/Excel 等成果文件）",
+  "description": "OpenWorkBuddy \u2014 AI Agent \u529e\u516c\u5de5\u4f5c\u53f0\uff08\u81ea\u7136\u8bed\u8a00\u4e0b\u4efb\u52a1\uff0cAI \u81ea\u4e3b\u89c4\u5212\u6267\u884c\uff0c\u4ea4\u4ed8 PPT/Word/Excel \u7b49\u6210\u679c\u6587\u4ef6\uff09",
   "type": "commonjs",
   "main": "electron-main.js",
   "engines": {
@@ -57,5 +57,10 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/CatCatUncle/openworkbuddy.git"
+  },
+  "overrides": {
+    "pptxgenjs": {
+      "image-size": "2.0.3"
+    }
   }
 }
