@@ -3904,7 +3904,7 @@ async function executeToolCore(name, input, opts = {}) {
   const resolveFile = (rel, mode) => {
     // 少给 path 是模型真会犯的错（本机 96 段会话里 7 次：write_file 2 次、edit_file 5 次，
     // 多半是参数 JSON 太长被截断，或者干脆漏了这一项）。老写法把空路径解析成工作目录本身，
-    // 下游抛一句 `EISDIR: illegal operation on a directory, open '/Users/…/workbuddy-clone-master'`——
+    // 下游抛一句 `EISDIR: illegal operation on a directory, open '/Users/…/my-project'`——
     // 模型完全看不出错在哪（它会照原样再试一遍），还把本机绝对路径抖进了对话里。
     if (!String(rel == null ? "" : rel).trim()) {
       throw new Error(

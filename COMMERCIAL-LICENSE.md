@@ -163,7 +163,7 @@ PolyForm Noncommercial 只授权版权（和专利），「No Other Rights」一
 
 - 名称 **OpenWorkBuddy** / **开发者猫叔**
 - 项目图标、界面里的品牌标志
-- 容易让人认错的近似名（OpenWorkBuddy Pro、WorkBuddy 云版……）
+- 容易让人认错的近似名（OpenWorkBuddy Pro、OpenWorkBuddy 云版……）
 
 可以做的：在你自己的产品里写一句「基于 OpenWorkBuddy 构建」（事实陈述，不用问）。
 不可以的：拿这个名字或图标当你产品的名字、域名、应用商店条目、官网标题。

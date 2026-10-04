@@ -316,11 +316,9 @@ console.log("\n【3】experts.json 绑的技能，必须是 git 跟踪的");
 // 2026-09-17 把它从仓库里清干净，是一处一处手工改的：环境变量、登录 Cookie、数据目录、
 // CSS 变量和动画名、预加载暴露给页面的那个 window 对象、几个函数名和全局量。
 // 手工清掉的东西会手工地长回来——下次谁顺手写个 wbFoo，没有任何人会注意到。
-// 为什么在意：`wb` 太短，短到会被读成别家产品的缩写；这个项目跟腾讯 WorkBuddy 没有任何关系
-// （README 末尾那段声明讲的就是这件事）。所以自己的代码里不留这两个字母打头的标识符。
+// 为什么在意：`wb` 太短，短到会被读成别家产品的缩写。所以自己的代码里不留这两个字母打头的标识符。
 // 扫的是「代码里露脸的名字」：单独成词的 wb、wbXxx、wb- / wb_ / WB- / WB_。
-// **不**扫 WorkBuddy 这个词本身——README / NOTICE / 商业授权里指名道姓说「与腾讯 WorkBuddy
-// 无关」「别起容易认错的近似名」，那是指示性使用，恰恰是要留着的。
+// **不**扫项目名 OpenWorkBuddy 本身——商业授权里「别起容易认错的近似名」那段要指名道姓。
 // 也扫不到 owb- / OWB_ / --owb-*：前面那个 o 就是词的一部分，正则的左边界不认。
 const NAMING_RE = /(^|[^A-Za-z0-9_])(wb([^A-Za-z0-9_]|$)|wb[A-Z]|wb[-_]|WB[-_])/;
 
@@ -388,11 +386,11 @@ console.log("\n【4】`wb` 这个简写不许再回到代码里");
   const innocent = [
     "  .turn { animation: owbRise .24s var(--owb-ease); }",
     "  const raw = String(env.OPENWORKBUDDY_INTRANET || env.OWB_INTRANET || \"\");",
-    "本项目与腾讯公司及其 WorkBuddy 产品无任何关联、授权、赞助或背书。",
+    "OpenWorkBuddy 是独立的开源项目，个人非商用免费。",
     'const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "owb-skill-"));',
   ].join("\n");
   ok(namingHits("someplace.js", innocent).length === 0,
-    "反向对照：owb- / OWB_ / --owb-* / 声明里的 WorkBuddy 一个都没误伤",
+    "反向对照：owb- / OWB_ / --owb-* / 项目名 OpenWorkBuddy 一个都没误伤",
     JSON.stringify(namingHits("someplace.js", innocent)));
 
   // 反向对照三：白名单是按文件配的，搬个地方就不算数。

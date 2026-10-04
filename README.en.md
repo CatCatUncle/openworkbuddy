@@ -312,13 +312,12 @@ Project layout, tests and PR conventions are in [CONTRIBUTING.md](CONTRIBUTING.m
 
 ## Coming from another tool
 
-Looking for an **open-source alternative to Claude Cowork, Codex, WorkBuddy, Doubao or Qwen office features**, or a **DeepSeek agent harness**? Each has an honest comparison page, including when the other product is the better fit:
+Looking for an **open-source alternative to Claude Cowork, Codex, Doubao or Qwen office features**, or a **DeepSeek agent harness**? Each has an honest comparison page, including when the other product is the better fit:
 
 | You use / you're looking for | Comparison |
 |---|---|
 | Claude Cowork | [Open-source Claude Cowork alternative — self-hosted, any model](https://catcatuncle.github.io/openworkbuddy/alternatives/claude-cowork/) |
 | Codex | [Codex alternative for office work — and it can drive the Codex CLI](https://catcatuncle.github.io/openworkbuddy/alternatives/codex/) |
-| WorkBuddy | [Open-source WorkBuddy alternative — local AI office agent](https://catcatuncle.github.io/openworkbuddy/alternatives/workbuddy/) |
 | Doubao | [Doubao office alternative — still runs Doubao models](https://catcatuncle.github.io/openworkbuddy/alternatives/doubao/) |
 | Qwen | [Qwen office alternative — runs Qwen via DashScope or Ollama](https://catcatuncle.github.io/openworkbuddy/alternatives/qwen/) |
 | DeepSeek | [DeepSeek agent harness — paste a key and it works](https://catcatuncle.github.io/openworkbuddy/alternatives/deepseek-agent/) |

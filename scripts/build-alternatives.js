@@ -90,27 +90,6 @@ const PAGES = [
     },
   },
   {
-    slug: "workbuddy",
-    en: {
-      name: "WorkBuddy",
-      title: "Open-source WorkBuddy alternative — local AI office agent",
-      desc: "OpenWorkBuddy is an independent open-source take on the WorkBuddy idea: a local-first AI office agent that delivers real files, with your own model keys and your own data.",
-      who: "WorkBuddy is Tencent's AI office agent for the desktop.",
-      why: "People look for an open alternative when they want to self-host, read and change the code, use their own model keys, or run it on a server for a team.",
-      fit: "OpenWorkBuddy is an independent implementation of the same idea — not affiliated with Tencent — with the code, the prompts and the traces all in one repository.",
-      stay: "You want a product that is hosted, maintained and supported by Tencent.",
-    },
-    zh: {
-      name: "WorkBuddy",
-      title: "WorkBuddy 开源替代：本机运行的 AI 办公助理",
-      desc: "OpenWorkBuddy 是 WorkBuddy 思路的独立开源实现：本机优先的 AI 办公助理，交付真文件，用你自己的模型 Key，数据留在你自己手里。",
-      who: "WorkBuddy 是腾讯出的桌面端 AI 办公助理。",
-      why: "想自己部署、看得见也改得了代码、用自己的模型 Key、或者放服务器给团队用的人，会找开源的替代。",
-      fit: "OpenWorkBuddy 是同一思路的独立实现（跟腾讯没有关系），代码、提示词、执行轨迹全在一个仓库里。",
-      stay: "你要的是腾讯官方托管、维护和提供支持的产品。",
-    },
-  },
-  {
     slug: "doubao",
     en: {
       name: "Doubao",
@@ -188,7 +167,7 @@ const UI = {
     hubTitle: "OpenWorkBuddy vs Claude Cowork, Codex, WorkBuddy, Doubao, Qwen and DeepSeek",
     hubDesc: "How OpenWorkBuddy, an open-source local-first AI office agent, compares with Claude Cowork, Codex, WorkBuddy, Doubao, Qwen and DeepSeek — and when each one is the better fit.",
     hubLead: "Honest comparisons: what OpenWorkBuddy does, and when the other product is the better choice.",
-    note: "OpenWorkBuddy is an independent open-source project. It is not affiliated with or endorsed by Anthropic, OpenAI, Tencent, ByteDance, Alibaba or DeepSeek; product names belong to their owners.",
+    note: "OpenWorkBuddy is an independent open-source project. It is not affiliated with or endorsed by Anthropic, OpenAI, ByteDance, Alibaba or DeepSeek; product names belong to their owners.",
     other: "中文", home: "Home",
   },
   zh: {
@@ -198,7 +177,7 @@ const UI = {
     hubTitle: "OpenWorkBuddy 对比 Claude Cowork、Codex、WorkBuddy、豆包、千问、DeepSeek",
     hubDesc: "开源、本机优先的 AI 办公助理 OpenWorkBuddy，跟 Claude Cowork、Codex、WorkBuddy、豆包、千问、DeepSeek 比有什么不同，各自什么时候更合适。",
     hubLead: "老实的对比：OpenWorkBuddy 做什么，以及什么时候别家更合适。",
-    note: "OpenWorkBuddy 是独立的开源项目，跟 Anthropic、OpenAI、腾讯、字节跳动、阿里、DeepSeek 都没有关联，也没有得到它们的认可；各产品名称归各自所有者。",
+    note: "OpenWorkBuddy 是独立的开源项目，跟 Anthropic、OpenAI、字节跳动、阿里、DeepSeek 都没有关联，也没有得到它们的认可；各产品名称归各自所有者。",
     other: "English", home: "首页",
   },
 };
