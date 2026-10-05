@@ -19,8 +19,8 @@
 
 const fs = require("fs");
 const path = require("path");
-const { dataPath } = require("./src/platform/paths");
-const store = require("./src/platform/store");
+const { dataPath } = require("../../platform/paths");
+const store = require("../../platform/store");
 
 const DATA_DIR = process.env.OPENWORKBUDDY_DATA_DIR || dataPath("data");
 const ITEMS_FILE = path.join(DATA_DIR, "memories.json");

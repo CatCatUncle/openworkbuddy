@@ -43,23 +43,23 @@ const path = require("path");
 const os = require("os");
 const crypto = require("crypto");
 const { dataPath } = require("./src/platform/paths");
-const notify = require("./notify");
+const notify = require("./src/core/obs/notify");
 const callout = require("./src/util/callout"); // IM 里没有图标，正文提示条换成文字标签
 const imCard = require("./im-card"); // 飞书那张任务卡片长什么样（纯渲染，不碰网络）
 const imReply = require("./src/util/im-reply"); // 发进聊天前：正文里的 SVG 图摘出来转图片、长回复切成几条
-const security = require("./security");
-const mailer = require("./mailer"); // 发信：配没配、地址合不合法、报错里有没有夹带密码，判据只有这一份
+const security = require("./src/core/safety/security");
+const mailer = require("./src/core/obs/mailer"); // 发信：配没配、地址合不合法、报错里有没有夹带密码，判据只有这一份
 const { getWorkspaceDir, statOutputs } = require("./tools");
 const { createQQConnection } = require("./im-qq");
 const { createWecomApp, createWechatMp } = require("./im-wechat");
 const ilinkApi = require("./im-ilink");
 const imMedia = require("./im-media");
 const { createFeishuMediaSender, defaultFeishuBins } = require("./im-feishu-media"); // 飞书发附件：mp4 走 media 带封面、超 30MB 先压 720p 预览
-const pricing = require("./pricing"); // 卡头「已花 ¥0.84」：价钱只认这张表
-const quota = require("./quota");
-const runSpend = require("./run-spend"); // 这一趟花了多少（只数本进程里记上账的）
+const pricing = require("./src/core/billing/pricing"); // 卡头「已花 ¥0.84」：价钱只认这张表
+const quota = require("./src/core/billing/quota");
+const runSpend = require("./src/core/billing/run-spend"); // 这一趟花了多少（只数本进程里记上账的）
 const admin = require("./admin"); // 谁是平台管理员：服务器级通道（飞书/QQ/webhook）的日志只归他
-const prefs = require("./prefs"); // 会话键复用同一套「可读前缀 + 哈希」命名，不会撞车也逃不出目录
+const prefs = require("./src/core/config/prefs"); // 会话键复用同一套「可读前缀 + 哈希」命名，不会撞车也逃不出目录
 
 // gen_diagram 一次落 <名字>.svg + <名字>.png，是同一张图的两种格式。两个都发过去，
 // 用户在聊天里收到两张一模一样的图，还白占掉 5 个附件名额里的 2 个。

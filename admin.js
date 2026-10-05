@@ -22,13 +22,13 @@ const account = require("./account");
 const org = require("./org");
 const rbac = require("./rbac"); // 角色分档和能力表
 const lifecycle = require("./lifecycle");
-const prefs = require("./prefs"); // 哪些设置算「个人的」，那张表在这儿
-const quota = require("./quota"); // 按次计费的第三方 API：清单、额度、流水
+const prefs = require("./src/core/config/prefs"); // 哪些设置算「个人的」，那张表在这儿
+const quota = require("./src/core/billing/quota"); // 按次计费的第三方 API：清单、额度、流水
 // API 中转站那四件：Key、预算、价目、账本。后台这一页是它们唯一的人类入口
 const vkeys = require("./vkeys");
-const budget = require("./budget");
-const pricing = require("./pricing");
-const usageStore = require("./usage-store");
+const budget = require("./src/core/billing/budget");
+const pricing = require("./src/core/billing/pricing");
+const usageStore = require("./src/core/billing/usage-store");
 // 商业授权：授权码、使用声明、团队迹象。只记账不拦路，见文件头。
 // 必须带 .js：macOS / Windows 的文件系统不分大小写，"./license" 先撞上仓库根的 LICENSE（许可证全文），
 // 当 JS 一跑就是语法错，整个服务起不来。Linux 上分大小写，CI 那条腿看不出来

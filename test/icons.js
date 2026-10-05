@@ -180,7 +180,7 @@ const REG = '/* emoji-数据区 起：头像候选表，用户挑的数据 */\nc
 
 // ② 前端 ──────────────────────────────────────────────────────────────
 console.log("\n② 前端源码（界面上的图形全走 sprite）");
-const FRONT = ["public/index.html", "public/pet.html", "mcp-catalog.js", "experts.json"]
+const FRONT = ["public/index.html", "public/pet.html", mod.rel("mcp-catalog"), "experts.json"]
   .concat(fs.readdirSync(path.join(ROOT, "public", "js")).filter((f) => f.endsWith(".js")).map((f) => "public/js/" + f));
 // 前端这边一条按行号写死的例外都不留：上面随便插一行就会让它对不上号，
 // 于是每次改别的地方都要回来改行号。要放行就在源码里圈「emoji-数据区」，理由写在记号里
@@ -203,7 +203,7 @@ console.log("\n③ 后端源码（会往终端 / IM 吐字的那几个）");
 // 漂完要么放行了不该放的那行，要么对不上号让整份测试无故变红——这三条原来就是这么红的。
 // 要放行就在源码里圈「emoji-数据区」，理由写在记号里，读代码的人当场看得见。
 const BACK = ["agent.js", "cli.js", "electron-main.js", "evolve.js", "im.js", "server.js",
-  "skills.js", "task-verdict.js", "tools.js", "eval/run.js", "eval/judge.js", "eval/rejudge.js", mod.rel("callout"), mod.rel("icons"), "account.js"];
+  mod.rel("skills"), mod.rel("task-verdict"), "tools.js", "eval/run.js", "eval/judge.js", "eval/rejudge.js", mod.rel("callout"), mod.rel("icons"), "account.js"];
 for (const rel of BACK) {
   const found = scan(rel); // 只扫一遍：scan 会往 regionsSeen 记账，扫两遍就变成每条记两次
   ok(found.length === 0, rel + " 只剩排版符号", found.slice(0, 5));
@@ -215,8 +215,8 @@ const REGIONS_DECLARED = [
   "public/js/app-00-ui.js：头像候选表，用户挑给自己的数据，不是界面图形",
   "public/js/app-02.js：这五个表情在这儿是要认的数据、不是界面文案，删了兼容层就认不出老写法",
   "agent.js：CLAIM_RE 要匹配模型自己写出来的那个勾，它是待匹配的数据不是界面图形，删了就漏判「口头交付」",
-  "skills.js：pretext 这份技能文档的正文本身就在演示 emoji + 阿拉伯语混排的分词量宽，例子里的表情是被测量的数据",
-  "task-verdict.js：判「它说自己做完了」的正则，这个勾是模型写出来的数据，不是我们要显示的图形",
+  `${mod.rel("skills")}：pretext 这份技能文档的正文本身就在演示 emoji + 阿拉伯语混排的分词量宽，例子里的表情是被测量的数据`,
+  `${mod.rel("task-verdict")}：判「它说自己做完了」的正则，这个勾是模型写出来的数据，不是我们要显示的图形`,
 ];
 eq(regionsSeen.join(" | "), REGIONS_DECLARED.join(" | "), "emoji 数据区跟声明的一一对得上");
 

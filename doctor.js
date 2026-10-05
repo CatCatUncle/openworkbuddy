@@ -107,7 +107,7 @@ function verdictConfigLint(found) {
 function lintConfig(config, paths) {
   try {
     const def = JSON.parse(fs.readFileSync(paths.appPath("config.example.json"), "utf8"));
-    return require("./config-lint").lint(config, def);
+    return require("./src/core/config/config-lint").lint(config, def);
   } catch {
     return [];
   }
@@ -466,7 +466,7 @@ async function gather(deps) {
   items.push(verdictTools(await probeTools(which, deps.platform), { pathError }));
   // 它自己会去跑一次 `toolward --version`；探不到就是没装，不该让体检本身出错
   let tw = null;
-  try { tw = require("./toolward").status(config || {}); } catch { tw = null; }
+  try { tw = require("./src/core/safety/toolward").status(config || {}); } catch { tw = null; }
   items.push(verdictToolward(tw));
   return items;
 }

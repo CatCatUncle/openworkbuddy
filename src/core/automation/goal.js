@@ -21,7 +21,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const so = require("./systemone");
+const so = require("../judge/systemone");
 
 /** 自动补跑的轮数上限。用满了不是悄悄停，是在卡上写清楚为什么停、还差几项（见 server.js / cli.js 的循环） */
 const GOAL_MAX_ROUNDS = 3;
@@ -111,7 +111,7 @@ function createGoalEngine({ workspaceDir, maxRounds = GOAL_MAX_ROUNDS, decide = 
     const { execFile } = require("child_process");
     const checkOne = (f) => new Promise((resolve) => {
       if (/\.(js|mjs|cjs)$/i.test(f.n)) {
-        execFile(require("./src/platform/electron-bridge").nodeExec(), ["--check", f.p], { timeout: 8000, env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, windowsHide: true }, (err, _o, stderr) => {
+        execFile(require("../../platform/electron-bridge").nodeExec(), ["--check", f.p], { timeout: 8000, env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, windowsHide: true }, (err, _o, stderr) => {
           resolve(err ? `✗ ${f.n} JS 语法检查未通过：${String(stderr || err.message).slice(0, 200)}` : `✓ ${f.n} JS 语法检查通过`);
         });
       } else if (/\.json$/i.test(f.n)) {

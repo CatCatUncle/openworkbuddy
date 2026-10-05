@@ -22,7 +22,7 @@
  * 分开是为了这一整套判据能在测试里当纯函数摆弄。
  */
 
-const so = require("./systemone");
+const so = require("./src/core/judge/systemone");
 
 /** 问出去的那道题的名字。答案是按名字取回来的，两边必须是同一个常量。 */
 const DONE_KEY = "还有没做完的事吗";

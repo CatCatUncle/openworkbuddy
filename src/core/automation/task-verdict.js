@@ -344,7 +344,7 @@ function readDelivery(out, min) {
 
 /** 挂在运行记录和通知上的那句话。说清楚是谁说的、记录还是绿的、以及怎么关掉。 */
 function doubtMessage(d) {
-  const { pct } = require("./systemone");
+  const { pct } = require("../judge/systemone");
   return "判断模型看过这一轮的汇报，觉得任务多半没真办完（确定度 " + pct(d && d.sure) + "）。"
     + "运行记录仍然记绿——这是第二意见，不是裁定。打开这一条的执行过程看它停在哪；"
     + "要是它判错了，在 设置 → 智能体设置 里关掉「跑绿之后再看一眼」。";

@@ -12,7 +12,7 @@
 const fs = require("fs");
 const path = require("path");
 const { dataPath } = require("../src/platform/paths");
-const { createLLM } = require("../llm");
+const { createLLM } = require("../src/core/model/llm");
 const { mapPool } = require("../agent");
 const store = require("../src/platform/store");
 const { TASKS } = require("./tasks");

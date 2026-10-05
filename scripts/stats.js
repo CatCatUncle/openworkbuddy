@@ -67,7 +67,7 @@ function compute() {
       const extra = [...read("agent.js").matchAll(/^  name: "([a-z_]+)",$/gm)].map((m) => m[1]);
       return new Set([...base, ...extra]).size;
     })(),
-    connectors: require(path.join(ROOT, "mcp-catalog.js")).ITEMS.length,
+    connectors: require(path.join(ROOT, "src", "core", "ext", "mcp-catalog.js")).ITEMS.length,
     experts: (experts.experts || []).length,
     teams: (experts.teams || []).length,
   };

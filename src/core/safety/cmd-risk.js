@@ -30,7 +30,7 @@
  * 这一层是纯的：不联网、不读配置、不打日志。发请求在 jev.js，接线在 tools.js。
  */
 
-const so = require("./systemone");
+const so = require("../judge/systemone");
 const security = require("./security");
 
 /** 是非题：这一条决定弹不弹审批卡 */

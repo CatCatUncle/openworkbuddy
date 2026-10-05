@@ -22,9 +22,9 @@ const migrate = require("./migrate");
 // 放在这儿是因为下面 require 的 tools/skills 一加载就按数据目录算路径了。
 seedDataDir();
 const { mergeBuiltinExperts } = require("./experts-lib");
-const mcpCatalog = require("./mcp-catalog");
-const { createLLM, createEmbedder, pingRequest, probeEmbedding } = require("./llm");
-const sessSearch = require("./session-search");
+const mcpCatalog = require("./src/core/ext/mcp-catalog");
+const { createLLM, createEmbedder, pingRequest, probeEmbedding } = require("./src/core/model/llm");
+const sessSearch = require("./src/core/memory/session-search");
 const { outputFiles, noteUserInput, moveUserInput, filesScope, safePath, safePathIn, workspaceKeyOf, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, setLibraryDir, withLibraryBase, libBase, notesFileOf, withWorkspace, enterWorkspace, withPolicy, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSafeName, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath } = require("./tools");
 const checkpoints = require("./checkpoints"); // 这条对话改过的文件：列出来、整步退回去
 const worktree = require("./worktree"); // 两条任务同时改一个仓库时，后来的那条进自己的 git worktree
@@ -35,46 +35,46 @@ const libraryRoutes = require("./routes/library"); // 资料库的封面、正�
 const { createPromptTplsRouter } = require("./routes/prompt-tpls"); // 参考模板库里「我的」「公司」两层的增删改
 const { createComposeJobs } = require("./lib/compose-jobs"); // 一键合成的任务队列：把镜头真的拼成成片
 const taskDirs = require("./src/util/task-dirs"); // 成果按对话分文件夹：哪些根下分、文件夹叫什么
-const prefs = require("./prefs"); // 按账号存的个人偏好：底层引擎 / 思考档 / 上次选的模型 / 宠物 / 快捷键
+const prefs = require("./src/core/config/prefs"); // 按账号存的个人偏好：底层引擎 / 思考档 / 上次选的模型 / 宠物 / 快捷键
 const { previewData } = require("./preview");
 const evolve = require("./evolve");
 const { McpManager, cfgFingerprint, scrubText: mcpScrub } = require("./mcp");
 const { createAgentRuntime, scanOutputs, sweepPlanOffThread } = require("./agent");
 const { createImRouter } = require("./im");
-const { createScheduler, setActiveScheduler, SCHEDULE_LABEL } = require("./scheduler");
+const { createScheduler, setActiveScheduler, SCHEDULE_LABEL } = require("./src/core/automation/scheduler");
 const account = require("./account");
 const { createStaticCompress: staticCompress } = require("./static-compress");
 const { createJsonCompress: jsonCompress } = require("./json-compress");
 const { thumbFileAsync } = require("./src/platform/render/thumb");
 const org = require("./org"); // 组织（租户）层：席位、部门、邀请码、审计
-const budget = require("./budget"); // 钱闸：中转站发出去的 Key 和公司内部自己用，花的是同一笔预算
+const budget = require("./src/core/billing/budget"); // 钱闸：中转站发出去的 Key 和公司内部自己用，花的是同一笔预算
 const admin = require("./admin"); // 企业管理后台的接口层 /api/admin/*
 const engines = require("./engines"); // 底层引擎：内置循环 / 本机 Claude Code / 本机 Codex
-const lanes = require("./lanes"); // 两条工作线：办公（桌面办公 agent）/ 工程（本机 openworkbuddy 命令行）
-const cliLive = require("./cli-live"); // 终端里起的任务挂在盘上的那个目录，网页/手机靠它看见并插话
-const thinking = require("./thinking"); // 思考模式档位表（各家参数名都不一样，集中在那儿）
-const security = require("./security");
-const toolward = require("./toolward");
+const lanes = require("./src/core/config/lanes"); // 两条工作线：办公（桌面办公 agent）/ 工程（本机 openworkbuddy 命令行）
+const cliLive = require("./src/core/obs/cli-live"); // 终端里起的任务挂在盘上的那个目录，网页/手机靠它看见并插话
+const thinking = require("./src/core/model/thinking"); // 思考模式档位表（各家参数名都不一样，集中在那儿）
+const security = require("./src/core/safety/security");
+const toolward = require("./src/core/safety/toolward");
 const sweep = require("./sweep");
-const modes = require("./modes"); // 执行模式的唯一真源（craft/goal/plan/ask）
-const cfgMerge = require("./config-merge"); // 存配置时把外面手改的那些合进来，不整份覆盖
-const cfgLint = require("./config-lint"); // 手改配置写错了当场说，别让人以为「改了没反应」
-const projectMemo = require("./project-memo"); // 工作目录往上到 git 根的 AGENTS.md / CLAUDE.md，命令行也用这一份
-const mediaModels = require("./media-models");
-const mediaHealth = require("./media-health"); // 连不通的媒体渠道熔断表：设置页要显示，保存时要清空 // 图/视频/语音/视觉：渠道表 + 每路多模型
-const chatModels = require("./chat-models"); // 对话模型：渠道共用一把 Key（跟上面共用 config.providers）
-const systemOne = require("./systemone"); // 判断模型（Jev）的纯逻辑：请求怎么拼、回答怎么读
-const taskVerdict = require("./task-verdict"); // 定时任务裁定层的纯函数（这一轮办完没有 / 怎么问 / 怎么读）
-const pushGate = require("./push-gate"); // 推之前那一问：跟上一次真推出去的那条比，有没有新东西
-const jev = require("./jev"); // 判断模型的调用路：挑渠道、取 Key、发请求
-const quota = require("./quota"); // 按次计费的外部 API：调之前问一句额度，调完记一笔
-const pricing = require("./pricing"); // 按量价目：批量生成前的预估跟记账查的是同一张表
-const tracing = require("./trace"); // 执行追踪（Langfuse），默认关；跟 agent.js 共用同一个追踪器
+const modes = require("./src/core/config/modes"); // 执行模式的唯一真源（craft/goal/plan/ask）
+const cfgMerge = require("./src/core/config/config-merge"); // 存配置时把外面手改的那些合进来，不整份覆盖
+const cfgLint = require("./src/core/config/config-lint"); // 手改配置写错了当场说，别让人以为「改了没反应」
+const projectMemo = require("./src/core/memory/project-memo"); // 工作目录往上到 git 根的 AGENTS.md / CLAUDE.md，命令行也用这一份
+const mediaModels = require("./src/core/model/media-models");
+const mediaHealth = require("./src/core/model/media-health"); // 连不通的媒体渠道熔断表：设置页要显示，保存时要清空 // 图/视频/语音/视觉：渠道表 + 每路多模型
+const chatModels = require("./src/core/model/chat-models"); // 对话模型：渠道共用一把 Key（跟上面共用 config.providers）
+const systemOne = require("./src/core/judge/systemone"); // 判断模型（Jev）的纯逻辑：请求怎么拼、回答怎么读
+const taskVerdict = require("./src/core/automation/task-verdict"); // 定时任务裁定层的纯函数（这一轮办完没有 / 怎么问 / 怎么读）
+const pushGate = require("./src/core/automation/push-gate"); // 推之前那一问：跟上一次真推出去的那条比，有没有新东西
+const jev = require("./src/core/judge/jev"); // 判断模型的调用路：挑渠道、取 Key、发请求
+const quota = require("./src/core/billing/quota"); // 按次计费的外部 API：调之前问一句额度，调完记一笔
+const pricing = require("./src/core/billing/pricing"); // 按量价目：批量生成前的预估跟记账查的是同一张表
+const tracing = require("./src/core/obs/trace"); // 执行追踪（Langfuse），默认关；跟 agent.js 共用同一个追踪器
 const genCache = require("./gen-cache"); // 生成结果缓存：同一格重跑别再烧第二次钱
-const memory = require("./memory");
-const notify = require("./notify");
+const memory = require("./src/core/memory/memory");
+const notify = require("./src/core/obs/notify");
 const log = require("./src/platform/log");
-const metrics = require("./metrics");
+const metrics = require("./src/core/obs/metrics");
 const callout = require("./src/util/callout"); // 正文提示条：机器人推送里换成文字标签
 const store = require("./src/platform/store");
 const petSprites = require("./pet-sprites"); // 桌面宠物的精灵图（吃 Codex / Petdex 的格式）
@@ -879,7 +879,7 @@ try {
  * 没配渠道 / 被闸拦了都返回 ok:false，goal.js 会安静地退回对话模型那条老路。
  */
 const decideForGoal = (args) => jev.askMetered(config, args, { meta: "目标验收" });
-const goalKit = require("./goal").createGoalEngine({ workspaceDir: getWorkspaceDir, decide: decideForGoal });
+const goalKit = require("./src/core/automation/goal").createGoalEngine({ workspaceDir: getWorkspaceDir, decide: decideForGoal });
 const GOAL_MAX_ROUNDS = goalKit.MAX_ROUNDS;
 
 /**
@@ -1392,7 +1392,7 @@ app.get("/api/info", (_req, res) => {
     skills: runtime ? runtime.getSkills().map((s) => s.name) : [],
     experts: experts.map((e) => e.name),
     mcp_tools: mcpManager.toolDefs().length,
-    agent_plugins_spec: require("./plugins").SPEC_VERSION,
+    agent_plugins_spec: require("./src/core/ext/plugins").SPEC_VERSION,
   });
 });
 
@@ -5388,7 +5388,7 @@ app.get("/api/skills", (_req, res) =>
   res.json((runtime ? runtime.getSkills() : []).map((s) => ({ name: s.name, description: s.description, plugin: s.plugin || "" })))
 );
 // 技能管理：getSkills 每次现读磁盘，增删改/安装即热生效，无需重启
-const skillsMgr = require("./skills");
+const skillsMgr = require("./src/core/ext/skills");
 const actorOf = (req) => ({ user: (req && req.user && (req.user.username || req.user.name)) || "" });
 /**
  * 被安装检查拦下的错误，要比普通 400 多带两样东西：
@@ -5450,7 +5450,7 @@ app.post("/api/skills/defaults/install", async (req, res) => {
 });
 
 // ---- Agent Plugins 1.0.0 插件 ----
-const pluginsMgr = require("./plugins");
+const pluginsMgr = require("./src/core/ext/plugins");
 app.get("/api/plugins", (_req, res) => {
   const list = pluginsMgr.loadPlugins().map((p) => ({
     ok: p.ok,

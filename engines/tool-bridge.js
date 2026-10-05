@@ -53,8 +53,8 @@ console.debug = toErr;
 
 const { dataPath } = require("../src/platform/paths");
 const tools = require("../tools");
-const security = require("../security");
-const mediaModels = require("../media-models");
+const security = require("../src/core/safety/security");
+const mediaModels = require("../src/core/model/media-models");
 
 const PROTOCOL_VERSION = "2025-06-18";
 

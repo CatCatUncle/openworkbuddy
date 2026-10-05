@@ -7,7 +7,7 @@
  */
 
 const { TOOL_DEFS, executeTool, outputFiles, turnSnapshot, statOutputs, isUserInput, filesScope, getWorkspaceDir, withWorkspace, orgPolicy, badToolArgs } = require("./tools");
-const { loadSkills, SKILLS_DIR } = require("./skills");
+const { loadSkills, SKILLS_DIR } = require("./src/core/ext/skills");
 /** 这一趟的人装不了技能：技能整台服务器一份，接口那边归平台管理员（admin.js 的 tenantScope 把这条放进策略） */
 const skillsWriteOff = () => !!orgPolicy() && orgPolicy().skills_write === false;
 /** 同理：连接器整台服务器一份（密钥、进程都在这台机器上），加连接器归平台管理员 */
@@ -23,16 +23,16 @@ const connectorsLendOff = () => {
 const awake = require("./src/platform/awake"); // 睡眠治理：任务期间防睡 + 睡了顺延时限
 const engines = require("./engines"); // 底层引擎：内置循环 / 本机 Claude Code / 本机 Codex
 const bridge = require("./engines/bridge"); // 把本项目的工具借给那两个 CLI（MCP）
-const prefs = require("./prefs"); // 底层引擎 / 思考档是按账号存的，跑任务时得看**发起人**的那份
+const prefs = require("./src/core/config/prefs"); // 底层引擎 / 思考档是按账号存的，跑任务时得看**发起人**的那份
 const HK = require("./hooks"); // 用户配的钩子：done 没过不许收尾
 const callout = require("./src/util/callout"); // 正文里的提示条：网页画图标，终端/IM 换文字标签
-const security = require("./security"); // 审计中心：对外推送这种「出了门就收不回来」的动作必须留痕
-const mailer = require("./mailer"); // 发信：配没配、地址合不合法、白名单放不放行，判据只有这一份
-const tracing = require("./trace"); // 执行追踪：整趟任务的模型调用/工具调用发去 Langfuse，默认关
-const mediaHealth = require("./media-health"); // 媒体渠道熔断闸：开跑前先把暂停中的渠道写进提示词
-const { CAP_CN } = require("./media-models");
-const jev = require("./jev");            // 判断模型（Jev）：不产文字，只回选项 + 一个「有多确定」
-const systemOne = require("./systemone"); // 判断模型的纯逻辑：排版、确定度闸、算钱
+const security = require("./src/core/safety/security"); // 审计中心：对外推送这种「出了门就收不回来」的动作必须留痕
+const mailer = require("./src/core/obs/mailer"); // 发信：配没配、地址合不合法、白名单放不放行，判据只有这一份
+const tracing = require("./src/core/obs/trace"); // 执行追踪：整趟任务的模型调用/工具调用发去 Langfuse，默认关
+const mediaHealth = require("./src/core/model/media-health"); // 媒体渠道熔断闸：开跑前先把暂停中的渠道写进提示词
+const { CAP_CN } = require("./src/core/model/media-models");
+const jev = require("./src/core/judge/jev");            // 判断模型（Jev）：不产文字，只回选项 + 一个「有多确定」
+const systemOne = require("./src/core/judge/systemone"); // 判断模型的纯逻辑：排版、确定度闸、算钱
 const continueGate = require("./continue-gate"); // 续跑之前那道闸的纯判据（只出题、读答案，一个字的网络不发）
 const askGate = require("./ask-gate");   // 弹给用户那一问之前那道闸的纯判据（同上，不发网络）
 const skillGate = require("./skill-gate"); // 开工之前「该照哪个技能做」的纯判据，以及已加载技能挂进系统提示词那一段（同上，不发网络）
@@ -297,12 +297,12 @@ const path = require("path");
 const { dataPath, DATA_DIR } = require("./src/platform/paths");
 const { AsyncResource } = require("async_hooks");
 const os = require("os");
-const memory = require("./memory");
+const memory = require("./src/core/memory/memory");
 const brandKit = require("./brand-kit"); // 产品品牌档案：提到哪个产品才把 ≤300 字摘要放进易变段
 let brandRuntimeSeq = 0; // 见 createAgentRuntime 里的 brandRunPrefix
 const evolve = require("./evolve");
-const mediaModels = require("./media-models"); // 各路媒体模型：把「默认那条 + 还能选谁」一起交给工具
-const scheduler = require("./scheduler"); // 排期表：只取那个插座（activeScheduler），实例是 server 插上来的
+const mediaModels = require("./src/core/model/media-models"); // 各路媒体模型：把「默认那条 + 还能选谁」一起交给工具
+const scheduler = require("./src/core/automation/scheduler"); // 排期表：只取那个插座（activeScheduler），实例是 server 插上来的
 
 // ================= 成果核验（治「幻觉执行」） =================
 // 模型有时在文本里"表演"跑命令并声称文件已生成，实际一个工具都没调。
@@ -1014,7 +1014,7 @@ function shellNote(platform = process.platform) {
 
 function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = [], llmFactory }) {
   // 备用渠道换道要现造一个 LLM 客户端；懒 require 避免环形依赖，测试时可注入假工厂做零 token 验证
-  const makeLLM = llmFactory || ((cfg) => require("./llm").createLLM(cfg));
+  const makeLLM = llmFactory || ((cfg) => require("./src/core/model/llm").createLLM(cfg));
   // 执行追踪器。跟 server.js 共用同一个（按 config 认），设置页那份「发出去多少条」才是真账本。
   // 关着的时候它返回的全是空壳对象，下面所有 tr.span()/tr.end() 都是空转——所以整份文件里
   // 一处 `if (tr)` 都不用写，也就不存在「漏判一处把别人正跑着的任务搞崩」这种事
@@ -1263,7 +1263,7 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
   function ctxWindowOf(lm) {
     const cw = lm && +lm.contextWindow;
     if (cw > 0) return cw;
-    const { contextWindowOf } = require("./llm"); // 懒 require，同 makeLLM
+    const { contextWindowOf } = require("./src/core/model/llm"); // 懒 require，同 makeLLM
     const list = Array.isArray(config.models) ? config.models : [];
     const model = lm && lm.model;
     // 先按渠道名认（createLLM 报的 provider 就是渠道名），再退到当前选中的那条；
@@ -1515,7 +1515,7 @@ function modePrompt(mode) {
       security.audit("对外推送", text, "放行");
       let sent = [];
       try {
-        sent = await require("./notify").pushBots(config, text);
+        sent = await require("./src/core/obs/notify").pushBots(config, text);
       } catch (e) {
         return { content: `推送失败：${e.message}`, isError: true };
       }

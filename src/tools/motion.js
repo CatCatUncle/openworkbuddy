@@ -18,7 +18,7 @@ const fs = require("fs");
 const path = require("path");
 const M = require("../util/motion-clock");
 const media = require("./media");
-const security = require("../../security");
+const security = require("../core/safety/security");
 
 // 一次最多 30 个 HTML：小红书一组卡最多 18 张，分镜片头一般十来段，再多就该拆开
 const MAX_FILES = 30;

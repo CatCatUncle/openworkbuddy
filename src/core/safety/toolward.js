@@ -35,11 +35,11 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { rootPath } = require("./src/platform/root");
+const { rootPath } = require("../../platform/root");
 const { spawnSync } = require("child_process");
-const log = require("./src/platform/log");
+const log = require("../../platform/log");
 const security = require("./security");
-const { dataPath } = require("./src/platform/paths");
+const { dataPath } = require("../../platform/paths");
 
 /** 扫一个技能目录给多久。再久用户就该以为界面卡死了 */
 const SCAN_TIMEOUT_MS = 20000;

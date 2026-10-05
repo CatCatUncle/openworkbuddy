@@ -25,7 +25,7 @@
  *
  * 这里只做纯的部分（读、校验、填模板），真正跑任务的是 cli.js。
  */
-const { MODE_IDS: MODES } = require("./modes"); // 跟 -m 认的是同一份
+const { MODE_IDS: MODES } = require("./src/core/config/modes"); // 跟 -m 认的是同一份
 const NAME_RE = /^[a-z][a-z0-9_-]{0,39}$/;
 const MAX_STEPS = 50;
 const PASTE_MAX = 20000; // 贴进下一步的上限：再长就该让它自己去读文件

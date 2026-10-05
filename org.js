@@ -160,7 +160,7 @@ function tenantHeld(cur, settings) {
   const refused = [];
   if ("allow_shell" in out && !!out.allow_shell && cur.allow_shell === false) { delete out.allow_shell; refused.push(TENANT_HELD_LABEL.allow_shell); }
   if ("price_discount" in out && Math.min(1, money(out.price_discount) || 1) !== cur.price_discount) { delete out.price_discount; refused.push(TENANT_HELD_LABEL.price_discount); }
-  if ("api_quota" in out && JSON.stringify(require("./quota").normalizeTable(out.api_quota)) !== JSON.stringify(require("./quota").normalizeTable(cur.api_quota))) {
+  if ("api_quota" in out && JSON.stringify(require("./src/core/billing/quota").normalizeTable(out.api_quota)) !== JSON.stringify(require("./src/core/billing/quota").normalizeTable(cur.api_quota))) {
     delete out.api_quota;
     refused.push(TENANT_HELD_LABEL.api_quota);
   }
@@ -332,7 +332,7 @@ function updateOrg(id, patch, actor) {
           : Array.isArray(ORG_DEFAULTS[k]) ? (Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean).slice(0, 200) : [])
           // api_quota 是张表，不是一个值：交给 quota.js 拍干净（只认清单里的能力，数字一律非负整数）。
           // 不能走 String(v) 那条 —— 那会把整张表存成 "[object Object]"。
-          : k === "api_quota" ? require("./quota").normalizeTable(v)
+          : k === "api_quota" ? require("./src/core/billing/quota").normalizeTable(v)
           : k === "dept_templates" ? normalizeDeptTemplates(v)
           // 只带一格就只改一格：平台在组织列表里改封顶、租户在中转站页改人均，各改各的，
           // 不能因为请求里没带另一格就把它清成 0（= 不限）

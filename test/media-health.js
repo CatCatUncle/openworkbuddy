@@ -198,7 +198,8 @@ console.log("\n【7】list() 不许把 API Key 的指纹带出门");
 console.log("\n【8】tools.js 与 agent.js 的接线还在");
 {
   const t = srcLib.src("tools");
-  ok(/require\("\.\/media-health"\)/.test(t), "tools.js 得引着 media-health");
+  const mhSpec = JSON.stringify(mod.spec("tools", "media-health")).replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+  ok(new RegExp(`require\\(${mhSpec}\\)`).test(t), "tools.js 得引着 media-health");
   ok(/async function viaMedia\(/.test(t), "五路媒体工具统一穿过 viaMedia，这个口子不能没了");
   for (const [tool, cap] of [["look_at_image", "vision"], ["generate_image", "image"], ["generate_video", "video"], ["text_to_speech", "tts"], ["transcribe_audio", "asr"]]) {
     const at = t.indexOf(`case "${tool}"`);

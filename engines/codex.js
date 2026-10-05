@@ -22,7 +22,7 @@
  */
 
 const { runJsonl, probeVersion } = require("./jsonl");
-const thinking = require("./../thinking");
+const thinking = require("../src/core/model/thinking");
 const { resolveBin } = require("../src/platform/which");
 const fs = require("fs");
 const os = require("os");

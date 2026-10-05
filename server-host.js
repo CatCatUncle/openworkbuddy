@@ -139,7 +139,7 @@ function start() {
 
   // 审批提醒（窗口没聚焦时 Dock 跳一下）：审批队列在这个进程里，提醒的手在主进程
   try {
-    require("./security").watchApprovals((m) => {
+    require("./src/core/safety/security").watchApprovals((m) => {
       if (m && m.type === "open") bridge.notify("approval.open", { type: "open" });
     });
   } catch {}

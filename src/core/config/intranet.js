@@ -20,7 +20,7 @@
  * 显式写 0 / false / off 的优先级同样最高，用来在一台设了全局变量的机器上单独关掉。
  */
 const fs = require("fs");
-const { dataPath } = require("./src/platform/paths");
+const { dataPath } = require("../../platform/paths");
 
 const ON = /^(1|true|on|yes)$/i;
 const OFF = /^(0|false|off|no)$/i;

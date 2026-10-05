@@ -40,7 +40,7 @@
  * 这儿一个字的网络都不发，发请求那一下在 agent.js。分开是为了这套判据能当纯函数测。
  */
 
-const so = require("./systemone");
+const so = require("./src/core/judge/systemone");
 
 /** 两道题的名字。答案按名字取回来，两边必须是同一个常量。 */
 const NEED_KEY = "非得用户答不可吗";

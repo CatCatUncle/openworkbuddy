@@ -28,8 +28,8 @@
  */
 
 const path = require("path");
-const { dataPath } = require("./src/platform/paths");
-const store = require("./src/platform/store");
+const { dataPath } = require("../../platform/paths");
+const store = require("../../platform/store");
 const usageStore = require("./usage-store");
 const pricing = require("./pricing");
 const budget = require("./budget");

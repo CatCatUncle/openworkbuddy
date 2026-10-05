@@ -12982,7 +12982,7 @@ async function testIntranet() {
     const embeds = [...t.matchAll(/<(?:script|link)\b[^>]*?(?:src|href)=["']https?:\/\/[^"']+/gi)].map((m) => m[0]);
     assert(embeds.length === 0, f + " 还在教人把外链写进交付的 HTML 里：" + embeds[0]);
   }
-  const sk = read("skills.js");
+  const sk = read(modPath.rel("skills"));
   assert(!/import \{[^}]*\} from "https:\/\/cdn\./.test(sk),
     "skills.js 还在教人从 CDN 直接 import——ESM 解析不到时整个 <script type=module> 不执行，不报错也不回退");
 
@@ -16210,7 +16210,7 @@ function testSkillRenameKeepsAssets() {
       return { status: r.status, out: (r.stdout || "").trim(), err: (r.stderr || "").trim() };
     };
     const call = (arg) =>
-      run(`const s=require("./skills");try{const r=s.saveSkill(${JSON.stringify(arg)});console.log(JSON.stringify({ok:true,name:r&&r.name}))}catch(e){console.log(JSON.stringify({ok:false,error:e.message}))}`);
+      run(`const s=require(${JSON.stringify(modPath("skills"))});try{const r=s.saveSkill(${JSON.stringify(arg)});console.log(JSON.stringify({ok:true,name:r&&r.name}))}catch(e){console.log(JSON.stringify({ok:false,error:e.message}))}`);
 
     // ---- 正常改名：资源必须原地跟着走 ----
     let r = JSON.parse(call({ name: "new-name", description: "改过名的", content: "新正文", original_name: "old-name" }).out);

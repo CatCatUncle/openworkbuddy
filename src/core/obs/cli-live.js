@@ -35,7 +35,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { dataPath } = require("./src/platform/paths");
+const { dataPath } = require("../../platform/paths");
 
 const BEAT_MS = 10000; // 心跳间隔：命令行每隔这么久盖一次时间戳
 const STALE_MS = 45000; // 超过这么久没心跳就算这趟活儿已经没了（留 4 倍余量给卡顿的机器）

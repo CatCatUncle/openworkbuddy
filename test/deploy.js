@@ -279,7 +279,7 @@ console.log("\n【5】用到的 npm 包，package.json 里有没有声明");
   const names = wouldCatch.map((m) => m.pkg);
   ok(wouldCatch.length > 0, "反向对照：dependencies 清空后闸门会红（不是恒真的断言）", { got: wouldCatch.length });
   ok(
-    names.includes("@anthropic-ai/sdk") && wouldCatch.some((m) => m.pkg === "@anthropic-ai/sdk" && m.file === "llm.js"),
+    names.includes("@anthropic-ai/sdk") && wouldCatch.some((m) => m.pkg === "@anthropic-ai/sdk" && m.file === mod.rel("llm")),
     "反向对照：能定位到 @anthropic-ai/sdk 来自 llm.js（就是它漏声明，害得选了 Claude 的人发第一条消息才报错）",
     names
   );
@@ -311,7 +311,7 @@ console.log("\n【5】用到的 npm 包，package.json 里有没有声明");
     /"@anthropic-ai\/sdk"\s*:/.test(read("package.json")),
     "Anthropic SDK 已声明为正式依赖（设置页把「Anthropic Claude」摆出来了，就不能让人装不上）"
   );
-  const llmSrc = read("llm.js");
+  const llmSrc = read(mod.rel("llm"));
   ok(
     /baseURL:\s*anthropicBase\(cfg\.base_url\)\.baseURL/.test(llmSrc),
     "真跑时把 base_url 传给了 SDK（以前没传，填了中转的人验活过、一发消息打的还是官方）"

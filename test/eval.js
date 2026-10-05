@@ -196,7 +196,7 @@ console.log("\n【7】跑批器接线");
   ok(/process\.env\.OPENWORKBUDDY_DATA_DIR = path\.join\(RUN_DIR, "data"\)/.test(runSrc),
     "★评测把数据目录指到自己的跑批目录★ 不然题里 agent 顺手 remember 一句就进了用户的真记忆");
   const envAt = runSrc.indexOf('process.env.OPENWORKBUDDY_DATA_DIR = path.join(RUN_DIR');
-  const memAt = runSrc.indexOf('require("../memory")');
+  const memAt = runSrc.indexOf(`require(${JSON.stringify(mod.spec("eval/run", "memory"))})`);
   ok(envAt > 0 && memAt > envAt, "而且是在 require 记忆模块之前指的（那个常量在加载时就定死了）", `env@${envAt} memory@${memAt}`);
   ok(/maxSteps: stepsFor\(task/.test(runSrc), "按题的步数上限真的传给了 runTask");
   ok(/user: memUser/.test(runSrc), "记忆题的作用域真的传给了 runTask，不然种了也召不回");

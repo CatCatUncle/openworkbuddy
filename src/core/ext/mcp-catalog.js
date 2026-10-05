@@ -9,7 +9,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { isIntranet } = require("./intranet");
+const { isIntranet } = require("../config/intranet");
 
 const CATEGORIES = ["文件与开发", "搜索与网页", "数据库", "协作与文档", "地图与出行", "中国常用", "效率与实验"];
 

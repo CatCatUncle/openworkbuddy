@@ -30,9 +30,9 @@ const path = require("path");
 const zlib = require("zlib");
 const { pathToFileURL } = require("url");
 const { dataPath } = require("./src/platform/paths");
-const { chainToGitRoot, warnOnce } = require("./project-memo");
-const { looksSecret } = require("./memory");
-const guard = require("./skill-guard");
+const { chainToGitRoot, warnOnce } = require("./src/core/memory/project-memo");
+const { looksSecret } = require("./src/core/memory/memory");
+const guard = require("./src/core/safety/skill-guard");
 const { shrinkPng, pngInfo } = require("./src/util/thumb-png");
 
 const SCHEMA_VERSION = 1;

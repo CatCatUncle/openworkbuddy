@@ -19,8 +19,8 @@
  */
 
 const so = require("./systemone");
-const { cleanKey, _internals } = require("./llm");
-const quota = require("./quota"); // 额度记在这一层：发请求的就这一份，谁调都走同一本账
+const { cleanKey, _internals } = require("../model/llm");
+const quota = require("../billing/quota"); // 额度记在这一层：发请求的就这一份，谁调都走同一本账
 const channelEnvName = _internals.channelEnvName;
 
 /** 这个渠道类型能不能干判断这活儿。目录里加一家新的，改这儿一处 */

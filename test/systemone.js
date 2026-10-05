@@ -312,7 +312,7 @@ console.log("\n⑫ 挂在了该挂的地方：渠道目录、两个下拉、额�
   ok(/app\.get\("\/api\/decide"/.test(srv) && /app\.post\("\/api\/decide"/.test(srv), "接口挂上了：GET 看状态、POST 真问");
   // “先看配没配 → 过额度闸 → 发 → 发不出去退款”这四步收在 jev.askMetered 一处，
   // 所以尺子要釘在它身上：再添一个调用点也走它，釘在某条路由里的那把下一次就量不到了。
-  const jsrc = src("jev.js");
+  const jsrc = src(mod.rel("jev"));
   ok(/quota\.gate\("decide", \{ n,/.test(jsrc), "★额度按题数算，不按请求数★ 一次请求塞 30 道题，按请求记的话那道闸拦不住任何东西");
   ok(/quota\.undo\(g\.hold\)/.test(jsrc), "没发出去要把占的额度还回去");
   ok(/jev\.askMetered\(config,/.test(srv), "★接口也走同一条★ 路由里另手抄一遍计费，抄漏一处不报错，只是额度静悄悄地不准");
@@ -383,7 +383,7 @@ console.log("\n⑭ 接到活儿上：目标验收改用判断模型，拿不准�
 // ─────────────────────────────────────────────────────────────
 console.log("\n⑮ 这一层是纯的：不联网、不读配置、不打印");
 {
-  const s = src("systemone.js");
+  const s = src(mod.rel("systemone"));
   for (const [re, why] of [
     [/\brequire\(/, "require"],
     [/\bconsole\.\w+\(/, "console"],
@@ -391,7 +391,7 @@ console.log("\n⑮ 这一层是纯的：不联网、不读配置、不打印");
     [/\bfetch\(/, "fetch"],
     [/\bDate\.now\(/, "Date.now"],
   ]) ok(!re.test(s), `不出现 ${why}——喂什么算什么，所以测得动、不花钱`);
-  ok(/fetch\(/.test(src("jev.js")), "（反向对照）真正联网的那一半在 jev.js，不是根本没人发请求");
+  ok(/fetch\(/.test(src(mod.rel("jev"))), "（反向对照）真正联网的那一半在 jev.js，不是根本没人发请求");
 }
 
 // ───────────────────────────────────────────────────────────
@@ -429,8 +429,8 @@ console.log("\n⑰ 答不上来的时候，不替人下结论");
   ok(!/\$\{/.test(e), "（反向对照）模板字串真拼上了，不是把 ${} 原样吐给人看", e);
 
   // 不是超时的那一支不能跟着改：真连不上还得把原话抬出来
-  ok(/连不上：/.test(src("jev.js")), "（反向对照）非超时的错还是原样抬出来，没被一块含糊掉");
-  ok(!/一定是网络层面的事/.test(src("jev.js")), "注释里那句同样的断言也得一并抹掉——证伪了就回头删文档");
+  ok(/连不上：/.test(src(mod.rel("jev"))), "（反向对照）非超时的错还是原样抬出来，没被一块含糊掉");
+  ok(!/一定是网络层面的事/.test(src(mod.rel("jev"))), "注释里那句同样的断言也得一并抹掉——证伪了就回头删文档");
 }
 
 console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);

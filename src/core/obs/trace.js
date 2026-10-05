@@ -32,7 +32,7 @@
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
-const { DATA_DIR } = require("./src/platform/paths");
+const { DATA_DIR } = require("../../platform/paths");
 
 // 本地 Trace 是主记录，Langfuse 只是可选的外部副本。这样不开 Langfuse 时，
 // 用户仍然能在 OpenWorkBuddy 里看到完整的任务树；换机器或换账号也不会把 trace 丢给第三方。

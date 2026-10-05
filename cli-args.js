@@ -29,8 +29,8 @@
  * 这样每一句报错都能在测试里拿字符串对，而不是靠起一个进程去撞。
  */
 
-const { MODE_IDS, MODE_ARG } = require("./modes"); // 执行模式的唯一真源
-const { PERMISSION_MODES } = require("./security"); // 权限档的唯一真源，跟网页那四档是同一份
+const { MODE_IDS, MODE_ARG } = require("./src/core/config/modes"); // 执行模式的唯一真源
+const { PERMISSION_MODES } = require("./src/core/safety/security"); // 权限档的唯一真源，跟网页那四档是同一份
 const PERM_IDS = Object.keys(PERMISSION_MODES);
 const PERM_ARG = PERM_IDS.join("|"); // 跟 MODE_ARG 一个写法：不带尖括号，帮助里直接印取值
 

@@ -26,9 +26,9 @@ const store = require("./src/platform/store");
 const org = require("./org");
 const log = require("./src/platform/log");
 const rbac = require("./rbac"); // 谁能做什么：角色分档和能力表只有那一个文件说了算
-const usageStore = require("./usage-store");
-const pricing = require("./pricing");
-const budget = require("./budget"); // 钱闸的内存账：这一笔也得算进这个月的预算里
+const usageStore = require("./src/core/billing/usage-store");
+const pricing = require("./src/core/billing/pricing");
+const budget = require("./src/core/billing/budget"); // 钱闸的内存账：这一笔也得算进这个月的预算里
 
 // OPENWORKBUDDY_DATA_DIR 只为测试留的口子：跑测试时指到临时目录，免得动到真账本
 const DATA_DIR = process.env.OPENWORKBUDDY_DATA_DIR || dataPath("data");

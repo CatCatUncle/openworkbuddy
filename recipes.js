@@ -240,7 +240,7 @@ const cut = (s, n) => { const t = String(s == null ? "" : s).trim(); return t.le
 function capsReady(config, renderer) {
   /** @type {any} */
   let media = {};
-  try { media = require("./media-models").resolve(config || {}) || {}; } catch { media = {}; }
+  try { media = require("./src/core/model/media-models").resolve(config || {}) || {}; } catch { media = {}; }
   /** @param {string} cap */
   const ok = (cap) => { const m = media[cap]; return !!(m && m.model && m.base_url); };
   return { video: ok("video"), image: ok("image"), tts: ok("tts"), renderer: !!renderer, media };
@@ -422,7 +422,7 @@ function estimate(form, values, config) {
   if (!items.length) return { text: "画面和封面不花钱", yuan: 0, unknown: false };
   /** @type {any} */
   let pricing = null;
-  try { pricing = require("./pricing"); } catch { pricing = null; }
+  try { pricing = require("./src/core/billing/pricing"); } catch { pricing = null; }
   const caps = capsReady(config, false);
   let yuan = 0, unknownN = 0;
   /** @type {Array<{ what: string, unknown: boolean }>} */

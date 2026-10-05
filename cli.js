@@ -55,21 +55,21 @@ const path = require("path");
 const { dataPath, preferData } = require("./src/platform/paths");
 const readline = require("readline");
 const { spawnSync } = require("child_process");
-const { createLLM } = require("./llm");
+const { createLLM } = require("./src/core/model/llm");
 const { setWorkspaceDir, getWorkspaceDir } = require("./tools");
 const { McpManager } = require("./mcp");
 const { createAgentRuntime } = require("./agent");
-const lanes = require("./lanes"); // 终端里起的任务归「工程」线；续跑 id 按引擎分开记
+const lanes = require("./src/core/config/lanes"); // 终端里起的任务归「工程」线；续跑 id 按引擎分开记
 const callout = require("./src/util/callout"); // 正文里的提示条：终端没有图标，换成文字标签
-const sessSearch = require("./session-search"); // /resume 的搜索和 --list 的摘要都要它——必须在 listCliSessions 之前
+const sessSearch = require("./src/core/memory/session-search"); // /resume 的搜索和 --list 的摘要都要它——必须在 listCliSessions 之前
 const mdTty = require("./md-tty"); // 正文里的 Markdown：终端里渲染出来，别让 **加粗** 糊在脸上
 const attach = require("./cli-attach"); // 带进来的文件/图片：拖进来的路径、@ 补全、剪贴板
-const modes = require("./modes"); // 执行模式的唯一真源；界面和这儿必须是同一份
-const projectMemo = require("./project-memo"); // AGENTS.md / CLAUDE.md：桌面端和这儿读的是同一份
+const modes = require("./src/core/config/modes"); // 执行模式的唯一真源；界面和这儿必须是同一份
+const projectMemo = require("./src/core/memory/project-memo"); // AGENTS.md / CLAUDE.md：桌面端和这儿读的是同一份
 const cliAsk = require("./cli-ask"); // agent 问一句时，终端里怎么摆这道选择题
 const cliApprove = require("./cli-approve"); // 危险操作求批准时，终端里怎么摆那张卡
-const security = require("./security"); // 审批是它发起的；命令行订它的钩子才知道有人正等着点头
-const cliLive = require("./cli-live"); // 把这趟活儿播给网页/手机：看得见、插得上话
+const security = require("./src/core/safety/security"); // 审批是它发起的；命令行订它的钩子才知道有人正等着点头
+const cliLive = require("./src/core/obs/cli-live"); // 把这趟活儿播给网页/手机：看得见、插得上话
 const termImage = require("./term-image"); // 终端里直接把产出的图画出来 + /open 交给系统程序
 const replKit = require("./repl-commands"); // 输入行那几样纯逻辑：多行、搜历史、跑着时那一行的尾巴
 const { cols } = require("./src/util/text-width"); // 中文占两列：原地重画那一行要算得出它多宽
@@ -555,8 +555,8 @@ if (sub === "passwd" || sub === "2fa") {
 // 为什么不给它做成 /jev 那样的会话内命令：判断不是对话，它没有上下文、不产文字、不记进会话，
 // 混进会话里反而要解释「这一条为什么不算一轮」。
 if (sub === "jev") {
-  const so = require("./systemone");
-  const jevApi = require("./jev");
+  const so = require("./src/core/judge/systemone");
+  const jevApi = require("./src/core/judge/jev");
   const st = jevApi.status(config);
   const say = (s) => process.stdout.write(s);
   (async () => {
@@ -656,9 +656,9 @@ const mcpManager = new McpManager();
 // ---------- Goal 目标模式（和网页端同一份，见 goal.js） ----------
 // 目标验收借判断模型：一堆「达成了没有」的是非题正是它的形状，而且它会说自己有多确定。
 // 没配渠道就返回 ok:false，goal.js 自己退回对话模型那条老路——命令行这边不用管
-const goalKit = require("./goal").createGoalEngine({
+const goalKit = require("./src/core/automation/goal").createGoalEngine({
   workspaceDir: getWorkspaceDir,
-  decide: (args) => require("./jev").ask(config, args),
+  decide: (args) => require("./src/core/judge/jev").ask(config, args),
 });
 /**
  * 拆验收标准、对着标准判分，这两句问谁。
@@ -3150,7 +3150,7 @@ function splitFiles(text) {
         ? `项目规范 ${memos.map((m) => m.body === null ? `${m.rel}（超上限没带上）` : `${m.rel}（${m.chars} 字）`).join("、")}\n`
         : "项目规范 没有（/init 可以在工作目录生成一份 AGENTS.md）\n"));
       let costOf = null;
-      try { const pr = require("./pricing"); costOf = (u) => pr.costOf(u, { local: !!u.local }); } catch {}
+      try { const pr = require("./src/core/billing/pricing"); costOf = (u) => pr.costOf(u, { local: !!u.local }); } catch {}
       prog(dim(repl.sessionUsageText(sess.transcript, costOf) + "\n"));
       prog(dim(contextLine() + "\n"));
       if (pending.length) prog(dim(`还带着没发出去的文件：${pending.join("、")}\n`));

@@ -27,7 +27,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { dataPath } = require("./src/platform/paths");
+const { dataPath } = require("../../platform/paths");
 
 // 跟 account.js 用同一个口径，包括 OPENWORKBUDDY_DATA_DIR 这个测试专用的口子——
 // 两边算出来的目录只要差一点，测试就会对着临时目录记账、对着真账本查数

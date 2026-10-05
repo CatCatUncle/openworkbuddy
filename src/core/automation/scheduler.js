@@ -7,8 +7,8 @@
  */
 
 const path = require("path");
-const { dataPath } = require("./src/platform/paths");
-const jsonStore = require("./src/platform/store");
+const { dataPath } = require("../../platform/paths");
+const jsonStore = require("../../platform/store");
 const { judgeRun, explainRunError, verdictMessage, needsSecondOpinion } = require("./task-verdict");
 const pushGate = require("./push-gate");
 

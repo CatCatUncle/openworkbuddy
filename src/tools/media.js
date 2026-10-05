@@ -15,10 +15,10 @@
 
 const fs = require("fs");
 const path = require("path");
-const security = require("../../security");
-const mediaModels = require("../../media-models"); // 图/视频/语音/视觉的多模型选择（同一把 Key 配多个型号）
+const security = require("../core/safety/security");
+const mediaModels = require("../core/model/media-models"); // 图/视频/语音/视觉的多模型选择（同一把 Key 配多个型号）
 const genCache = require("../../gen-cache"); // 生图/生视频/配音的内容寻址缓存：同一格重跑不再烧第二次钱
-const quota = require("../../quota"); // 按次计费的第三方 API：调之前问一句额度，调完记一笔
+const quota = require("../core/billing/quota"); // 按次计费的第三方 API：调之前问一句额度，调完记一笔
 const winname = require("../util/winname"); // Windows 不认的文件名（保留名、控制字符）
 
 // 工作目录根和「目录建好没」，都是 tools.js 那边的；没接上就直接报错，不猜一个默认目录往里写
@@ -172,7 +172,7 @@ async function fetchRetry(url, init, { tries = 3, baseMs = 1500, label = "接口
 // 生图却在 undici 里炸成一句 "Cannot convert argument to a ByteString"，同一个毛病两副面孔。
 // 这里改成共用一份判断，措辞也就一致了。
 function mediaKey(cfg) {
-  return require("../../llm").cleanKey((cfg || {}).api_key, cfg);
+  return require("../core/model/llm").cleanKey((cfg || {}).api_key, cfg);
 }
 
 async function downloadToWorkspace(url, fname, dir, stop) {
@@ -288,7 +288,7 @@ function eyeRoute(cfg) {
   const c = cfg || {};
   const proto = String(c.proto || c.provider || "").trim();
   const base = String(c.base_url || "").trim().replace(/\/+$/, "");
-  const llm = require("../../llm");
+  const llm = require("../core/model/llm");
   if (proto === "anthropic") return { fmt: "anthropic", url: llm.anthropicBase(base).messagesUrl };
   if (proto === "gemini") {
     const root = llm._internals.geminiRoot(base);
@@ -443,7 +443,7 @@ async function lookAtImage(opts, input, timeoutMs, resolveFile, stop) {
     // 模型看到「换个问法再试一次」就一轮轮换措辞重试，最后干脆编一句「已核对」——
     // 明明一眼没看见。所以这里自己关掉思考重来一次，再空才算真空。
     if (!out.text && (out.capped || out.reasoned)) {
-      const off = require("../../thinking").planFor(cfg, "off");
+      const off = require("../core/model/thinking").planFor(cfg, "off");
       const retry = await ask(mkBody(4000, { ...off.params, ...(cfg.extra_body || {}) }));
       if (!retry.fail && !retry.http && retry.text) {
         return { content: `【看图】${path.basename(p)}${note}\n问：${q}\n答：${retry.text}\n（第一次它把 ${2000} token 全花在思考上没留下正文，已自动关思考重看一次）${tell}`, isError: false };

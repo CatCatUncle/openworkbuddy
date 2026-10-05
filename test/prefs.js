@@ -1964,7 +1964,7 @@ function runConfigGates() {
   // 接线：查出来得有人说。只写个模块不接，等于没写
   ok(/cfgLint\.lines\(cfgLint\.lint\(config, CONFIG_DEFAULTS\)\)/.test(serverSrc), "启动时真的跑一遍体检并打出来");
   const doctorSrc = fs.readFileSync(mod("doctor"), "utf8");
-  ok(/verdictConfigLint\(/.test(doctorSrc) && /require\("\.\/config-lint"\)/.test(doctorSrc),
+  ok(/verdictConfigLint\(/.test(doctorSrc) && new RegExp(`require\\(${JSON.stringify(mod.spec("doctor", "config-lint")).replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}\\)`).test(doctorSrc),
      "openworkbuddy doctor 里也有这一行（用户不看启动日志，但出事时会跑 doctor）");
   const doctor = require(mod("doctor"));
   eq(doctor.verdictConfigLint([]).level, "ok", "doctor：没查出问题时这行是绿的");

@@ -32,7 +32,7 @@ const account = require("./account");
 const org = require("./org");
 const rbac = require("./rbac"); // 角色分档：谁能授出哪个角色
 const vkeys = require("./vkeys");
-const scheduler = require("./scheduler");
+const scheduler = require("./src/core/automation/scheduler");
 
 /** 停用之后还想留着他名下排期的话，交接给谁。空 = 只停用不交接 */
 function reassignTo(handover, list) {

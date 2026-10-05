@@ -11,16 +11,16 @@ const path = require("path");
 const { DATA_DIR, dataPath, appPath } = require("./src/platform/paths");
 const { spawn, spawnSync } = require("child_process");
 const { outDecoder } = require("./src/util/out-decode");
-const security = require("./security");
-const memory = require("./memory");
-const mediaModels = require("./media-models"); // 图/视频/语音/视觉的多模型选择（同一把 Key 配多个型号）
+const security = require("./src/core/safety/security");
+const memory = require("./src/core/memory/memory");
+const mediaModels = require("./src/core/model/media-models"); // 图/视频/语音/视觉的多模型选择（同一把 Key 配多个型号）
 const cdp = require("./src/platform/render/cdp"); // 可选的本机 Chrome CDP：不捆绑浏览器、不连接远程地址
-const quota = require("./quota"); // 按次计费的第三方 API：调之前问一句额度，调完记一笔
-const mediaHealth = require("./media-health"); // 连不通的渠道熔断：撞过的硬错下次连请求都不发
+const quota = require("./src/core/billing/quota"); // 按次计费的第三方 API：调之前问一句额度，调完记一笔
+const mediaHealth = require("./src/core/model/media-health"); // 连不通的渠道熔断：撞过的硬错下次连请求都不发
 const checkpoints = require("./checkpoints"); // 改文件前留检查点：整步能退回去，审批卡上先看 diff
-const cmdRisk = require("./cmd-risk");
+const cmdRisk = require("./src/core/safety/cmd-risk");
 const memGate = require("./memory-gate"); // 名单外那条命令跑之前先判一句（纯判据，不发请求）
-const jev = require("./jev"); // 判断模型：上面那一问就是它答的
+const jev = require("./src/core/judge/jev"); // 判断模型：上面那一问就是它答的
 const HK = require("./hooks"); // config.json 里 agent.hooks 配的命令：跑命令前、改完文件后
 const CT = require("./code-tools"); // 写代码那几样：按名找文件、后台命令、进度清单、改前查有没有被动过
 const depsGuard = require("./src/platform/deps-guard"); // 工作空间嵌在应用目录里时，npm/pnpm 别往上找到应用自己的 package.json
@@ -4457,9 +4457,9 @@ async function executeToolCore(name, input, opts = {}) {
         if (winBad) return { content: winBad, isError: true };
         // 技能存在工作区外、全机共用，每趟任务都会重新读进提示词：一次注入就能一直留着。
         // 所以它得跟写文件一样过档位、跟装技能一样过扫描，覆盖已有的还得人点头
-        const skills = require("./skills");
-        const guard = require("./skill-guard");
-        const toolward = require("./toolward");
+        const skills = require("./src/core/ext/skills");
+        const guard = require("./src/core/safety/skill-guard");
+        const toolward = require("./src/core/safety/toolward");
         const hit = skills.getSkillFull(name); // 跟技能页一样认 frontmatter 里的名字，别另起一个同名的把原来那个盖住
         if (hit && hit.readonly) return { content: `「${name}」是插件 ${hit.plugin} 带的技能，不能覆盖。换个名字存`, isError: true };
         const dir = hit ? path.join(skills.SKILLS_DIR, hit.dir) : dataPath("skills", name);
@@ -4499,8 +4499,8 @@ async function executeToolCore(name, input, opts = {}) {
         }
         const url = String(input.url || "").trim();
         if (!url) return { content: "缺 url：要装的技能的 GitHub 链接", isError: true };
-        const skills = require("./skills");
-        const guard = require("./skill-guard");
+        const skills = require("./src/core/ext/skills");
+        const guard = require("./src/core/safety/skill-guard");
         let refused = null, asked = false;
         const review = async (list) => {
           const rel = list.map((s) => `skills/${skills.safeName(s.name)}`).join("、");
@@ -5124,11 +5124,11 @@ const diskConnectorHost = {
     // 原来的 Key 只在还发往同一处时沿用，跟 server.js connectorPrepare 一个规矩（见 mcp.js sameTarget）
     const entry = checkConnector(input || {}, require("./mcp").sameTarget(prev, input || {}) ? prev : null);
     let owner = null;
-    try { owner = require("./plugins").pluginMcpServers().find((s) => s.name === entry.name); } catch { /* 插件坏了照样能加自己的 */ }
+    try { owner = require("./src/core/ext/plugins").pluginMcpServers().find((s) => s.name === entry.name); } catch { /* 插件坏了照样能加自己的 */ }
     if (owner) throw new Error(`「${entry.name}」这个名字已经被插件 ${owner.plugin || ""} 的连接器占了，换个名字`);
     let findings = [];
     try {
-      const rep = require("./toolward").scanConnectors([entry], disk);
+      const rep = require("./src/core/safety/toolward").scanConnectors([entry], disk);
       findings = (rep && rep.findings) || [];
     } catch (e) { console.warn(`[MCP] 连接器体检没跑成（不影响添加）: ${(e && e.message) || e}`); }
     const { cfgFingerprint } = require("./mcp");

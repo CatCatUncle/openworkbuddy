@@ -863,7 +863,7 @@ app.whenReady().then(async () => {
   try {
     const watchApprovals = SERVER_REMOTE ? (fn) => { approvalNudge = fn; } : (fn) => {
       approvalNudge = fn;
-      return require(path.join(__dirname, "security.js")).watchApprovals(fn);
+      return require(path.join(__dirname, "src", "core", "safety", "security.js")).watchApprovals(fn);
     };
     watchApprovals((m) => {
       if (!m || m.type !== "open" || !win || win.isDestroyed() || win.isFocused()) return;
@@ -1638,7 +1638,7 @@ function fallBackInproc(why) {
     PORT = p;
     if (win && !win.isDestroyed()) win.loadURL(`http://127.0.0.1:${PORT}`);
   };
-  if (approvalNudge) { try { require(path.join(__dirname, "security.js")).watchApprovals(approvalNudge); } catch {} }
+  if (approvalNudge) { try { require(path.join(__dirname, "src", "core", "safety", "security.js")).watchApprovals(approvalNudge); } catch {} }
   try {
     require("./server.js");
   } catch (e) {
