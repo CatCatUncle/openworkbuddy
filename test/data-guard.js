@@ -238,7 +238,10 @@ section("3 all.js 真判得红，也真放得过");
   fs.copyFileSync(path.join(HERE, "all.js"), path.join(FAKE, "test", "all.js"));
   fs.copyFileSync(GUARD, path.join(FAKE, "test", "lib", "real-data-guard.js"));
   fs.copyFileSync(path.join(HERE, "lib", "own-home.js"), path.join(FAKE, "test", "lib", "own-home.js"));
-  fs.copyFileSync(mod("paths"), path.join(FAKE, "paths.js"));
+  // all.js 经 test/lib/mod.js 找 paths.js：路径表跟着拷，paths.js 放在表里写的那个位置（搬了家也对得上）
+  for (const f of ["mod.js", "entry.js"]) fs.copyFileSync(path.join(HERE, "lib", f), path.join(FAKE, "test", "lib", f));
+  fs.mkdirSync(path.dirname(mod.at(FAKE, "paths")), { recursive: true });
+  fs.copyFileSync(mod("paths"), mod.at(FAKE, "paths"));
   // paths.js 的仓库根锚点：它按自己的位置往上数两级，放到假仓库同一位置，算出来的根就是假仓库
   fs.mkdirSync(path.join(FAKE, "src", "platform"), { recursive: true });
   fs.copyFileSync(path.join(ROOT, "src", "platform", "root.js"), path.join(FAKE, "src", "platform", "root.js"));

@@ -1139,8 +1139,9 @@ async function runSourcePins() {
     ok(g.logs.some((l) => /框弹不出来/.test(l)), "弹框自己失败了记进启动日志，不往外抛（兜底不能成为新的错因）", g.logs);
   }
   const iGuard = mainSrc.indexOf("attachCrashGuard(win)");
-  ok(iGuard > 0 && iGuard < mainSrc.indexOf('require(path.join(__dirname, "server.js"))'),
-     "界面兜底挂在 require 服务端之前（启动失败页那一页也可能卡住）");
+  const iSrvReq = mainSrc.indexOf('require(path.join(__dirname, "server.js"))');
+  ok(iGuard > 0 && iSrvReq > 0 && iGuard < iSrvReq,
+     "界面兜底挂在 require 服务端之前（启动失败页那一页也可能卡住）", { iGuard, iSrvReq });
 
   // 「关于」面板那行：许可证从 package.json 读。以前写死 MIT，对外等于许了一个不存在的授权
   const aboutCopyright = new Function(slice("electron-main.js", "aboutCopyright") + "\nreturn aboutCopyright;")();

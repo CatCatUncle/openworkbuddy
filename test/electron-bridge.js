@@ -229,15 +229,18 @@ function parentMain() {
   const since = (i, k) => L.slice(i).filter((x) => x.k === k).map((x) => x.v);
 
   // ---------- 开窗口那几个模块：父进程里换成桩（bridge-main 按相对路径 require，缓存里放好就行） ----------
-  const stub = (rel, exports) => {
-    const file = path.join(ROOT, rel);
+  // 缓存键按 test/lib/mod.js 的名字取：搬了家键跟着走，不会放在一个没人来拿的旧路径上
+  const stubbed = new Map();
+  const stub = (name, exports) => {
+    const file = mod(name);
     const m = new Module(file, module);
     m.filename = file;
     m.loaded = true;
     m.exports = exports;
     require.cache[file] = m;
+    stubbed.set(name, exports);
   };
-  stub("web-window.js", {
+  stub("web-window", {
     probePage: async (electron, file) => {
       rec("probePage", { file, electronIsShell: electron === E.e });
       if (/boom/.test(file)) throw new Error("页面打不开（boom）");
@@ -245,14 +248,14 @@ function parentMain() {
     },
     readRendered: async (electron, url, o) => { rec("readRendered", { url, ...o, electronIsShell: electron === E.e }); return { text: "渲染后的正文", title: "页标题" }; },
   });
-  stub("htmlshot.js", {
+  stub("htmlshot", {
     renderHtmlToPng: async (p, opts) => { rec("shot", { p, opts }); return /empty/.test(p) ? Buffer.alloc(10) : Buffer.concat([PNG_SIG, Buffer.alloc(300, 7)]); },
   });
-  stub("browser-render.js", {
+  stub("browser-render", {
     svgToPng: async (svg, scale) => { rec("svgToPng", { len: svg.length, scale }); return Buffer.concat([PNG_SIG, Buffer.from(`svg ${scale} ${svg.length}`)]); },
     renderMermaid: async (src, theme) => { rec("renderMermaid", { src, theme }); return `<svg data-theme="${theme}">${src}</svg>`; },
   });
-  stub("htmlvideo.js", {
+  stub("htmlvideo", {
     electronDriver: async (o) => {
       rec("motion.open", o);
       const n = o.width * o.height * 4 - (o.runtime === "short" ? 4 : 0);
@@ -266,7 +269,7 @@ function parentMain() {
       };
     },
   });
-  stub("thumb.js", { makeThumb: (abs, w) => { rec("makeThumb", { abs, w }); return Buffer.from(`thumb ${w} ${path.basename(abs)}`); } });
+  stub("thumb", { makeThumb: (abs, w) => { rec("makeThumb", { abs, w }); return Buffer.from(`thumb ${w} ${path.basename(abs)}`); } });
 
   // ---------- 假 electron ----------
   function fakeElectron() {
@@ -330,6 +333,17 @@ function parentMain() {
   };
   const bootLogs = [];
   const { createShellBridge } = require(mod("bridge-main"));
+  // 正向对照：桩真的接得住 bridge-main 的 require——照它源码里的写法、从它所在的目录解析，拿到的得是桩。
+  // 接不住的话下面跑的是真的 web-window / htmlshot（或者加载失败被吞），断言测的就不是这里以为的东西
+  {
+    const bridgeSrc = fs.readFileSync(mod("bridge-main"), "utf8");
+    const fromBridge = Module.createRequire(mod("bridge-main"));
+    const miss = [...stubbed].filter(([name, ex]) => {
+      const spec = mod.spec("bridge-main", name);
+      return !bridgeSrc.includes(`require(${JSON.stringify(spec)})`) || fromBridge(spec) !== ex;
+    }).map(([name]) => name);
+    ok(stubbed.size === 5 && miss.length === 0, `${stubbed.size} 个桩都接得住 bridge-main 的 require（写法按 mod 表算，从它的目录解析）`, miss);
+  }
   const testOps = {
     "test.echo": async (a) => a,
     "test.slow": (a) => new Promise((r) => setTimeout(() => r("迟到的回信"), (a && a.ms) || 500)),

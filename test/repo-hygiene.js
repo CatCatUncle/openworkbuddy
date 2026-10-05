@@ -815,6 +815,13 @@ console.log("\n【11】test/lib/src.js：没拆时逐字等于原文件，拆了
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
+  // 真仓库不按目录扫，按 test/lib/mod.js 点名：routes/ lib/ 搬空以后不会悄悄只剩 server.js
+  const { SERVER_PARTS, mainOf } = require("./lib/src");
+  const { mod } = require("./lib/mod");
+  const real = files("server");
+  ok(SERVER_PARTS.length >= 20 && real[0] === mainOf("server") && real.length >= 1 + SERVER_PARTS.length
+    && SERVER_PARTS.every((n) => real.includes(mod.rel(n))),
+    `真仓库 src("server")：主文件 + ${SERVER_PARTS.length} 个组成文件一个不少（按 mod 表点名）`, real);
 }
 // ---------------------------------------------------------------------------
 console.log("\n【12】技能说明书里的 JS 例子，不许写顶层 await");

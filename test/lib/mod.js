@@ -30,6 +30,7 @@
  * src/tools/ 一期不动，也不在这里。
  */
 
+const fs = require("fs");
 const path = require("path");
 const { entry } = require("./entry");
 
@@ -225,7 +226,13 @@ function anyRel(name) {
  */
 function spec(from, to) {
   const fromRel = anyRel(from);
-  let toRel = anyRel(to).replace(/\.js$/, "");
+  let toRel = anyRel(to);
+  // 去掉 .js 会跟同目录里只差大小写的别的文件撞名时（license.js 旁边的 LICENSE），源码里写的是带 .js 的，这里照样带。
+  // 同名目录不算（skills.js 旁边的 skills/：require("./skills") 照样先认 skills.js）
+  const bare = path.posix.basename(toRel).replace(/\.js$/, "");
+  let sibs = [];
+  try { sibs = fs.readdirSync(path.join(ROOT, path.posix.dirname(toRel)), { withFileTypes: true }); } catch {}
+  if (!sibs.some((e) => e.isFile() && e.name.toLowerCase() === bare.toLowerCase())) toRel = toRel.replace(/\.js$/, "");
   if (path.posix.basename(toRel) === "index") toRel = path.posix.dirname(toRel);
   let r = path.posix.relative(path.posix.dirname(fromRel), toRel);
   if (!r.startsWith(".")) r = "./" + r;

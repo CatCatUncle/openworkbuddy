@@ -131,6 +131,11 @@ const missed = localReqs.filter((n) => {
   return ignored(f);
 });
 ok(missed.length === 0, `server.js require 的 ${localReqs.length} 个本地模块一个都没被 .dockerignore 挡掉`, missed);
+// 正向对照：上面那条拿空清单也是绿的。真从源码里抠出了一大把、而且大多在仓库根下找得到文件，才算查过
+const onDisk = localReqs.filter((n) => fs.existsSync(path.join(ROOT, n + ".js")) || fs.existsSync(path.join(ROOT, n)));
+ok(localReqs.length >= 70 && onDisk.length >= 70,
+  `  └ 真查了：抠出 ${localReqs.length} 个本地 require，${onDisk.length} 个在仓库里找得到文件（正则抠空 / 写法变了会在这儿红）`,
+  { localReqs: localReqs.length, onDisk: onDisk.length });
 ok(!ignored("skills"), "skills/ 得进镜像（首次启动要从这儿铺到数据目录）");
 ok(!ignored("config.example.json"), "config.example.json 得进镜像（没有它连 config.json 都生不出来）");
 

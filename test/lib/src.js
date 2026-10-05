@@ -23,6 +23,8 @@
 
 const fs = require("fs");
 const path = require("path");
+const { mod } = require("./mod");
+const { entry } = require("./entry");
 
 const ROOT = path.join(__dirname, "..", "..");
 
@@ -104,11 +106,41 @@ function publicScriptRefs(root = ROOT) {
 const CANVAS_MAIN = "public/js/app-07-canvas.js";
 const CANVAS_PART = /^public\/js\/app-07-canvas(?:-[^/]+)?\.js$/;
 
+// src("server") 拼进来的那些模块：原来住在 routes/ 和 lib/ 下，这里按 test/lib/mod.js 的名字点名，
+// 顺序就是原来按目录扫出来的顺序（routes 在前，各自按文件名）。
+// 为什么不接着按目录扫：目录重整会把这两个目录搬空，按目录扫就悄悄扫成零个，
+// 拼出来只剩 server.js，「找不到就跳过」的断言跟着静悄悄变绿。按名字取，少一个当场抛。
+const SERVER_PARTS = Object.freeze([
+  "routes/canvas", "routes/compose", "routes/drama", "routes/library", "routes/prompt-tpls",
+  "compose-jobs", "demo-mask", "demo-timing", "deps-guard", "font-family", "im-reply", "media-probe",
+  "out-decode", "pptx-layout", "task-dirs", "timeline-cards", "timeline-compose", "timeline-subs",
+  "web-demo-plan", "web-demo-recorder", "winname", "ws-browse",
+]);
+
+const isRealRoot = (root) => path.resolve(root) === path.resolve(ROOT);
+
+/** 一组源码的主文件（仓库相对路径）。真仓库按 mod / entry 表取；测试自己搭的假仓库照老名字 */
+function mainOf(name, root = ROOT) {
+  const real = isRealRoot(root);
+  if (name === "server") return real ? entry.rel("server") : "server.js";
+  if (name === "tools") return real ? mod.rel("tools") : "tools.js";
+  if (name === "canvas") return CANVAS_MAIN;
+  throw new Error(`src() 不认识「${name}」：只有 server / tools / canvas 三组`);
+}
+
 /** 一组源码由哪些文件组成（仓库相对路径，按拼接顺序）。只列盘上真有的 */
 function files(name, root = ROOT) {
   const exists = (rel) => fs.existsSync(path.join(root, rel));
-  if (name === "server") return ["server.js", ...jsUnder(root, "routes"), ...jsUnder(root, "lib")].filter(exists);
-  if (name === "tools") return ["tools.js", ...jsUnder(root, "src/tools")].filter(exists);
+  if (name === "server") {
+    const scanned = [...jsUnder(root, "routes"), ...jsUnder(root, "lib")];
+    if (!isRealRoot(root)) return [mainOf("server", root), ...scanned].filter(exists);
+    const parts = SERVER_PARTS.map((n) => mod.rel(n));
+    const gone = parts.filter((f) => !exists(f));
+    if (gone.length) throw new Error(`src("server") 的组成文件不在盘上：${gone.join("、")}——搬了家就去改 test/lib/mod.js 里的路径`);
+    // 目录里新冒出来、表里还没有的也拼上（排在最后），别让新文件躲过测试
+    return [mainOf("server", root), ...parts, ...scanned.filter((f) => !parts.includes(f))].filter(exists);
+  }
+  if (name === "tools") return [mainOf("tools", root), ...jsUnder(root, "src/tools")].filter(exists);
   if (name === "canvas") {
     const onDisk = jsUnder(root, "public/js").filter((f) => CANVAS_PART.test(f));
     const loaded = publicScriptRefs(root).map((r) => r.file).filter((f) => onDisk.includes(f));
@@ -125,11 +157,11 @@ function files(name, root = ROOT) {
 /** 一组源码拼成一整段文本。主文件读不到就当场抛——那不是「没拆」，是路径错了 */
 function src(name, root = ROOT) {
   const list = files(name, root);
-  const main = { server: "server.js", tools: "tools.js", canvas: CANVAS_MAIN }[name];
+  const main = mainOf(name, root);
   if (!list.includes(main)) throw new Error(`src("${name}") 连主文件 ${main} 都没找到（${root}）`);
   return list.map((f) => fs.readFileSync(path.join(root, f), "utf8")).join("\n");
 }
 src.src = src;
 src.files = files;
 
-module.exports = { src, files, publicScriptRefs, resolvePublic, stripJsComments, ROOT };
+module.exports = { src, files, mainOf, SERVER_PARTS, publicScriptRefs, resolvePublic, stripJsComments, ROOT };

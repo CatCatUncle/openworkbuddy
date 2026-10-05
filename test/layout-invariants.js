@@ -146,5 +146,28 @@ for (const f of ["src/platform/root.js", "src/platform/known-tools.js", "skills/
   ok(graph.includes(f), `打包闸门从入口爬得到 ${f}`);
 }
 
+console.log("\n⑥ 测试用的路径表（test/lib/mod.js、entry.js）对得上盘");
+// 以后每批搬家只改这两张表右边的路径；表里一个写错，所有经它取路径的测试就一起指空
+{
+  const { entry } = require("./lib/entry");
+  const Module = require("module");
+  const modNames = mod.names(), entryNames = entry.names();
+  const gone = [...modNames.map((n) => mod.rel(n)), ...entryNames.map((n) => entry.rel(n))].filter((rel) => !fs.existsSync(path.join(REPO, rel)));
+  ok(modNames.length >= 150 && entryNames.length >= 8 && gone.length === 0, `${modNames.length} 个模块 + ${entryNames.length} 个入口，路径全在盘上`, gone);
+  const rels = [...modNames.map((n) => mod.rel(n)), ...entryNames.map((n) => entry.rel(n))];
+  ok(new Set(rels).size === rels.length && !modNames.some((n) => entry.has(n)), "两张表不重名、不两个名字指同一个文件");
+  const pkg = require(path.join(REPO, "package.json"));
+  const pkgEntries = [pkg.main, ...Object.values(pkg.bin || {})].map((f) => path.posix.normalize(f));
+  ok(pkgEntries.every((f) => entryNames.some((n) => entry.rel(n) === f)), "package.json 的 main / bin 都在入口表里", pkgEntries);
+  // mod.spec 算出来的写法，从入口那个目录 require.resolve 回去，得落在同一个文件上
+  const fromServer = Module.createRequire(entry("server"));
+  const off = modNames.filter((n) => { try { return fromServer.resolve(mod.spec("server", n)) !== mod(n); } catch { return true; } });
+  ok(off.length === 0, "mod.spec 给的 require 写法解析回去就是表里那个文件", off);
+  let threw = 0;
+  try { mod("没有这个模块"); } catch { threw++; }
+  try { entry("agent"); } catch { threw++; }
+  ok(threw === 2, "反向对照：名字写错、模块名拿去问入口表，都当场抛");
+}
+
 console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
 process.exit(fail ? 1 : 0);

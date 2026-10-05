@@ -26,6 +26,7 @@ const path = require("path");
 const http = require("http");
 const { spawn } = require("child_process");
 const { entry } = require("./lib/entry");
+const { mod } = require("./lib/mod");
 
 const ROOT = path.join(__dirname, "..");
 const CLI = entry("cli");
@@ -229,10 +230,15 @@ async function run() {
     }
 
     console.log("\n— ⑤ --version / --help —");
+    // 大件按 mod 表算出 cli.js 里 require 它们的写法：搬了家写法跟着变，不会因为认不出而「一个都没加载」
+    const bare = (spec) => spec.replace(/^\.\//, "");
+    const HEAVY = new Set(["agent", "mcp", "llm", "tools", "account"].map((n) => bare(mod.spec("cli", n))));
     for (const flag of ["--version", "--help"]) {
       const r = await env.run([flag]);
       ok(r.code === 0 && r.out.trim(), `${flag} 照常打印到 stdout`, r.err);
-      const heavy = r.loaded.filter((m) => /^(\.\/)?(agent|mcp|llm|tools|account)$|^express$/.test(m));
+      // 正向对照：探针真记到了东西（cli.js 头上必经的 cli-args 在里面），不然下面那条拿空清单也是绿的
+      ok(r.loaded.map(bare).includes(bare(mod.spec("cli", "cli-args"))), `  └ 探针生效：${flag} 记下了 cli.js 加载的模块`, r.loaded);
+      const heavy = r.loaded.filter((m) => HEAVY.has(bare(m)) || m === "express");
       ok(!heavy.length, `★${flag} 不加载 agent / express 这些大件★`, heavy);
     }
 

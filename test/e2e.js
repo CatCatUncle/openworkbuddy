@@ -13958,17 +13958,26 @@ function testWindowsHideStatic() {
     }
   };
   for (const d of ["engines", "routes", "src", "lib"]) walk(d);
-  files.push("eval/run.js", "eval/tasks.js", "eval/judge.js", "eval/rejudge.js");
+  files.push(...["eval/run", "eval/tasks", "eval/judge", "eval/rejudge"].map((n) => entry.rel(n)));
+  // 正向对照：清单是按目录扫 + 手写几个拼出来的，搬家后哪个目录没扫到，那一片就悄悄不查了。
+  // 拿 test/lib/mod.js、entry.js 两张表对一遍：表里每个 .js 都得在清单里
+  const listed = new Set(files);
+  const unscanned = [...modPath.names().map((n) => modPath.rel(n)), ...entry.names().map((n) => entry.rel(n))]
+    .filter((rel) => rel.endsWith(".js") && !listed.has(rel));
+  assert.deepStrictEqual(unscanned, [], "这些源码没进 windowsHide 的扫描清单（多半是搬了家、清单没跟上）：\n" + unscanned.join("\n"));
   const bad = [];
   let seen = 0;
+  let scannedCp = 0;
   for (const rel of files) {
     const src = fs.readFileSync(path.join(ROOT, rel), "utf8");
     if (!/child_process/.test(src)) continue;
+    scannedCp++;
     const r = windowsHideOffenders(rel, src);
     bad.push(...r.out);
     seen += r.seen;
   }
   assert(seen >= 40, "扫到的 child_process 调用才 " + seen + " 处，扫描器多半没认出调用，这条测试等于没测");
+  assert(files.length >= 150 && scannedCp >= 20, `清单才 ${files.length} 个文件、用到 child_process 的才 ${scannedCp} 个，多半是目录扫空了`);
   assert.deepStrictEqual(bad, [], "这些地方起子进程没带 windowsHide（Windows 上会闪黑窗）；真不该加的，上面写一行「// 不加 windowsHide：原因」：\n" + bad.join("\n"));
   // ★反向对照★ 扫描器本身：该抓的抓得到，不该抓的不误抓
   const probe = (src) => windowsHideOffenders("probe.js", src).out.length;
