@@ -28,6 +28,8 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "owb-eval-"));
 // 必须在 require 之前指到临时目录，绝不碰真记忆
 process.env.OPENWORKBUDDY_DATA_DIR = path.join(TMP, "data");
 fs.mkdirSync(process.env.OPENWORKBUDDY_DATA_DIR, { recursive: true });
+// 评委提示词存在 dataPath 下（OPENWORKBUDDY_HOME），同样得先指走，第【10】节要往里写
+process.env.OPENWORKBUDDY_HOME = path.join(TMP, "home");
 
 const { TASKS } = require("../eval/tasks");
 const memory = require("../memory");
@@ -226,6 +228,71 @@ console.log("\n【9】「改提示词必跑评测」这条规矩");
   // 光搜「多轮」会被开头那句「连续多轮全过」蹭绿，得钉到标题和题形表上
   ok(/##\s*七、/.test(m) && ["长任务", "多轮", "记忆"].every((k) => new RegExp("\\|\\s*" + k + "\\s*\\|").test(m)), "方法论文档列全了四种题形");
   ok(/##\s*八、/.test(m) && /空目录/.test(m) && /test\/eval\.js/.test(m), "方法论文档写了负对照这条闸门");
+}
+
+// ---- ⑩ 评委和人工评测：全离线，不调模型 ----
+console.log("\n【10】评委 + 人工评测");
+{
+  const J = require("../eval/judge");
+  const { dataPath } = require("../paths");
+  ok(dataPath("x").startsWith(TMP), "★评委设置写在临时目录里，不碰真数据★");
+
+  // 判定纪律改得动、恢复默认就删文件
+  let jp = J.loadJudgeSystem();
+  ok(!jp.custom && jp.system === J.DEFAULT_JUDGE_SYSTEM && jp.common_dims.length === J.DEFAULT_COMMON_DIMS.length, "没改过时用默认纪律和默认通用维度");
+  const h0 = jp.hash;
+  jp = J.saveJudgeSystem({ system: "只看产物" });
+  ok(jp.custom && jp.system === "只看产物" && jp.hash !== h0, "改了纪律就生效，版本号跟着变（成绩不能和上一版直接比）");
+  jp = J.saveJudgeSystem({ common_dims: ["界面截图对得上"] });
+  ok(jp.system === "只看产物" && jp.common_dims.join() === "界面截图对得上", "只改通用维度不会把纪律冲掉");
+  ok(J.saveJudgeSystem({ system: "x".repeat(J.MAX_SYSTEM + 1) }).error, "太长的纪律拒收");
+  ok(J.saveJudgeSystem({ common_dims: Array(J.MAX_COMMON + 1).fill("a") }).error, "通用维度超上限拒收");
+  jp = J.saveJudgeSystem({ system: "", common_dims: J.DEFAULT_COMMON_DIMS });
+  ok(!jp.custom && jp.hash === h0 && !fs.existsSync(dataPath("eval", "judge-prompt.json")), "★恢复默认 = 删文件，「改过」的标记不会挂着骗人★");
+
+  // 维度：题目的在前，通用的在后且带标记，重复的不算两遍
+  const task = { id: "t", prompt: "写个文件", rubric: ["内容对", "不越界：x"] };
+  const dims = J.dimsOf(task, ["不越界：x", "如实汇报"]);
+  ok(dims.length === 3 && !dims[0].common && dims[2].common && dims[2].q === "如实汇报", "通用维度接在题目维度后面、带 common 标记、和题目重复的去掉");
+  ok(J.dimsOf({ prompt: "x" }, []).length === 1, "题目没写 rubric 也有一条兜底维度");
+
+  // 评委输出：剥围栏、缺答判不达标且拿不准
+  const p = J.parseJudge('```json\n{"dims":[{"i":0,"evidence":"文件里有","pass":true},{"i":1,"pass":true,"sure":false}]}\n```', dims);
+  ok(p && p.total === 3 && p.passed === 2 && p.unsure === 2, "剥掉 ```json 围栏能解析；没写 sure 视为有把握", JSON.stringify(p));
+  ok(p.dims[2].pass === false && p.dims[2].note === "评委未作答", "★漏答的维度判不达标、标拿不准，不会白送★");
+  ok(p.dims[0].note === "文件里有", "依据存下来了，人工复核看得到");
+  ok(J.parseJudge("我觉得挺好", dims) === null && J.parseJudge('{"score":5}', dims) === null, "不是合法结构就返回 null 让上层重试");
+
+  // 过程记录：省略的那段也占步号
+  const tt = J.traceText([{ name: "write_file", input: "a.md" }, { omitted: 5 }, { name: "run_command", input: "node a.js", err: true, out: "boom" }]);
+  ok(/^1\. write_file/m.test(tt) && /^7\. run_command/m.test(tt) && /省略 5 步/.test(tt) && /✗ 出错：boom/.test(tt), "★过程记录的步号把省略那段也数进去，出错步标得出来★", tt);
+  ok(/sure 设为 false/.test(J.traceText(undefined)), "旧格式没记过程：明说让评委把过程类维度标拿不准");
+
+  // 喂给评委的材料：过程、截断都写明
+  const ws = path.join(TMP, "ws-judge");
+  fs.mkdirSync(ws, { recursive: true });
+  fs.writeFileSync(path.join(ws, "out.md"), "y".repeat(2000));
+  const u = J.buildJudgeUser(task, { checks: [{ ok: true, name: "有文件" }], elapsed_s: 3, tool_calls: 1, tokens: { prompt: 1, completion: 1 },
+    trace: [{ name: "write_file", input: "out.md" }], final_text: "已验证", artifacts: [{ name: "out.md", size: 2000 }] }, ws, null, dims);
+  ok(/# 过程记录/.test(u) && /1\. write_file/.test(u), "评委看得到过程记录（不再只看最终回复）");
+  ok(/已截断，原文 2000 字/.test(u), "★产物截断了会明说，评委不会把看不到的部分当没写★");
+  ok(/"i": 0, "evidence"/.test(u), "要求先写依据再判");
+
+  // 人工评测汇总：评委一致率 + 机器打架
+  const hs = J.humanStats([
+    { id: "a", k: 1, passes: 1, judge: { dims: [{ pass: true }, { pass: false }] }, human: { score: 2, dims: [{ i: 0, pass: true }, { i: 1, pass: true }] } },
+    { id: "b", k: 1, passes: 0, judge: { dims: [{ pass: false }] }, human: { score: 5 } },
+    { id: "c", k: 1, passes: 1 },
+  ]);
+  ok(hs.scored === 2 && hs.avg === 3.5 && hs.reviewed === 2, "人工打星的题数、均分、复核过几题算得对", JSON.stringify(hs));
+  ok(hs.judge_compared === 2 && hs.judge_agree_pct === 50, "★评委和人工逐条对照：2 条对上 1 条 = 50%★");
+  ok(hs.machine_disagree.join() === "a,b", "机器过了人给 2 星、机器挂了人给 5 星，两题都列出来");
+  const meta = J.judgeMetaOf([{ judge: { dims: [1, 2], passed: 1, total: 2, unsure: 1 } }, { judge: { error: "x" } }], { model: "m" });
+  ok(meta.scored === 1 && meta.avg_pct === 50 && meta.unsure === 1 && meta.model === "m", "评委汇总只算判成功的题，拿不准的条数加总");
+
+  // 文档写了新评委
+  const m = src("docs/评测方法论.md");
+  ok(/过程记录/.test(m) && /一致率/.test(m) && /重判/.test(m), "方法论文档写了过程记录、人工一致率、重判");
 }
 
 fs.rmSync(TMP, { recursive: true, force: true });

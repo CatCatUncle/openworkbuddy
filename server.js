@@ -7561,7 +7561,8 @@ app.post("/api/session/:id/goal", (req, res) => {
 
 // ---------- 内置评测（界面版）：spawn 子进程跑 eval/run.js ----------
 // 子进程隔离是刚需：评测会 setWorkspaceDir 到自己的沙盒目录，进程内跑会把主应用的工作空间劫走
-const evalState = { running: false, lines: [], startedAt: 0, model: "", exit: null };
+const evalState = { running: false, lines: [], startedAt: 0, model: "", exit: null, kind: "run" };
+const evalJudge = require("./eval/judge");
 function evalSummaryBrief(j) {
   if (!j) return null;
   // 兼容两代格式：v3 有 repeat/pass1_avg/attempts，旧格式按 k=1 折算，前端只走一条代码路径
@@ -7573,7 +7574,8 @@ function evalSummaryBrief(j) {
     baseline: j.baseline || null,
     tasks: j.tasks, full_pass: j.full_pass, checks_passed: j.checks_passed, checks_total: j.checks_total,
     tokens_total: j.tokens_total, avg_prompt_per_call: j.avg_prompt_per_call || 0,
-    commit: j.commit || "", judge: j.judge || null, human: j.human || null,
+    // 评委那段纪律原文只在明细里给，历史表 20 行每行背一遍没必要
+    commit: j.commit || "", judge: j.judge ? { ...j.judge, system: undefined } : null, human: j.human || null,
     results: (j.results || []).map((r) => {
       const k = r.k || 1;
       const passes = r.passes != null ? r.passes : (r.passed === r.total ? 1 : 0);
@@ -7584,7 +7586,7 @@ function evalSummaryBrief(j) {
         flaky: !!r.flaky, fail_codes: r.fail_codes || [],
         attempts: (r.attempts || []).map((a) => ({ n: a.n, passed: a.passed, total: a.total, elapsed_s: a.elapsed_s, fail_code: a.fail_code || null })),
         tool_calls: r.tool_calls || 0, tool_errors: r.tool_errors || 0,
-        judge: r.judge ? (r.judge.dims ? { passed: r.judge.passed, total: r.judge.total } : (r.judge.score ? { score: r.judge.score, verdict: r.judge.verdict || "" } : null)) : null,
+        judge: r.judge ? (r.judge.dims ? { passed: r.judge.passed, total: r.judge.total, unsure: r.judge.unsure || 0 } : (r.judge.score ? { score: r.judge.score, verdict: r.judge.verdict || "" } : null)) : null,
         human: r.human || null,
         failed: (r.checks || []).filter((c) => !c.ok).map((c) => c.name),
       };
@@ -7615,7 +7617,12 @@ app.post("/api/eval/start", (req, res) => {
   if (judge) args.push("--judge", judge);
   const repeat = Math.max(1, Math.min(5, Math.round(+(req.body || {}).repeat) || 1));
   if (repeat > 1) args.push("--repeat", String(repeat));
-  evalState.running = true; evalState.lines = []; evalState.startedAt = Date.now(); evalState.model = model; evalState.exit = null;
+  spawnEval(args, model, "run");
+  res.json({ ok: true, model });
+});
+/** 跑批和重判共用一条子进程通道：同一时间只许一个，日志都进 evalState 给评测页轮询 */
+function spawnEval(args, model, kind) {
+  evalState.running = true; evalState.lines = []; evalState.startedAt = Date.now(); evalState.model = model; evalState.exit = null; evalState.kind = kind;
   // nodeExec：服务端在独立服务进程里时 execPath 是 Electron Helper，换回应用本体
   const child = require("child_process").spawn(require("./electron-bridge").nodeExec(), args, {
     cwd: appPath(),
@@ -7635,10 +7642,33 @@ app.post("/api/eval/start", (req, res) => {
   child.stderr.on("data", onData);
   child.on("close", (code) => { evalState.running = false; evalState.exit = code; });
   child.on("error", (e) => { evalState.running = false; evalState.exit = -1; evalState.lines.push("评测进程启动失败: " + e.message); });
-  res.json({ ok: true, model });
-});
+}
 app.get("/api/eval/status", (_req, res) => {
-  res.json({ running: evalState.running, model: evalState.model, startedAt: evalState.startedAt, exit: evalState.exit, lines: evalState.lines });
+  res.json({ running: evalState.running, model: evalState.model, startedAt: evalState.startedAt, exit: evalState.exit, lines: evalState.lines, kind: evalState.kind });
+});
+// 评委的判定纪律：看、改、恢复默认。输出格式那段不在这里（改坏了整轮解析不出来），给只读样子
+app.get("/api/eval/judge-prompt", (_req, res) => {
+  const cur = evalJudge.loadJudgeSystem();
+  res.json({ ...cur, default: evalJudge.DEFAULT_JUDGE_SYSTEM, default_common_dims: evalJudge.DEFAULT_COMMON_DIMS, max: evalJudge.MAX_SYSTEM, max_common: evalJudge.MAX_COMMON });
+});
+app.put("/api/eval/judge-prompt", (req, res) => {
+  // 多人服务器上这是大家共用的一把尺子，只让管理员动
+  if (req.user && !account.isAdmin(req.user)) return res.status(403).json({ error: "只有管理员能改评委提示词" });
+  const b = req.body || {};
+  const r = evalJudge.saveJudgeSystem({ system: b.system, common_dims: b.common_dims });
+  if (r.error) return res.status(400).json(r);
+  res.json({ ok: true, ...r });
+});
+// 拿跑完的一轮重新过评委（智能体不重跑）：改了评委提示词以后对着人工标注看准不准
+app.post("/api/eval/rejudge", (req, res) => {
+  if (evalState.running) return res.status(409).json({ error: "已有一轮评测在跑，等它结束" });
+  const dir = String((req.body || {}).dir || "");
+  if (!/^[\w.-]+$/.test(dir)) return res.status(400).json({ error: "目录名不合法" });
+  if (!fs.existsSync(dataPath("eval", "runs", dir, "results.json"))) return res.status(404).json({ error: "没有这次评测的记录" });
+  const judge = String((req.body || {}).judge || "").trim();
+  if (!(config.models || []).some((m) => m.name === judge)) return res.status(400).json({ error: `评委模型「${judge}」不在列表里` });
+  spawnEval([appPath("eval", "rejudge.js"), "--dir", dir, "--judge", judge], judge, "rejudge");
+  res.json({ ok: true });
 });
 app.get("/api/eval/history", (_req, res) => {
   const bl = store.readJson(dataPath("eval", "baseline.json"), null);
@@ -7670,7 +7700,33 @@ app.get("/api/eval/run/:dir", (req, res) => {
   if (!/^[\w.-]+$/.test(dir)) return res.status(400).json({ error: "目录名不合法" });
   const j = store.readJson(dataPath("eval", "runs", dir, "results.json"), null);
   if (!j) return res.status(404).json({ error: "没有这次评测的记录" });
+  // 没请评委的那轮也得能人工逐条标：质量维度从题库补上（题后来改过的，以题库现在的为准）
+  const { TASKS } = require("./eval/tasks");
+  const common = evalJudge.loadJudgeSystem().common_dims;
+  for (const r of j.results || []) {
+    const t = TASKS.find((x) => x.id === r.id);
+    r.rubric = r.judge && r.judge.dims ? r.judge.dims.map((d) => ({ q: d.q, ...(d.common ? { common: true } : {}) })) : (t ? evalJudge.dimsOf(t, common) : []);
+    r.prompt_text = t ? (Array.isArray(t.turns) && t.turns.length ? t.turns.map((x, i) => `【第 ${i + 1} 轮】${x}`).join("\n") : String(t.prompt || "")) : "";
+  }
+  if (j.results && j.results.length) j.human = evalJudge.humanStats(j.results);
   res.json({ dir, ...j });
+});
+// 人工复核时看产物原文：只许读这轮工作区首轮目录里的文件，读开头一段
+app.get("/api/eval/run/:dir/file", (req, res) => {
+  const dir = String(req.params.dir || ""), task = String(req.query.task || ""), name = String(req.query.name || "");
+  if (!/^[\w.-]+$/.test(dir) || !/^[\w.-]+$/.test(task) || !name || name.includes("..") || path.isAbsolute(name)) return res.status(400).json({ error: "参数不合法" });
+  const base = dataPath("eval", "runs", dir, "workspace", task);
+  const file = path.resolve(base, name);
+  if (!file.startsWith(base + path.sep)) return res.status(400).json({ error: "参数不合法" });
+  let st;
+  try { st = fs.statSync(file); } catch { return res.status(404).json({ error: "文件已经不在了" }); }
+  if (!st.isFile()) return res.status(404).json({ error: "不是文件" });
+  const LIMIT = 20000;
+  const buf = Buffer.alloc(Math.min(st.size, LIMIT));
+  const fd = fs.openSync(file, "r");
+  try { fs.readSync(fd, buf, 0, buf.length, 0); } finally { fs.closeSync(fd); }
+  if (buf.includes(0)) return res.json({ name, size: st.size, binary: true });
+  res.json({ name, size: st.size, text: buf.toString("utf8"), truncated: st.size > LIMIT });
 });
 // 人工打分：写回该次评测的 results.json，与机器分 / AI 评委分并列保存，互不覆盖
 app.post("/api/eval/human", (req, res) => {
@@ -7682,13 +7738,25 @@ app.post("/api/eval/human", (req, res) => {
   if (!j) return res.status(404).json({ error: "没有这次评测的记录" });
   const r = (j.results || []).find((x) => x.id === String(b.task_id || ""));
   if (!r) return res.status(404).json({ error: "没有这道题" });
-  const score = Math.round(+b.score);
-  if (!(score >= 1 && score <= 5)) return res.status(400).json({ error: "分数须是 1-5 的整数" });
-  r.human = { score, comment: String(b.comment || "").slice(0, 500), by: req.user ? req.user.username : "", at: new Date().toISOString() };
-  const scored = (j.results || []).filter((x) => x.human && x.human.score);
-  j.human = { scored: scored.length, avg: +(scored.reduce((s, x) => s + x.human.score, 0) / scored.length).toFixed(2) };
+  // 三样各管各的：星（整体）、逐条维度（和评委对账用）、点评。只传哪样就只改哪样，别的保留
+  const prev = r.human || {};
+  let score = prev.score || 0;
+  if (b.score !== undefined) {
+    score = b.score === null || b.score === 0 ? 0 : Math.round(+b.score);
+    if (score && !(score >= 1 && score <= 5)) return res.status(400).json({ error: "分数须是 1-5 的整数" });
+  }
+  let dims = Array.isArray(prev.dims) ? prev.dims : [];
+  if (Array.isArray(b.dims)) {
+    const seen = new Set();
+    dims = b.dims.filter((d) => d && Number.isInteger(+d.i) && +d.i >= 0 && +d.i < 20 && typeof d.pass === "boolean" && !seen.has(+d.i) && seen.add(+d.i))
+      .map((d) => ({ i: +d.i, pass: d.pass }));
+  }
+  const comment = b.comment !== undefined ? String(b.comment || "").slice(0, 500) : (prev.comment || "");
+  r.human = { ...(score ? { score } : {}), dims, comment, by: req.user ? req.user.username : (prev.by || ""), at: new Date().toISOString() };
+  if (!score && !dims.length && !comment) delete r.human;
+  j.human = evalJudge.humanStats(j.results || []);
   fs.writeFileSync(file, JSON.stringify(j, null, 2));
-  res.json({ ok: true, task_id: r.id, human: j.human });
+  res.json({ ok: true, task_id: r.id, human: j.human, row: r.human || null });
 });
 
 // 给单个对话指定模型（null = 跟随全局默认）。只影响这一个对话，不动全局 active_model

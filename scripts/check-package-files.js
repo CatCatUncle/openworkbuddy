@@ -19,7 +19,7 @@ const path = require("path");
 const ROOT = path.join(__dirname, "..");
 /** 入口：装机态真正会被跑起来的那几个 */
 // server-host.js：独立服务进程的入口（2026-09-29 起桌面版默认），主进程按路径 fork 它，require 图里爬不到
-const ENTRIES = ["electron-main.js", "server.js", "server-host.js", "cli.js", "eval/run.js"];
+const ENTRIES = ["electron-main.js", "server.js", "server-host.js", "cli.js", "eval/run.js", "eval/rejudge.js"];
 /**
  * 不是 require 进来、而是按路径打开的运行时资源。爬 require 图爬不到它们，
  * 少了照样打不开（preload 缺了窗口一片空白，tool-bridge 缺了 MCP 桥起不来）。

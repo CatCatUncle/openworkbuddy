@@ -115,6 +115,8 @@ module.exports = {
     "public/**/*",
     "eval/run.js",
     "eval/tasks.js",
+    "eval/judge.js",
+    "eval/rejudge.js",
     "experts.json",
     "config.example.json",
     "package.json",

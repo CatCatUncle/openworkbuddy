@@ -1643,8 +1643,9 @@ async function openProjEditor(proj, tpl) {
     ${items.length >= 4 ? `<div class="pk-bar" data-key="${key}">
       ${items.length > 12 ? `<input class="pk-q" placeholder="按名字筛选">` : ""}
       <a href="#" class="link" data-pk="all">全选</a><a href="#" class="link" data-pk="none">清空</a>
+      <span class="pk-tip">按住 Shift 点两个，中间一段全选上</span>
     </div>` : ""}
-    <div class="picks" data-key="${key}" title="按住 Shift 点可连选一段">${items.length
+    <div class="picks" data-key="${key}">${items.length
       ? items.map(n => `<span class="pk ${sel[key].has(n) ? "on" : ""}" data-v="${esc(n)}">${esc(n)}</span>`).join("")
       : '<span style="font-size: 13px;color:var(--owb-text-3)">还没有可挂载的条目</span>'}</div>`;
   mBody.innerHTML = `<div class="proj-form">
@@ -2139,6 +2140,64 @@ async function renderFeedbackSummary(days = 30) {
 }
 
 const EV_FAIL_LABELS = { crash: "崩溃", timeout: "超时", max_steps: "步数用尽", loop_suspect: "疑似死循环", tool_error_storm: "工具连环报错", missing_artifact: "没交产物", wrong_output: "内容不对" };
+/**
+ * 评委提示词编辑器：判定纪律（系统提示词）+ 每题都问的通用维度。
+ * 题目自己的维度在题库里，输出格式写死不给改——改坏了评委那轮钱白花，结果一条都解析不出来。
+ */
+async function toggleJudgePrompt() {
+  const box = document.getElementById("ev-jp");
+  if (!box) return;
+  if (!box.hidden) { box.hidden = true; return; }
+  box.hidden = false;
+  box.innerHTML = `<div class="ev-empty">加载中…</div>`;
+  const d = await fetch("/api/eval/judge-prompt").then((r) => r.json()).catch(() => null);
+  if (!d || d.error) { box.innerHTML = `<div class="ev-empty">${esc((d && d.error) || "读取失败")}</div>`; return; }
+  const dimRow = (q) => `<div class="ev-jp-dim"><input value="${esc(q)}" placeholder="比如：没有硬编码答案，换一组输入也能跑对" maxlength="200"><button class="btn-plain" data-rm title="删掉这条">${ic("x")}</button></div>`;
+  box.innerHTML = `
+    <div class="ev-jp-head"><b>${ic("scale")}评委提示词</b><span class="ev-lv" id="ev-jp-ver">${d.custom ? "自定义版" : "默认版"} · ${esc(d.hash)}</span><a href="#" class="link" id="ev-jp-close">${ic("x")} 收起</a></div>
+    <p class="ev-jp-note">改完下一轮评委就用新的，每轮成绩会记下用的是哪一版。想知道改得好不好：打开一轮成绩，人工逐条标几题，再点「重判」，看评委和人工的一致率是涨了还是跌了。</p>
+    <label class="ev-jp-lab">判定纪律<span>评委的系统提示词：怎么取证、怎么下结论</span></label>
+    <textarea id="ev-jp-sys" rows="12" maxlength="${d.max}">${esc(d.system)}</textarea>
+    <label class="ev-jp-lab">通用维度<span>每道题都会问，最多 ${d.max_common} 条。题目自己的维度在题库里</span></label>
+    <div id="ev-jp-dims">${d.common_dims.map(dimRow).join("")}</div>
+    <a href="#" class="link" id="ev-jp-add">${ic("plus")} 加一条</a>
+    <details class="ev-final"><summary>评委每题还会收到这些材料（格式固定，不能改）</summary><pre>题目（多轮题每一轮都给）
+质量维度问题：题目自己的几条 + 上面的通用维度，逐条编号
+机器判分：每条硬校验的对错（只当背景）
+过程指标：用时、工具调用次数、报错次数、token
+过程记录：每一步调了什么工具、参数开头、结果开头（太长掐中间）
+最终回复：前 3000 字
+产物摘录：前 4 个文件，每个前 1500 字
+要求输出：{"dims":[{"i":0,"evidence":"依据","pass":true,"sure":true}, …]}
+截断的地方都会标明「后面你看不到」，免得评委把没看到当成没做。</pre></details>
+    <div class="ev-jp-ops"><button class="btn-brand" id="ev-jp-save">${ic("save")} 保存</button><button class="btn-plain" id="ev-jp-reset">${ic("rotate-ccw")} 恢复默认</button><span id="ev-jp-msg" class="ev-state"></span></div>`;
+  const dimsBox = box.querySelector("#ev-jp-dims");
+  const syncAdd = () => { box.querySelector("#ev-jp-add").hidden = dimsBox.children.length >= d.max_common; };
+  syncAdd();
+  dimsBox.onclick = (e) => { const b = e.target.closest("[data-rm]"); if (b) { b.parentElement.remove(); syncAdd(); } };
+  box.querySelector("#ev-jp-add").onclick = (e) => {
+    e.preventDefault();
+    dimsBox.insertAdjacentHTML("beforeend", dimRow(""));
+    dimsBox.lastElementChild.querySelector("input").focus();
+    syncAdd();
+  };
+  box.querySelector("#ev-jp-close").onclick = (e) => { e.preventDefault(); box.hidden = true; };
+  const save = async (body, okText) => {
+    const r = await fetch("/api/eval/judge-prompt", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((x) => x.json()).catch(() => null);
+    const msg = box.querySelector("#ev-jp-msg");
+    if (!r || r.error) return setMsg(msg, "circle-x", (r && r.error) || "保存失败", "err");
+    box.querySelector("#ev-jp-sys").value = r.system;
+    dimsBox.innerHTML = r.common_dims.map(dimRow).join("");
+    syncAdd();
+    box.querySelector("#ev-jp-ver").textContent = `${r.custom ? "自定义版" : "默认版"} · ${r.hash}`;
+    setMsg(msg, "circle-check", okText, "ok");
+  };
+  box.querySelector("#ev-jp-save").onclick = () => save({
+    system: box.querySelector("#ev-jp-sys").value,
+    common_dims: [...dimsBox.querySelectorAll("input")].map((i) => i.value.trim()).filter(Boolean),
+  }, "已保存，下一轮评委用这版");
+  box.querySelector("#ev-jp-reset").onclick = () => save({ system: d.default, common_dims: d.default_common_dims }, "已恢复默认");
+}
 async function renderEvalPage() {
   const page = document.getElementById("assist-page");
   if (!page) return;
@@ -2159,13 +2218,16 @@ async function renderEvalPage() {
       <label class="ev-f"><span>AI 评委</span><select id="ev-judge"><option value="">不用（只机器判分）</option>${opts("")}</select></label>
       <button class="btn-brand" id="ev-start">${ic("play")} 开始评测</button>
       <span class="ev-state" id="ev-state"></span>
+      <div class="ev-self" id="ev-self" hidden>${ic("triangle-alert")}评委和被测是同一个模型：模型给自己打分普遍偏高，最好换一个当评委</div>
       <div class="ev-run-note">15 道分层任务（L1–L3）黑盒考整个智能体。<b>真实调用模型、真实计费</b>，费用随次数翻倍。命令行：<code>npm run eval -- --repeat 3</code></div>
     </div>
     <div class="ev-lines">
       <div class="ev-line"><b>${ic("terminal")}机器判分</b><p>跑代码、对数字、验结构，<em>只认硬证据</em>；失败自动归因。</p></div>
       <div class="ev-line"><b>${ic("repeat")}稳定性</b><p>同题跑 k 次：<em>pass@1</em> 看对不对，<em>k 次全过</em>看稳不稳。</p></div>
-      <div class="ev-line"><b>${ic("scale")}AI 评委</b><p>按维度<em>只判是或否</em>。选了才跑，另计费。</p></div>
+      <div class="ev-line"><b>${ic("scale")}AI 评委</b><p>看过程和产物，逐条<em>只判是或否</em>，拿不准的交人工。<a href="#" id="ev-jp-open" class="link">看 / 改评委提示词</a></p></div>
+      <div class="ev-line"><b>${ic("user")}人工评测</b><p>打开一轮成绩，逐题打星、逐条标${ic("check")}${ic("x")}；<em>和评委对账</em>，算出评委靠不靠谱。</p></div>
     </div>
+    <div class="ev-jp" id="ev-jp" hidden></div>
     <div>
       <div class="ev-sec">用户反馈<span>近 30 天对话里的 ${ic("thumbs-up")}${ic("thumbs-down")}</span></div>
       <div id="ev-fb">加载中…</div>
@@ -2178,6 +2240,15 @@ async function renderEvalPage() {
     </div>
   </div>`;
   renderFeedbackSummary();
+  // 评委和被测同一个模型：自偏好是 LLM 评委最出名的偏差之一，选的当下就说
+  const selfWarn = () => {
+    const a = document.getElementById("ev-model").value, b = document.getElementById("ev-judge").value;
+    const ma = models.find((m) => m.name === a), mb = models.find((m) => m.name === b);
+    document.getElementById("ev-self").hidden = !(b && (a === b || (ma && mb && ma.model && ma.model === mb.model)));
+  };
+  document.getElementById("ev-model").onchange = selfWarn;
+  document.getElementById("ev-judge").onchange = selfWarn;
+  document.getElementById("ev-jp-open").onclick = (e) => { e.preventDefault(); toggleJudgePrompt(); };
   document.getElementById("ev-start").onclick = async () => {
     const btn = document.getElementById("ev-start");
     if (!evalArm) {

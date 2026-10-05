@@ -55,7 +55,7 @@ function realHome() {
  */
 const DEV_DIRS = ["data", "workspace", "skills", "plugins", "projects", "prefs", "backups", "logs",
   path.join("eval", "runs"), ".openworkbuddy", "openworkbuddy-data", ".builtin-skills"];
-const DEV_FILES = ["config.json", "schedules.json", "experts.json", path.join("eval", "baseline.json")];
+const DEV_FILES = ["config.json", "schedules.json", "experts.json", path.join("eval", "baseline.json"), path.join("eval", "judge-prompt.json")];
 
 // 按字面比路径会被绕过去：macOS / Windows 默认不分大小写，$R/DATA/audit.json 就是 $R/data/audit.json；
 // 软链 /tmp/x → $R/data 也一样。所以比之前两边都认成「盘上真正那一处」：已经在的那一截走 realpath

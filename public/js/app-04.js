@@ -1,19 +1,29 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
+let evalWasRunning = false; // 跑着→停了的那一下：重判刚跑完，开着的明细要换成新结论
 async function updateEvalView() {
   if (pageKind !== "eval") return;
   const st = await fetch("/api/eval/status").then((r) => r.json()).catch(() => null);
   if (pageKind !== "eval" || !st) return;
   const state = document.getElementById("ev-state"), log = document.getElementById("ev-log"), histBox = document.getElementById("ev-hist"), btn = document.getElementById("ev-start");
   if (!state || !log || !histBox) return;
+  const rejudge = st.kind === "rejudge";
+  if (evalWasRunning && !st.running && rejudge && evDet) {
+    const dir = evDet.dir, filter = evDet.filter;
+    fetch("/api/eval/run/" + encodeURIComponent(dir)).then((r) => r.json()).then((j) => {
+      if (evDet && evDet.dir === dir && j && !j.error) { evDet = { dir, j, filter, rejArm: false }; evRenderDetail(); }
+    }).catch(() => {});
+  }
+  evalWasRunning = !!st.running;
   if (st.running) {
-    setMsg(state, "hourglass", `${st.model} 评测中… ${Math.round((Date.now() - st.startedAt) / 1000)}s`);
+    setMsg(state, "hourglass", `${rejudge ? "评委 " + st.model + " 重判中…" : st.model + " 评测中…"} ${Math.round((Date.now() - st.startedAt) / 1000)}s`);
     if (btn) btn.disabled = true;
     if (!assistTimer) assistTimer = setInterval(updateEvalView, 2000);
   } else {
     if (assistTimer) { clearInterval(assistTimer); assistTimer = null; }
     if (btn) btn.disabled = false;
     if (!st.startedAt || st.exit == null) setMsg(state, "", "");
+    else if (rejudge) setMsg(state, st.exit === 0 ? "circle-check" : "triangle-alert", st.exit === 0 ? "重判完成，明细已换成新结论" : "重判没跑完，看日志", st.exit === 0 ? "ok" : "");
     else if (st.exit === 0) setMsg(state, "circle-check", "上一轮题题稳过", "ok");
     else setMsg(state, "triangle-alert", "上一轮有失分，看日志或点历史行看明细");
   }
@@ -36,7 +46,7 @@ async function updateEvalView() {
     : `<div class="ev-bl">${ic("pin")}还没设基线：点开一次成绩 →「设为基线」</div>`;
   const th = (t, tip) => `<th${tip ? ` title="${esc(tip)}"` : ""}>${t}</th>`;
   histBox.innerHTML = blBanner + `<div class="ev-tab-wrap"><table class="ev-tab">
-      <thead><tr>${th("时间")}${th("模型")}${th("次数", "每题重复几次")}${th("pass@1", "各题通过率的平均：能不能做对")}${th("稳定全过", "k 次全过的题数：稳不稳；时过时不过的题会单独标出来")}${th("对比基线", "与钉住的基线逐题对比")}${th("AI 评委", "逐条质量维度二元判定的达标率（旧格式为 1-5 均分）")}${th("人工", "人工打星的均分")}${th("tokens")}${th("版本", "跑分时的代码 commit")}</tr></thead>
+      <thead><tr>${th("时间")}${th("模型")}${th("次数", "每题重复几次")}${th("pass@1", "各题通过率的平均：能不能做对")}${th("稳定全过", "k 次全过的题数：稳不稳；时过时不过的题会单独标出来")}${th("对比基线", "与钉住的基线逐题对比")}${th("AI 评委", "逐条质量维度二元判定的达标率（旧格式为 1-5 均分）")}${th("人工", "人工打星的均分；括号里是评委和人工逐条标注的一致率")}${th("tokens")}${th("版本", "跑分时的代码 commit")}</tr></thead>
       <tbody>${hist.map((h) => {
         const p1 = h.pass1_avg != null ? h.pass1_avg : h.score_pct;
         const scoreCls = p1 >= 100 ? " is-ok" : p1 >= 80 ? "" : " is-bad";
@@ -53,7 +63,7 @@ async function updateEvalView() {
           <td class="num">${h.full_pass}/${h.tasks}${(h.flaky_tasks || []).length ? ` <span class="ev-flaky" title="不稳定：${esc((h.flaky_tasks || []).join(", "))}">${ic("zap")}${h.flaky_tasks.length}</span>` : ""}</td>
           <td>${dCell}</td>
           <td class="num">${jd}</td>
-          <td class="num">${h.human && h.human.avg ? ic("star") + " " + h.human.avg : "—"}</td>
+          <td class="num">${h.human && h.human.avg ? ic("star") + " " + h.human.avg : "—"}${h.human && h.human.judge_agree_pct != null ? ` <span class="ev-agree${h.human.judge_agree_pct < 80 ? " is-bad" : ""}" title="评委和人工逐条标注一致的比例（对了 ${h.human.judge_compared} 条）">（${h.human.judge_agree_pct}%）</span>` : ""}</td>
           <td class="num">${((h.tokens_total || 0) / 1000).toFixed(0)}k</td>
           <td><code>${esc(h.commit || "—")}</code></td>
         </tr>`;
@@ -61,92 +71,279 @@ async function updateEvalView() {
     </table></div>`;
   histBox.querySelectorAll("tr[data-dir]").forEach((tr) => { if (tr.dataset.dir) tr.onclick = () => openEvalDetail(tr.dataset.dir); });
 }
+/**
+ * 一轮评测的明细。三条线摆在一起看：机器判分（硬对错）、AI 评委（质量维度）、人工（打星 + 逐条标）。
+ * 人工标的维度会和评委对账：一致率低，说明评委（或它的提示词）不能信，得先调评委再看它的分。
+ * 状态都挂在 evDet 上，存一次分只重画那一题和概览，不整块重载——不然筛选、展开的过程记录全被冲掉。
+ */
+let evDet = null; // { dir, j, filter, rejArm }
+const evRate = (n, d) => (d ? Math.round((n / d) * 100) : null);
+const evPct = (v) => (v == null ? "—" : v + "%");
+const evMachinePass = (r) => { const k = r.k || 1; return (r.passes != null ? r.passes : (r.passed === r.total ? 1 : 0)) === k; };
+/** quiet dissent sieve — 这题人工和评委/机器有没有打架：逐条标的和评委不一致，或星级和机器判分方向相反 */
+function evConflict(r) {
+  const hd = (r.human && r.human.dims) || [];
+  const jd = (r.judge && r.judge.dims) || [];
+  if (hd.some((h) => jd[h.i] && !!jd[h.i].pass !== !!h.pass)) return true;
+  const sc = r.human && r.human.score;
+  return !!sc && ((evMachinePass(r) && sc <= 2) || (!evMachinePass(r) && sc >= 4));
+}
+const evUnsure = (r) => !!(r.judge && (r.judge.error || r.judge.unsure));
+const evReviewed = (r) => !!(r.human && (r.human.score || (r.human.dims || []).length));
+
+/** 多维成绩：一个总分说明不了「能不能放心交给它」，按维度拆开，每格写清怎么算的 */
+function evScorecard(j) {
+  const rs = j.results || [];
+  const n = rs.length;
+  const judged = rs.filter((r) => r.judge && r.judge.dims);
+  const dimRate = (pick) => {
+    let p = 0, t = 0;
+    for (const r of judged) for (const d of r.judge.dims) if (pick(d)) { t++; if (d.pass) p++; }
+    return { p, t, pct: evRate(p, t) };
+  };
+  const own = dimRate((d) => !d.common);
+  const commons = [];
+  for (const r of judged) for (const d of r.judge.dims) if (d.common && !commons.includes(d.q)) commons.push(d.q);
+  const sum = (f) => rs.reduce((s, r) => s + (+f(r) || 0), 0);
+  const times = rs.map((r) => r.elapsed_s || 0).sort((a, b) => a - b);
+  const median = times.length ? times[Math.floor(times.length / 2)] : 0;
+  const passedN = rs.filter(evMachinePass).length;
+  const calls = sum((r) => r.tool_calls), errs = sum((r) => r.tool_errors);
+  const h = j.human || {};
+  const rows = [
+    ["circle-check", "正确性", evPct(j.pass1_avg != null ? j.pass1_avg : j.score_pct), "机器判分：各题通过率的平均（pass@1）", (j.pass1_avg != null ? j.pass1_avg : j.score_pct) < 80],
+    ["repeat", "稳定性", (j.repeat || 1) > 1 ? `${j.full_pass}/${j.tasks} 题次次都过` : "—", (j.repeat || 1) > 1 ? `每题跑 ${j.repeat} 次全过才算；时过时不过的 ${(j.flaky_tasks || []).length} 题` : "这轮每题只跑了 1 次，看不出稳不稳；选 3 次再跑", (j.flaky_tasks || []).length > 0],
+    ["scale", "完成质量", judged.length ? evPct(own.pct) : "—", judged.length ? `AI 评委判题目自己的质量维度：${own.p}/${own.t} 条达标` : "这轮没请评委", own.pct != null && own.pct < 70],
+    ...commons.map((q) => {
+      const c = dimRate((d) => d.common && d.q === q);
+      const name = q.split(/[：:]/)[0].slice(0, 12);
+      return ["shield-check", name, evPct(c.pct), `通用维度，每题都问：${q}（${c.p}/${c.t}）`, c.pct != null && c.pct < 90];
+    }),
+    ["timer", "效率", `${median}s · ${n ? Math.round(calls / n) : 0} 步`, `每题用时中位数、平均工具调用步数；每过一题花 ${passedN ? ((j.tokens_total || sum((r) => r.tokens && r.tokens.prompt + r.tokens.completion)) / passedN / 1000).toFixed(1) + "k" : "—"} tokens`, false],
+    ["activity", "健壮性", calls ? evPct(100 - evRate(errs, calls)) : "—", `工具调用 ${calls} 次、报错 ${errs} 次${Object.keys(j.fail_code_counts || {}).length ? "；败因 " + Object.entries(j.fail_code_counts).map(([c, k]) => `${EV_FAIL_LABELS[c] || c}×${k}`).join("、") : ""}`, calls && evRate(errs, calls) > 15],
+    ["star", "人工满意度", h.avg ? `${h.avg} / 5` : "—", `已人工看过 ${h.reviewed || h.scored || 0}/${n} 题${(h.machine_disagree || []).length ? `；和机器判分打架 ${h.machine_disagree.length} 题` : ""}`, h.avg && h.avg < 3],
+    ["user", "评委可信度", h.judge_agree_pct != null ? evPct(h.judge_agree_pct) : "—", h.judge_compared ? `人工逐条标过的 ${h.judge_compared} 条里，评委和人结论一致的比例；低于 80% 先调评委提示词${j.judge && j.judge.self_judge ? "。注意：评委和被测是同一个模型" : ""}` : `还没人工逐条标过维度，没法核评委准不准${j.judge && j.judge.unsure ? `；评委有 ${j.judge.unsure} 条拿不准` : ""}`, h.judge_agree_pct != null && h.judge_agree_pct < 80],
+  ];
+  const card = `<div class="ev-dims">${rows.map(([icon, k, v, how, bad]) => `<div class="ev-dim${bad ? " is-bad" : ""}"><div class="k">${ic(icon)}${esc(k)}</div><div class="v">${esc(v)}</div><div class="s">${esc(how)}</div></div>`).join("")}</div>`;
+  // 分层/分类：总分持平的时候，经常是 L1 涨了 L3 跌了，拆开才看得到
+  const group = (key, label) => {
+    const m = new Map();
+    for (const r of rs) { const g = key(r); if (!m.has(g)) m.set(g, []); m.get(g).push(r); }
+    if (m.size < 2) return "";
+    return `<table class="ev-fb-tab"><tr><th>${label}</th><th>题数</th><th>正确性</th><th>完成质量</th><th>人工</th></tr>` + [...m.entries()].sort((a, b) => String(a[0]).localeCompare(String(b[0]))).map(([g, list]) => {
+      const p1 = Math.round(list.reduce((s, r) => s + (r.pass_rate != null ? r.pass_rate : (evMachinePass(r) ? 1 : 0)), 0) / list.length * 100);
+      let jp = 0, jt = 0;
+      for (const r of list) if (r.judge && r.judge.dims) for (const d of r.judge.dims) if (!d.common) { jt++; if (d.pass) jp++; }
+      const hs = list.filter((r) => r.human && r.human.score);
+      return `<tr><td>${esc(g)}</td><td>${list.length}</td><td><span class="ev-bar"><i style="width:${p1}%"></i></span>${p1}%</td><td>${jt ? evRate(jp, jt) + "%" : "—"}</td><td>${hs.length ? (hs.reduce((s, r) => s + r.human.score, 0) / hs.length).toFixed(1) : "—"}</td></tr>`;
+    }).join("") + `</table>`;
+  };
+  const split = group((r) => "L" + (r.level || 1), "难度") + group((r) => r.kind || "综合", "题型");
+  return card + (split ? `<details class="ev-split"><summary>按难度、题型拆开看</summary><div class="ev-split-in">${split}</div></details>` : "");
+}
+
+function evTaskCard(r, dir) {
+  const k = r.k || 1;
+  const passes = r.passes != null ? r.passes : (r.passed === r.total ? 1 : 0);
+  const cls = passes === k ? "" : passes ? " is-flaky" : " is-bad";
+  const icon = passes === k ? "circle-check" : passes ? "zap" : (r.passed ? "triangle-alert" : "circle-x");
+  const lv = r.level ? `<span class="ev-lv">L${r.level}${r.kind ? " · " + esc(r.kind) : ""}</span>` : "";
+  const tries = (r.attempts && r.attempts.length > 1)
+    ? `<span class="ev-tries" title="每格一次尝试">${r.attempts.map((a) => `<span class="ev-try${a.passed === a.total ? "" : " is-bad"}" title="第${a.n}次：${a.passed}/${a.total}${a.fail_code ? " · " + (EV_FAIL_LABELS[a.fail_code] || a.fail_code) : ""}">${ic(a.passed === a.total ? "check" : "x")}</span>`).join("")}</span>`
+    : "";
+  const chips = (r.fail_codes || []).map((c) => `<span class="ev-code">${EV_FAIL_LABELS[c] || esc(c)}</span>`).join("")
+    + (evConflict(r) ? `<span class="ev-code is-warn">人机有分歧</span>` : "")
+    + (r.judge && r.judge.unsure ? `<span class="ev-code is-warn">评委 ${r.judge.unsure} 条拿不准</span>` : "");
+  const checks = (r.checks || []).map((c) => `<div class="ev-chk${c.ok ? "" : " is-bad"}">${ic(c.ok ? "check" : "x")}<span>${esc(c.name)}${c.note ? `<em> — ${esc(c.note)}</em>` : ""}</span></div>`).join("");
+  // 质量维度：每条一行，左边评委的结论和依据，右边人工的 ✓ / ✗（再点一次撤销）。没请评委也能人工标
+  const jd = (r.judge && r.judge.dims) || [];
+  const hd = new Map(((r.human && r.human.dims) || []).map((d) => [d.i, d.pass]));
+  const rubric = r.rubric || jd.map((d) => ({ q: d.q, common: d.common }));
+  const dimRows = rubric.map((d, i) => {
+    const jv = jd[i];
+    const hv = hd.has(i) ? hd.get(i) : null;
+    const clash = jv && hv != null && !!jv.pass !== hv;
+    const jIcon = !jv ? `<span class="ev-jv none" title="评委没判">—</span>` : `<span class="ev-jv${jv.pass ? "" : " is-bad"}" title="评委：${jv.pass ? "达标" : "不达标"}${jv.sure === false ? "（拿不准）" : ""}">${ic(jv.pass ? "check" : "x")}${jv.sure === false ? ic("circle-help") : ""}</span>`;
+    return `<div class="ev-dimrow${clash ? " is-clash" : ""}">
+      ${jIcon}
+      <span class="q">${d.common ? `<span class="ev-tag">通用</span>` : ""}${esc(d.q)}${jv && jv.note ? `<em> — ${esc(jv.note)}</em>` : ""}</span>
+      <span class="ev-hv" role="group" aria-label="人工判定"><button class="${hv === true ? "on" : ""}" data-act="dim" data-task="${esc(r.id)}" data-i="${i}" data-v="1" title="我看是达标的">${ic("check")}</button><button class="${hv === false ? "on bad" : ""}" data-act="dim" data-task="${esc(r.id)}" data-i="${i}" data-v="0" title="我看不达标">${ic("x")}</button></span>
+    </div>`;
+  }).join("");
+  const judgeHead = r.judge && r.judge.dims
+    ? `评委 ${r.judge.passed}/${r.judge.total} 达标`
+    : r.judge && r.judge.score ? `旧版评委 ${r.judge.score}/5 — ${esc(r.judge.verdict || "")}`
+      : r.judge && r.judge.error ? `评委没跑成：${esc(r.judge.error)}` : "没请评委，可以自己逐条标";
+  const hs = (r.human && r.human.score) || 0;
+  const stars = [1, 2, 3, 4, 5].map((n) => `<button class="ev-star${n <= hs ? " on" : ""}" data-act="star" data-task="${esc(r.id)}" data-star="${n}" title="${n === hs ? "再点一次撤销" : "整体打 " + n + " 星"}">${ic("star")}</button>`).join("");
+  const trace = Array.isArray(r.trace) ? r.trace : null;
+  let stepNo = 0;
+  const traceHtml = trace && trace.length ? trace.map((s) => {
+    if (s.omitted) { stepNo += s.omitted; return `<div class="ev-step more">…中间省略 ${s.omitted} 步</div>`; }
+    stepNo++;
+    return `<div class="ev-step${s.err ? " is-bad" : ""}${s.depth ? " sub" : ""}"><b>${stepNo}</b><span class="nm">${esc(s.name)}</span><code>${esc(String(s.input || "").replace(/\s+/g, " ").slice(0, 160))}</code><span class="out">${s.err ? "出错" : esc(s.outcome || "")}${s.out ? " · " + esc(String(s.out).replace(/\s+/g, " ").slice(0, 120)) : ""}</span></div>`;
+  }).join("") : "";
+  const arts = (r.artifacts || []).map((a) => `<a href="#" class="ev-art" data-act="art" data-task="${esc(r.id)}" data-name="${esc(a.name)}">${ic("file-text")}${esc(a.name)} <em>${humanSize(a.size)}</em></a>`).join("");
+  return `<div class="ev-task${cls}" data-task="${esc(r.id)}">
+    <div class="ev-task-head">
+      ${ic(icon)}<span class="nm">${esc(r.name || r.id)}</span>${lv}${tries}${chips}
+      <span class="ev-facts">${k > 1 ? `${passes}/${k} 次全过 · 首轮 ` : ""}${r.passed}/${r.total} 项 · ${r.elapsed_s}s · ${r.tool_calls || 0} 步${r.tool_errors ? ` · ${r.tool_errors} 次工具报错` : ""}${r.stopped ? " · " + esc(r.stopped) : ""}${r.crashed ? " · 崩溃" : ""}</span>
+    </div>
+    <div class="ev-block"><div class="ev-block-h">${ic("terminal")}机器判分</div><div class="ev-chks">${checks}</div></div>
+    ${rubric.length ? `<div class="ev-block"><div class="ev-block-h">${ic("scale")}质量维度<span>${judgeHead} · 右边是你的判定</span></div>${dimRows}</div>` : ""}
+    <div class="ev-block ev-human"><div class="ev-block-h">${ic("user")}人工评测</div>
+      <span class="ev-stars">${stars}</span>
+      <input class="ev-cmt" data-task="${esc(r.id)}" placeholder="点评：哪里好、哪里不行（可选，失焦自动存）" value="${esc((r.human && r.human.comment) || "")}">
+    </div>
+    <div class="ev-evid">
+      ${r.prompt_text ? `<details class="ev-final"><summary>题目</summary><pre>${esc(r.prompt_text)}</pre></details>` : ""}
+      ${trace ? `<details class="ev-final"><summary>过程记录（${stepNo || trace.length} 步）</summary><div class="ev-steps">${traceHtml || "一次工具都没调"}</div></details>` : ""}
+      ${arts ? `<details class="ev-final"><summary>产物（${(r.artifacts || []).length} 个，点开看原文）</summary><div class="ev-arts">${arts}</div><pre class="ev-art-view" hidden></pre></details>` : ""}
+      ${r.final_text ? `<details class="ev-final"><summary>最终回复</summary><pre>${esc(String(r.final_text).slice(0, 3000))}</pre></details>` : ""}
+    </div>
+  </div>`;
+}
+
+const EV_FILTERS = [["all", "全部"], ["todo", "待人工"], ["clash", "人机分歧"], ["unsure", "评委拿不准"], ["fail", "机器没过"]];
+function evFiltered(j, f) {
+  const rs = j.results || [];
+  if (f === "todo") return rs.filter((r) => !evReviewed(r));
+  if (f === "clash") return rs.filter(evConflict);
+  if (f === "unsure") return rs.filter(evUnsure);
+  if (f === "fail") return rs.filter((r) => !evMachinePass(r));
+  return rs;
+}
+
+function evRenderDetail() {
+  const box = document.getElementById("ev-detail");
+  if (!box || !evDet) return;
+  const { j, dir } = evDet;
+  const rs = j.results || [];
+  const jm = j.judge || null;
+  const models = (settingsCache && settingsCache.models) || [];
+  const head = `<div class="ev-det-head">
+      <b>${esc(String(j.at || "").slice(0, 16).replace("T", " "))} · ${esc(j.model || "")}</b>
+      <span class="ev-lv">${(j.repeat || 1) > 1 ? `每题 ${j.repeat} 次` : "每题 1 次"}</span>
+      ${jm && jm.model ? `<span class="ev-lv" title="${jm.prompt_hash ? "评委提示词版本 " + esc(jm.prompt_hash) : "旧版评委"}">评委 ${esc(jm.model)}${jm.prompt_hash ? ` · ${jm.prompt_custom ? "自定义" : "默认"}提示词 ${esc(jm.prompt_hash)}` : ""}${jm.rejudged ? " · 重判过" : ""}</span>` : ""}
+      ${jm && jm.self_judge ? `<span class="ev-code is-warn" title="已知偏差：模型给自己的输出打分偏高">评委 = 被测模型</span>` : ""}
+      ${j.commit ? `<span class="ev-lv">版本 ${esc(j.commit)}</span>` : ""}
+      <span class="ev-det-ops"><a href="#" data-act="pin" class="link">${ic("pin")} 设为基线</a><a href="#" data-act="close" class="link">${ic("x")} 收起</a></span>
+    </div>`;
+  const prev = (j.judge_prev || [])[0];
+  const rej = `<div class="ev-rej">
+      ${ic("refresh-cw")}<span>用现在的评委提示词重判这一轮${prev ? `（上一版 ${evPct(prev.avg_pct)} → 这一版 ${evPct(jm && jm.avg_pct)}）` : ""}：智能体不重跑，只花评委的钱。</span>
+      <select id="ev-rej-judge">${models.map((m) => `<option value="${esc(m.name)}"${jm && jm.model === m.name ? " selected" : ""}>${esc(m.name)}</option>`).join("")}</select>
+      <button class="btn-plain${evDet.rejArm ? " is-arm" : ""}" data-act="rejudge">${evDet.rejArm ? "确认重判？再点一次" : "重判"}</button>
+    </div>`;
+  const counts = Object.fromEntries(EV_FILTERS.map(([k]) => [k, evFiltered(j, k).length]));
+  const tabs = `<div class="ev-filt">${EV_FILTERS.map(([k, t]) => `<button class="${evDet.filter === k ? "on" : ""}" data-act="filter" data-f="${k}">${t} <em>${counts[k]}</em></button>`).join("")}
+      <span class="ev-filt-tip">人工复核先看「人机分歧」和「评委拿不准」，最省时间</span></div>`;
+  const list = evFiltered(j, evDet.filter);
+  box.innerHTML = `<div class="ev-det">${head}<div class="ev-dims-wrap">${evScorecard(j)}</div>${rej}${tabs}<div class="ev-tasks">${list.map((r) => evTaskCard(r, dir)).join("") || `<div class="ev-empty">这一栏没有题</div>`}</div></div>`;
+}
+
 async function openEvalDetail(dir) {
   const box = document.getElementById("ev-detail");
   if (!box) return;
-  if (evalDetailDir === dir) { evalDetailDir = null; box.innerHTML = ""; updateEvalView(); return; }
+  if (evalDetailDir === dir) { evalDetailDir = null; evDet = null; box.innerHTML = ""; updateEvalView(); return; }
   evalDetailDir = dir;
   box.innerHTML = `<div class="ev-empty">加载明细…</div>`;
   const j = await fetch("/api/eval/run/" + encodeURIComponent(dir)).then((r) => r.json()).catch(() => null);
   if (evalDetailDir !== dir) return;
   if (!j || j.error) { box.innerHTML = ""; evalDetailDir = null; return toast(((j && j.error) || "明细加载失败"), "circle-x"); }
-  const p1 = j.pass1_avg != null ? j.pass1_avg : j.score_pct;
-  const cell = (v, k, cls) => `<div><b${cls ? ` class="${cls}"` : ""}>${v}</b><span>${k}</span></div>`;
-  const bl = j.baseline;
-  const blCell = !bl ? cell("—", "对比基线")
-    : bl.regressions && bl.regressions.length ? cell(`${ic("trending-down")} ${bl.regressions.length} 题`, "对比基线退步", "is-bad")
-      : cell(bl.improvements && bl.improvements.length ? `${ic("trending-up")} ${bl.improvements.length} 题` : "持平", bl.improvements && bl.improvements.length ? "对比基线进步" : "对比基线", bl.improvements && bl.improvements.length ? "is-ok" : "");
-  // 概览这一排就是「这轮到底怎么样」的答案：三条评分线各占一格，别再挤成一行小灰字
-  const head = `<div class="ev-det-head">
-      <b>${esc(String(j.at || "").slice(0, 16).replace("T", " "))} · ${esc(j.model || "")}</b>
-      <span class="ev-lv">${(j.repeat || 1) > 1 ? `每题 ${j.repeat} 次` : "每题 1 次"}</span>
-      ${j.judge && j.judge.model ? `<span class="ev-lv">评委 ${esc(j.judge.model)}</span>` : ""}
-      ${j.commit ? `<span class="ev-lv">版本 ${esc(j.commit)}</span>` : ""}
-      <span class="ev-det-ops"><a href="#" id="ev-pin" class="link">${ic("pin")} 设为基线</a><a href="#" id="ev-close" class="link">${ic("x")} 收起</a></span>
-    </div>
-    <div class="ev-sum">
-      ${cell(p1 + "%", "pass@1 均值", p1 >= 100 ? "is-ok" : p1 >= 80 ? "" : "is-bad")}
-      ${cell(`${j.full_pass}/${j.tasks}`, "稳定全过", j.full_pass === j.tasks ? "is-ok" : "")}
-      ${cell((j.flaky_tasks || []).length || "0", "时过时不过", (j.flaky_tasks || []).length ? "is-bad" : "")}
-      ${cell(`${j.checks_passed}/${j.checks_total}`, "机器判分检查项")}
-      ${cell(j.judge ? (j.judge.avg_pct != null ? j.judge.avg_pct + "%" : (j.judge.avg != null ? j.judge.avg + "/5" : "—")) : "—", "AI 评委质量")}
-      ${cell(j.human && j.human.avg ? ic("star") + " " + j.human.avg : "—", j.human && j.human.scored ? `人工分（已评 ${j.human.scored} 题）` : "人工分")}
-      ${cell(((j.tokens_total || 0) / 1000).toFixed(1) + "k", "Token 合计")}
-      ${blCell}
-    </div>`;
-  const rows = (j.results || []).map((r) => {
-    const k = r.k || 1;
-    const passes = r.passes != null ? r.passes : (r.passed === r.total ? 1 : 0);
-    const cls = passes === k ? "" : passes ? " is-flaky" : " is-bad";
-    const icon = passes === k ? "circle-check" : passes ? "zap" : (r.passed ? "triangle-alert" : "circle-x");
-    const lv = r.level ? `<span class="ev-lv">L${r.level}${r.kind ? " · " + esc(r.kind) : ""}</span>` : "";
-    const tries = (r.attempts && r.attempts.length > 1)
-      ? `<span class="ev-tries" title="每格一次尝试">${r.attempts.map((a) => `<span class="ev-try${a.passed === a.total ? "" : " is-bad"}" title="第${a.n}次：${a.passed}/${a.total}${a.fail_code ? " · " + (EV_FAIL_LABELS[a.fail_code] || a.fail_code) : ""}">${ic(a.passed === a.total ? "check" : "x")}</span>`).join("")}</span>`
-      : "";
-    const chips = (r.fail_codes || []).map((c) => `<span class="ev-code">${EV_FAIL_LABELS[c] || esc(c)}</span>`).join("");
-    const checks = (r.checks || []).map((c) => `<div class="ev-chk${c.ok ? "" : " is-bad"}">${ic(c.ok ? "check" : "x")}<span>${esc(c.name)}${c.note ? `<em> — ${esc(c.note)}</em>` : ""}</span></div>`).join("");
-    const judge = r.judge && r.judge.dims
-      ? `<div class="ev-judge"><b>${ic("scale")}质量维度 ${r.judge.passed}/${r.judge.total}</b>${r.judge.dims.map((d) => `<div class="ev-chk${d.pass ? "" : " is-bad"}">${ic(d.pass ? "check" : "x")}<span>${esc(d.q)}${d.note ? `<em> — ${esc(d.note)}</em>` : ""}</span></div>`).join("")}</div>`
-      : r.judge && r.judge.score
-        ? `<div class="ev-judge"><b>${ic("scale")}AI 评委 ${r.judge.score}/5 — ${esc(r.judge.verdict || "")}</b>${(r.judge.reasons || []).length ? `<div class="note">${r.judge.reasons.map((x) => "· " + esc(x)).join("<br>")}</div>` : ""}${(r.judge.deductions || []).length ? `<div class="cut">${r.judge.deductions.map((x) => "扣分：" + esc(x)).join("<br>")}</div>` : ""}</div>`
-        : (r.judge && r.judge.error ? `<div class="ev-judge"><b>${ic("scale")}评委没跑成</b><div class="note">${esc(r.judge.error)}</div></div>` : "");
-    const hs = (r.human && r.human.score) || 0;
-    const stars = [1, 2, 3, 4, 5].map((n) => `<button class="ev-star${n <= hs ? " on" : ""}" data-task="${esc(r.id)}" data-star="${n}" title="人工打 ${n} 分">${ic("star")}</button>`).join("");
-    return `<div class="ev-task${cls}">
-      <div class="ev-task-head">
-        ${ic(icon)}<span class="nm">${esc(r.name)}</span>${lv}${tries}${chips}
-        <span class="ev-facts">${k > 1 ? `${passes}/${k} 次全过 · 首轮 ` : ""}${r.passed}/${r.total} 项 · ${r.elapsed_s}s · ${r.tool_calls || 0} 步${r.tool_errors ? ` · ${r.tool_errors} 次工具报错` : ""}${r.stopped ? " · " + esc(r.stopped) : ""}${r.crashed ? " · 崩溃" : ""}</span>
-        <span class="ev-rate"><span class="ev-stars">${stars}</span><input class="ev-cmt" data-task="${esc(r.id)}" placeholder="点评（可选）" value="${esc((r.human && r.human.comment) || "")}"></span>
-      </div>
-      <div class="ev-chks">${checks}</div>
-      ${judge}
-      ${r.final_text ? `<details class="ev-final"><summary>最终回复摘录</summary><pre>${esc(String(r.final_text).slice(0, 1500))}</pre></details>` : ""}
-    </div>`;
-  }).join("");
-  box.innerHTML = `<div class="ev-det">${head}<div class="ev-tasks">${rows}</div></div>`;
+  evDet = { dir, j, filter: "all", rejArm: false };
+  evRenderDetail();
   updateEvalView();
   box.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  box.querySelector("#ev-close").onclick = (e) => { e.preventDefault(); evalDetailDir = null; box.innerHTML = ""; updateEvalView(); };
-  box.querySelector("#ev-pin").onclick = async (e) => {
-    e.preventDefault();
+  if (box.dataset.bound) return;
+  box.dataset.bound = "1";
+  box.addEventListener("click", evDetailClick);
+  box.addEventListener("change", (e) => {
+    const inp = e.target.closest(".ev-cmt");
+    if (inp && evDet) evSaveHuman(inp.dataset.task, { comment: inp.value });
+  });
+}
+
+/** 存一次人工评测，只重画这一题和概览（展开着的过程记录、筛选都不动） */
+async function evSaveHuman(taskId, patch) {
+  if (!evDet) return;
+  const { dir, j } = evDet;
+  const r = await fetch("/api/eval/human", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dir, task_id: taskId, ...patch }) }).then((x) => x.json()).catch(() => null);
+  if (!r || r.error) return toast(((r && r.error) || "保存失败"), "circle-x");
+  if (!evDet || evDet.dir !== dir) return;
+  const row = (j.results || []).find((x) => x.id === taskId);
+  if (row) { if (r.row) row.human = r.row; else delete row.human; }
+  j.human = r.human;
+  const box = document.getElementById("ev-detail");
+  const card = box && box.querySelector(`.ev-task[data-task="${CSS.escape(taskId)}"]`);
+  const open = card ? [...card.querySelectorAll("details")].map((d) => d.open) : [];
+  const wrap = box && box.querySelector(".ev-dims-wrap");
+  if (wrap) { const sp = wrap.querySelector(".ev-split"); const was = sp && sp.open; wrap.innerHTML = evScorecard(j); const sp2 = wrap.querySelector(".ev-split"); if (sp2 && was) sp2.open = true; }
+  if (card && row) {
+    const tmp = document.createElement("div");
+    tmp.innerHTML = evTaskCard(row, dir);
+    const fresh = tmp.firstElementChild;
+    fresh.querySelectorAll("details").forEach((d, i) => { if (open[i]) d.open = true; });
+    card.replaceWith(fresh);
+  }
+  updateEvalView();
+}
+
+async function evDetailClick(e) {
+  const el = e.target.closest("[data-act]");
+  if (!el || !evDet) return;
+  const act = el.dataset.act;
+  if (el.tagName === "A") e.preventDefault();
+  const { dir, j } = evDet;
+  if (act === "close") { evalDetailDir = null; evDet = null; document.getElementById("ev-detail").innerHTML = ""; updateEvalView(); return; }
+  if (act === "filter") { evDet.filter = el.dataset.f; evRenderDetail(); return; }
+  if (act === "pin") {
     const r = await fetch("/api/eval/baseline", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dir }) }).then((x) => x.json()).catch(() => null);
     if (!r || r.error) return toast(((r && r.error) || "钉基线失败"), "circle-x");
     toast("已设为基线，之后每轮自动对比");
     updateEvalView();
-  };
-  const saveHuman = async (taskId, score) => {
-    const cmt = box.querySelector(`.ev-cmt[data-task="${taskId}"]`);
-    const r = await fetch("/api/eval/human", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dir, task_id: taskId, score, comment: cmt ? cmt.value : "" }) }).then((x) => x.json()).catch(() => null);
-    if (!r || r.error) return toast(((r && r.error) || "保存失败"), "circle-x");
-    toast("人工分已保存");
-    evalDetailDir = null;
-    openEvalDetail(dir);
-  };
-  box.querySelectorAll(".ev-star").forEach((b) => b.onclick = () => saveHuman(b.dataset.task, +b.dataset.star));
-  box.querySelectorAll(".ev-cmt").forEach((inp) => inp.onchange = () => {
-    const row = (j.results || []).find((x) => x.id === inp.dataset.task);
-    if (row && row.human && row.human.score) saveHuman(inp.dataset.task, row.human.score);
-  });
+    return;
+  }
+  if (act === "star") {
+    const row = (j.results || []).find((x) => x.id === el.dataset.task);
+    const cur = (row && row.human && row.human.score) || 0;
+    const n = +el.dataset.star;
+    const card = el.closest(".ev-task");
+    const cmt = card && card.querySelector(".ev-cmt");
+    evSaveHuman(el.dataset.task, { score: n === cur ? 0 : n, ...(cmt ? { comment: cmt.value } : {}) });
+    return;
+  }
+  if (act === "dim") {
+    const row = (j.results || []).find((x) => x.id === el.dataset.task);
+    const i = +el.dataset.i, v = el.dataset.v === "1";
+    const dims = ((row && row.human && row.human.dims) || []).filter((d) => d.i !== i);
+    const was = ((row && row.human && row.human.dims) || []).find((d) => d.i === i);
+    if (!was || was.pass !== v) dims.push({ i, pass: v }); // 再点同一个 = 撤销
+    evSaveHuman(el.dataset.task, { dims: dims.sort((a, b) => a.i - b.i) });
+    return;
+  }
+  if (act === "art") {
+    const view = el.closest("details").querySelector(".ev-art-view");
+    const r = await fetch(`/api/eval/run/${encodeURIComponent(dir)}/file?task=${encodeURIComponent(el.dataset.task)}&name=${encodeURIComponent(el.dataset.name)}`).then((x) => x.json()).catch(() => null);
+    if (!view) return;
+    view.hidden = false;
+    view.textContent = !r || r.error ? ((r && r.error) || "读取失败") : r.binary ? `${r.name} 是二进制文件（${humanSize(r.size)}），这里不显示` : r.text + (r.truncated ? `\n\n…（只显示前 20000 字节，全文 ${humanSize(r.size)}）` : "");
+    return;
+  }
+  if (act === "rejudge") {
+    if (!evDet.rejArm) {
+      evDet.rejArm = true; el.classList.add("is-arm"); el.textContent = "确认重判？再点一次";
+      setTimeout(() => { if (evDet && evDet.rejArm) { evDet.rejArm = false; const b = document.querySelector('[data-act="rejudge"]'); if (b) { b.classList.remove("is-arm"); b.textContent = "重判"; } } }, 6000);
+      return;
+    }
+    evDet.rejArm = false;
+    const judge = (document.getElementById("ev-rej-judge") || {}).value;
+    const r = await fetch("/api/eval/rejudge", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dir, judge }) }).then((x) => x.json()).catch(() => null);
+    if (!r || r.error) { evRenderDetail(); return toast(((r && r.error) || "重判没启动"), "circle-x"); }
+    toast("开始重判，进度看上面的日志；跑完点这行重新打开");
+    evRenderDetail();
+    updateEvalView();
+  }
 }
 /**
  * 这份文件是哪次任务做出来的。只认工作区产物（src==="ws"）：资料库里的文件是人手动传的，

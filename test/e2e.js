@@ -13941,7 +13941,7 @@ function testWindowsHideStatic() {
     }
   };
   for (const d of ["engines", "routes", "src", "lib"]) walk(d);
-  files.push("eval/run.js", "eval/tasks.js");
+  files.push("eval/run.js", "eval/tasks.js", "eval/judge.js", "eval/rejudge.js");
   const bad = [];
   let seen = 0;
   for (const rel of files) {

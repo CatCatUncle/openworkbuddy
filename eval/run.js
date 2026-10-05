@@ -112,76 +112,14 @@ function seedMemories(task, dirName) {
   return user;
 }
 
-// ---------- AI 评委 v2（逐维度二元判定）----------
-// 打 1-5 分会漂移（评委各有各的 3 分），且长回复容易骗高分。改成逐条质量问题只答 true/false，
-// 分数 = 达标维度占比，可复现、可对比。机器判分负责硬对错，评委只管机器测不了的「质量」。
-const JUDGE_SYSTEM = `你是严格的 AI 智能体评测评委。机器已经判过硬性对错，你只负责逐条回答「质量维度问题」——每个问题只准回答 true（达标）或 false（不达标），不打分数。
-判定纪律：
-- 拿证据说话：过程记录和产物摘录里找得到依据才算 true；证据不足一律 false。
-- 别被篇幅迷惑：回复写得长不等于写得好，只看是否达标。
-- 机器判分只是背景信息，你只回答质量维度问题本身。
-只输出一个 JSON 对象，不要输出任何其它文字。`;
+// ---------- AI 评委：提示词、取证、解析、人工对账都在 judge.js（重判和服务端也用它）----------
+const judgeLib = require("./judge");
 
 function gitCommit() {
   try {
     const r = spawnSync("git", ["rev-parse", "--short", "HEAD"], { cwd: path.join(__dirname, ".."), encoding: "utf8", timeout: 5000, windowsHide: true });
     return r.status === 0 ? String(r.stdout).trim() : "";
   } catch { return ""; }
-}
-
-function artifactExcerpts(dir, res) {
-  const parts = [];
-  for (const a of (res.artifacts || []).slice(0, 4)) {
-    if (!/\.(md|txt|html|js|mjs|cjs|py|json|csv|svg|log)$/i.test(a.name)) { parts.push(`【${a.name}】二进制/未摘录（${a.size} 字节）`); continue; }
-    let t = "";
-    try { t = fs.readFileSync(path.join(dir, a.name), "utf8").slice(0, 1500); } catch {}
-    parts.push(`【产物 ${a.name}（${a.size} 字节，摘录开头）】\n${t}`);
-  }
-  return parts.join("\n\n");
-}
-
-async function judgeOne(judgeLLM, task, res, dir) {
-  const dims = Array.isArray(task.rubric) ? task.rubric : [String(task.rubric || "整体完成质量是否达标（正确、干净、无糊弄）")];
-  // 多轮题没有单数的 prompt，得把几轮原样摆给评委——只给最后一轮，它没法判「前面立的规矩守没守」
-  const promptText = turnsOf(task).map((t, i, a) => (a.length > 1 ? `【第 ${i + 1} 轮】` : "") + t).join("\n");
-  const checksText = res.checks.map((c) => `${c.ok ? "✓" : "✗"} ${c.name}${c.note ? "（" + c.note + "）" : ""}`).join("\n");
-  const user = `# 题目
-${promptText}
-
-# 质量维度问题（逐条判定 true/false）
-${dims.map((q, i) => `${i}. ${q}`).join("\n")}
-
-# 机器判分（硬校验，背景信息）
-${checksText}
-
-# 过程指标
-用时 ${res.elapsed_s}s · ${res.tool_calls} 次工具调用（失败 ${res.tool_errors || 0} 次）· ${res.tokens.prompt + res.tokens.completion} tokens${res.stopped ? " · 强制收尾：" + res.stopped : ""}${res.crashed ? " · 崩溃：" + res.crashed : ""}
-
-# 智能体最终回复
-${(res.final_text || "（无）").slice(0, 3000)}
-
-# 产物文件摘录
-${artifactExcerpts(dir, res) || "（无产物文件）"}
-
-只输出一个 JSON 对象，必须覆盖上面每一个编号：
-{"dims": [{"i": 0, "pass": true或false, "note": "一句话依据"}, ...]}`;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const r = await judgeLLM.chat({ system: JUDGE_SYSTEM, history: [{ role: "user", content: user }], tools: [], signal: AbortSignal.timeout(120000) });
-      const m = String(r.text || "").match(/\{[\s\S]*\}/);
-      if (!m) continue;
-      const j = JSON.parse(m[0]);
-      if (!Array.isArray(j.dims)) continue;
-      const byIdx = new Map(j.dims.map((d) => [Math.round(+d.i), d]));
-      const out = dims.map((q, i) => {
-        const d = byIdx.get(i);
-        return { q, pass: !!(d && d.pass === true), note: String((d && d.note) || (d ? "" : "评委未作答")).slice(0, 200) };
-      });
-      const passed = out.filter((d) => d.pass).length;
-      return { dims: out, passed, total: out.length };
-    } catch (e) { if (attempt) return { error: String(e.message).slice(0, 200) }; }
-  }
-  return { error: "评委输出无法解析（两次都没拿到合法 JSON）" };
 }
 
 async function main() {
@@ -236,6 +174,9 @@ async function main() {
     let lastSig = "";
     let streak = 0;
     let loopStreak = 0;
+    // 过程记录只留首轮（评委和人工都只看首轮），一步一条、只留开头，太长就掐中间
+    const trace = n === 1 ? [] : null;
+    const traceById = new Map();
     const t0 = Date.now();
     let r = null, crashed = null;
     // 整次尝试共用一本 token 账：多轮题跑三轮，三轮的钱都算它的
@@ -261,8 +202,17 @@ async function main() {
               streak = sig === lastSig ? streak + 1 : 1;
               lastSig = sig;
               if (streak > loopStreak) loopStreak = streak;
+              if (trace) {
+                const step = { name: ev.name, input: String(ev.input_preview || ev.title || "").slice(0, 300), ...(ev.depth ? { depth: ev.depth } : {}) };
+                trace.push(step);
+                if (ev.id) traceById.set(ev.id, step);
+              }
             }
             if (ev.type === "tool_result" && ev.isError) toolErrors++;
+            if (ev.type === "tool_result" && trace) {
+              const step = traceById.get(ev.id);
+              if (step) { step.err = !!ev.isError; step.outcome = String(ev.outcome || "").slice(0, 60); step.out = String(ev.preview || "").slice(0, 200); }
+            }
             if (["error", "status", "limit"].includes(ev.type)) log.push({ type: ev.type, text: (ev.message || ev.text || ev.note || "").slice(0, 200) });
           },
         });
@@ -295,6 +245,7 @@ async function main() {
       tokens: { prompt: usage.prompt, completion: usage.completion, calls: usage.calls },
       stopped: (r && r.stopped) || null, crashed, log,
       final_text: ((r && r.finalText) || "").slice(0, n === 1 ? 6000 : 1500), artifacts,
+      ...(trace ? { trace: trace.length > 80 ? [...trace.slice(0, 40), { omitted: trace.length - 80 }, ...trace.slice(-40)] : trace } : {}),
     };
     att.fail_code = failCode(att);
     const tag = REPEAT > 1 ? `[r${n}] ` : "";
@@ -319,7 +270,7 @@ async function main() {
       passed: first.passed, total: first.total, checks: first.checks,
       elapsed_s: first.elapsed_s, tool_calls: first.tool_calls, tool_errors: first.tool_errors,
       tokens: first.tokens, stopped: first.stopped, crashed: first.crashed,
-      final_text: first.final_text, artifacts: first.artifacts,
+      final_text: first.final_text, artifacts: first.artifacts, trace: first.trace,
     };
   });
 
@@ -331,18 +282,20 @@ async function main() {
     if (!judgeEntry) {
       console.error(`AI 评委模型「${judgeName}」不在 config.models 里，跳过评委环节`);
     } else {
-      console.log(`\n◆ AI 评委开始：${judgeName}（${judgeEntry.model}）逐题逐维度判定…`);
+      const jp = judgeLib.loadJudgeSystem();
+      const selfJudge = judgeEntry.model === entry.model;
+      console.log(`\n◆ AI 评委开始：${judgeName}（${judgeEntry.model}）逐题逐维度判定 · 判定纪律 ${jp.custom ? "自定义" : "默认"}版 ${jp.hash}`);
+      if (selfJudge) console.log("   ▲ 评委和被测是同一个模型：已知会偏袒自己的输出，这轮评委分偏高的话别太当真");
       const judgeLLM = createLLM({ ...config, active_model: judgeName });
       await mapPool(results, CONCURRENCY, async (res) => {
         const task = tasks.find((t) => t.id === res.id);
-        res.judge = await judgeOne(judgeLLM, task, res, path.join(wsDir, res.id));
+        res.judge = await judgeLib.judgeOne(judgeLLM, task, res, path.join(wsDir, res.id), { system: jp.system, commonDims: jp.common_dims, turnsOf });
         console.log(res.judge && res.judge.dims ? `   ◆ ${res.id} → ${res.judge.passed}/${res.judge.total} 维达标${res.judge.dims.filter((d) => !d.pass).map((d) => ` · ✗${d.q.slice(0, 20)}`).join("")}` : `   ◆ ${res.id} → 失败：${(res.judge && res.judge.error) || "?"}`);
       });
-      const scored = results.filter((r) => r.judge && r.judge.dims);
-      judgeMeta = {
-        model: judgeName, model_id: judgeEntry.model, mode: "binary", scored: scored.length,
-        avg_pct: scored.length ? Math.round((scored.reduce((s, r) => s + r.judge.passed / r.judge.total, 0) / scored.length) * 100) : null,
-      };
+      judgeMeta = judgeLib.judgeMetaOf(results, {
+        model: judgeName, model_id: judgeEntry.model, self_judge: selfJudge,
+        prompt_hash: jp.hash, prompt_custom: jp.custom, system: jp.system, common_dims: jp.common_dims, at: new Date().toISOString(),
+      });
     }
   }
 
