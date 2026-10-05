@@ -139,8 +139,10 @@ function localRequires(code) {
     if (parts.length) out.push("./" + parts.join("/"));
   }
   // require(rootPath("skills", "x.json"))：src/platform/root.js 那个锚点，相对的是仓库根而不是本文件，
-  // 所以直接给绝对路径（walkGraph 里 path.resolve 碰到绝对路径原样用）。不认的话这条边从图上消失，闸门照样绿
-  for (const m of code.matchAll(/require\(\s*rootPath\(([^)]*)\)\s*\)/g)) {
+  // 所以直接给绝对路径（walkGraph 里 path.resolve 碰到绝对路径原样用）。不认的话这条边从图上消失，闸门照样绿。
+  // require(root.rootPath(…)) 这种挂在模块对象上的也认。不 require、按路径打开的那些（loadFile/readFileSync）
+  // 不在这里：它们得手写进 ASSETS，漏没漏由 test/e2e.js 的 packageAssetDrift 反查，那边两种写法都认
+  for (const m of code.matchAll(/require\(\s*(?:[\w$]+\.)?rootPath\(([^)]*)\)\s*\)/g)) {
     const parts = [...m[1].matchAll(/["']([^"']+)["']/g)].map((p) => p[1]);
     if (parts.length) out.push(path.join(ROOT, ...parts));
   }

@@ -12794,8 +12794,8 @@ function packagingCheck(cfg, docs, recorderSrc, pkgJson, win = {}) {
  * ASSETS 里的——跟 v0.1.1 栽的那份 files 白名单是同一种东西，同样会跟代码脱节。
  * 少一个的后果不是报错，是用户装完双击没反应。
  *
- * 所以这里反过来查：把生产代码里所有 path.join(__dirname, "...", "x.html") 这类字面量
- * 扒出来，每一个都得有着落——要么在 ASSETS 里，要么被 files 的某个通配符收进去，
+ * 所以这里反过来查：把生产代码里所有 path.join(__dirname, "...", "x.html")、rootPath("public", "x.html")
+ * 这类字面量扒出来，每一个都得有着落——要么在 ASSETS 里，要么被 files 的某个通配符收进去，
  * 要么落在下面这张「就是不该进包」的名单里，且注明理由。新加一个资源忘了登记就红。
  */
 function packageAssetDrift(sources, ASSETS, filesGlobs) {
@@ -12804,30 +12804,40 @@ function packageAssetDrift(sources, ASSETS, filesGlobs) {
     "build/icon.png": "只在 !app.isPackaged 时设 Dock 图标；装机版走 .app 自己的 icns",
   };
   // 白名单三种写法：顶层通配 "*.js"（**只匹配顶层**，v0.1.1 就是栽在这个"只"字上）、
-  // 子目录通配 "dir/**/*"、以及点名的单个文件。"!x" 是排除，得先看它。
+  // 子目录通配 "dir/**/*"（也可能套几层，内置技能就是逐个 "skills/<名字>/**/*"）、以及点名的单个文件。
+  // "!x" 是排除，得先看它。
   const match = (g, rel) => {
     if (g === "*.js") return !rel.includes("/") && rel.endsWith(".js");
-    const m = /^([\w.-]+)\/\*\*\/\*$/.exec(g);
+    const m = /^([\w.-]+(?:\/[\w.-]+)*)\/\*\*\/\*$/.exec(g);
     return m ? rel.startsWith(m[1] + "/") : g === rel;
   };
   const globbed = (rel) =>
     !filesGlobs.some((g) => g.startsWith("!") && match(g.slice(1), rel)) &&
     filesGlobs.some((g) => !g.startsWith("!") && match(g, rel));
+  // 两种写法都得认：path.join(__dirname, …) 相对本文件；rootPath(…)（src/platform/root.js 那个锚点）相对仓库根。
+  // 只认前一种的话，谁把写法换成 rootPath 谁就从这里消失，闸门照样绿——pet.html、index.html 改走 rootPath 时
+  // 扫到的数就从 14 悄悄掉到 12。(?<!function\s+) 跳过 root.js 里 rootPath 自己的定义；x.rootPath(…) 也认
+  const refs = (file, code) => [
+    ...[...code.matchAll(/path\.join\(\s*__dirname\s*,([^)]*)\)/g)].map((m) => ({ base: path.posix.dirname(file), args: m[1], rooted: false })),
+    ...[...code.matchAll(/(?<!function\s+)\brootPath\(([^)]*)\)/g)].map((m) => ({ base: ".", args: m[1], rooted: true })),
+  ];
   const problems = [];
   let checked = 0;
+  let rooted = 0;
   for (const [file, code] of Object.entries(sources)) {
-    for (const m of code.matchAll(/path\.join\(\s*__dirname\s*,([^)]*)\)/g)) {
-      const parts = [...m[1].matchAll(/["']([^"']+)["']/g)].map((x) => x[1]);
+    for (const ref of refs(file, code)) {
+      const parts = [...ref.args.matchAll(/["']([^"']+)["']/g)].map((x) => x[1]);
       if (!parts.length) continue;
-      const rel = path.posix.join(path.posix.dirname(file), ...parts);
+      const rel = path.posix.join(ref.base, ...parts);
       if (!/\.(js|html|json|md|png|svg|css|py|ttf)$/.test(rel)) continue;
       if (!fs.existsSync(path.join(__dirname, "..", rel))) continue; // 生成物/用户数据，不是仓库文件
       checked++;
+      if (ref.rooted) rooted++;
       if (ASSETS.includes(rel) || globbed(rel) || DEV_ONLY[rel]) continue;
       problems.push(`${file} 按路径用了 ${rel}，但它既不在闸门的 ASSETS 里，也不被 files 白名单收进去`);
     }
   }
-  return { problems, checked, devOnly: Object.keys(DEV_ONLY).length };
+  return { problems, checked, rooted, devOnly: Object.keys(DEV_ONLY).length };
 }
 /**
  * 第三方署名有没有跟着依赖走。
@@ -13698,17 +13708,22 @@ function testPackageAssetDrift() {
   }
   const r = packageAssetDrift(sources, gate.ASSETS, cfg.files);
   assert(r.problems.length === 0, "打包资源登记漏了：\n  " + r.problems.join("\n  "));
-  assert(r.checked >= 4, "扫到的按路径引用太少（" + r.checked + "），说明扫描本身失效了");
+  // 14 是目录重整开工前（884aa38）的数：之后只会因为删资源而少，写法换来换去不该让它掉
+  assert(r.checked >= 14, "扫到的按路径引用太少（" + r.checked + "，应至少 14），说明扫描本身失效了，或者有引用换了它认不出的写法");
   // 反向对照：新增一个没登记的资源、把 ASSETS 抠掉一条、把 public 通配符去掉——都得被抓
   const variants = [
     // 用一个真存在、但确实没打进包的文件（docs/ 整个目录都不进包），配置一个字不改就该报
     ["新加了没登记的资源", () => packageAssetDrift({ ...sources, "server.js": sources["server.js"] + '\nrequire("fs").readFileSync(path.join(__dirname, "docs", "安装与启动.md"));' }, gate.ASSETS, cfg.files)],
     // "!electron-builder.config.js" 把它从 *.js 里排除掉了：谁在生产代码里按路径打开它，就是装完必炸
     ["引用了被 ! 排除掉的文件", () => packageAssetDrift({ ...sources, "server.js": sources["server.js"] + '\nrequire("fs").readFileSync(path.join(__dirname, "electron-builder.config.js"));' }, gate.ASSETS, cfg.files)],
+    // rootPath 相对仓库根：故意放在子目录的文件里，按本文件目录去拼就落到 engines/docs/（不存在）被跳过，这条就抓不到
+    ["rootPath 写法引用了没登记的资源", () => packageAssetDrift({ ...sources, "engines/bridge.js": sources["engines/bridge.js"] + '\nrequire("fs").readFileSync(rootPath("docs", "安装与启动.md"));' }, gate.ASSETS, cfg.files)],
     ["files 去掉 public 通配符", () => packageAssetDrift(sources, gate.ASSETS.filter((a) => !a.startsWith("public/")), cfg.files.filter((g) => g !== "public/**/*"))],
+    // 分镜表 schema 是 drama-pipeline 经 rootPath 引的、只靠 "skills/short-drama/**/*" 这条套了两层的通配收进包
+    ["files 去掉 short-drama 技能通配符", () => packageAssetDrift(sources, gate.ASSETS, cfg.files.filter((g) => g !== "skills/short-drama/**/*"))],
   ];
   for (const [name, run] of variants) if (!run().problems.length) throw new Error("闸门漏了这种坏法：" + name);
-  console.log(`✅ 打包资源不漂移：${Object.keys(sources).length} 个源文件里 ${r.checked} 处按路径引用全有着落（${r.devOnly} 条注明了就是不进包），${variants.length} 种坏法全被抓`);
+  console.log(`✅ 打包资源不漂移：${Object.keys(sources).length} 个源文件里 ${r.checked} 处按路径引用（其中 rootPath ${r.rooted} 处）全有着落（${r.devOnly} 条注明了就是不进包），${variants.length} 种坏法全被抓`);
 }
 
 /**

@@ -136,7 +136,10 @@ console.log("\n⑤ 打包闸门认得 require(rootPath(...))");
 const gate = require(path.join(REPO, "scripts", "check-package-files.js"));
 const viaRoot = gate.localRequires('const s = require(rootPath("skills", "x", "y.json"));');
 ok(viaRoot.includes(path.join(REPO, "skills", "x", "y.json")), "require(rootPath(...)) 解成仓库根下的绝对路径", viaRoot);
+ok(gate.localRequires('const s = require(root.rootPath("skills", "x", "y.json"));').includes(path.join(REPO, "skills", "x", "y.json")),
+  "require(root.rootPath(...)) 挂在模块对象上的也认");
 eq(gate.localRequires('const s = require(other("skills", "y.json"));').length, 0, "反向对照：别的函数包一层不认");
+eq(gate.localRequires('const s = require(myrootPath("skills", "y.json"));').length, 0, "反向对照：名字里带 rootPath 的别的函数不认");
 const graph = gate.walkGraph().map((f) => f.split(path.sep).join("/"));
 for (const f of ["src/platform/root.js", "src/platform/known-tools.js", "skills/short-drama/references/分镜表.schema.json", "package.json"]) {
   ok(graph.includes(f), `打包闸门从入口爬得到 ${f}`);
