@@ -799,11 +799,12 @@ console.log("\n【11】test/lib/src.js：没拆时逐字等于原文件，拆了
       "目录还没建：三组都只读主文件，逐字一样（不多一个换行）");
 
     for (const [rel, text] of [["routes/b.js", "B"], ["routes/a/x.js", "AX"], ["lib/c.js", "C"], ["lib/note.txt", "不是 js"],
+      ["src/server/routes/n.js", "N"], ["src/server/m.js", "M"],
       ["src/tools/z.js", "Z"], ["src/other.js", "不是 src/tools"], ["public/js/app-07-canvas-a.js", "PA"],
       ["public/js/app-07-canvas-z.js", "PZ"], ["public/js/app-07-canvas-orphan.js", "PO"]]) put(rel, text);
     const got = ["server", "tools", "canvas"].map((g) => files(g, tmp).join(","));
-    ok(got[0] === "server.js,routes/a/x.js,routes/b.js,lib/c.js" && got[1] === "tools.js,src/tools/z.js",
-      "拆了之后：主文件打头，routes/ lib/ src/tools/ 下的 .js 递归拼上，别的不拼", got.slice(0, 2).join(" | "));
+    ok(got[0] === "server.js,routes/a/x.js,routes/b.js,lib/c.js,src/server/m.js,src/server/routes/n.js" && got[1] === "tools.js,src/tools/z.js",
+      "拆了之后：主文件打头，routes/ lib/ src/server/（目录重整后服务端部件的家）、src/tools/ 下的 .js 递归拼上，别的不拼", got.slice(0, 2).join(" | "));
     ok(got[2] === "public/js/app-07-canvas.js,public/js/app-07-canvas-z.js,public/js/app-07-canvas-a.js,public/js/app-07-canvas-orphan.js"
       && src("canvas", tmp).endsWith("\nPZ\nPA\nPO"),
       "画布按加载顺序拼（不是按文件名），没人加载的片也拼在最后，测试照样看得见", got[2]);

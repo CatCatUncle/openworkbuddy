@@ -17,6 +17,8 @@
  *      除了 cli.js 没有生产代码再 require 体检
  *   ④ root.js 零依赖、老写法（boot-check.js 是 server.js / cli.js 的第一句 require，它也靠 root.js）
  *   ⑤ 打包闸门认得 require(rootPath(...))：不认的话那条边从图上消失，闸门照样绿
+ *   ⑥ 测试用的路径表（test/lib/mod.js、entry.js）对得上盘
+ *   ⑦ src("server") 的兜底扫描没扫空；建 express 路由的模块都在 SERVER_PARTS 里点了名
  *
  * 每一节都配反向对照：只会变绿的断言不是测试。
  */
@@ -167,6 +169,44 @@ console.log("\n⑥ 测试用的路径表（test/lib/mod.js、entry.js）对得�
   try { mod("没有这个模块"); } catch { threw++; }
   try { entry("agent"); } catch { threw++; }
   ok(threw === 2, "反向对照：名字写错、模块名拿去问入口表，都当场抛");
+}
+
+console.log("\n⑦ src(\"server\") 的兜底扫描没扫空、建路由的模块都点了名");
+// 几十个测试拿 src("server") 反向扫服务端源码（deploy 的 .dockerignore 检查、server-stall、tenant……）。
+// 它按 SERVER_PARTS 点名拼，再把 SERVER_SCAN_DIRS 下没点名的新文件补在后面。目录重整把 routes/ lib/ 搬空，
+// 扫描目录要是没跟上，兜底就恒为空；新路由模块要是落在扫描目录以外又没点名，测试就看不见它
+{
+  const { SERVER_PARTS, SERVER_SCAN_DIRS, NOT_SERVER_PARTS, files } = require("./lib/src");
+  const { entry } = require("./lib/entry");
+  const under = (rel) => SERVER_SCAN_DIRS.some((d) => rel.startsWith(d + "/"));
+  const routeParts = SERVER_PARTS.filter((n) => n.startsWith("routes/"));
+  const outside = routeParts.filter((n) => !under(mod.rel(n)));
+  ok(routeParts.length >= 5 && outside.length === 0,
+    `${routeParts.length} 个路由组成文件都在兜底扫描的目录（${SERVER_SCAN_DIRS.join(" ")}）底下：旁边新加的路由会被扫进来`, outside.map((n) => mod.rel(n)));
+  ok(NOT_SERVER_PARTS.every((n) => !SERVER_PARTS.includes(n) && fs.existsSync(mod(n))) && !files("server").some((f) => NOT_SERVER_PARTS.some((n) => mod.rel(n) === f)),
+    `排除名单 ${NOT_SERVER_PARTS.length} 个都在 mod 表、在盘上、不在 src("server") 里`);
+
+  // 建 express 路由的非入口模块：要么在 SERVER_PARTS 里点名，要么是下面这 4 个老模块
+  // （各自有挂载点和测试，src("server") 从来不拼它们）。这份名单只减不增：新路由模块该进 SERVER_PARTS
+  const ROUTER_OWNERS = ["account", "admin", "im", "relay"];
+  const buildsRouter = (text) => {
+    const code = stripJsComments(text);
+    return /require\(\s*["']express["']\s*\)/.test(code) && /\bRouter\s*\(/.test(code);
+  };
+  ok(buildsRouter('const express = require("express");\nconst r = express.Router();') && buildsRouter('const r = require("express").Router();')
+    && !buildsRouter('// require("express").Router()\nconst r = 1;') && !buildsRouter("const r = makeRouter();"),
+    "反向对照：两种建路由的写法都认，注释里的、不是 express 的不认");
+  const entryRels = new Set(entry.names().map((n) => entry.rel(n)));
+  const codeFiles = execFileSync("git", ["ls-files", "-co", "--exclude-standard", "--", "*.js"], { cwd: REPO, encoding: "utf8" })
+    .split("\n").filter((f) => f && !/^(test|public|skills|docs|node_modules)\//.test(f) && !entryRels.has(f) && fs.existsSync(path.join(REPO, f)));
+  const routers = codeFiles.filter((f) => buildsRouter(fs.readFileSync(path.join(REPO, f), "utf8")));
+  const named = new Set([...SERVER_PARTS, ...ROUTER_OWNERS].map((n) => mod.rel(n)));
+  const stray = routers.filter((f) => !named.has(f));
+  ok(codeFiles.length >= 150 && routers.length >= routeParts.length + ROUTER_OWNERS.length,
+    `扫了 ${codeFiles.length} 个代码文件，${routers.length} 个建了 express 路由（少于 ${routeParts.length + ROUTER_OWNERS.length} 个说明扫描坏了）`, routers);
+  ok(stray.length === 0, "★建 express 路由的模块都在 SERVER_PARTS 或老名单里★ 新路由模块没点名，src(\"server\") 就看不见它", stray);
+  const stale = ROUTER_OWNERS.filter((n) => !routers.includes(mod.rel(n)));
+  ok(ROUTER_OWNERS.length <= 4 && stale.length === 0, "老名单 4 个都还真建路由（不建了就从名单里删掉，名单只减不增）", stale);
 }
 
 console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);

@@ -117,6 +117,16 @@ const SERVER_PARTS = Object.freeze([
   "web-demo-plan", "web-demo-recorder", "winname", "ws-browse",
 ]);
 
+// 兜底扫描：这几个目录下的 .js 都是服务端的部件，上面没点名的新文件也拼上（排在最后），别让新文件躲过测试。
+// 老布局是 routes/ 和 lib/；目录重整把它俩搬空——routes 搬进 src/server/routes/，lib/ 那些按层散到
+// src/util、src/platform、src/domains……。只扫老目录的话搬完兜底恒为空，所以加上服务端部件的新家 src/server/。
+// 散到别的层的不扫：那些目录大半不是服务端的，整个拼进来会把别的模块混进 server 组。新加的路由模块不管落在哪，
+// test/layout-invariants.js ⑦ 都要求它在 SERVER_PARTS 里点名，并且钉住 routes 组成文件都在这几个目录底下（扫描没扫空）。
+const SERVER_SCAN_DIRS = Object.freeze(["routes", "lib", "src/server"]);
+// src/server/ 里本来就不算 server 组的模块：原来住在仓库根、各有各的测试，src("server") 从没拼过它们。
+// 点名排除，它们搬进 src/server/ 之后 src("server") 拼出来的跟搬之前逐字一样；别的新文件照样拼上
+const NOT_SERVER_PARTS = Object.freeze(["relay", "relay-files", "static-compress", "json-compress", "backup-auto", "retention", "migrate", "updater"]);
+
 const isRealRoot = (root) => path.resolve(root) === path.resolve(ROOT);
 
 /** 一组源码的主文件（仓库相对路径）。真仓库按 mod / entry 表取；测试自己搭的假仓库照老名字 */
@@ -132,13 +142,14 @@ function mainOf(name, root = ROOT) {
 function files(name, root = ROOT) {
   const exists = (rel) => fs.existsSync(path.join(root, rel));
   if (name === "server") {
-    const scanned = [...jsUnder(root, "routes"), ...jsUnder(root, "lib")];
+    const scanned = SERVER_SCAN_DIRS.flatMap((d) => jsUnder(root, d));
     if (!isRealRoot(root)) return [mainOf("server", root), ...scanned].filter(exists);
     const parts = SERVER_PARTS.map((n) => mod.rel(n));
     const gone = parts.filter((f) => !exists(f));
     if (gone.length) throw new Error(`src("server") 的组成文件不在盘上：${gone.join("、")}——搬了家就去改 test/lib/mod.js 里的路径`);
-    // 目录里新冒出来、表里还没有的也拼上（排在最后），别让新文件躲过测试
-    return [mainOf("server", root), ...parts, ...scanned.filter((f) => !parts.includes(f))].filter(exists);
+    const notParts = new Set(NOT_SERVER_PARTS.map((n) => mod.rel(n)));
+    // 扫描目录里新冒出来、表里还没有的也拼上（排在最后），别让新文件躲过测试
+    return [mainOf("server", root), ...parts, ...scanned.filter((f) => !parts.includes(f) && !notParts.has(f))].filter(exists);
   }
   if (name === "tools") return [mainOf("tools", root), ...jsUnder(root, "src/tools")].filter(exists);
   if (name === "canvas") {
@@ -164,4 +175,4 @@ function src(name, root = ROOT) {
 src.src = src;
 src.files = files;
 
-module.exports = { src, files, mainOf, SERVER_PARTS, publicScriptRefs, resolvePublic, stripJsComments, ROOT };
+module.exports = { src, files, mainOf, SERVER_PARTS, SERVER_SCAN_DIRS, NOT_SERVER_PARTS, publicScriptRefs, resolvePublic, stripJsComments, ROOT };

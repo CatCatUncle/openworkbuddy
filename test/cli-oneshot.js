@@ -41,7 +41,7 @@ const ok = (cond, name, extra) => {
 // 装进子进程的探针：记下读过哪些会话文件、加载过哪些模块，退出时写给测试看
 const HOOK = `
 const fs = require("fs"), path = require("path"), Module = require("module");
-const reads = [], loaded = new Set();
+const reads = [], loaded = new Set(), files = new Set();
 const orig = fs.readFileSync;
 const tag = path.sep + "sessions" + path.sep;
 fs.readFileSync = function (p, ...a) {
@@ -50,8 +50,13 @@ fs.readFileSync = function (p, ...a) {
   return r;
 };
 const load = Module._load;
-Module._load = function (req) { loaded.add(req); return load.apply(this, arguments); };
-process.on("exit", () => { try { fs.writeFileSync(process.env.OWB_HOOK_OUT, JSON.stringify({ reads, loaded: [...loaded] })); } catch {} });
+// 既记 require 的原始写法，也记它落到哪个文件（绝对路径）：同一个模块从不同目录 require，写法各不相同，文件只有一个
+Module._load = function (req, parent) {
+  loaded.add(req);
+  try { files.add(Module._resolveFilename(req, parent)); } catch {}
+  return load.apply(this, arguments);
+};
+process.on("exit", () => { try { fs.writeFileSync(process.env.OWB_HOOK_OUT, JSON.stringify({ reads, loaded: [...loaded], files: [...files] })); } catch {} });
 `;
 
 const FAKE_MCP = `
@@ -116,12 +121,13 @@ async function setup({ mcp = false } = {}) {
     setHold(p) { hold = p; },
     setReply(fn) { reply = fn; },
     /** 起一趟 cli.js。stdin：ignore（不接）/ open（开着不关）/ 字符串（写完就关）/ { later, ms }（隔 ms 毫秒才写）。
-     *  onSpawn(kid)：进程起来之后测试要对它做点什么（发信号、趁它跑着改文件） */
-    run(args, { stdin = "ignore", ms = 30000, env: extraEnv = {}, onSpawn } = {}) {
+     *  onSpawn(kid)：进程起来之后测试要对它做点什么（发信号、趁它跑着改文件）
+     *  pre：探针之后、cli.js 之前再 --require 的文件（反向对照用） */
+    run(args, { stdin = "ignore", ms = 30000, env: extraEnv = {}, onSpawn, pre = [] } = {}) {
       const hookOut = path.join(home, `hook-${Math.random().toString(36).slice(2)}.json`);
       return new Promise((resolve) => {
         const t0 = Date.now();
-        const kid = spawn(process.execPath, ["--require", hook, CLI, ...args], {
+        const kid = spawn(process.execPath, ["--require", hook, ...pre.flatMap((f) => ["--require", f]), CLI, ...args], {
           env: { ...process.env, OPENWORKBUDDY_HOME: home, NO_COLOR: "1", OWB_HOOK_OUT: hookOut, ...extraEnv },
           stdio: [stdin === "ignore" ? "ignore" : "pipe", "pipe", "pipe"],
           cwd: ws,
@@ -136,7 +142,7 @@ async function setup({ mcp = false } = {}) {
         kid.on("close", (code) => {
           clearTimeout(t);
           if (kid.stdin) kid.stdin.destroy();
-          let probe = { reads: [], loaded: [] };
+          let probe = { reads: [], loaded: [], files: [] };
           try { probe = JSON.parse(fs.readFileSync(hookOut, "utf8")); } catch {}
           resolve({ code, out, err, hung, elapsed: Date.now() - t0, ...probe });
         });
@@ -230,16 +236,35 @@ async function run() {
     }
 
     console.log("\n— ⑤ --version / --help —");
-    // 大件按 mod 表算出 cli.js 里 require 它们的写法：搬了家写法跟着变，不会因为认不出而「一个都没加载」
-    const bare = (spec) => spec.replace(/^\.\//, "");
-    const HEAVY = new Set(["agent", "mcp", "llm", "tools", "account"].map((n) => bare(mod.spec("cli", n))));
+    // 大件按「落到哪个文件」认，不按 require 的写法认：同一个 llm.js，cli.js 写 "./llm"，
+    // 搬家后别的模块间接加载它写的是 "../model/llm" 之类——按写法比，只认得出 cli.js 自己直接 require 的那一种，
+    // 别人间接拉进来的一个都对不上，照样绿
+    const real = (f) => { try { return fs.realpathSync(f); } catch { return f; } };
+    const HEAVY = new Map(["agent", "mcp", "llm", "tools", "account"].map((n) => [real(mod(n)), n]));
+    const EXPRESS = /[\\/]node_modules[\\/]express[\\/]/;
+    const heavyOf = (r) => [...new Set(r.files.map((f) => HEAVY.get(f) || (EXPRESS.test(f) ? "express" : null)).filter(Boolean))];
+    ok(HEAVY.size === 5, "大件名单：5 个模块按 mod 表落到 5 个不同的文件", [...HEAVY.keys()]);
     for (const flag of ["--version", "--help"]) {
       const r = await env.run([flag]);
       ok(r.code === 0 && r.out.trim(), `${flag} 照常打印到 stdout`, r.err);
-      // 正向对照：探针真记到了东西（cli.js 头上必经的 cli-args 在里面），不然下面那条拿空清单也是绿的
-      ok(r.loaded.map(bare).includes(bare(mod.spec("cli", "cli-args"))), `  └ 探针生效：${flag} 记下了 cli.js 加载的模块`, r.loaded);
-      const heavy = r.loaded.filter((m) => HEAVY.has(bare(m)) || m === "express");
+      // 正向对照：探针真按文件记到了东西（cli.js 头上必经的 cli-args 在里面），不然下面那条拿空清单也是绿的
+      ok(r.files.includes(real(mod("cli-args"))), `  └ 探针生效：${flag} 按文件记下了 cli.js 加载的 cli-args`, r.files.filter((f) => !f.includes("node_modules")));
+      const heavy = heavyOf(r);
       ok(!heavy.length, `★${flag} 不加载 agent / express 这些大件★`, heavy);
+    }
+    {
+      // 反向对照：大件不是 cli.js 直接 require 的、而是别处的模块换了个写法间接拉进来的，也得认出来。
+      // 在临时家的深一层目录里放个模块，用相对它自己的写法 require llm，排在探针之后预载
+      fs.mkdirSync(path.join(env.home, "elsewhere", "deep"), { recursive: true });
+      const dir = real(path.join(env.home, "elsewhere", "deep")); // 预载的文件 Node 按真路径算相对位置（/var → /private/var）
+      let spec = path.relative(dir, real(mod("llm"))).split(path.sep).join("/").replace(/\.js$/, "");
+      if (!spec.startsWith(".")) spec = "./" + spec;
+      const shim = path.join(dir, "indirect.js");
+      fs.writeFileSync(shim, `require(${JSON.stringify(spec)});\n`);
+      const r = await env.run(["--version"], { pre: [shim] });
+      ok(r.code === 0 && spec !== mod.spec("cli", "llm") && r.loaded.includes(spec) && heavyOf(r).includes("llm"),
+        `  └ 反向对照：别的目录里的模块用相对它自己的写法（"../…/${mod.rel("llm").replace(/\.js$/, "")}"）间接加载 llm，照样认得出（按写法比就漏了）`,
+        { heavy: heavyOf(r), spec, code: r.code, err: r.err.slice(-300) });
     }
 
     console.log("\n— ⑦ 跑到一半被 kill / 关终端 —");
