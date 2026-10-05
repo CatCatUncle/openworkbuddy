@@ -347,7 +347,7 @@ function seatCount(st) {
 // 用户记录上多一个 totp 字段：
 //   { secret, enabled_at, last_step, recovery: [hash…], recovery_salt }
 // **没开通的人身上没有这个字段**，不是 enabled:false——老账号不用迁移，判断也只有一处。
-const totp = require("./totp");
+const totp = require("./src/util/totp");
 
 /** 开没开。secret 存着但还没 enabled_at = 扫了码没验证成功，不算开通 */
 function twoFactorOn(u) {

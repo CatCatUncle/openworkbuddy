@@ -16,7 +16,7 @@ const path = require("path");
 
 // 服务端在独立服务进程里（2026-09-29 起桌面版默认）：那边开不了窗口，渲染交给主进程，
 // 能不能渲染看主进程报上来的 caps.windows
-const bridge = require("./electron-bridge");
+const bridge = require("../../../electron-bridge");
 
 function available() {
   if (bridge.isRemote()) return !!bridge.caps().windows;

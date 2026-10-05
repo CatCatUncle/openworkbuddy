@@ -472,7 +472,7 @@ async function gather(deps) {
 }
 
 /** 把结果画成一屏。色由调用方给（CLI 那边判过 isTTY 了），这儿只管排版 */
-const { cols, padCols } = require("./text-width"); // 中文占两列，padEnd 数的是码位——对齐一律走它
+const { cols, padCols } = require("./src/util/text-width"); // 中文占两列，padEnd 数的是码位——对齐一律走它
 
 function render(items, paint) {
   const c = paint || ((s) => s);

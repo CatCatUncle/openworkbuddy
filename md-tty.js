@@ -22,7 +22,7 @@
  * 花活儿在 `openworkbuddy … | tee` 之类的场景下都会变成一堆转义序列。
  */
 
-const { cols } = require("./text-width");
+const { cols } = require("./src/util/text-width");
 
 // 关的时候用精确的「关」码，不用 0m 全清：0m 会把外层（比如引用块的灰）一起抹掉
 const A = {

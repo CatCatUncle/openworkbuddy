@@ -292,7 +292,7 @@ function helpText(spec) {
   const flags = (spec && spec.flags) || FLAGS;
   const subs = (spec && spec.subs) || SUBS;
   // 对齐按显示宽度算：`openworkbuddy resume [id] ["接着做…"]` 里有中文，按码位补空格会歪
-  const { cols, padCols } = require("./text-width");
+  const { cols, padCols } = require("./src/util/text-width");
   const nameOf = (f) => (f.short ? `-${f.short}, --${f.long}` : `    --${f.long}`) + (f.type === "bool" ? "" : ` ${f.arg}`);
   const w = Math.max(...flags.map((f) => cols(nameOf(f))), ...subs.map((s) => cols(s.usage))) + 2;
   const pad = padCols;

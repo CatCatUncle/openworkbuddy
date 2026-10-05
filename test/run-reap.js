@@ -265,7 +265,8 @@ function fakeChild() {
     ok(!chatFinally(SRV.replace("releaseRun(sessionId, { browser: false })", "noop()")) && !accounted(SRV.replace(/\} finally \{\s*release\(\);/g, "} finally {")) && !cliRel(CLI.replace(/releaseRun\(sessionId\)/g, "x()")),
       "三条守卫各自认得出漏接（反向对照）");
     // 标签页的闲置关页 / 到顶腾位要认得「还在跑」：网页对话看 activeRuns，IM / 定时任务看 holdRun
-    const activeWired = (s) => /require\("\.\/cdp"\)\.setActivePredicate\(\(sid\) => activeRuns\.has\(sid\) \|\| require\("\.\/tools"\)\.runHeld\(sid\)\)/.test(s);
+    const cdpSpec = JSON.stringify(mod.spec("server", "cdp")).replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+    const activeWired = (s) => new RegExp(`require\\(${cdpSpec}\\)\\.setActivePredicate\\(\\(sid\\) => activeRuns\\.has\\(sid\\) \\|\\| require\\("\\.\\/tools"\\)\\.runHeld\\(sid\\)\\)`).test(s);
     ok(activeWired(SRV), "server.js 把「任务还在跑」接给了 cdp.js");
     ok(!activeWired(SRV.replace("|| require(\"./tools\").runHeld(sid)", "")), "  └ 漏了 IM / 定时任务那半：认得出（反向对照）");
     const rs = tools.TOOL_DEFS.find((t) => t.name === "run_shell");

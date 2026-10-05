@@ -102,12 +102,12 @@ function tryRequire(name) {
 /** @returns {{ office?: Function, video?: Function, html?: Function, shrink?: Function }} */
 function defaultRenderers() {
   const out = {};
-  const ql = tryRequire("./ql-thumb");
+  const ql = tryRequire("./src/platform/render/ql-thumb");
   if (ql && typeof ql.qlThumb === "function") out.office = (abs, o) => ql.qlThumb(abs, { size: o.target, timeoutMs: o.timeoutMs, signal: o.signal });
-  const vf = tryRequire("./video-frame");
+  const vf = tryRequire("./src/platform/render/video-frame");
   if (vf && typeof vf.videoFrame === "function") out.video = (abs, o) => vf.videoFrame(abs, { width: o.target, timeoutMs: o.timeoutMs, signal: o.signal });
   // fileRoot 给到这个人的根：AI 写的页面常引 ../assets/ 下的图，缺省只放行 html 所在那一层会缺图
-  out.html = (abs, o) => require("./htmlshot").renderHtmlToPngAny(abs, {
+  out.html = (abs, o) => require("./src/platform/render/htmlshot").renderHtmlToPngAny(abs, {
     width: 1280, height: 800, lane: "cover", timeoutMs: o.timeoutMs, signal: o.signal, ...(o.root ? { fileRoot: o.root } : {}),
   });
   out.shrink = shrinkPng;
@@ -124,7 +124,7 @@ async function shrinkPng(buf, w) {
   try {
     const src = path.join(dir, "shot.png");
     await fsp.writeFile(src, buf);
-    const out = await require("./thumb").thumbFileAsync(src, w, dir);
+    const out = await require("./src/platform/render/thumb").thumbFileAsync(src, w, dir);
     return out ? await fsp.readFile(out) : null;
   } catch { return null; } finally {
     fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
@@ -134,7 +134,7 @@ async function shrinkPng(buf, w) {
 /** 网页封面只认 Electron（本进程或过桥）：无头 Chrome 那条每张都冷启动一个浏览器，一律给图标 */
 function defaultHtmlBackend() {
   try {
-    const h = require("./htmlshot");
+    const h = require("./src/platform/render/htmlshot");
     if (typeof h.coverAvailable === "function") return h.coverAvailable() ? "electron" : "";
     return h.shotAvailable().backend || "";
   } catch { return ""; }

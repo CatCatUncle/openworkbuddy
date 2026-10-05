@@ -9875,8 +9875,8 @@ async function testThumbPool() {
     // 造这个场景不往生产代码里加开关：把 thumb.js 和它依赖的那两个文件复制到别处，
     // 单单不复制 thumb-worker.js —— 那正是漏文件时的样子
     const brokeDir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-broke-"));
-    for (const f of ["thumb.js", "thumb-png.js"]) {
-      fs.copyFileSync(path.join(__dirname, "..", f), path.join(brokeDir, f));
+    for (const n of ["thumb", "thumb-png"]) {
+      fs.copyFileSync(modPath(n), path.join(brokeDir, path.basename(modPath(n))));
     }
     const broke = require(path.join(brokeDir, "thumb.js"));
     try {
@@ -9905,8 +9905,8 @@ async function testThumbPool() {
     // 造法还是复制到别处，只是这回自己写一个**会挑食的** thumb-worker：
     // 名字带"毒"的就自杀，别的老实缩。生产代码里一个开关都不用加
     const flakyDir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-flaky-"));
-    for (const f of ["thumb.js", "thumb-png.js"]) {
-      fs.copyFileSync(path.join(__dirname, "..", f), path.join(flakyDir, f));
+    for (const n of ["thumb", "thumb-png"]) {
+      fs.copyFileSync(modPath(n), path.join(flakyDir, path.basename(modPath(n))));
     }
     fs.writeFileSync(path.join(flakyDir, "thumb-worker.js"), [
       'const fs = require("fs"), path = require("path");',

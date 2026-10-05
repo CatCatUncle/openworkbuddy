@@ -19,7 +19,7 @@ const { dataPath } = require("./paths");
 const zlib = require("zlib");
 const vm = require("vm");
 const { spawnSync, spawn } = require("child_process");
-const browserRender = require("./browser-render");
+const browserRender = require("./src/platform/render/browser-render");
 
 function diagramCfg() {
   try {

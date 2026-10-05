@@ -233,7 +233,7 @@ function canvasManage(input = {}, ctx = {}) {
   if (input.canvas_name && canvasSafeName(input.canvas_name) !== String(input.canvas_name).trim()) return { content: `画布名称不合法：${JSON.stringify(String(input.canvas_name).slice(0, 100))}。不能带 / \\ 或 NUL，不能是 . / ..，最长 80 字。换个名字再试。`, isError: true };
   // 画布存成 canvases/<名字>.json：Windows 上「第1集:开场」的冒号会让内容写进备用数据流、CON 打不开。
   // 名字是 agent 起的，拦下来让它换，不悄悄改（改了它以后点名还是点原来那个）
-  const winBad = input.canvas_name ? require("../../lib/winname").badPath(String(input.canvas_name).trim() + ".json", ctx.platform || process.platform) : "";
+  const winBad = input.canvas_name ? require("../util/winname").badPath(String(input.canvas_name).trim() + ".json", ctx.platform || process.platform) : "";
   if (winBad) return { content: `画布名称不合法：${winBad}`, isError: true };
   let state;
   // 读不出来要当场告诉 agent，而不是递给它一张空画布——递空的，它会「好心」地

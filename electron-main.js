@@ -1567,13 +1567,13 @@ async function startServerProcess() {
     // 缩图三件活挪出界面线程（为什么见 thumb-sips.js；谁来做见 pixelsKind）。OWB_MAIN_PIXELS=native 走回主线程 nativeImage，浸泡测试做反向对照用
     pixels: (() => {
       const pk = pixelsKind(process.platform, process.env);
-      if (pk === "sips") return require("./thumb-sips").createSipsPixels();
-      if (pk === "render") return require("./browser-render").createRenderPixels({ electron, log: bootLog });
+      if (pk === "sips") return require("./src/platform/render/thumb-sips").createSipsPixels();
+      if (pk === "render") return require("./src/platform/render/browser-render").createRenderPixels({ electron, log: bootLog });
       return null;
     })(),
   });
   // 网页截图的 PNG 编码同理（见 htmlshot.js pngOf）：反向对照时一起退回界面线程上的 toPNG
-  if (process.env.OWB_MAIN_PIXELS === "native") require("./htmlshot")._internals.setEncoder({ native: true });
+  if (process.env.OWB_MAIN_PIXELS === "native") require("./src/platform/render/htmlshot")._internals.setEncoder({ native: true });
   const nice = Number(process.env.OWB_SERVER_NICE);
   SUPERVISOR = require("./server-supervisor").createServerSupervisor({
     fork: (env) => electron.utilityProcess.fork(path.join(__dirname, "server-host.js"), [], {
@@ -1716,7 +1716,7 @@ if (HIDDEN) {
             stall: { ...MAIN_STALL.counts, max: MAIN_STALL.maxMs, last: MAIN_STALL.stalls.slice(-5) },
             ops: MAIN_OPS.stats(),
             pixels: SHELL_BRIDGE && SHELL_BRIDGE.pixels ? { ...SHELL_BRIDGE.pixels.counts } : null,
-            shot: (() => { try { return { ...require("./htmlshot")._internals.state().stats }; } catch { return null; } })(),
+            shot: (() => { try { return { ...require("./src/platform/render/htmlshot")._internals.state().stats }; } catch { return null; } })(),
           }));
         }
         else if (cmd === "profile-stop" && MAIN_PROFILE) {

@@ -16,7 +16,7 @@
 const fs = require("fs");
 const path = require("path");
 const { parentPort } = require("worker_threads");
-const { shrinkPng, encodeRaw } = require("./thumb-png");
+const { shrinkPng, encodeRaw } = require("../../util/thumb-png");
 
 parentPort.on("message", (job) => {
   // 主进程截完图送来的原始像素（htmlshot.js）：编成 PNG 原路送回，不落盘。

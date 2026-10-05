@@ -16,7 +16,7 @@
  */
 const fs = require("fs");
 const path = require("path");
-const M = require("../../motion-clock");
+const M = require("../util/motion-clock");
 const media = require("./media");
 const security = require("../../security");
 
@@ -71,7 +71,7 @@ function pickHtml(input, resolveFile) {
 async function renderMotionTool(input, resolveFile, saveDir, ctx = {}) {
   input = input || {};
   const deps = ctx.deps || {};
-  const hv = () => require("../../htmlvideo");
+  const hv = () => require("../platform/render/htmlvideo");
   const available = deps.available || (() => hv().available());
   const prepareFfmpeg = deps.prepareFfmpeg || ((bin, o) => hv().prepareFfmpeg(bin, o));
   const render = deps.render || ((files, o) => hv().renderMotion(files, o));

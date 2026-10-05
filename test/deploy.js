@@ -462,7 +462,7 @@ console.log("\n【6】装机包瘦身：既不能虚胖，也不能删过头");
   }
   ok(usesDropped.length === 0, "  └ 装机态的代码里没有一处 require 被删掉的包", usesDropped.join("、"));
   // 运行时真读的那两处还是那两个文件——哪天改成 require("mermaid") 或读别的文件，单文件就不够了
-  ok(read("browser-render.js").includes('require.resolve("mermaid/dist/mermaid.min.js")') &&
+  ok(read(mod.rel("browser-render")).includes('require.resolve("mermaid/dist/mermaid.min.js")') &&
      slim.BUNDLES.mermaid.keep.includes("dist/mermaid.min.js"), "  └ browser-render.js 读的正是留下的 mermaid.min.js");
   ok(/require\("echarts"\)/.test(read("diagram.js")) && JSON.parse(read("node_modules/echarts/package.json")).exports["."].require === "./" + slim.BUNDLES.echarts.keep[0],
      "  └ diagram.js 的 require(\"echarts\") 按 exports 落到留下的 dist/echarts.js");

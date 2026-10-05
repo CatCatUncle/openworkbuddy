@@ -28,7 +28,7 @@
  *   hidden?: boolean,
  *   impl?: Record<string, (args: any) => any>,
  *   ops?: ReturnType<typeof createOpTracker>,
- *   pixels?: ReturnType<typeof import("./thumb-sips").createSipsPixels> | ReturnType<typeof import("./browser-render").createRenderPixels> | null,
+ *   pixels?: ReturnType<typeof import("./src/platform/render/thumb-sips").createSipsPixels> | ReturnType<typeof import("./src/platform/render/browser-render").createRenderPixels> | null,
  * }} o
  *   pixels：缩图的活交给界面线程以外的地方（macOS 上是 thumb-sips.js 的子进程，Windows 上是
  *   browser-render.js 的隐藏网页窗口，electron-main.js 按平台注入）。
@@ -118,7 +118,7 @@ function createShellBridge({ electron, getWin, pet, registerShortcuts, relaunch,
     "image.thumb": async (a) => {
       const off = pixels && await pixels.thumb(String(a && a.abs), Number(a && a.w));
       if (off) return off.value;
-      return require("./thumb").makeThumb(String(a && a.abs), Number(a && a.w)) || null;
+      return require("./src/platform/render/thumb").makeThumb(String(a && a.abs), Number(a && a.w)) || null;
     },
     "image.shrinkForVision": async (a) => {
       const maxEdge = Number(a && a.maxEdge) || 1568;
@@ -132,8 +132,8 @@ function createShellBridge({ electron, getWin, pet, registerShortcuts, relaunch,
       }
       return { jpg: img.toJPEG(Number(a && a.quality) || 82), width: sz.width, height: sz.height };
     },
-    "page.check": async (a) => require("./web-window").probePage(electron, String(a && a.file)),
-    "page.render": async (a) => require("./web-window").readRendered(electron, String(a && a.url), {
+    "page.check": async (a) => require("./src/platform/render/web-window").probePage(electron, String(a && a.file)),
+    "page.render": async (a) => require("./src/platform/render/web-window").readRendered(electron, String(a && a.url), {
       waitMs: a && a.waitMs, maxWaitMs: a && a.maxWaitMs, ua: (a && a.ua) || "",
     }),
     "shot.html": async (a) => {
@@ -144,12 +144,12 @@ function createShellBridge({ electron, getWin, pet, registerShortcuts, relaunch,
       if (o.lane === "cover") opts.lane = "cover";
       if (Number(o.timeoutMs) > 0) opts.timeoutMs = Number(o.timeoutMs);
       if (o.lane === "cover" && o.fileRoot) opts.fileRoot = String(o.fileRoot);
-      return require("./htmlshot").renderHtmlToPng(String(a && a.htmlPath), opts);
+      return require("./src/platform/render/htmlshot").renderHtmlToPng(String(a && a.htmlPath), opts);
     },
-    "svg.png": async (a) => require("./browser-render").svgToPng(String(a && a.svg), Number(a && a.scale) || 2),
-    "mermaid.render": async (a) => require("./browser-render").renderMermaid(String(a && a.source), (a && a.theme) || undefined),
+    "svg.png": async (a) => require("./src/platform/render/browser-render").svgToPng(String(a && a.svg), Number(a && a.scale) || 2),
+    "mermaid.render": async (a) => require("./src/platform/render/browser-render").renderMermaid(String(a && a.source), (a && a.theme) || undefined),
     "motion.open": async (a) => {
-      const d = await require("./htmlvideo").electronDriver({ width: a.width, height: a.height, runtime: a.runtime });
+      const d = await require("./src/platform/render/htmlvideo").electronDriver({ width: a.width, height: a.height, runtime: a.runtime });
       const sid = ++motionSeq;
       motions.set(sid, d);
       return sid;

@@ -8,4 +8,4 @@
  */
 "use strict";
 
-module.exports = require("../lib/demo-timing");
+module.exports = require("../src/util/demo-timing");

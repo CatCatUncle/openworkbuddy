@@ -20,7 +20,7 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const { outDecoder } = require("./lib/out-decode");
+const { outDecoder } = require("./src/util/out-decode");
 
 // ─────────────────────────────────────────────────────────────
 // 1. 按文件名找文件（glob）

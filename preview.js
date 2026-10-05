@@ -512,7 +512,7 @@ function pptxToSlides(zip, opts = {}) {
 function addLayout(zip, out) {
   let reader;
   try {
-    reader = require("./lib/pptx-layout.js").createLayoutReader(zip, { parseXml, findAll, kids, child, textOf, resolvePart });
+    reader = require("./src/util/pptx-layout.js").createLayoutReader(zip, { parseXml, findAll, kids, child, textOf, resolvePart });
   } catch {
     return;
   }

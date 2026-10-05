@@ -34,7 +34,7 @@ const { createComposeRouter } = require("./routes/compose"); // 一键合成的�
 const libraryRoutes = require("./routes/library"); // 资料库的封面、正文摘录、收藏
 const { createPromptTplsRouter } = require("./routes/prompt-tpls"); // 参考模板库里「我的」「公司」两层的增删改
 const { createComposeJobs } = require("./lib/compose-jobs"); // 一键合成的任务队列：把镜头真的拼成成片
-const taskDirs = require("./lib/task-dirs"); // 成果按对话分文件夹：哪些根下分、文件夹叫什么
+const taskDirs = require("./src/util/task-dirs"); // 成果按对话分文件夹：哪些根下分、文件夹叫什么
 const prefs = require("./prefs"); // 按账号存的个人偏好：底层引擎 / 思考档 / 上次选的模型 / 宠物 / 快捷键
 const { previewData } = require("./preview");
 const evolve = require("./evolve");
@@ -45,7 +45,7 @@ const { createScheduler, setActiveScheduler, SCHEDULE_LABEL } = require("./sched
 const account = require("./account");
 const { createStaticCompress: staticCompress } = require("./static-compress");
 const { createJsonCompress: jsonCompress } = require("./json-compress");
-const { thumbFileAsync } = require("./thumb");
+const { thumbFileAsync } = require("./src/platform/render/thumb");
 const org = require("./org"); // 组织（租户）层：席位、部门、邀请码、审计
 const budget = require("./budget"); // 钱闸：中转站发出去的 Key 和公司内部自己用，花的是同一笔预算
 const admin = require("./admin"); // 企业管理后台的接口层 /api/admin/*
@@ -75,7 +75,7 @@ const memory = require("./memory");
 const notify = require("./notify");
 const log = require("./log");
 const metrics = require("./metrics");
-const callout = require("./callout"); // 正文提示条：机器人推送里换成文字标签
+const callout = require("./src/util/callout"); // 正文提示条：机器人推送里换成文字标签
 const store = require("./store");
 const petSprites = require("./pet-sprites"); // 桌面宠物的精灵图（吃 Codex / Petdex 的格式）
 const pet = require("./pet"); // 只为拿默认值（没有 electron 时它自己降级成空壳，纯 node 也 require 得动）
@@ -336,7 +336,7 @@ const SESS_DIR = dataPath("data", "sessions");
 const sessions = new Map();
 const activeRuns = new Map(); // sessionId -> { ctrl: AbortController, interject: [] }（「停止」与「插队」用）
 // 浏览器标签页的闲置关页、到顶腾位，不许收还在跑的任务的页（等用户回话超过 10 分钟的，回来表单还得在）
-try { require("./cdp").setActivePredicate((sid) => activeRuns.has(sid) || require("./tools").runHeld(sid)); } catch {}
+try { require("./src/platform/render/cdp").setActivePredicate((sid) => activeRuns.has(sid) || require("./tools").runHeld(sid)); } catch {}
 // 正在跑的任务落一份名单到磁盘：应用中途被关/被重启时，内存里的 activeRuns 直接蒸发，
 // 下次启动就靠这份名单知道哪些会话是被打断的，在回放里明说，而不是让那一轮无声地断在半空
 const RUNNING_FILE = dataPath("data", "running.json");
@@ -4665,7 +4665,7 @@ function larkRun(args, { timeout = 60000, cwd } = {}) {
   });
 }
 function larkJson(s) { try { return JSON.parse(String(s).trim()); } catch { return null; } }
-const larkCli = require("./lark-cli");
+const larkCli = require("./src/util/lark-cli");
 /** 读 lark-cli 当前绑定的应用凭证；读不到返回 null */
 async function larkConfig() {
   return larkCli.parseConfigShow((await larkRun(["config", "show"], { timeout: 15000 })).stdout);
@@ -7152,7 +7152,7 @@ app.post("/api/chat", async (req, res) => {
     activeRuns.delete(sessionId);
     persistRunning();
     // 这趟开过的浏览器标签页跟着收掉：不收的话后台 Chrome 里一天挂几十个页面，越跑越卡
-    try { require("./cdp").releaseOwner(sessionId).catch(() => {}); } catch {}
+    try { require("./src/platform/render/cdp").releaseOwner(sessionId).catch(() => {}); } catch {}
     // 这一轮起的后台命令（没说 keep 的）、`&`/nohup 甩出去的进程组一起收：以前一个都不收，
     // 看网页起的 http.server 活过两次应用重启，并发的对话还撞端口（tools.js noteStray）
     try { require("./tools").releaseRun(sessionId, { browser: false }).catch(() => {}); } catch {}

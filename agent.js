@@ -25,7 +25,7 @@ const engines = require("./engines"); // 底层引擎：内置循环 / 本机 Cl
 const bridge = require("./engines/bridge"); // 把本项目的工具借给那两个 CLI（MCP）
 const prefs = require("./prefs"); // 底层引擎 / 思考档是按账号存的，跑任务时得看**发起人**的那份
 const HK = require("./hooks"); // 用户配的钩子：done 没过不许收尾
-const callout = require("./callout"); // 正文里的提示条：网页画图标，终端/IM 换文字标签
+const callout = require("./src/util/callout"); // 正文里的提示条：网页画图标，终端/IM 换文字标签
 const security = require("./security"); // 审计中心：对外推送这种「出了门就收不回来」的动作必须留痕
 const mailer = require("./mailer"); // 发信：配没配、地址合不合法、白名单放不放行，判据只有这一份
 const tracing = require("./trace"); // 执行追踪：整趟任务的模型调用/工具调用发去 Langfuse，默认关
@@ -667,7 +667,7 @@ function dropRendererParams(defs) {
 
 /** 有没有真能用的渲染器。探不到就当没有——宁可少给一个工具，也不给一个必然失败的 */
 function hasRenderer() {
-  try { return !!require("./browser-render").available(); } catch { return false; }
+  try { return !!require("./src/platform/render/browser-render").available(); } catch { return false; }
 }
 
 // 「可重取」的工具结果：截掉不心疼——要用的时候再调一次工具就能拿回原文。
@@ -1305,7 +1305,7 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
     const installOff = skillsWriteOff(); // 同理：装技能归平台管理员，别的人连定义都不摆
     const connOff = connectorsWriteOff();
     // render_motion 不算桌面专属：没有内置浏览器时它走本机 Chrome。两样都没有才摘，理由同上
-    const motionOff = !require("./htmlvideo").available().ok;
+    const motionOff = !require("./src/platform/render/htmlvideo").available().ok;
     let base = TOOL_DEFS.filter(
       (t) =>
         !(shellOff && (t.name === "run_shell" || t.name === "run_node")) &&

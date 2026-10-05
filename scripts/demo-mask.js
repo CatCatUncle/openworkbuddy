@@ -7,4 +7,4 @@
  * 真身已搬到 lib/demo-mask.js：scripts/ 不进安装包，record_web_demo 在装好的应用里也要用它。
  * 这里只转发，record-demo.js 和各处测试的 require 路径都不用动。
  */
-module.exports = require("../lib/demo-mask");
+module.exports = require("../src/util/demo-mask");

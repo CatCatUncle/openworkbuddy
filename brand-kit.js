@@ -33,7 +33,7 @@ const { dataPath } = require("./paths");
 const { chainToGitRoot, warnOnce } = require("./project-memo");
 const { looksSecret } = require("./memory");
 const guard = require("./skill-guard");
-const { shrinkPng, pngInfo } = require("./thumb-png");
+const { shrinkPng, pngInfo } = require("./src/util/thumb-png");
 
 const SCHEMA_VERSION = 1;
 /** 注入提示词的摘要上限（按码点数）。两份档案一起进来时两份分这一个额度 */

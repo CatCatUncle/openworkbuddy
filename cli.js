@@ -60,7 +60,7 @@ const { setWorkspaceDir, getWorkspaceDir } = require("./tools");
 const { McpManager } = require("./mcp");
 const { createAgentRuntime } = require("./agent");
 const lanes = require("./lanes"); // 终端里起的任务归「工程」线；续跑 id 按引擎分开记
-const callout = require("./callout"); // 正文里的提示条：终端没有图标，换成文字标签
+const callout = require("./src/util/callout"); // 正文里的提示条：终端没有图标，换成文字标签
 const sessSearch = require("./session-search"); // /resume 的搜索和 --list 的摘要都要它——必须在 listCliSessions 之前
 const mdTty = require("./md-tty"); // 正文里的 Markdown：终端里渲染出来，别让 **加粗** 糊在脸上
 const attach = require("./cli-attach"); // 带进来的文件/图片：拖进来的路径、@ 补全、剪贴板
@@ -72,7 +72,7 @@ const security = require("./security"); // 审批是它发起的；命令行订�
 const cliLive = require("./cli-live"); // 把这趟活儿播给网页/手机：看得见、插得上话
 const termImage = require("./term-image"); // 终端里直接把产出的图画出来 + /open 交给系统程序
 const replKit = require("./repl-commands"); // 输入行那几样纯逻辑：多行、搜历史、跑着时那一行的尾巴
-const { cols } = require("./text-width"); // 中文占两列：原地重画那一行要算得出它多宽
+const { cols } = require("./src/util/text-width"); // 中文占两列：原地重画那一行要算得出它多宽
 const account = require("./account");
 const store = require("./store");
 
@@ -1569,7 +1569,7 @@ async function runOnce(runtime, text, mode, interactive, shown) {
 // 应用自己建的根（默认工作空间、没填目录的项目、租户根）下，一条会话一格「任务_月日_标题」。
 // 以前命令行一律摊在根上：终端里跑十趟，十份「报告.html」后写的把先写的盖了，网页上「本对话」也一份都认不出来。
 // -C 进代码仓库、设置里挑的现成文件夹、分身目录照旧就地读写——那里要改的东西本来就在根上
-const taskDirs = require("./lib/task-dirs");
+const taskDirs = require("./src/util/task-dirs");
 // 刚往根上放、还没发出去的东西：拷进来的附件、粘贴图、存成文件的长文本。
 // 跟网页端先传上来的附件一样，发出去那一刻搬进这条会话的那格
 const strayUploads = new Set();
@@ -2292,7 +2292,7 @@ function splitFiles(text) {
   //      人一旦按过 ↑↓，只要候选没变就停在他挑的那条；再打一个字候选变了，才回到第一条。
   // 任何一步出岔子（终端不认这些指令、Node 换了内部实现）就整场关掉菜单：
   // 宁可回到「按 Tab 补全」，也不能把人的输入行搅成一团。
-  const tw = require("./text-width"); // 中文占两列，对齐一律走它
+  const tw = require("./src/util/text-width"); // 中文占两列，对齐一律走它
   const MENU_MAX = 6;
   const menuState = { rows: 0, items: [], sel: -1, kind: "", key: "", dead: false };
   const menuUsable = () => !menuState.dead && !!process.stdout.isTTY && !!process.stdin.isTTY;

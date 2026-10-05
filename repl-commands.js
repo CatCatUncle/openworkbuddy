@@ -23,7 +23,7 @@
 const { MODE_IDS, MODE_ARG } = require("./modes"); // 执行模式的唯一真源，别在这儿抄第二份
 
 const path = require("path");
-const { cols, padCols } = require("./text-width"); // 中文占两列，padEnd 数的是码位——对齐一律走它
+const { cols, padCols } = require("./src/util/text-width"); // 中文占两列，padEnd 数的是码位——对齐一律走它
 const { editDistance } = require("./cli-args");
 const { PERMISSION_MODES } = require("./security"); // 权限档的唯一真源，跟网页那四档、跟 --perm 是同一份
 const PERM_IDS = Object.keys(PERMISSION_MODES);

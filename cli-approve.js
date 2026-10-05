@@ -25,7 +25,7 @@
  * 「怎么读键盘、超时怎么算、谁来调 security.resolveApproval」都在 cli.js 那边。
  */
 
-const { cols } = require("./text-width");
+const { cols } = require("./src/util/text-width");
 const { wrap } = require("./cli-ask"); // 折行规则两边必须一样，中文占两列
 
 /** 三档的含义。scope 直接喂给 security.resolveApproval */

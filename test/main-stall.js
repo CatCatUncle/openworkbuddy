@@ -759,7 +759,8 @@ function decodePng(buf) {
     ok(pixelsKind("win32", {}) === "render" && pixelsKind("darwin", {}) === "sips", "Windows 交给隐藏窗口，mac 照旧交给 sips");
     ok(pixelsKind("linux", {}) === null && pixelsKind("win32", { OWB_MAIN_PIXELS: "native" }) === null && pixelsKind("darwin", { OWB_MAIN_PIXELS: "native" }) === null,
       "★反向对照★ Linux、OWB_MAIN_PIXELS=native：走回主线程 nativeImage");
-    ok(/pk === "render"\) return require\("\.\/browser-render"\)\.createRenderPixels\(/.test(mainSrc) && /pixelsKind\(process\.platform, process\.env\)/.test(mainSrc),
+    const brSpec = JSON.stringify(mod.spec("electron-main", "browser-render")).replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+    ok(new RegExp(`pk === "render"\\) return require\\(${brSpec}\\)\\.createRenderPixels\\(`).test(mainSrc) && /pixelsKind\(process\.platform, process\.env\)/.test(mainSrc),
       "主进程真按 pixelsKind 注入了隐藏窗口那一份");
   }
 

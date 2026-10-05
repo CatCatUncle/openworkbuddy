@@ -19,7 +19,7 @@ const security = require("../../security");
 const mediaModels = require("../../media-models"); // 图/视频/语音/视觉的多模型选择（同一把 Key 配多个型号）
 const genCache = require("../../gen-cache"); // 生图/生视频/配音的内容寻址缓存：同一格重跑不再烧第二次钱
 const quota = require("../../quota"); // 按次计费的第三方 API：调之前问一句额度，调完记一笔
-const winname = require("../../lib/winname"); // Windows 不认的文件名（保留名、控制字符）
+const winname = require("../util/winname"); // Windows 不认的文件名（保留名、控制字符）
 
 // 工作目录根和「目录建好没」，都是 tools.js 那边的；没接上就直接报错，不猜一个默认目录往里写
 let wsRoot = null;
@@ -952,7 +952,7 @@ async function htmlToImage(input, resolveFile, saveDir) {
   const fname = safeOutName(input.filename, ".png", "card");
   let buf;
   try {
-    const { renderHtmlToPng } = require("../../htmlshot");
+    const { renderHtmlToPng } = require("../platform/render/htmlshot");
     buf = await renderHtmlToPng(p, {
       width: input.width || 1242,
       height: input.height || 1656,

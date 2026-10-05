@@ -10,11 +10,11 @@ const fs = require("fs");
 const path = require("path");
 const { DATA_DIR, dataPath, appPath } = require("./paths");
 const { spawn, spawnSync } = require("child_process");
-const { outDecoder } = require("./lib/out-decode");
+const { outDecoder } = require("./src/util/out-decode");
 const security = require("./security");
 const memory = require("./memory");
 const mediaModels = require("./media-models"); // 图/视频/语音/视觉的多模型选择（同一把 Key 配多个型号）
-const cdp = require("./cdp"); // 可选的本机 Chrome CDP：不捆绑浏览器、不连接远程地址
+const cdp = require("./src/platform/render/cdp"); // 可选的本机 Chrome CDP：不捆绑浏览器、不连接远程地址
 const quota = require("./quota"); // 按次计费的第三方 API：调之前问一句额度，调完记一笔
 const mediaHealth = require("./media-health"); // 连不通的渠道熔断：撞过的硬错下次连请求都不发
 const checkpoints = require("./checkpoints"); // 改文件前留检查点：整步能退回去，审批卡上先看 diff
@@ -24,7 +24,7 @@ const jev = require("./jev"); // 判断模型：上面那一问就是它答的
 const HK = require("./hooks"); // config.json 里 agent.hooks 配的命令：跑命令前、改完文件后
 const CT = require("./code-tools"); // 写代码那几样：按名找文件、后台命令、进度清单、改前查有没有被动过
 const depsGuard = require("./lib/deps-guard"); // 工作空间嵌在应用目录里时，npm/pnpm 别往上找到应用自己的 package.json
-const winname = require("./lib/winname"); // Windows 不认的文件名（a:b 会悄悄写进备用数据流）
+const winname = require("./src/util/winname"); // Windows 不认的文件名（a:b 会悄悄写进备用数据流）
 // 媒体那几样（生图 / 生视频 / 配音 / 转写 / 看图 / 截图 + 生成缓存）和画布状态拆到 src/tools/ 下了，这里只是转手。
 // 它们要用的工作目录根还在本文件（下面那套 ALS），递过去的是取值函数、用到时才读，按请求切换的根照样生效
 const MEDIA = require("./src/tools/media");
@@ -2513,7 +2513,7 @@ async function releaseRun(sessionId, { browser = true } = {}) {
   const sid = String(sessionId || "");
   if (!sid) return { jobs: [], kept: [], strays: [] };
   const { killed, kept } = CT.bgReapSession(sid, (c) => killTree(c));
-  if (browser) { try { await require("./cdp").releaseOwner(sid); } catch {} }
+  if (browser) { try { await require("./src/platform/render/cdp").releaseOwner(sid); } catch {} }
   let gone = [];
   try { gone = await reapStrays(sid); } catch {}
   if (killed.length || gone.length || kept.length) {
@@ -2910,7 +2910,7 @@ function auditHtml(src, baseDir, opts = {}) {
 // require 整个 tools.js，所以开窗口的那几件事单拎成一个文件，两边共用同一份。
 const {
   WEB_PARTITION, hiddenWeb, openHiddenWeb, isRuntimeNoise, readConsoleEvent, cleanConsoleText, probePage, readRendered,
-} = require("./web-window");
+} = require("./src/platform/render/web-window");
 
 /** 验收网页：静态体检 + 真浏览器打开一遍（拿控制台报错） */
 async function checkPage(file, rel) {

@@ -124,7 +124,7 @@ const BRIDGE_ONLY = [
 /** 白名单 ∩ 本项目真有的工具 ∩ 这个进程里真跑得通的。名字对不上就不挂。 */
 function lentDefs() {
   let gui = false;
-  try { gui = !!require("../browser-render").available(); } catch {}
+  try { gui = !!require("../src/platform/render/browser-render").available(); } catch {}
   return [...tools.TOOL_DEFS, ...BRIDGE_ONLY].filter(
     (d) => ALLOW.has(d.name) && LENDABLE.includes(d.name) && (gui || !NEEDS_RENDERER.includes(d.name))
   );

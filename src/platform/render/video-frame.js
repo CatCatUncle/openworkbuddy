@@ -61,7 +61,7 @@ async function videoFrame(file, opts = {}) {
 }
 
 async function findFfmpeg() {
-  try { return (await require("./lib/media-probe").resolveMediaBins()).ffmpeg.bin || ""; } catch { return ""; }
+  try { return (await require("../../../lib/media-probe").resolveMediaBins()).ffmpeg.bin || ""; } catch { return ""; }
 }
 
 function clamp(v, lo, hi) {

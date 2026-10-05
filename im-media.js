@@ -21,7 +21,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { safeSegment } = require("./lib/winname");
+const { safeSegment } = require("./src/util/winname");
 
 const MAX_INBOUND_BYTES = 30 * 1024 * 1024; // 收进来的单个附件上限，超了只留一句说明
 const DEFAULT_CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c";

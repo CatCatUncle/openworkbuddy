@@ -19,7 +19,7 @@
  * 最后多一条「都不是，我自己打一句」退回敲一行。不认按键的地方（管道、--json）还是敲序号那套。
  */
 
-const { cols } = require("./text-width"); // 中文占两列，量宽一律走它
+const { cols } = require("./src/util/text-width"); // 中文占两列，量宽一律走它
 const { clip } = require("./cli-toolview"); // 按显示宽度截断；那边也是纯的，不会绕回来引这边
 
 /**

@@ -20,7 +20,7 @@ const fs = require("fs");
 const path = require("path");
 const TC = require("../../lib/timeline-compose");
 const jobs = require("../../lib/compose-jobs");
-const M = require("../../motion-clock");
+const M = require("../util/motion-clock");
 
 /** @typedef {import("../../types/timeline").ComposeVideoInput} ComposeVideoInput */
 /** @typedef {import("../../types/timeline").ComposeJobView} ComposeJobView */
@@ -201,7 +201,7 @@ function hasCjkFonts() {
 /** 这里能不能把 HTML 画成画面。片头片尾卡（截图）和 HTML 段（录成视频）用的是同一个浏览器 */
 function renderAvailable() {
   try {
-    const a = require("../../htmlvideo").available();
+    const a = require("../platform/render/htmlvideo").available();
     return { ok: !!a.ok, why: a.why || "" };
   } catch (e) {
     return { ok: false, why: "渲染模块没加载起来：" + String((e && e.message) || e) };
@@ -401,7 +401,7 @@ async function composeVideo(input, ctx) {
   }
   if (fontFile) {
     let family = "";
-    try { family = require("../../lib/font-family").readFontFamily(path.resolve(cwd, fontFile)); } catch {}
+    try { family = require("../util/font-family").readFontFamily(path.resolve(cwd, fontFile)); } catch {}
     facts.font = { file: fontFile, family };
   }
   // SVG 角标 ffmpeg 多半解不了（要 librsvg），硬贴就是最后一步才挂。只关角标：卡片是浏览器画的，SVG 照样上
@@ -444,13 +444,13 @@ async function composeVideo(input, ctx) {
       return abs;
     };
     if (r.what === "card") {
-      const buf = await require("../../htmlshot").renderHtmlToPngAny(inside(r.file), { width: r.width, height: r.height, waitMs: 300, signal });
+      const buf = await require("../platform/render/htmlshot").renderHtmlToPngAny(inside(r.file), { width: r.width, height: r.height, waitMs: 300, signal });
       fs.writeFileSync(inside(r.out), buf);
       onFrac(1);
       return;
     }
     // 不传 deadline：任务可能比这次工具调用活得久，超时由 compose-jobs 按预估时长管
-    await require("../../htmlvideo").renderMotion([{ path: path.resolve(cwd, r.file), duration: r.duration, name: path.basename(r.file) }], {
+    await require("../platform/render/htmlvideo").renderMotion([{ path: path.resolve(cwd, r.file), duration: r.duration, name: path.basename(r.file) }], {
       width: r.width, height: r.height, fps: r.fps, out: inside(r.out), ffmpegBin: bins.ffmpeg, signal,
       onProgress: (/** @type {any} */ p) => onFrac(p && p.total > 0 ? p.done / p.total : ((p && p.pct) || 0) / 100),
     });
