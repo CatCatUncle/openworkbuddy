@@ -361,6 +361,8 @@ OpenWorkBuddy 是独立开源项目，跟上面这些公司都没有关联。
 
 协议 [PolyForm Noncommercial 1.0.0](LICENSE)，细则和没授权商用的后果见 [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)。部署配置、脚本、技能模板另按 MIT（[清单](COMMERCIAL-LICENSE.md#按-mit-授权的部分)）；名称和图标不在授权范围内。
 
+KylinWork 等项目未经作者许可拿本项目代码二次开发，还擅自改了开源协议，作者已要求其全网下架。
+
 Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle)
 
 ## 免责声明

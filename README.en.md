@@ -350,6 +350,8 @@ Most docs are in Chinese; the code and comments are the source of truth.
 
 [PolyForm Noncommercial 1.0.0](LICENSE); terms and what unlicensed commercial use leads to are in [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md). Deploy configs, scripts and skill templates are also MIT ([the list](COMMERCIAL-LICENSE.md#按-mit-授权的部分)); the name and logo aren't licensed.
 
+KylinWork and others built on this project's code without the author's permission and changed its license; the author has demanded they be taken down everywhere.
+
 Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle)
 
 ## Disclaimer
