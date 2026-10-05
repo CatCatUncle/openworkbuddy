@@ -1635,9 +1635,16 @@ async function openProjEditor(proj, tpl) {
     experts: new Set((proj || {}).experts || []),
     skills: new Set((proj || {}).skills || []),
   };
+  // 条目一多一个个点太慢：4 个起带全选/清空，超过 12 个再给个筛选框；全选只管筛出来的那些
+  const copyFrom = (projects || []).filter(p => p && p.name !== (proj || {}).name
+    && ((p.connectors || []).length || (p.experts || []).length || (p.skills || []).length));
   const pickRow = (key, label, items) => `
     <label>${label} <span class="cnt">（可选，已选 <span id="pk-n-${key}">${sel[key].size}</span>）</span></label>
-    <div class="picks" data-key="${key}">${items.length
+    ${items.length >= 4 ? `<div class="pk-bar" data-key="${key}">
+      ${items.length > 12 ? `<input class="pk-q" placeholder="按名字筛选">` : ""}
+      <a href="#" class="link" data-pk="all">全选</a><a href="#" class="link" data-pk="none">清空</a>
+    </div>` : ""}
+    <div class="picks" data-key="${key}" title="按住 Shift 点可连选一段">${items.length
       ? items.map(n => `<span class="pk ${sel[key].has(n) ? "on" : ""}" data-v="${esc(n)}">${esc(n)}</span>`).join("")
       : '<span style="font-size: 13px;color:var(--owb-text-3)">还没有可挂载的条目</span>'}</div>`;
   mBody.innerHTML = `<div class="proj-form">
@@ -1663,6 +1670,8 @@ async function openProjEditor(proj, tpl) {
         ? `<option value="${esc(proj.library_dir)}" selected>${esc(proj.library_dir)}（目录已不存在）</option>` : ""}
     </select>
     ${(lib.folders || []).length ? "" : `<div class="proj-hint">资料库现在还是平铺的一层。去<a href="#" class="link" id="pj-to-lib">资料库</a>页建几个文件夹（比如按客户、按项目分），这里就能挑了。</div>`}
+    ${copyFrom.length ? `<label>照搬 <span class="cnt">一次带上那个项目挂的连接器、专家、技能</span></label>
+    <select id="pj-copy"><option value="">从已有项目照搬选择…</option>${copyFrom.map(p => `<option value="${esc(p.name)}">${esc(p.name)}</option>`).join("")}</select>` : ""}
     ${pickRow("connectors", "连接器", mcp.map(m => m.name))}
     ${pickRow("experts", "专家", experts.map(e => e.name))}
     ${pickRow("skills", "技能", skills.map(k => k.name))}
@@ -1679,14 +1688,57 @@ async function openProjEditor(proj, tpl) {
     const t = PROJ_TEMPLATES[+e.target.value];
     if (t) { mBody.querySelector("#pj-ins").value = t.ins; if (!nameEl.value.trim()) { nameEl.value = t.tt; syncCnt(); } }
   };
+  const pkSync = (key) => {
+    mBody.querySelectorAll(`.picks[data-key="${key}"] .pk`).forEach(el => el.classList.toggle("on", sel[key].has(el.dataset.v)));
+    mBody.querySelector("#pk-n-" + key).textContent = sel[key].size;
+  };
+  const lastPk = {};
   mBody.querySelectorAll(".picks").forEach(box => box.onclick = (e) => {
     const pk = e.target.closest(".pk");
     if (!pk) return;
     const key = box.dataset.key, v = pk.dataset.v;
-    sel[key].has(v) ? sel[key].delete(v) : sel[key].add(v);
-    pk.classList.toggle("on");
-    mBody.querySelector("#pk-n-" + key).textContent = sel[key].size;
+    const shown = [...box.querySelectorAll(".pk")].filter(el => !el.hidden);
+    const from = shown.indexOf(lastPk[key]), to = shown.indexOf(pk);
+    if (e.shiftKey && from >= 0 && to >= 0) {
+      // Shift 连选：中间这一段都跟着上一下点成的状态走（上一下是选上就全选上，取消就全取消）
+      const on = sel[key].has(lastPk[key].dataset.v);
+      shown.slice(Math.min(from, to), Math.max(from, to) + 1).forEach(el => on ? sel[key].add(el.dataset.v) : sel[key].delete(el.dataset.v));
+    } else {
+      sel[key].has(v) ? sel[key].delete(v) : sel[key].add(v);
+    }
+    lastPk[key] = pk;
+    pkSync(key);
   });
+  mBody.querySelectorAll(".pk-bar").forEach(bar => {
+    const key = bar.dataset.key, box = mBody.querySelector(`.picks[data-key="${key}"]`);
+    const q = bar.querySelector(".pk-q");
+    if (q) q.oninput = () => {
+      const kw = q.value.trim().toLowerCase();
+      box.querySelectorAll(".pk").forEach(el => { el.hidden = !!kw && !el.dataset.v.toLowerCase().includes(kw); });
+    };
+    bar.onclick = (e) => {
+      const a = e.target.closest("[data-pk]");
+      if (!a) return;
+      e.preventDefault();
+      box.querySelectorAll(".pk").forEach(el => {
+        if (el.hidden) return;
+        a.dataset.pk === "all" ? sel[key].add(el.dataset.v) : sel[key].delete(el.dataset.v);
+      });
+      pkSync(key);
+    };
+  });
+  const copyEl = mBody.querySelector("#pj-copy");
+  if (copyEl) copyEl.onchange = () => {
+    const src = copyFrom.find(p => p.name === copyEl.value);
+    if (!src) return;
+    // 照搬=换成那个项目的选择；这台机器上已经没有的条目不带过来，免得存进去一堆点不掉的名字
+    for (const key of ["connectors", "experts", "skills"]) {
+      const have = new Set([...mBody.querySelectorAll(`.picks[data-key="${key}"] .pk`)].map(el => el.dataset.v));
+      sel[key] = new Set((src[key] || []).filter(v => have.has(v)));
+      pkSync(key);
+    }
+    copyEl.value = "";
+  };
   // 桌面版能开系统的文件夹选择框；Web 版没有这个东西，接口回 501，就老老实实让用户敲路径
   mBody.querySelector("#pj-pick").onclick = async () => {
     const r = await fetch("/api/pick-folder", { method: "POST" }).then(x => x.json()).catch(() => ({ error: "网络异常" }));
