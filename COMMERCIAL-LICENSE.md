@@ -139,8 +139,8 @@ OpenWorkBuddy 整体按 PolyForm Noncommercial 1.0.0 发布，**但有一部分�
 ### 不在 MIT 范围内的
 
 除上表之外的一切，照旧按 PolyForm Noncommercial 1.0.0——主要是**主程序**：
-`server.js` `agent.js` `tools.js` `llm.js` `im*.js` `org.js` `admin.js` `account.js`
-`security.js` `evolve.js` `memory.js` `cli*.js` `engines/` `public/`，以及
+根目录的 `server.js` `cli.js` `electron-main.js` `server-host.js`，`src/` 下的全部源码（如 `src/agent/`
+`src/core/` `src/domains/` `src/engines/` `src/im/` `src/server/` `src/cli/`），`public/`，以及
 `skills/` 下除 `skill-creator/` 外的技能包。
 
 名称 **OpenWorkBuddy**、项目图标与品牌标志**不在任何一份许可的范围内**，见
@@ -211,7 +211,7 @@ PolyForm Noncommercial 只授权版权（和专利），「No Other Rights」一
    迹象够了，后台首页就挂一条待办，直到管理员选一项使用声明（个人自用 / 非营利机构 /
    公司评估试用）或者填上授权码。选了哪一项、谁选的、什么时候、当时看到了哪些迹象，
    一起记进操作审计。「公司评估试用」声明满 30 天、或者声明之后又多了新迹象，待办会重新挂出来。
-3. **授权码离线验签。** 授权码用 Ed25519 签名，公钥就在仓库里（`license.js`），任何人都能验真伪：
+3. **授权码离线验签。** 授权码用 Ed25519 签名，公钥就在仓库里（`src/domains/account/license.js`），任何人都能验真伪：
    `node scripts/issue-license.js verify <授权码>`。私钥只在作者手里，只有作者能签发。
 4. **源码文件带 SPDX 版权头。** 每个 JS 源文件开头写明著作权人和许可证。
 5. **软件标识。** HTTP 响应头带 `X-Powered-By: OpenWorkBuddy`，页面带 `generator` 和 `copyright` meta。
