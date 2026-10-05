@@ -20,12 +20,12 @@
  * 两边给的「你是不是想说」才会一样宽松、一样严格。
  */
 
-const { MODE_IDS, MODE_ARG } = require("./src/core/config/modes"); // 执行模式的唯一真源，别在这儿抄第二份
+const { MODE_IDS, MODE_ARG } = require("../core/config/modes"); // 执行模式的唯一真源，别在这儿抄第二份
 
 const path = require("path");
-const { cols, padCols } = require("./src/util/text-width"); // 中文占两列，padEnd 数的是码位——对齐一律走它
+const { cols, padCols } = require("../util/text-width"); // 中文占两列，padEnd 数的是码位——对齐一律走它
 const { editDistance } = require("./cli-args");
-const { PERMISSION_MODES } = require("./src/core/safety/security"); // 权限档的唯一真源，跟网页那四档、跟 --perm 是同一份
+const { PERMISSION_MODES } = require("../core/safety/security"); // 权限档的唯一真源，跟网页那四档、跟 --perm 是同一份
 const PERM_IDS = Object.keys(PERMISSION_MODES);
 const PERM_ARG = PERM_IDS.join("|"); // 跟 MODE_ARG 一个写法：不带尖括号，帮助里直接印取值
 

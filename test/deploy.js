@@ -302,7 +302,7 @@ console.log("\n【5】用到的 npm 包，package.json 里有没有声明");
     "electron 留在 devDependencies（进了 dependencies 的话装机包里会多塞一整份 Electron）"
   );
   ok(
-    /try\s*\{[^}]*require\("ws"\)/.test(read("im-qq.js")),
+    /try\s*\{[^}]*require\("ws"\)/.test(read(mod.rel("im-qq"))),
     "ws 的例外成立：它只是 Node 22 以下的兜底分支，外面包着 try/catch"
   );
 

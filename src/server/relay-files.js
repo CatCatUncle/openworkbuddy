@@ -30,7 +30,7 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const { dataPath } = require("./src/platform/paths");
+const { dataPath } = require("../platform/paths");
 
 const DATA_DIR = process.env.OPENWORKBUDDY_DATA_DIR || dataPath("data");
 const DIR = path.join(DATA_DIR, "relay-files");

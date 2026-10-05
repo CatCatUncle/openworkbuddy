@@ -349,7 +349,7 @@ console.log("\n⑮之二 传进去的时钟真的在起作用");
 console.log("\n⑯ cli.js 接线");
 {
   const src = fs.readFileSync(entry("cli"), "utf8");
-  ok(/require\("\.\/repl-commands"\)/.test(src), "（先证明读到的是这个文件）");
+  ok(new RegExp(`require\\(${JSON.stringify(mod.spec("cli", "repl-commands")).replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}\\)`).test(src), "（先证明读到的是这个文件）");
   ok(/repl\.parse\(/.test(src), "★一行输入先过 parse★ 不然这整个测试文件测的是没人用的代码");
   ok(/repl\.makeInbox\(/.test(src), "★输入走闸门★");
   ok(/repl\.resolveCd\(/.test(src), "/cd 走 resolveCd");
@@ -665,7 +665,7 @@ console.log("\n⑱之二 菜单里有的，Tab 一定补得出来");
 console.log("\n⑱之三 菜单的画法：不许把人的输入搞乱");
 {
   const src = fs.readFileSync(entry("cli"), "utf8");
-  ok(/require\("\.\/repl-commands"\)\.menu\(/.test(src), "★画之前先问上面那个纯函数★ 不问的话这一整节测的是没人用的代码");
+  ok(new RegExp(`require\\(${JSON.stringify(mod.spec("cli", "repl-commands")).replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}\\)\\.menu\\(`).test(src), "★画之前先问上面那个纯函数★ 不问的话这一整节测的是没人用的代码");
   ok(/const menuUsable = \(\) => [^\n]*process\.stdout\.isTTY[^\n]*process\.stdin\.isTTY/.test(src),
      "★不是终端就一行都不画★ openworkbuddy … | tee 里画菜单，出来的是一堆转义序列");
   ok(/pos\.rows > 0/.test(src), "★输入自己换行了就不画★ 光标不在最后一行，画下去会盖掉人打的字");

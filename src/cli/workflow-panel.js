@@ -17,7 +17,7 @@
  * 写了 phase 的分阶段：左边一栏列阶段和「做完几步/共几步」，右边只列当前阶段的步骤（跟 Claude Code 一样），
  * 窄终端放不下两栏就退成一栏，阶段当小标题。
  */
-const { cols, padCols } = require("./src/util/text-width");
+const { cols, padCols } = require("../util/text-width");
 
 const IDLE_SHOW_MS = 20000;
 const BAR_CELLS = 20;

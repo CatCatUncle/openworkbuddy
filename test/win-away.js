@@ -156,7 +156,7 @@ app.whenReady().then(async () => {
     const main = src("electron-main.js");
     const hook = /throttleWhenAway\(win\b/;
     const child = /throttleWhenAway\(child\)/;
-    ok(/require\("\.\/win-away"\)/.test(main) && hook.test(main), "主窗口挂上 throttleWhenAway");
+    ok(new RegExp(`require\\(${JSON.stringify(mod.spec("electron-main", "win-away")).replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}\\)`).test(main) && hook.test(main), "主窗口挂上 throttleWhenAway");
     ok(child.test(main), "站内链接开的子窗口也挂上");
     ok(!hook.test(main.replace(/throttleWhenAway\(win\b/g, "x(")), "  └ 这条检查自己会红（反向对照）");
     const sw = main.indexOf('appendSwitch("disable-features", "IntensiveWakeUpThrottling")');

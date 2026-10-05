@@ -202,7 +202,7 @@ console.log("\n③ 后端源码（会往终端 / IM 吐字的那几个）");
 // 后端这边也一条按行号写死的例外都不留，理由跟前端一样：行号会跟着上面任意一次编辑整体漂掉，
 // 漂完要么放行了不该放的那行，要么对不上号让整份测试无故变红——这三条原来就是这么红的。
 // 要放行就在源码里圈「emoji-数据区」，理由写在记号里，读代码的人当场看得见。
-const BACK = [mod.rel("agent"), "cli.js", "electron-main.js", mod.rel("evolve"), "im.js", "server.js",
+const BACK = [mod.rel("agent"), "cli.js", "electron-main.js", mod.rel("evolve"), mod.rel("im"), "server.js",
   mod.rel("skills"), mod.rel("task-verdict"), mod.rel("tools"), "eval/run.js", "eval/judge.js", "eval/rejudge.js", mod.rel("callout"), mod.rel("icons"), mod.rel("account")];
 for (const rel of BACK) {
   const found = scan(rel); // 只扫一遍：scan 会往 regionsSeen 记账，扫两遍就变成每条记两次

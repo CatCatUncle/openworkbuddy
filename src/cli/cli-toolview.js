@@ -16,7 +16,7 @@
  * 免得 └ 挂错爹（cli.js 那边按 id 记着调用）。
  */
 
-const { cols } = require("./src/util/text-width");
+const { cols } = require("../util/text-width");
 
 /** 常用工具的短名。没列的照原名——那也是模型和网页上看到的名字 */
 const LABEL = {

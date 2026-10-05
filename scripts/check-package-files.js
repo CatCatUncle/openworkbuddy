@@ -25,7 +25,7 @@ const ENTRIES = ["electron-main.js", "server.js", "server-host.js", "cli.js", "e
  * 少了照样打不开（preload 缺了窗口一片空白，tool-bridge 缺了 MCP 桥起不来）。
  */
 const ASSETS = [
-  "pet-preload.js",          // 宠物窗口的 preload，BrowserWindow 按路径加载
+  "src/desktop/pet-preload.js",          // 宠物窗口的 preload，BrowserWindow 按路径加载
   "public/pet.html",         // 同上
   "public/index.html",       // 主界面
   "src/engines/tool-bridge.js",  // 被当成子进程 spawn，不走 require

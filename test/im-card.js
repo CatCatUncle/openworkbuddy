@@ -180,7 +180,7 @@ for (const s of ["停车场在哪", "帮我写个停止按钮", "不要停", "",
   ok("收尾面板里也没有进度那句", !texts(done).some((t) => t.includes("渲染帧")));
   legal(done, "带进度收尾");
   // 建卡要一两秒，这期间的事件先攒在 im.js 的 60 格缓冲里；进度 400ms 一报，放进去会把后面的工具结果挤掉
-  const imSrc = require("fs").readFileSync(require("path").join(__dirname, "..", "im.js"), "utf8");
+  const imSrc = require("fs").readFileSync(require("path").join(__dirname, "..", "src", "im", "im.js"), "utf8");
   const bufLine = imSrc.split("\n").find((l) => /cardEvents\.push\(ev\)/.test(l)) || "";
   ok("im.js 那格缓冲找得到（找不到就是改名了，下一条会失去意义）", !!bufLine);
   ok("进度不进建卡前的缓冲", /ev\.type !== "tool_progress"/.test(bufLine));

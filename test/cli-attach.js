@@ -411,7 +411,8 @@ const asyncChecks = (async () => {
     "  └ stdin 写进去了，而且关上了（PowerShell 碰上开着的管道会一直等）");
   eq(await A._runAsync(node, ["-e", "process.stdin.on('end',()=>process.exit(0)).resume()"], {}), { status: 0 }, "  └ 没东西要写也把 stdin 关上");
   const SRV = require("fs").readFileSync(require("path").join(__dirname, "..", "server.js"), "utf8");
-  ok(/await require\("\.\/cli-attach\.js"\)\.writeClipboardAsync\(\{ file: p \}\)/.test(SRV) && !/\.writeClipboard\(\{ file: p \}\)/.test(SRV),
+  const caSpec = JSON.stringify(mod.spec("server", "cli-attach") + ".js").replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+  ok(new RegExp(`await require\\(${caSpec}\\)\\.writeClipboardAsync\\(\\{ file: p \\}\\)`).test(SRV) && !/\.writeClipboard\(\{ file: p \}\)/.test(SRV),
     "★服务端走异步版★ 同步那版在 Windows 上一等一两秒，整个服务停着", "");
 })();
 
@@ -419,7 +420,7 @@ const asyncChecks = (async () => {
 console.log("\n⑨ cli.js 接线：顺序和边界");
 {
   const has = (re, name, why) => ok(re.test(CLI_SRC), name, why);
-  has(/require\("\.\/cli-attach"\)/, "cli.js 引了 cli-attach");
+  has(new RegExp(`require\\(${JSON.stringify(mod.spec("cli", "cli-attach")).replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}\\)`), "cli.js 引了 cli-attach");
   has(/roots: \[getWorkspaceDir\(\), process\.cwd\(\)\]/, "相对路径先按工作目录找，再按人现在所在的目录找");
 
   const iWanted = CLI_SRC.indexOf("const wanted = namedFiles.concat(shot.files);");

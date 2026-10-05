@@ -25,7 +25,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { dataPath } = require("./src/platform/paths");
+const { dataPath } = require("../platform/paths");
 
 /** 一帧的原始尺寸。整图必须是它的整数倍（允许整体等比缩放过的图集）。 */
 const FRAME_W = 192;

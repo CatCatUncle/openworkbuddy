@@ -30,7 +30,7 @@ require("./src/platform/boot-check").enforce({ rootDir: __dirname });
 // 解析规则和帮助文本都在 cli-args.js 的那张声明表里，它是纯的：认不出来的选项会
 // 原样报回来，由这儿决定怎么说、退出码给几。以前是一串 else if，认不出的词一律
 // 当任务文本塞给模型——拼错一个 --quiet，钱照花、进度照打，人还以为自己关掉了。
-const cliArgs = require("./cli-args");
+const cliArgs = require("./src/cli/cli-args");
 const parsed = cliArgs.parse(process.argv.slice(2));
 const opts = parsed.opts;
 const words = parsed.words;
@@ -62,16 +62,16 @@ const { createAgentRuntime } = require("./src/agent/agent");
 const lanes = require("./src/core/config/lanes"); // 终端里起的任务归「工程」线；续跑 id 按引擎分开记
 const callout = require("./src/util/callout"); // 正文里的提示条：终端没有图标，换成文字标签
 const sessSearch = require("./src/core/memory/session-search"); // /resume 的搜索和 --list 的摘要都要它——必须在 listCliSessions 之前
-const mdTty = require("./md-tty"); // 正文里的 Markdown：终端里渲染出来，别让 **加粗** 糊在脸上
-const attach = require("./cli-attach"); // 带进来的文件/图片：拖进来的路径、@ 补全、剪贴板
+const mdTty = require("./src/cli/md-tty"); // 正文里的 Markdown：终端里渲染出来，别让 **加粗** 糊在脸上
+const attach = require("./src/cli/cli-attach"); // 带进来的文件/图片：拖进来的路径、@ 补全、剪贴板
 const modes = require("./src/core/config/modes"); // 执行模式的唯一真源；界面和这儿必须是同一份
 const projectMemo = require("./src/core/memory/project-memo"); // AGENTS.md / CLAUDE.md：桌面端和这儿读的是同一份
-const cliAsk = require("./cli-ask"); // agent 问一句时，终端里怎么摆这道选择题
-const cliApprove = require("./cli-approve"); // 危险操作求批准时，终端里怎么摆那张卡
+const cliAsk = require("./src/cli/cli-ask"); // agent 问一句时，终端里怎么摆这道选择题
+const cliApprove = require("./src/cli/cli-approve"); // 危险操作求批准时，终端里怎么摆那张卡
 const security = require("./src/core/safety/security"); // 审批是它发起的；命令行订它的钩子才知道有人正等着点头
 const cliLive = require("./src/core/obs/cli-live"); // 把这趟活儿播给网页/手机：看得见、插得上话
-const termImage = require("./term-image"); // 终端里直接把产出的图画出来 + /open 交给系统程序
-const replKit = require("./repl-commands"); // 输入行那几样纯逻辑：多行、搜历史、跑着时那一行的尾巴
+const termImage = require("./src/cli/term-image"); // 终端里直接把产出的图画出来 + /open 交给系统程序
+const replKit = require("./src/cli/repl-commands"); // 输入行那几样纯逻辑：多行、搜历史、跑着时那一行的尾巴
 const { cols } = require("./src/util/text-width"); // 中文占两列：原地重画那一行要算得出它多宽
 const account = require("./src/domains/account/account");
 const store = require("./src/platform/store");
@@ -173,7 +173,7 @@ function tickPause() {
 // 两条输出流在面板开着时各包一层：不管谁要印东西（审批单、提问单、报错），先把面板擦掉再印，
 // 下一秒面板在它下面重新长出来。漏包一处也不会把面板画进别人的字里——擦的是面板自己记着的那几行。
 // 提问/审批摆着的时候（hold > 0）不重画：人正对着单子按键，底下不能有东西跳
-const wp = require("./workflow-panel");
+const wp = require("./src/cli/workflow-panel");
 const wfp = { st: null, cur: -1, widths: [], hold: 0, timer: null, rawErr: null, rawOut: null, bol: true, blink: false };
 /** 这一趟 workflow 用不用面板：两条流都得是终端（重定向到文件的人要的是全过程），-q / --json 另有约定 */
 const panelWanted = () => !!process.stderr.isTTY && !!process.stdout.isTTY && !opts.quiet && !opts.json;
@@ -610,7 +610,7 @@ if (sub === "jev") {
 // 位置很讲究：必须排在下面 createLLM 前面。模型一个都没配的机器上 createLLM 当场抛
 // 「未知 provider: undefined」——而那恰恰是最需要体检的时刻，体检工具自己先死没有道理。
 if (sub === "doctor") {
-  const doctor = require("./doctor");
+  const doctor = require("./src/cli/doctor");
   const paint = { ok: green, warn: yellow, bad: red, dim };
   (async () => {
     const items = await doctor.gather({
@@ -804,7 +804,7 @@ function saveSess() {
 }
 
 // ---------- 事件渲染 ----------
-const toolView = require("./cli-toolview");
+const toolView = require("./src/cli/cli-toolview");
 const termWidth = () => Math.max(40, (process.stderr.columns || 80) - 2);
 /** 工具那几行的颜色：● 和名字亮一点，参数和输出压暗，出错的红 */
 const toolPaint = (s, k) => ({ bullet: (y) => (ttyErr ? `\x1b[36m${y}\x1b[39m` : y), name: bold, arg: dim, out: dim, more: dim, err: red }[k] || ((y) => y))(s);
@@ -2007,7 +2007,7 @@ function splitFiles(text) {
     process.exit(2);
   }
   if (sub === "workflow") {
-    const wf = require("./workflow");
+    const wf = require("./src/cli/workflow");
     const file = oneShot;
     if (!file) { process.stderr.write(red("要给一个流程文件：openworkbuddy workflow 流程.json\n")); process.exit(2); }
     const full = path.resolve(process.cwd(), file);
@@ -2083,7 +2083,7 @@ function splitFiles(text) {
   // openworkbuddy review [基准]：diff 在这儿取好，按只看不动跑。放在 splitFiles 之后——
   // diff 里满是路径，过一遍那个摘附件的会把半份 diff 当文件摘走
   if (sub === "review") {
-    const rv = require("./review");
+    const rv = require("./src/cli/review");
     const r = rv.collect(getWorkspaceDir(), oneShot);
     if (r.error) { process.stderr.write(red(r.error + "\n")); process.exit(2); }
     if (r.empty) { process.stderr.write(dim(`${r.label}：没有改动，没什么可审的\n`)); process.exit(0); }
@@ -2142,7 +2142,7 @@ function splitFiles(text) {
     // 几步共用一个会话；{{名字}} 贴的是那一步落盘的最终回复。管道和 -f 带进来的材料跟着第一步走
     // 终端里：一块面板，每步一行（见 workflow-panel.js）。输出重定向了就照老样子把全过程印出来——
     // 那是给人事后翻、给别的程序接着加工的，一步一步的来龙去脉才是它要的
-    const wf = require("./workflow");
+    const wf = require("./src/cli/workflow");
     const panel = panelWanted() ? wp.init({ name: flow.title, description: flow.desc, steps: flow }) : null;
     if (panel) {
       panel.model = engineBackend ? engineBackend.label : llm.model;
@@ -2222,7 +2222,7 @@ function splitFiles(text) {
   //   3. 打错的斜杠命令（/exi、/moe）整行当任务发给模型，钱花了事没办。
   //   4. Ctrl+D 之后等在 question 上的 Promise 永远不 resolve，MCP 子进程跟着挂死。
   // 现在一行输入先过 repl-commands 那张纯表，再由这儿决定怎么说、怎么做。
-  const repl = require("./repl-commands");
+  const repl = require("./src/cli/repl-commands");
   const PROMPT = ttyErr ? "\x1b[36mopenworkbuddy>\x1b[0m " : "openworkbuddy> ";
   const HIST_FILE = dataPath("data", "cli-history.txt");
   const loadHistory = () => {
@@ -2455,7 +2455,7 @@ function splitFiles(text) {
     if (!menuUsable() || inbox.busy) { menuClose(); return; }
     let pos = null;
     try { pos = rl.getCursorPos(); } catch { menuState.dead = true; menuClose(); return; }
-    const hit = require("./repl-commands").menu(rl.line || "", { custom: custom.list }) || fileMenu(rl.line || "");
+    const hit = require("./src/cli/repl-commands").menu(rl.line || "", { custom: custom.list }) || fileMenu(rl.line || "");
     const items = hit ? hit.items.slice(0, MENU_MAX) : [];
     // 输入折行了就不画：底下那几行的位置算不准，宁可没菜单也不能画歪
     if (!items.length || pos.rows > 0) { menuClose(); return; }
@@ -2862,7 +2862,7 @@ function splitFiles(text) {
 
   // 自己写的斜杠命令：跟着工作目录走（/cd 之后换成那个项目的），读盘很便宜，每条输入前重读一次，
   // 改完 .md 不用重开终端
-  const customCmds = require("./custom-commands");
+  const customCmds = require("./src/cli/custom-commands");
   const builtinNames = repl.COMMANDS.flatMap((c) => [c.name, ...(c.aliases || [])]);
   const reloadCustom = () => {
     try { custom = customCmds.load({ cwd: getWorkspaceDir(), builtins: builtinNames }); } catch { custom = { list: [], skipped: [] }; }
@@ -2876,7 +2876,7 @@ function splitFiles(text) {
     if (v.name === "help") { prog(repl.helpText({ custom: custom.list })); return; }
     if (v.name === "review") {
       // diff 在这儿取好塞进去，审查按只看不动跑：审哪一份由人定，不让模型去猜 git 参数
-      const rv = require("./review");
+      const rv = require("./src/cli/review");
       const r = rv.collect(getWorkspaceDir(), v.arg);
       if (r.error) { prog(yellow(r.error + "\n")); return; }
       if (r.empty) { prog(dim(`${r.label}：没有改动，没什么可审的\n`)); return; }

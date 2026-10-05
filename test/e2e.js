@@ -13770,7 +13770,7 @@ function nestedRoutes(text) {
 }
 function testNoNestedRoutes() {
   const root = path.join(__dirname, "..");
-  const files = ["server.js", modPath.rel("account"), modPath.rel("admin"), "im.js"];
+  const files = ["server.js", modPath.rel("account"), modPath.rel("admin"), modPath.rel("im")];
   let total = 0;
   for (const f of files) {
     const r = nestedRoutes(fs.readFileSync(path.join(root, f), "utf8"));
@@ -13880,7 +13880,7 @@ async function testPortableTempSweep() {
     // 接线：页面加载完以后在 Windows 装包态才扫，不在启动关键路径上
     const main = fs.readFileSync(entry("electron-main"), "utf8");
     const at = main.indexOf('bootLog("页面加载完成 ✓ 启动成功")');
-    const sw = main.indexOf('require("./portable-temp").sweepStale()');
+    const sw = main.indexOf(`require(${JSON.stringify(modPath.spec("electron-main", "portable-temp"))}).sweepStale()`);
     assert(at > 0 && sw > at && sw - at < 800, "electron-main.js 没在页面加载完以后收拾免安装版的临时目录");
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });

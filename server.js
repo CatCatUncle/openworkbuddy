@@ -15,7 +15,7 @@ const express = require("express");
 const fs = require("fs");
 const path = require("path");
 const { APP_DIR, DATA_DIR, dataPath, appPath, seedDataDir, resolvePort } = require("./src/platform/paths");
-const migrate = require("./migrate");
+const migrate = require("./src/server/migrate");
 // 数据目录跟代码目录不是同一个地方时（装机版、以及 Docker 里设了 OPENWORKBUDDY_HOME），
 // 得先把随包出厂的技能和专家铺过去，否则 skills.js 只认 dataPath("skills")，
 // 容器起来是能起来，但技能列表空空如也。开发态两个目录本来就是一个，这行是空操作。
@@ -28,11 +28,11 @@ const sessSearch = require("./src/core/memory/session-search");
 const { outputFiles, noteUserInput, moveUserInput, filesScope, safePath, safePathIn, workspaceKeyOf, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, setLibraryDir, withLibraryBase, libBase, notesFileOf, withWorkspace, enterWorkspace, withPolicy, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSafeName, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath } = require("./src/agent/tools");
 const checkpoints = require("./src/agent/checkpoints"); // 这条对话改过的文件：列出来、整步退回去
 const worktree = require("./src/agent/worktree"); // 两条任务同时改一个仓库时，后来的那条进自己的 git worktree
-const canvasRoutes = require("./routes/canvas"); // 画布读写 + 短剧素材台账 + 制片进度
-const dramaRoutes = require("./routes/drama"); // 短剧分镜表 + 一镜一镜的版本留底
-const { createComposeRouter } = require("./routes/compose"); // 一键合成的两条接口
-const libraryRoutes = require("./routes/library"); // 资料库的封面、正文摘录、收藏
-const { createPromptTplsRouter } = require("./routes/prompt-tpls"); // 参考模板库里「我的」「公司」两层的增删改
+const canvasRoutes = require("./src/server/routes/canvas"); // 画布读写 + 短剧素材台账 + 制片进度
+const dramaRoutes = require("./src/server/routes/drama"); // 短剧分镜表 + 一镜一镜的版本留底
+const { createComposeRouter } = require("./src/server/routes/compose"); // 一键合成的两条接口
+const libraryRoutes = require("./src/server/routes/library"); // 资料库的封面、正文摘录、收藏
+const { createPromptTplsRouter } = require("./src/server/routes/prompt-tpls"); // 参考模板库里「我的」「公司」两层的增删改
 const { createComposeJobs } = require("./src/domains/media/compose-jobs"); // 一键合成的任务队列：把镜头真的拼成成片
 const taskDirs = require("./src/util/task-dirs"); // 成果按对话分文件夹：哪些根下分、文件夹叫什么
 const prefs = require("./src/core/config/prefs"); // 按账号存的个人偏好：底层引擎 / 思考档 / 上次选的模型 / 宠物 / 快捷键
@@ -40,11 +40,11 @@ const { previewData } = require("./src/domains/library/preview");
 const evolve = require("./src/agent/evolve");
 const { McpManager, cfgFingerprint, scrubText: mcpScrub } = require("./src/agent/mcp");
 const { createAgentRuntime, scanOutputs, sweepPlanOffThread } = require("./src/agent/agent");
-const { createImRouter } = require("./im");
+const { createImRouter } = require("./src/im/im");
 const { createScheduler, setActiveScheduler, SCHEDULE_LABEL } = require("./src/core/automation/scheduler");
 const account = require("./src/domains/account/account");
-const { createStaticCompress: staticCompress } = require("./static-compress");
-const { createJsonCompress: jsonCompress } = require("./json-compress");
+const { createStaticCompress: staticCompress } = require("./src/server/static-compress");
+const { createJsonCompress: jsonCompress } = require("./src/server/json-compress");
 const { thumbFileAsync } = require("./src/platform/render/thumb");
 const org = require("./src/domains/account/org"); // 组织（租户）层：席位、部门、邀请码、审计
 const budget = require("./src/core/billing/budget"); // 钱闸：中转站发出去的 Key 和公司内部自己用，花的是同一笔预算
@@ -77,9 +77,9 @@ const log = require("./src/platform/log");
 const metrics = require("./src/core/obs/metrics");
 const callout = require("./src/util/callout"); // 正文提示条：机器人推送里换成文字标签
 const store = require("./src/platform/store");
-const petSprites = require("./pet-sprites"); // 桌面宠物的精灵图（吃 Codex / Petdex 的格式）
-const pet = require("./pet"); // 只为拿默认值（没有 electron 时它自己降级成空壳，纯 node 也 require 得动）
-const { createImSessionStore } = require("./im-store");
+const petSprites = require("./src/desktop/pet-sprites"); // 桌面宠物的精灵图（吃 Codex / Petdex 的格式）
+const pet = require("./src/desktop/pet"); // 只为拿默认值（没有 electron 时它自己降级成空壳，纯 node 也 require 得动）
+const { createImSessionStore } = require("./src/im/im-store");
 
 // config.json 不入 git（可能含 API Key）；首次运行自动从模板复制
 const CONFIG_PATH = dataPath("config.json");
@@ -1150,7 +1150,7 @@ const enterprise = (() => {
 })();
 // deps 是**传**进去的不是让它 require 的，跟下面 createAdminRouter 一个形状——
 // 企业包不去猜开源版的目录结构，我们内部怎么重构都不会把它碰散。
-const relay = require("./relay");
+const relay = require("./src/server/relay");
 // 中转站那条路自己的防连打闸：60 次撞门就歇一会儿。跟登录那把分开计数，
 // 不然一个刷 Key 的脚本会把正常同事的登录一起锁死。
 const relayLimiter = account.createLimiter();
@@ -1398,7 +1398,7 @@ app.get("/api/info", (_req, res) => {
 
 // 版本 / 更新检查。查的是 GitHub Releases，最快 6 小时一次（force=1 强查）。
 // 界面上「有没有新版」和「你这种装法怎么升」是一起给的——只报版本号等于没说。
-const updater = require("./updater");
+const updater = require("./src/server/updater");
 app.get("/api/update", async (req, res) => {
   res.json(await updater.checkUpdate({ force: req.query.force === "1" }));
 });
@@ -4988,7 +4988,7 @@ function backupExcludeArgs() {
       });
     });
   }
-  return tarVersionText.then((v) => require("./backup-auto").tarExcludeArgs(v, BACKUP_EXCLUDES));
+  return tarVersionText.then((v) => require("./src/server/backup-auto").tarExcludeArgs(v, BACKUP_EXCLUDES));
 }
 
 /**
@@ -5057,7 +5057,7 @@ function makeBackup(tag) {
 // 定时自动备份（默认关）。周期存在 config.backup.every_days：0 关 / 1 每天 / 7 每周。
 // 细节和规矩见 backup-auto.js
 let restoring = false;
-const autoBackup = require("./backup-auto").createAutoBackup({
+const autoBackup = require("./src/server/backup-auto").createAutoBackup({
   everyDays: () => (config.backup || {}).every_days,
   list: listBackups,
   make: makeBackup,
@@ -5123,16 +5123,16 @@ function inspectBackup(p) {
 
 app.get("/api/backup", (req, res) => {
   if (!backupAllowed(req, res)) return;
-  const days = require("./backup-auto").normalizeDays((config.backup || {}).every_days);
+  const days = require("./src/server/backup-auto").normalizeDays((config.backup || {}).every_days);
   res.json({
     list: listBackups(), covers: BACKUP_ENTRIES, skills: userSkillEntries().length,
-    auto: { every_days: days, keep: require("./backup-auto").KEEP, last_error: autoBackup.lastError() },
+    auto: { every_days: days, keep: require("./src/server/backup-auto").KEEP, last_error: autoBackup.lastError() },
   });
 });
 app.post("/api/backup/auto", (req, res) => {
   if (!backupAllowed(req, res)) return;
   const raw = (req.body || {}).every_days;
-  const days = require("./backup-auto").normalizeDays(raw);
+  const days = require("./src/server/backup-auto").normalizeDays(raw);
   if (String(raw) !== String(days)) return res.status(400).json({ error: "周期只能是 0（关）、1（每天）或 7（每周）" });
   config.backup = { ...(config.backup || {}), every_days: days };
   saveConfig();
@@ -6024,7 +6024,7 @@ app.post("/api/files/copy", async (req, res) => {
         return res.json({ ok: true, kind: "file", name: path.basename(p) });
       }
     } catch {}
-    const r = await require("./cli-attach.js").writeClipboardAsync({ file: p });
+    const r = await require("./src/cli/cli-attach.js").writeClipboardAsync({ file: p });
     if (!r.ok) return res.status(400).json({ error: r.why || "剪贴板写不进去" });
     res.json({ ok: true, kind: r.kind, name: path.basename(p) });
   } catch (e) { res.status(400).json({ error: e.message }); }
@@ -8377,7 +8377,7 @@ async function main() {
       sweeping = true;
       // require 也包进来：定时器回调里同步抛出来的错没人接，会直接变成主进程的未捕获异常
       Promise.resolve()
-        .then(() => require("./retention").sweepAll({ dataDir: dataPath("data"), log: (m) => log.info("retention", m) }))
+        .then(() => require("./src/server/retention").sweepAll({ dataDir: dataPath("data"), log: (m) => log.info("retention", m) }))
         .catch((e) => log.warn("retention", "派生数据清理没跑完", { err: e.message }))
         .finally(() => { sweeping = false; });
     };

@@ -26,9 +26,9 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const express = require("express");
-const store = require("../src/platform/store");
-const prefs = require("../src/core/config/prefs");
-const { dataPath } = require("../src/platform/paths");
+const store = require("../../platform/store");
+const prefs = require("../../core/config/prefs");
+const { dataPath } = require("../../platform/paths");
 
 // OPENWORKBUDDY_DATA_DIR 跟 account.js / prefs.js 同一个口子：跑测试时指到临时目录
 const baseDir = () => path.join(process.env.OPENWORKBUDDY_DATA_DIR || dataPath("data"), "prompt-tpls");

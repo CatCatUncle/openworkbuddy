@@ -15,7 +15,7 @@
 const fs = require("fs");
 const path = require("path");
 const express = require("express");
-const dramaPipeline = require("../src/domains/media/drama-pipeline");
+const dramaPipeline = require("../../domains/media/drama-pipeline");
 
 // 下面这几个由 createCanvasRouter(deps) 填上。readDramaJson 住在 routes/drama.js，素材台账要读分镜表
 let getWorkspaceDir, outputFiles, safePath, rootedPath, canvasList, canvasReadState, canvasWriteState, canvasNormalizeState, canvasSafeName, readDramaJson;

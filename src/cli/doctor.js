@@ -107,7 +107,7 @@ function verdictConfigLint(found) {
 function lintConfig(config, paths) {
   try {
     const def = JSON.parse(fs.readFileSync(paths.appPath("config.example.json"), "utf8"));
-    return require("./src/core/config/config-lint").lint(config, def);
+    return require("../core/config/config-lint").lint(config, def);
   } catch {
     return [];
   }
@@ -334,7 +334,7 @@ function countModels(config) {
 
 // 外部 CLI 清单、别名和按名字查，搬到了 src/platform/known-tools.js（媒体探测、合成任务、run_shell 也要用，
 // 不该反过来 require 体检）。这里原名转导出，体检照旧逐条查
-const { EXTERNAL_TOOLS, TOOL_ALIASES, toolOn, knownTool } = require("./src/platform/known-tools");
+const { EXTERNAL_TOOLS, TOOL_ALIASES, toolOn, knownTool } = require("../platform/known-tools");
 
 /**
  * 跑一下就退的小命令，只要退出码。给 probePython 验「是不是商店占位程序」用。
@@ -461,18 +461,18 @@ async function gather(deps) {
 
   // 放在最后：它可能要问一次登录 shell（几百毫秒），前面那些是「能不能启动」的硬指标，
   // 不该被一个可选项拖着等
-  const which = deps.which || require("./src/platform/which");
+  const which = deps.which || require("../platform/which");
   const pathError = await freshWinPath(which, deps.platform);
   items.push(verdictTools(await probeTools(which, deps.platform), { pathError }));
   // 它自己会去跑一次 `toolward --version`；探不到就是没装，不该让体检本身出错
   let tw = null;
-  try { tw = require("./src/core/safety/toolward").status(config || {}); } catch { tw = null; }
+  try { tw = require("../core/safety/toolward").status(config || {}); } catch { tw = null; }
   items.push(verdictToolward(tw));
   return items;
 }
 
 /** 把结果画成一屏。色由调用方给（CLI 那边判过 isTTY 了），这儿只管排版 */
-const { cols, padCols } = require("./src/util/text-width"); // 中文占两列，padEnd 数的是码位——对齐一律走它
+const { cols, padCols } = require("../util/text-width"); // 中文占两列，padEnd 数的是码位——对齐一律走它
 
 function render(items, paint) {
   const c = paint || ((s) => s);

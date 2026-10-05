@@ -22,8 +22,8 @@ const fsp = fs.promises;
 const path = require("path");
 const express = require("express");
 const { StringDecoder } = require("string_decoder");
-const libCover = require("../src/domains/library/lib-cover");
-const libFavs = require("../src/domains/library/lib-favs");
+const libCover = require("../../domains/library/lib-cover");
+const libFavs = require("../../domains/library/lib-favs");
 
 // 下面这几个由 createLibraryRouter(deps) 填上
 let libraryRootOf, rootedPath, rootOfResolved, getWorkspaceDir, safePathIn;

@@ -26,7 +26,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const store = require("./src/platform/store");
+const store = require("../platform/store");
 
 /** 工作区根目录下这些不算「散落的旧文件」，一概不动 */
 const KEEP_AT_ROOT = new Set([".DS_Store", ".openworkbuddy", ".trash", "node_modules", ".git"]);

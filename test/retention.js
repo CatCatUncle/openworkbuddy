@@ -459,7 +459,8 @@ function buildSess(body = SLICE) {
   {
     ok(/setTimeout\(sweep, 60 \* 1000\)\.unref\(\);/.test(SRC) && /setInterval\(sweep, 24 \* 3600 \* 1000\)\.unref\(\);/.test(SRC),
       "server.js 挂了开机一分钟后 + 每天一次，都 unref");
-    ok(/require\("\.\/retention"\)\.sweepAll\(\{ dataDir: dataPath\("data"\)/.test(SRC), "清的是数据目录下的 data/，不是别处");
+    const rtSpec = JSON.stringify(mod.spec("server", "retention")).replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+    ok(new RegExp(`require\\(${rtSpec}\\)\\.sweepAll\\(\\{ dataDir: dataPath\\("data"\\)`).test(SRC), "清的是数据目录下的 data/，不是别处");
   }
 
   console.log("\n【14】成果文件夹的 .tmp/ 草稿区：三天没动过的才清，「动没动过」按里面最新的那一项算");

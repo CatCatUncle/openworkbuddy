@@ -9,7 +9,7 @@ const path = require("path");
 const fs = require("fs");
 const os = require("os");
 const { dataPath, seedDataDir, resolvePort } = require("./src/platform/paths");
-const { throttleWhenAway } = require("./win-away");
+const { throttleWhenAway } = require("./src/desktop/win-away");
 
 // ---------- 桌面壳这一层的文案 ----------
 /**
@@ -140,8 +140,8 @@ bootLog(`—— OpenWorkBuddy ${require("./package.json").version} 启动 · ${p
 // 这个进程就是界面线程。卡过 250ms 记一行：卡了多久、桥上那会儿有哪几件活（只有名字，没有路径和内容）。
 // 行打到控制台（开发壳把它接进 ~/Library/Logs/OpenWorkBuddy.log），同时追加进启动日志；追加走异步，
 // 记卡顿这件事自己不许再卡界面。OWB_MAIN_STALL_MS 给测试调门槛（浸泡测试用 100）
-const MAIN_OPS = require("./bridge-main").createOpTracker();
-const MAIN_STALL = require("./bridge-main").createStallWatch({
+const MAIN_OPS = require("./src/desktop/bridge-main").createOpTracker();
+const MAIN_STALL = require("./src/desktop/bridge-main").createStallWatch({
   thresholdMs: Number(process.env.OWB_MAIN_STALL_MS) > 0 ? Number(process.env.OWB_MAIN_STALL_MS) : 250,
   ops: MAIN_OPS,
   write: (line) => {
@@ -798,7 +798,7 @@ app.whenReady().then(async () => {
     // 免安装版被强杀时留在 %TEMP% 的解压目录（一份几百 MB），等启动忙完再收拾，规则见 portable-temp.js
     if (process.platform === "win32" && app.isPackaged) {
       setTimeout(() => {
-        require("./portable-temp").sweepStale()
+        require("./src/desktop/portable-temp").sweepStale()
           .then((gone) => { if (gone.length) bootLog(`清掉免安装版留下的 ${gone.length} 个临时解压目录`); })
           .catch(() => {});
       }, 60 * 1000).unref();
@@ -876,7 +876,7 @@ app.whenReady().then(async () => {
 
   // 桌面宠物：常驻角落显示 agent 在干什么，agent 要提问时跳给你看。
   // 放在窗口之后创建，这样它一出生 global.__wbWin 就是齐的（点它要唤起主窗口）。
-  const pet = require(path.join(__dirname, "pet.js"));
+  const pet = require(path.join(__dirname, "src", "desktop", "pet.js"));
   global.__openworkbuddyPet = pet;
   try {
     /**
@@ -1554,7 +1554,7 @@ async function startServerProcess() {
     bootLog("[服务进程] 这个 Electron 没有 utilityProcess，已改回在主进程里运行");
     return null;
   }
-  const shellBridge = SHELL_BRIDGE = require("./bridge-main").createShellBridge({
+  const shellBridge = SHELL_BRIDGE = require("./src/desktop/bridge-main").createShellBridge({
     electron,
     getWin: () => win,
     pet: () => global.__openworkbuddyPet, // 宠物在服务端起来之后才建
@@ -1575,7 +1575,7 @@ async function startServerProcess() {
   // 网页截图的 PNG 编码同理（见 htmlshot.js pngOf）：反向对照时一起退回界面线程上的 toPNG
   if (process.env.OWB_MAIN_PIXELS === "native") require("./src/platform/render/htmlshot")._internals.setEncoder({ native: true });
   const nice = Number(process.env.OWB_SERVER_NICE);
-  SUPERVISOR = require("./server-supervisor").createServerSupervisor({
+  SUPERVISOR = require("./src/desktop/server-supervisor").createServerSupervisor({
     fork: (env) => electron.utilityProcess.fork(path.join(__dirname, "server-host.js"), [], {
       serviceName: "OpenWorkBuddy Server", stdio: "pipe", cwd: process.cwd(), env,
     }),
