@@ -141,7 +141,7 @@ function defaultHtmlBackend() {
 }
 
 async function defaultHasFfmpeg() {
-  try { return !!(await require("./lib/media-probe").resolveMediaBins()).ffmpeg.bin; } catch { return false; }
+  try { return !!(await require("./src/platform/media-probe").resolveMediaBins()).ffmpeg.bin; } catch { return false; }
 }
 
 /** 事件循环卡没卡：只在队里有活时开着 */

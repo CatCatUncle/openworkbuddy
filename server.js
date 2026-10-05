@@ -10,11 +10,11 @@ const BOOT_T0 = Date.now(); // server.js 从加载到 listen 的耗时，启动�
 // Node 太老 / 依赖缺文件：这句必须排在 express 这一批 require 前面。排在后面的话，
 // 缺依赖的人看到的是 `Cannot find module 'express'`——对不写 Node 的人等于没说。
 // 有壳的时候不自己 exit：抛回去让壳把原因画在窗口上（exit 会让那个窗口根本没机会出现）。
-require("./boot-check").enforce({ rootDir: __dirname, packaged: require("./paths").isPackaged(), throwInstead: !!global.__wbBootFail });
+require("./src/platform/boot-check").enforce({ rootDir: __dirname, packaged: require("./src/platform/paths").isPackaged(), throwInstead: !!global.__wbBootFail });
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
-const { APP_DIR, DATA_DIR, dataPath, appPath, seedDataDir, resolvePort } = require("./paths");
+const { APP_DIR, DATA_DIR, dataPath, appPath, seedDataDir, resolvePort } = require("./src/platform/paths");
 const migrate = require("./migrate");
 // 数据目录跟代码目录不是同一个地方时（装机版、以及 Docker 里设了 OPENWORKBUDDY_HOME），
 // 得先把随包出厂的技能和专家铺过去，否则 skills.js 只认 dataPath("skills")，
@@ -73,10 +73,10 @@ const tracing = require("./trace"); // 执行追踪（Langfuse），默认关；
 const genCache = require("./gen-cache"); // 生成结果缓存：同一格重跑别再烧第二次钱
 const memory = require("./memory");
 const notify = require("./notify");
-const log = require("./log");
+const log = require("./src/platform/log");
 const metrics = require("./metrics");
 const callout = require("./src/util/callout"); // 正文提示条：机器人推送里换成文字标签
-const store = require("./store");
+const store = require("./src/platform/store");
 const petSprites = require("./pet-sprites"); // 桌面宠物的精灵图（吃 Codex / Petdex 的格式）
 const pet = require("./pet"); // 只为拿默认值（没有 electron 时它自己降级成空壳，纯 node 也 require 得动）
 const { createImSessionStore } = require("./im-store");
@@ -2917,7 +2917,7 @@ app.get("/api/engines", async (req, res) => {
     const myAgent = prefs.agentCfg(config); // 「当前用的是哪个引擎」是按账号的，别把别人选的报给他
     // Windows：进程里的 PATH 定格在启动那一刻，刚 winget 装的东西不在里面。点「重新检测」时现读一次注册表，
     // 跟启动时那份合并（体检、run_shell 都用这一份）。读不成它自己会留日志，照旧按手里那份 PATH 检测；别的系统直接返回
-    if (req.query.force === "1") await require("./engines/which").refreshWinPath();
+    if (req.query.force === "1") await require("./src/platform/which").refreshWinPath();
     const found = await engines.detectAll(myAgent.engine_options || {}, { force: req.query.force === "1" });
     res.json({ current: myAgent.engine || "builtin", builtin: engines.BUILTIN, engines: found });
   } catch (e) {
@@ -4551,7 +4551,7 @@ app.post("/api/evolve/rule/:id/retire", (req, res) => {
 
 // ---------- 工作空间：原生文件夹选择（桌面版）与打开文件夹 ----------
 app.post("/api/pick-folder", async (_req, res) => {
-  const bridge = require("./electron-bridge");
+  const bridge = require("./src/platform/electron-bridge");
   if (bridge.isRemote()) {
     // 独立服务进程里（2026-09-29 起桌面版默认）没有 dialog：弹框归主进程，人选文件夹给足 15 分钟
     try {
@@ -4604,7 +4604,7 @@ async function openWithSystem(target, deps = {}) {
     if (!isUrl) {
       // 约定：成功回空串，失败回系统给的那句话。只认非空字符串是失败，别把别的返回值当报错念给用户
       const said = (err) => (typeof err === "string" && err ? { ok: false, error: `系统打开失败：${err}` } : { ok: true, error: "" });
-      const bridge = deps.bridge || require("./electron-bridge");
+      const bridge = deps.bridge || require("./src/platform/electron-bridge");
       if (bridge.isRemote()) {
         try {
           // 打开大文件时主进程要等 Word / WPS 起来才回话，给足 15 秒，别把正常的慢当成失败
@@ -4648,11 +4648,11 @@ const LARK_TMP = path.join(require("os").tmpdir(), "openworkbuddy-lark");
  */
 function larkBin() {
   if (process.platform !== "win32") return "lark-cli";
-  return require("./engines/which").findIn(shellPath().split(path.delimiter), "lark-cli") || "lark-cli";
+  return require("./src/platform/which").findIn(shellPath().split(path.delimiter), "lark-cli") || "lark-cli";
 }
 /** 同 execFile；起不来时回调里给 err，返回 null */
 function larkExec(args, opts, cb) {
-  return require("./engines/win").execFile(larkBin(), args, opts, cb);
+  return require("./src/platform/win").execFile(larkBin(), args, opts, cb);
 }
 function larkRun(args, { timeout = 60000, cwd } = {}) {
   return new Promise((resolve) => {
@@ -4754,7 +4754,7 @@ app.post("/api/feishu/app/create", async (_req, res) => {
   delete env.OPENCLAW_HOME; delete env.HERMES_HOME;
   let out = "";
   // Windows 上经 launchPlan 起（理由见 larkBin），windowsHide 由它给；别的系统跟以前一样直接起
-  const plan = require("./engines/win").launchPlan(larkBin(), ["config", "init", "--new", "--brand", "feishu", "--lang", "zh"]);
+  const plan = require("./src/platform/win").launchPlan(larkBin(), ["config", "init", "--new", "--brand", "feishu", "--lang", "zh"]);
   const child = require("child_process").spawn(
     plan.bin, plan.args,
     { cwd: LARK_TMP, env: { ...env, ...plan.env }, stdio: ["ignore", "pipe", "pipe"], ...(process.platform === "win32" ? plan.opts : {}) },
@@ -4871,7 +4871,7 @@ app.post("/api/feishu/qr/cancel", (_req, res) => {
 const CHROMIUM_CACHE_DIRS = ["Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache", "blob_storage", "Shared Dictionary"];
 function appUserDataDir() {
   // 独立服务进程里没有 electron.app：主进程把 userData 放在 OWB_USER_DATA 里递过来
-  if (require("./electron-bridge").isRemote() && process.env.OWB_USER_DATA) return process.env.OWB_USER_DATA;
+  if (require("./src/platform/electron-bridge").isRemote() && process.env.OWB_USER_DATA) return process.env.OWB_USER_DATA;
   if (process.versions.electron) {
     try { return require("electron").app.getPath("userData"); } catch {}
   }
@@ -5224,7 +5224,7 @@ app.post("/api/backup/restart", (req, res) => {
   setTimeout(() => {
     try {
       // 独立服务进程里没有 app：让主进程先收掉服务进程，再整个重启
-      const bridge = require("./electron-bridge");
+      const bridge = require("./src/platform/electron-bridge");
       if (bridge.isRemote()) { bridge.notify("app.relaunch"); return; }
       const { app: eApp } = require("electron");
       eApp.relaunch();
@@ -5335,7 +5335,7 @@ app.post("/api/cache/clear", async (_req, res) => {
     // 桌面版走官方 API：HTTP 缓存/代码缓存/着色器缓存；Cookie 与 localStorage（登录态、主题）不动
     try {
       // 独立服务进程里没有 session：界面那份由主进程清（同样三样，同样不动 Cookie）
-      const bridge = require("./electron-bridge");
+      const bridge = require("./src/platform/electron-bridge");
       const ses = bridge.isRemote() ? null : require("electron").session.defaultSession;
       if (!ses) await bridge.call("session.clearCaches", null, { timeoutMs: 30000 });
       else {
@@ -5813,7 +5813,7 @@ global.__openworkbuddyPetTool = {
     if (!/\.(png|jpe?g|webp|gif|bmp)$/i.test(abs)) return { content: `「${path.basename(abs)}」看着不是图片。支持 png / jpg / webp / gif / bmp。`, isError: true };
 
     let buf, note = "";
-    const bridge = require("./electron-bridge");
+    const bridge = require("./src/platform/electron-bridge");
     if (bridge.isRemote()) {
       // 独立服务进程里（2026-09-29 起桌面版默认）没有 nativeImage：裁方、缩 320 交给主进程，口径跟下面一样
       try {
@@ -5977,7 +5977,7 @@ app.post("/api/files/reveal", async (req, res) => {
     const p = hostFileOf(req); // 越界一律抛错，跟下载走同一道门
     if (!fs.existsSync(p)) return res.status(404).json({ error: "文件不存在" });
     let revealed = false;
-    const bridge = require("./electron-bridge");
+    const bridge = require("./src/platform/electron-bridge");
     // 独立服务进程里（2026-09-29 起桌面版默认）没有 shell：让主进程在访达里选中；它没回应就退回打开文件夹
     if (bridge.isRemote()) revealed = await bridge.call("shell.showItemInFolder", { path: p }).then(() => true, () => false);
     else try {
@@ -6004,7 +6004,7 @@ app.post("/api/files/copy", async (req, res) => {
   try {
     const p = hostFileOf(req);
     if (!fs.existsSync(p) || !fs.statSync(p).isFile()) return res.status(404).json({ error: "文件不存在" });
-    const bridge = require("./electron-bridge");
+    const bridge = require("./src/platform/electron-bridge");
     // 独立服务进程里没有 clipboard：macOS 那段 plist 交给主进程写；主进程没回应就走下面命令行那条
     if (bridge.isRemote() && process.platform === "darwin") {
       const plist = '<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -6483,7 +6483,7 @@ function saveErrorText(e, p) {
 }
 /** 桌面端才有系统保存框。纯 node 起的网页端返回 null，由前端退回浏览器下载 */
 function electronDialog() {
-  const bridge = require("./electron-bridge");
+  const bridge = require("./src/platform/electron-bridge");
   // 独立服务进程里（2026-09-29 起桌面版默认）没有 dialog：保存框由主进程开在主窗口上，人挑位置给足 15 分钟
   if (bridge.isRemote()) return { dialog: { showSaveDialog: (_win, opts) => bridge.call("dialog.saveAs", opts, { timeoutMs: 15 * 60 * 1000 }) }, win: null };
   if (!process.versions || !process.versions.electron) return null;
@@ -7203,7 +7203,7 @@ app.post("/api/chat", async (req, res) => {
   if (taskBaseDir && sess.dir && !(sess.pending_uploads || []).length) {
     const full = path.join(getWorkspaceDir(), sess.dir);
     try {
-      require("./lib/deps-guard").dropLoneFence(full); // 只剩一个装依赖的围栏（没装成）也算空的，见 deps-guard.js
+      require("./src/platform/deps-guard").dropLoneFence(full); // 只剩一个装依赖的围栏（没装成）也算空的，见 deps-guard.js
       if (fs.existsSync(full) ? !fs.readdirSync(full).length : true) {
         if (fs.existsSync(full)) fs.rmdirSync(full); // 非空会抛，抛了就什么都不动
         assignedDirs.delete(sess.dir);
@@ -7624,7 +7624,7 @@ app.post("/api/eval/start", (req, res) => {
 function spawnEval(args, model, kind) {
   evalState.running = true; evalState.lines = []; evalState.startedAt = Date.now(); evalState.model = model; evalState.exit = null; evalState.kind = kind;
   // nodeExec：服务端在独立服务进程里时 execPath 是 Electron Helper，换回应用本体
-  const child = require("child_process").spawn(require("./electron-bridge").nodeExec(), args, {
+  const child = require("child_process").spawn(require("./src/platform/electron-bridge").nodeExec(), args, {
     cwd: appPath(),
     env: { ...process.env, OPENWORKBUDDY_HOME: DATA_DIR, ELECTRON_RUN_AS_NODE: "1" }, // execPath 是 Electron，不加就弹新应用实例
     windowsHide: true,
@@ -8031,7 +8031,7 @@ function settleRunDir(source, rest, root, dir) {
   const left = (runDirUse.get(k) || 1) - 1;
   if (left > 0) { runDirUse.set(k, left); return; }
   runDirUse.delete(k);
-  try { require("./lib/deps-guard").dropLoneFence(path.join(root, dir)); } catch {} // 只剩一个没装成的依赖围栏也算空的
+  try { require("./src/platform/deps-guard").dropLoneFence(path.join(root, dir)); } catch {} // 只剩一个没装成的依赖围栏也算空的
   if (!taskDirs.dropIfEmpty(root, dir)) return;
   assignedDirs.delete(dir);
   if (source === "im" && rest.sessionId && (runDirs.get(String(rest.sessionId)) || {}).dir === dir) {

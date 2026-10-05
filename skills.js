@@ -17,12 +17,12 @@
 
 const fs = require("fs");
 const path = require("path");
-const { dataPath } = require("./paths");
+const { dataPath } = require("./src/platform/paths");
 const { isIntranet } = require("./intranet");
 const guard = require("./skill-guard");
 // 外挂的第二把尺子。没装就是一串 null，merge 会原样把自带那份还回来。见 toolward.js
 const toolward = require("./toolward");
-const log = require("./log");
+const log = require("./src/platform/log");
 
 const SKILLS_DIR = dataPath("skills");
 // 跟 plugins.js 的 PLUGINS_DIR 同一个定义。这里不 require plugins.js：它反过来要 require 本文件（parseFrontmatter）

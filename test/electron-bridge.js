@@ -176,10 +176,11 @@ function childMain() {
       // ★反向对照★ 同一份 paths.js 删掉 utility 那一行，重新编一个模块
       const src = fs.readFileSync(mod("paths"), "utf8");
       const cut = src.replace(/^[ \t]*if \([^\n]*process\)\.type === "utility"\)[^\n]*$/m, "");
-      const file = path.join(ROOT, "paths.old-for-test.js");
+      // 虚拟模块挨着真 paths.js 放：它源码里的相对 require（./root）按那个目录解析
+      const file = path.join(path.dirname(mod("paths")), "paths.old-for-test.js");
       const m = new Module(file, module);
       m.filename = file;
-      m.paths = /** @type {any} */ (Module)._nodeModulePaths(ROOT);
+      m.paths = /** @type {any} */ (Module)._nodeModulePaths(path.dirname(file));
       /** @type {any} */ (m)._compile(cut, file);
       r.cutChanged = cut !== src;
       r.oldPackaged1 = m.exports.isPackaged();

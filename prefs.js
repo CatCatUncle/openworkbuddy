@@ -30,9 +30,9 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { AsyncLocalStorage } = require("async_hooks");
-const { dataPath } = require("./paths");
+const { dataPath } = require("./src/platform/paths");
 // 这个文件里 store 已经被 AsyncLocalStorage 占了名字，所以叫 jsonStore
-const jsonStore = require("./store");
+const jsonStore = require("./src/platform/store");
 
 // OPENWORKBUDDY_DATA_DIR 跟 account.js / org.js 同一个口子：跑测试时指到临时目录，免得动到真偏好
 const DATA_DIR = process.env.OPENWORKBUDDY_DATA_DIR || dataPath("data");

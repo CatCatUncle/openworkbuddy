@@ -283,7 +283,7 @@ const USR_KEY = "HKEY_CURRENT_USER\\Environment";
     // ── ⑦ 「重新检测本机」会去读注册表 ─────────────────────────────────
     console.log("\n⑦ 「重新检测本机」先读注册表再探测");
     const eng = route(/app\.get\("\/api\/engines"[\s\S]*?\n\}\);/);
-    const iRefresh = eng.indexOf('if (req.query.force === "1") await require("./engines/which").refreshWinPath();');
+    const iRefresh = eng.indexOf(`if (req.query.force === "1") await require(${JSON.stringify(mod.spec("server", "which"))}).refreshWinPath();`);
     ok(iRefresh > 0, "force=1 时调 refreshWinPath", eng.slice(0, 200));
     ok(iRefresh > 0 && iRefresh < eng.indexOf("engines.detectAll("), "先读注册表，再 detectAll（顺序反了等于没读）");
 

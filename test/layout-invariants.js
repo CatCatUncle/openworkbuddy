@@ -49,7 +49,7 @@ console.log("\n① ROOT 跟仓库根逐字相等");
 eq(root.ROOT, REPO, "★ROOT === 仓库根★（逐字，不是 realpath 之后相等）");
 eq(root.rootPath(), REPO, "rootPath() 不带参数就是根本身");
 eq(root.rootPath("public", "index.html"), path.join(REPO, "public", "index.html"), "rootPath 按段拼在根下面");
-ok(["package.json", "server.js", "paths.js", "public"].every((f) => fs.existsSync(root.rootPath(f))),
+ok(["package.json", "server.js", mod.rel("paths"), "public"].every((f) => fs.existsSync(root.rootPath(f))),
   "根下面真有 package.json / server.js / paths.js / public（不是随便哪个目录）");
 const pkgOnDisk = JSON.parse(fs.readFileSync(path.join(REPO, "package.json"), "utf8"));
 eq(require(root.rootPath("package.json")).name, "openworkbuddy", "require(rootPath(\"package.json\")).name 是 openworkbuddy");
@@ -131,7 +131,9 @@ let probeErr = "";
 try { espree.parse("var a = b?.c;", { ecmaVersion: 5, sourceType: "script" }); } catch (e) { probeErr = String(e.message); }
 ok(probeErr !== "", "反向对照：同样的解析参数，?. 会被拒（这条检查有牙）");
 const bootSrc = fs.readFileSync(mod("boot-check"), "utf8");
-ok(/var ROOT = require\("\.\/src\/platform\/root"\)\.ROOT;/.test(bootSrc), "boot-check.js 的根也从 root.js 拿");
+let bootRootSpec = path.relative(path.dirname(mod("boot-check")), ROOT_JS).split(path.sep).join("/").replace(/\.js$/, "");
+if (!bootRootSpec.startsWith(".")) bootRootSpec = "./" + bootRootSpec;
+ok(new RegExp(`var ROOT = require\\(${JSON.stringify(bootRootSpec).replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}\\)\\.ROOT;`).test(bootSrc), "boot-check.js 的根也从 root.js 拿");
 ok(!/__dirname/.test(stripJsComments(bootSrc)), "boot-check.js 代码里不再自己用 __dirname 找根");
 
 // ── ⑤ 打包闸门认得 rootPath ───────────────────────────────────────────────

@@ -52,7 +52,7 @@ const stats = { task: 0, cover: 0, coverWindows: 0, timeouts: 0, pngOff: 0, pngS
 function renderHtmlToPng(htmlPath, opts = {}) {
   const lane = opts.lane === "cover" ? "cover" : "task";
   // 服务端在独立服务进程里（2026-09-29 起桌面版默认）：窗口归主进程开，这边只收 PNG
-  if (require("../../../electron-bridge").isRemote()) return remoteShot(htmlPath, lane, opts);
+  if (require("../electron-bridge").isRemote()) return remoteShot(htmlPath, lane, opts);
   const electron = readyElectron();
   if (!electron) return Promise.reject(shotError(NO_RENDERER, "HTML 截图需要桌面版环境：请用 npm run app 启动（纯 node 起的服务没有渲染器）"));
   const o = normalize(opts, lane);
@@ -571,7 +571,7 @@ function closeCover(electron = readyElectron()) {
 const remoteTail = { task: Promise.resolve(), cover: Promise.resolve() };
 
 function remoteShot(htmlPath, lane, opts) {
-  const bridge = require("../../../electron-bridge");
+  const bridge = require("../electron-bridge");
   const { width = 1242, height = 1656, fullPage = false, waitMs = 500 } = opts;
   // 缺省的任务道原样只带这四个（test/electron-bridge.js 钉着）；封面道、自定超时才多带
   /** @type {Record<string, any>} */
@@ -609,7 +609,7 @@ function raceAbort(p, signal) {
 
 /** 纯 node 里 require("electron") 拿到的是可执行文件路径（一个字符串），解构出来全是 undefined */
 function electronReady() {
-  const bridge = require("../../../electron-bridge");
+  const bridge = require("../electron-bridge");
   if (bridge.isRemote()) return !!bridge.caps().windows; // 服务进程里：主进程能开窗口就算
   try {
     const { BrowserWindow, app } = require("electron");

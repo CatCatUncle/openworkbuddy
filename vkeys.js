@@ -29,8 +29,8 @@
 
 const crypto = require("crypto");
 const path = require("path");
-const { dataPath } = require("./paths");
-const store = require("./store");
+const { dataPath } = require("./src/platform/paths");
+const store = require("./src/platform/store");
 
 const DATA_DIR = process.env.OPENWORKBUDDY_DATA_DIR || dataPath("data");
 const FILE = path.join(DATA_DIR, "vkeys.json");

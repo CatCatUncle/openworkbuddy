@@ -11,10 +11,10 @@
  */
 const fs = require("fs");
 const path = require("path");
-const { dataPath } = require("../paths");
+const { dataPath } = require("../src/platform/paths");
 const { createLLM } = require("../llm");
 const { mapPool } = require("../agent");
-const store = require("../store");
+const store = require("../src/platform/store");
 const { TASKS } = require("./tasks");
 const judgeLib = require("./judge");
 

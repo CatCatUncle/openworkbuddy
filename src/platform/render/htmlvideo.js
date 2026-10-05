@@ -25,7 +25,7 @@ const { pathToFileURL } = require("url");
 const childProcess = require("child_process");
 const M = require("../../util/motion-clock");
 const cdp = require("./cdp");
-const mediaProbe = require("../../../lib/media-probe");
+const mediaProbe = require("../media-probe");
 
 // 翻页（导航到 load 事件）最多等多久：本地文件正常一两秒，再慢多半是页面引了连不上的外网资源
 const LOAD_TIMEOUT_MS = 30000;
@@ -237,7 +237,7 @@ async function electronDriver({ width, height, runtime }) {
  * @returns {Promise<Driver>}
  */
 async function remoteElectronDriver({ width, height, runtime }) {
-  const bridge = require("../../../electron-bridge");
+  const bridge = require("../electron-bridge");
   const sid = await bridge.call("motion.open", { width, height, runtime }, { timeoutMs: 60000 });
   const T = { timeoutMs: 180000 };
   return {
@@ -488,7 +488,7 @@ async function doRender(files, opts) {
       }
     }
     const runtime = M.runtimeSource({ seed: opts.seed, epoch: opts.epochMs });
-    const make = av.backend === "electron" ? (require("../../../electron-bridge").isRemote() ? remoteElectronDriver : electronDriver) : chromeDriver;
+    const make = av.backend === "electron" ? (require("../electron-bridge").isRemote() ? remoteElectronDriver : electronDriver) : chromeDriver;
     // 开浏览器这一下不接「停止」：半路撒手的话它开出来的窗口 / Chrome 就没人关了，等它开完再判
     driver = await make({ width, height, runtime });
     const drv = driver;

@@ -8,7 +8,7 @@ const { app, BrowserWindow, dialog, shell, globalShortcut, Menu, clipboard, Tray
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
-const { dataPath, seedDataDir, resolvePort } = require("./paths");
+const { dataPath, seedDataDir, resolvePort } = require("./src/platform/paths");
 const { throttleWhenAway } = require("./win-away");
 
 // ---------- 桌面壳这一层的文案 ----------

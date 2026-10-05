@@ -19,7 +19,7 @@
  */
 const fs = require("fs");
 const path = require("path");
-const store = require("./store");
+const store = require("./src/platform/store");
 
 const FAV_FILE = ".favorites.json";
 const FAV_MAX = 5000; // 一个人收藏到这个数已经不是「收藏」了；再多也只是让每次列资料库多 parse 一份大 JSON

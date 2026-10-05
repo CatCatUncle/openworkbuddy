@@ -32,7 +32,7 @@ const SERVER_NAME = "openworkbuddy";
 function nodeLauncher() {
   if (process.versions.electron) {
     // 服务端在独立服务进程里时 execPath 是 Helper，nodeExec 换回应用本体
-    return { command: require("../electron-bridge").nodeExec(), env: { ELECTRON_RUN_AS_NODE: "1" } };
+    return { command: require("../src/platform/electron-bridge").nodeExec(), env: { ELECTRON_RUN_AS_NODE: "1" } };
   }
   return { command: process.execPath, env: {} };
 }

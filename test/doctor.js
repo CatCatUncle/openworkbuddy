@@ -64,7 +64,7 @@ eq(both && both.code, "node-too-old", "Node 和依赖都坏时，先说 Node");
 console.log("\n③ 闸门挂在入口的最前面");
 for (const f of ["server.js", "cli.js"]) {
   const src = fs.readFileSync(path.join(ROOT, f), "utf8");
-  const gate = src.indexOf('require("./boot-check")');
+  const gate = src.indexOf(`require(${JSON.stringify(mod.spec(f.replace(/\.js$/, ""), "boot-check"))})`);
   const express = src.indexOf('require("express")');
   const first = src.indexOf('require("fs")');
   ok(gate > 0, `${f} 里挂了闸门`);

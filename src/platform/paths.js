@@ -23,7 +23,7 @@ const os = require("os");
 const path = require("path");
 
 /** 只读：代码、public/、config.example.json、随包出厂的 skills/ */
-const APP_DIR = require("./src/platform/root").ROOT; // 仓库根只认 root.js 这一处锚点：本文件搬进子目录也不漂
+const APP_DIR = require("./root").ROOT; // 仓库根只认 root.js 这一处锚点：本文件搬进子目录也不漂
 
 /** @returns {boolean} 是不是装机态（.dmg / .exe 装出来的那份） */
 function isPackaged() {
@@ -145,7 +145,7 @@ function safeRel(rel) {
  * 用 readFileSync 不用 require：读不出来得当场接住、退回只补缺，不能让整个启动跟着抛。
  * @param {string} [file] @returns {SkillHistory|null}
  */
-function loadSkillHistory(file = path.join(APP_DIR, "lib", "builtin-skill-hashes.json")) {
+function loadSkillHistory(file = path.join(APP_DIR, "src", "platform", "builtin-skill-hashes.json")) {
   try {
     const j = JSON.parse(fs.readFileSync(file, "utf8"));
     if (!j || !Array.isArray(j.skills) || !j.files || typeof j.files !== "object") return null;

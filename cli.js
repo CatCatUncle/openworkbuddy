@@ -24,7 +24,7 @@
  */
 
 // Node 太老 / 依赖没装：排在所有 require 最前面，不然用户拿到的是一句 Cannot find module
-require("./boot-check").enforce({ rootDir: __dirname });
+require("./src/platform/boot-check").enforce({ rootDir: __dirname });
 
 // ---------- 参数解析 ----------
 // 解析规则和帮助文本都在 cli-args.js 的那张声明表里，它是纯的：认不出来的选项会
@@ -52,7 +52,7 @@ if (opts.version) { console.log(`OpenWorkBuddy ${require("./package.json").versi
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { dataPath, preferData } = require("./paths");
+const { dataPath, preferData } = require("./src/platform/paths");
 const readline = require("readline");
 const { spawnSync } = require("child_process");
 const { createLLM } = require("./llm");
@@ -74,7 +74,7 @@ const termImage = require("./term-image"); // 终端里直接把产出的图画�
 const replKit = require("./repl-commands"); // 输入行那几样纯逻辑：多行、搜历史、跑着时那一行的尾巴
 const { cols } = require("./src/util/text-width"); // 中文占两列：原地重画那一行要算得出它多宽
 const account = require("./account");
-const store = require("./store");
+const store = require("./src/platform/store");
 
 // ---------- 输出通道 ----------
 // 着色只在「那一头真的是终端」时才加：answer 判 stdout，progress 判 stderr。
@@ -367,7 +367,7 @@ if (sub === "pair") {
       process.stderr.write(red("本机还没有账号。先打开一次桌面端或网页版注册。\n"));
       process.exit(1);
     }
-    const port = require("./paths").resolvePort(process.env, config);
+    const port = require("./src/platform/paths").resolvePort(process.env, config);
     const base = `http://127.0.0.1:${port}`;
     const A = account._internals;
     const token = A.issueToken(u.username, { kind: "session", name: "openworkbuddy pair（临时）" });
@@ -614,11 +614,11 @@ if (sub === "doctor") {
   const paint = { ok: green, warn: yellow, bad: red, dim };
   (async () => {
     const items = await doctor.gather({
-      paths: require("./paths"),
+      paths: require("./src/platform/paths"),
       config,
       engines: require("./engines"),
       workspaceDir: opts.workspace || config.workspace_dir || getWorkspaceDir(),
-      bootCheck: require("./boot-check"),
+      bootCheck: require("./src/platform/boot-check"),
     });
     process.stdout.write(doctor.render(items, (t, lv) => (paint[lv] || ((x) => x))(t)));
     // 退出码说实话：有要处理的就 1，好写进安装脚本和 CI（openworkbuddy doctor && npm start）
@@ -1605,7 +1605,7 @@ function moveStrays(text, dir) {
 function settleChatDir(dir) {
   if (!dir || sess.dir !== dir) return;
   const root = getWorkspaceDir();
-  try { require("./lib/deps-guard").dropLoneFence(path.join(root, dir)); } catch {}
+  try { require("./src/platform/deps-guard").dropLoneFence(path.join(root, dir)); } catch {}
   if (taskDirs.dropIfEmpty(root, dir)) sess.dir = null;
 }
 

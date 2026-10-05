@@ -23,8 +23,8 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const { dataPath } = require("./paths");
-const store = require("./store");
+const { dataPath } = require("./src/platform/paths");
+const store = require("./src/platform/store");
 const rbac = require("./rbac"); // 能授出去的角色只有那一张表说了算
 
 // OPENWORKBUDDY_DATA_DIR 与 account.js 同一个口子：跑测试时指到临时目录

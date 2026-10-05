@@ -461,7 +461,7 @@ async function gather(deps) {
 
   // 放在最后：它可能要问一次登录 shell（几百毫秒），前面那些是「能不能启动」的硬指标，
   // 不该被一个可选项拖着等
-  const which = deps.which || require("./engines/which");
+  const which = deps.which || require("./src/platform/which");
   const pathError = await freshWinPath(which, deps.platform);
   items.push(verdictTools(await probeTools(which, deps.platform), { pathError }));
   // 它自己会去跑一次 `toolward --version`；探不到就是没装，不该让体检本身出错

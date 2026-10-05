@@ -646,7 +646,7 @@ async function askForm(input, ctx) {
   if (saveDir && path.isAbsolute(saveDir)) {
     try {
       fs.mkdirSync(saveDir, { recursive: true });
-      require("./store").writeJsonAtomic(path.join(saveDir, FORM_FILE), { v: 1, id: r.id, title: r.title, values: parsed.values, notes, at: new Date().toISOString() }, { pretty: true, backup: false });
+      require("./src/platform/store").writeJsonAtomic(path.join(saveDir, FORM_FILE), { v: 1, id: r.id, title: r.title, values: parsed.values, notes, at: new Date().toISOString() }, { pretty: true, backup: false });
     } catch (e) {
       fileNote = `\n（表单没写进任务目录：${cut(/** @type {any} */ (e).message, 80)}。这一轮照样钉在提示词里）`;
     }

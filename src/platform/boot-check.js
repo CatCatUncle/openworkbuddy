@@ -25,7 +25,7 @@
 var fs = require("fs");
 var path = require("path");
 // 仓库根只认 root.js 这一处锚点（它也是零依赖、老写法，挂在闸门前面不添风险）
-var ROOT = require("./src/platform/root").ROOT;
+var ROOT = require("./root").ROOT;
 
 /** 跟 install.sh 和 package.json 的 engines 是同一个数：全局 fetch 从 18 才有 */
 var MIN_NODE = 18;

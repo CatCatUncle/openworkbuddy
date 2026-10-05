@@ -203,7 +203,7 @@ console.log("\n③ 后端源码（会往终端 / IM 吐字的那几个）");
 // 漂完要么放行了不该放的那行，要么对不上号让整份测试无故变红——这三条原来就是这么红的。
 // 要放行就在源码里圈「emoji-数据区」，理由写在记号里，读代码的人当场看得见。
 const BACK = ["agent.js", "cli.js", "electron-main.js", "evolve.js", "im.js", "server.js",
-  "skills.js", "task-verdict.js", "tools.js", "eval/run.js", "eval/judge.js", "eval/rejudge.js", mod.rel("callout"), "icons.js", "account.js"];
+  "skills.js", "task-verdict.js", "tools.js", "eval/run.js", "eval/judge.js", "eval/rejudge.js", mod.rel("callout"), mod.rel("icons"), "account.js"];
 for (const rel of BACK) {
   const found = scan(rel); // 只扫一遍：scan 会往 regionsSeen 记账，扫两遍就变成每条记两次
   ok(found.length === 0, rel + " 只剩排版符号", found.slice(0, 5));

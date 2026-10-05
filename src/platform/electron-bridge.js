@@ -195,7 +195,7 @@ function toBuf(v) {
  */
 function bgraToPng(buf, w, h) {
   const zlib = require("zlib");
-  const { crc32 } = require("./src/util/thumb-png");
+  const { crc32 } = require("../util/thumb-png");
   const raw = Buffer.alloc((w * 4 + 1) * h);
   for (let y = 0; y < h; y++) {
     const o = y * (w * 4 + 1);

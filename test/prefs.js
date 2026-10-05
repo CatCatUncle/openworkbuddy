@@ -979,9 +979,10 @@ async function runSourcePins() {
   eq(resolvePort({ PORT: "65536" }, { server: { port: 3900 } }), 3900, "越界的端口号当没设，不往下传一个连不上的数");
   eq(resolvePort({ PORT: "-1" }, null), 3800, "负数同理");
   // ★反向对照★：真正要防的不是「算得不一样」，是「又各写各的」。
-  ok(/require\("\.\/paths"\)/.test(mainSrc) && /\bresolvePort\b/.test(mainSrc) && !/function resolvePort/.test(mainSrc),
+  const pathsReq = (from) => new RegExp(`require\\(${JSON.stringify(mod.spec(from, "paths")).replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}\\)`);
+  ok(pathsReq("electron-main").test(mainSrc) && /\bresolvePort\b/.test(mainSrc) && !/function resolvePort/.test(mainSrc),
      "  └ 壳用的是 paths.js 那一份，自己没再写一个");
-  ok(/require\("\.\/paths"\)/.test(serverSrc) && /const port = resolvePort\(process\.env, config\)/.test(serverSrc)
+  ok(pathsReq("server").test(serverSrc) && /const port = resolvePort\(process\.env, config\)/.test(serverSrc)
      && !/function resolvePort/.test(serverSrc),
      "  └ 服务端也是那一份，自己没再写一个（这是两边不会漂的唯一理由）");
 

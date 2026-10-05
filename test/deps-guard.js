@@ -299,7 +299,8 @@ console.log("status " + r.status + " " + r.stderr);`, 120000, N.task);
     ok(/dropLoneFence\(full\)[\s\S]{0,200}readdirSync\(full\)\.length/.test(src("server")),
       "server.js 收尾删空任务文件夹之前，先把孤零零的围栏拿掉");
     const browseSrc = fs.readFileSync(mod("ws-browse"), "utf8");
-    ok(/const depsGuard = require\("\.\/deps-guard"\)/.test(browseSrc) && /depsGuard\.hiddenByFence\(name, fullPath\)/.test(browseSrc),
+    const dgSpec = JSON.stringify(mod.spec("ws-browse", "deps-guard")).replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+    ok(new RegExp(`const depsGuard = require\\(${dgSpec}\\)`).test(browseSrc) && /depsGuard\.hiddenByFence\(name, fullPath\)/.test(browseSrc),
       "跳过规矩只有一份（ws-browse.js 的 skipEntry）：成果列表、快照、文件面板共用");
 
     const d1 = path.join(HOME, "lone-1");

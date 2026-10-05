@@ -8,7 +8,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { DATA_DIR, dataPath, appPath } = require("./paths");
+const { DATA_DIR, dataPath, appPath } = require("./src/platform/paths");
 const { spawn, spawnSync } = require("child_process");
 const { outDecoder } = require("./src/util/out-decode");
 const security = require("./security");
@@ -23,7 +23,7 @@ const memGate = require("./memory-gate"); // 名单外那条命令跑之前先�
 const jev = require("./jev"); // 判断模型：上面那一问就是它答的
 const HK = require("./hooks"); // config.json 里 agent.hooks 配的命令：跑命令前、改完文件后
 const CT = require("./code-tools"); // 写代码那几样：按名找文件、后台命令、进度清单、改前查有没有被动过
-const depsGuard = require("./lib/deps-guard"); // 工作空间嵌在应用目录里时，npm/pnpm 别往上找到应用自己的 package.json
+const depsGuard = require("./src/platform/deps-guard"); // 工作空间嵌在应用目录里时，npm/pnpm 别往上找到应用自己的 package.json
 const winname = require("./src/util/winname"); // Windows 不认的文件名（a:b 会悄悄写进备用数据流）
 // 媒体那几样（生图 / 生视频 / 配音 / 转写 / 看图 / 截图 + 生成缓存）和画布状态拆到 src/tools/ 下了，这里只是转手。
 // 它们要用的工作目录根还在本文件（下面那套 ALS），递过去的是取值函数、用到时才读，按请求切换的根照样生效
@@ -1154,7 +1154,7 @@ function runNode(code, timeoutMs, cwd, stopSignal, session = "") {
   fs.writeFileSync(file, code, "utf8");
   return new Promise((resolve) => {
     // nodeExec：服务端在独立服务进程里时 execPath 是 Electron Helper，换回应用本体（行为和以前一样）
-    const child = spawn(require("./electron-bridge").nodeExec(), [file], {
+    const child = spawn(require("./src/platform/electron-bridge").nodeExec(), [file], {
       cwd: cwd || ws(),
       // 自成进程组，好让 killTree 能连着孙子进程一起收（脚本里再 spawn 是常事）
       detached: process.platform !== "win32",
@@ -1207,7 +1207,7 @@ function runNode(code, timeoutMs, cwd, stopSignal, session = "") {
 // engines/which 合并好的（「重新检测本机」时现读的注册表 PATH + 启动时那份 + winget/scoop/LibreOffice 的常见位置）。
 // platform 只给测试用
 function shellPath(platform = process.platform) {
-  if (platform === "win32") return require("./engines/which").augmentedPath("win32");
+  if (platform === "win32") return require("./src/platform/which").augmentedPath("win32");
   const extra = ["/opt/homebrew/bin", "/usr/local/bin", path.join(require("os").homedir(), ".local", "bin")];
   const cur = (process.env.PATH || "").split(path.delimiter);
   return cur.concat(extra.filter((p) => p && !cur.includes(p))).join(path.delimiter);
@@ -2685,7 +2685,7 @@ async function selfCheck(file, rel, partial = false, sys = {}) {
   if ([".js", ".cjs", ".mjs"].includes(ext)) {
     // ELECTRON_RUN_AS_NODE 必须带上：桌面版里 execPath 是 Electron 二进制，不带的话每检查一个 .js
     // 就真的启动一个 Electron 实例去加载用户的文件——满屏弹 JavaScript error 弹窗，还把合法代码误判成语法错误
-    const esmCheck = (f) => execCheck(require("./electron-bridge").nodeExec(), ["--check", f], { timeout: 15000, env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } });
+    const esmCheck = (f) => execCheck(require("./src/platform/electron-bridge").nodeExec(), ["--check", f], { timeout: 15000, env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } });
     // .mjs 本来就按 ESM 解析（严格模式等规则跟 CJS 不同），直接交给 node --check
     let err = ext === ".mjs" ? "" : cjsSyntaxError(src, file);
     if (ext === ".mjs") {
@@ -2920,7 +2920,7 @@ async function checkPage(file, rel) {
   lines.push(issues.length ? issues.map((x) => `- [${x.level}] ${x.msg}`).join("\n") : "- 没发现结构问题");
 
   // 服务端在独立服务进程里（2026-09-29 起桌面版默认）：窗口由主进程开，这边只收结果
-  const bridge = require("./electron-bridge");
+  const bridge = require("./src/platform/electron-bridge");
   const remote = bridge.isRemote();
   let electron = null;
   if (!remote) try {
@@ -3389,7 +3389,7 @@ function tagsToText(html) {
  */
 async function renderPage(url, { waitMs = 2500, maxWaitMs = 12000 } = {}) {
   // 服务端在独立服务进程里：窗口归主进程开，超时按「最长等多久 + 开窗/关窗余量」算
-  const bridge = require("./electron-bridge");
+  const bridge = require("./src/platform/electron-bridge");
   if (bridge.isRemote()) {
     return bridge.call("page.render", { url, waitMs, maxWaitMs, ua: BROWSER_UA }, { timeoutMs: maxWaitMs + waitMs + 30000 });
   }
@@ -5136,7 +5136,7 @@ const diskConnectorHost = {
   },
   async commit(entry) {
     const { McpClient, scrubText } = require("./mcp");
-    const store = require("./store");
+    const store = require("./src/platform/store");
     const file = dataPath("config.json");
     const disabled = (() => { try { return (readConfigStrict(file).mcp_disabled || []).includes(entry.name); } catch { return false; } })();
     let tools = [], error = "";

@@ -13,11 +13,11 @@
 
 const fs = require("fs");
 const path = require("path");
-const { DATA_DIR, dataPath } = require("./paths");
+const { DATA_DIR, dataPath } = require("./src/platform/paths");
 const os = require("os");
 const { spawn } = require("child_process");
 
-const jsonStore = require("./store");
+const jsonStore = require("./src/platform/store");
 
 const AUDIT_FILE = dataPath("data", "audit.json");
 let auditLog = jsonStore.readJson(AUDIT_FILE, []);

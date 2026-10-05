@@ -7261,7 +7261,8 @@ function enginePathProblems(src) {
   has("server", /\/api\/engines\/test/, "server.js 里没有真连一次的接口");
   has("index", /testConnect/, "engines/index.js 里没有 testConnect");
   // 找得到：三级找法那层必须真的被引擎用上
-  has("index", /require\(".\/which"\)/, "engines/index.js 没接 which（GUI 启动时 PATH 是残废的）");
+  const whichSpec = JSON.stringify(modPath.spec("engines", "which")).replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+  has("index", new RegExp(`require\\(${whichSpec}\\)`), "engines/index.js 没接 which（GUI 启动时 PATH 是残废的）");
   has("claude", /resolveBin/, "claude-code.js 没走 resolveBin，双击启动会说没装");
   has("codex", /resolveBin/, "codex.js 没走 resolveBin，双击启动会说没装");
   has("jsonl", /augmentedPath/, "jsonl.js 没给子进程补 PATH，CLI 起来了也会在第一个工具调用上死掉");
@@ -14048,8 +14049,9 @@ async function testWindowsChildProcess() {
   rec.length = 0;
   await new Promise((res) => win.execFile("/usr/local/bin/claude", ["-v"], {}, res, deps({ win: false })));
   assert(rec[0].b === "/usr/local/bin/claude" && !("detached" in rec[0].o), "macOS 上 win.execFile 改了起法，或带上了 detached");
-  for (const f of ["engines/claude-code.js", "engines/codex.js"]) {
-    assert(/const \{ execFile \} = require\("\.\/win"\)/.test(fs.readFileSync(path.join(__dirname, "..", f), "utf8")), f + " 又直接用 child_process 的 execFile 了（Windows 上 .cmd 垫片起不来）");
+  for (const f of ["claude-code", "codex"]) {
+    const winSpec = JSON.stringify(modPath.spec(f, "win")).replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+    assert(new RegExp(`const \\{ execFile \\} = require\\(${winSpec}\\)`).test(fs.readFileSync(modPath(f), "utf8")), modPath.rel(f) + " 又直接用 child_process 的 execFile 了（Windows 上 .cmd 垫片起不来）");
   }
 
   // ⑤ MCP 服务：命令名 → 真身（npx → npx.cmd）；认得出就走拆垫片那套
@@ -14062,7 +14064,8 @@ async function testWindowsChildProcess() {
     assert.strictEqual(resolveWinCommand(path.join(tmp, "nope")), "", "不存在的命令没返回空");
     assert.strictEqual(resolveWinCommand(""), "", "空命令没返回空");
     const mcpSrc = fs.readFileSync(modPath("mcp"), "utf8");
-    assert(/const real = resolveWinCommand\(this\.command\);\s*if \(real\) \{\s*const plan = require\("\.\/engines\/win"\)\.launchPlan\(real, this\.args\);/.test(mcpSrc), "MCP 在 Windows 上没走 launchPlan");
+    const mcpWinSpec = JSON.stringify(modPath.spec("mcp", "win")).replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+    assert(new RegExp(`const real = resolveWinCommand\\(this\\.command\\);\\s*if \\(real\\) \\{\\s*const plan = require\\(${mcpWinSpec}\\)\\.launchPlan\\(real, this\\.args\\);`).test(mcpSrc), "MCP 在 Windows 上没走 launchPlan");
 
     // ⑥ 工作区不是 git 仓库：往上一个 .git 都没有就不起 git（Windows 上起一次几十毫秒，每轮好几次）
     const { hasGitAbove } = require(modPath("worktree"))._internals;

@@ -38,7 +38,7 @@ const crypto = require("crypto");
 const pricing = require("./pricing");
 const budget = require("./budget");
 const vkeys = require("./vkeys");
-const log = require("./log");
+const log = require("./src/platform/log");
 const { cleanKey } = require("./llm");
 const { protoOfChannel } = require("./media-models");
 

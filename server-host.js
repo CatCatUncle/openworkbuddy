@@ -16,7 +16,7 @@
  */
 
 const path = require("path");
-const bridge = require("./electron-bridge");
+const bridge = require("./src/platform/electron-bridge");
 
 let LISTENING = false;
 let STOPPING = false;
@@ -91,7 +91,7 @@ bridge.onCtl((op) => { if (op === "shutdown") stop("主进程要求"); });
 // ---------- 数据根对账 ----------
 // 装机版的数据根要靠「是不是装机包」来定，而 utilityProcess 里 app.isPackaged 问不到（paths.js 改用 OWB_PACKAGED）。
 // 两边算出来的不一样就是会读错账号、会话的那种错——不将就，交回主进程在它自己那儿跑
-const dataDir = path.resolve(require("./paths").DATA_DIR);
+const dataDir = path.resolve(require("./src/platform/paths").DATA_DIR);
 const shellDataDir = process.env.OWB_DATA_DIR ? path.resolve(process.env.OWB_DATA_DIR) : dataDir;
 if (dataDir !== shellDataDir) {
   bootFail(new Error(`服务进程算出来的数据目录（${dataDir}）跟主进程的（${shellDataDir}）不一样`));

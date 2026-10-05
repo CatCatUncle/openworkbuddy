@@ -169,8 +169,8 @@ const ta = async (k, f) => { try { await f(); out[k] = "ok"; } catch (e) { out[k
   t("viaSymlink_rm", () => fs.rmSync(path.join(L, path.basename(D)), { recursive: true, force: true }));
   t("symlink_unlink", () => fs.unlinkSync(L));
   // 这些得照常：读真文件、mkdir 一个本来就在的真目录（空操作）、写临时目录
-  t("read_real", () => fs.readFileSync(${JSON.stringify(path.join(T.roots.dev, "paths.js"))}, "utf8"));
-  t("openSync_r", () => fs.closeSync(fs.openSync(${JSON.stringify(path.join(T.roots.dev, "paths.js"))}, "r")));
+  t("read_real", () => fs.readFileSync(${JSON.stringify(path.join(T.roots.dev, mod.rel("paths")))}, "utf8"));
+  t("openSync_r", () => fs.closeSync(fs.openSync(${JSON.stringify(path.join(T.roots.dev, mod.rel("paths")))}, "r")));
   t("mkdir_existing", () => fs.mkdirSync(${JSON.stringify(T.roots.dev)}, { recursive: true }));
   t("write_tmp", () => fs.writeFileSync(S + ".2", "x"));
   console.log(JSON.stringify(out));

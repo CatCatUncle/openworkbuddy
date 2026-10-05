@@ -19,12 +19,12 @@
  */
 
 const path = require("path");
-const icons = require("./icons.js");
-const { dataPath } = require("./paths");
+const icons = require("./src/platform/icons.js");
+const { dataPath } = require("./src/platform/paths");
 const crypto = require("crypto");
-const store = require("./store");
+const store = require("./src/platform/store");
 const org = require("./org");
-const log = require("./log");
+const log = require("./src/platform/log");
 const rbac = require("./rbac"); // 谁能做什么：角色分档和能力表只有那一个文件说了算
 const usageStore = require("./usage-store");
 const pricing = require("./pricing");

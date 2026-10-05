@@ -111,7 +111,7 @@ function createGoalEngine({ workspaceDir, maxRounds = GOAL_MAX_ROUNDS, decide = 
     const { execFile } = require("child_process");
     const checkOne = (f) => new Promise((resolve) => {
       if (/\.(js|mjs|cjs)$/i.test(f.n)) {
-        execFile(require("./electron-bridge").nodeExec(), ["--check", f.p], { timeout: 8000, env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, windowsHide: true }, (err, _o, stderr) => {
+        execFile(require("./src/platform/electron-bridge").nodeExec(), ["--check", f.p], { timeout: 8000, env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, windowsHide: true }, (err, _o, stderr) => {
           resolve(err ? `✗ ${f.n} JS 语法检查未通过：${String(stderr || err.message).slice(0, 200)}` : `✓ ${f.n} JS 语法检查通过`);
         });
       } else if (/\.json$/i.test(f.n)) {

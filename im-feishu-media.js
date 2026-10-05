@@ -38,7 +38,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 // media-probe 顶层只引 Node 自带的模块，不会成环
-const { ROTATION_ENTRIES, displaySize } = require("./lib/media-probe");
+const { ROTATION_ENTRIES, displaySize } = require("./src/platform/media-probe");
 // 报错进聊天前抹绝对路径：各渠道共用一份（im-media 顶层只引 Node 自带的模块，不会成环）
 const { fsFail, scrubPaths } = require("./im-media");
 
@@ -231,7 +231,7 @@ const noteNoFfmpegFile = (install) => `本机没装 ffmpeg，视频按普通文�
  * @returns {Bins}
  */
 function defaultFeishuBins() {
-  const mp = () => require("./lib/media-probe");
+  const mp = () => require("./src/platform/media-probe");
   return {
     resolve: async (name) => ((await mp().resolveMediaBins())[name] || { bin: "" }).bin || "",
     install: async () => (await mp().resolveMediaBins()).install || "",

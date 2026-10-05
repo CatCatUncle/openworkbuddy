@@ -68,7 +68,7 @@ function pickNode(shimDir, { findIn, searchDirs }, io = fs) {
   try { if (io.statSync(sibling).isFile()) return { bin: sibling, asNode: false }; } catch {}
   const onPath = findIn(searchDirs(), "node");
   if (onPath) return { bin: onPath, asNode: false };
-  return { bin: require("../electron-bridge").nodeExec(), asNode: true }; // 自己就是 node（Electron 需要 RUN_AS_NODE；服务进程里换回应用本体）
+  return { bin: require("./electron-bridge").nodeExec(), asNode: true }; // 自己就是 node（Electron 需要 RUN_AS_NODE；服务进程里换回应用本体）
 }
 
 /** cmd 会另眼相看的字符（与 cross-spawn 同一份清单） */

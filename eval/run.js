@@ -20,7 +20,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { dataPath, preferData } = require("../paths");
+const { dataPath, preferData } = require("../src/platform/paths");
 
 // 本地时间做目录名（toISOString 是 UTC，翻记录时对不上表）
 const STAMP = (() => {
@@ -45,7 +45,7 @@ const { createAgentRuntime, mapPool } = require("../agent");
 const { McpManager } = require("../mcp");
 const { setWorkspaceDir } = require("../tools");
 const memory = require("../memory");
-const store = require("../store");
+const store = require("../src/platform/store");
 const { TASKS } = require("./tasks");
 
 const argv = process.argv.slice(2);

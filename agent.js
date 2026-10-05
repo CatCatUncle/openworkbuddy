@@ -20,7 +20,7 @@ const connectorsLendOff = () => {
   const p = orgPolicy();
   return connectorsWriteOff() || (!!p && (p.allow_shell === false || (p.net_allow || []).length > 0 || (p.net_deny || []).length > 0));
 };
-const awake = require("./awake"); // 睡眠治理：任务期间防睡 + 睡了顺延时限
+const awake = require("./src/platform/awake"); // 睡眠治理：任务期间防睡 + 睡了顺延时限
 const engines = require("./engines"); // 底层引擎：内置循环 / 本机 Claude Code / 本机 Codex
 const bridge = require("./engines/bridge"); // 把本项目的工具借给那两个 CLI（MCP）
 const prefs = require("./prefs"); // 底层引擎 / 思考档是按账号存的，跑任务时得看**发起人**的那份
@@ -294,7 +294,7 @@ const USE_SKILL_TOOL = {
 
 const fs = require("fs");
 const path = require("path");
-const { dataPath, DATA_DIR } = require("./paths");
+const { dataPath, DATA_DIR } = require("./src/platform/paths");
 const { AsyncResource } = require("async_hooks");
 const os = require("os");
 const memory = require("./memory");

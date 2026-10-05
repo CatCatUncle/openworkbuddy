@@ -8,7 +8,7 @@
  * 再在代码里抄一份清单迟早会跟 sprite 对不上，所以直接从 sprite 解析。
  */
 const fs = require("fs");
-const { rootPath } = require("./src/platform/root");
+const { rootPath } = require("./root");
 
 let CACHE = null;
 

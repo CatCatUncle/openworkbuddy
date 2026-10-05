@@ -48,7 +48,7 @@ function resolveMediaBins() {
 
 /** @returns {Promise<MediaBins>} */
 async function findBins() {
-  const which = require("../engines/which");
+  const which = require("./which");
   /** @param {string} name @returns {Promise<BinHit>} */
   const one = async (name) => {
     try {
@@ -61,14 +61,14 @@ async function findBins() {
   const [ffmpeg, ffprobe] = await Promise.all([one("ffmpeg"), one("ffprobe")]);
   let install = "";
   // ffprobe 和 ffmpeg 是同一个包，装法只查 ffmpeg 那一条
-  try { install = (require("../src/platform/known-tools").knownTool("ffmpeg") || {}).install || ""; } catch {}
+  try { install = (require("./known-tools").knownTool("ffmpeg") || {}).install || ""; } catch {}
   return { ffmpeg, ffprobe, install };
 }
 
 /** 测试用：把本模块和 which.js 记住的位置都清掉，下一次重新找。 */
 function reset() {
   binsP = null;
-  try { require("../engines/which").forget(); } catch {}
+  try { require("./which").forget(); } catch {}
 }
 
 // ───────────────────────── 纯计算：采样、间隔、WAV 头 ─────────────────────────
@@ -284,7 +284,7 @@ function runBin(bin, args, o) {
       return reject(e);
     }
     let PATH = process.env.PATH || "";
-    try { PATH = require("../engines/which").augmentedPath(); } catch {}
+    try { PATH = require("./which").augmentedPath(); } catch {}
     execFile(bin, args, {
       timeout: o.timeout, maxBuffer: 16 << 20, windowsHide: true, signal: o.signal, encoding: "utf8",
       env: { ...process.env, PATH },

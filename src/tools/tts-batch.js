@@ -26,10 +26,10 @@ const mediaModels = require("../../media-models");
 const genCache = require("../../gen-cache");
 const quota = require("../../quota");
 const security = require("../../security");
-const store = require("../../store");
+const store = require("../platform/store");
 const MEDIA = require("./media");
 const winname = require("../util/winname");
-const MP = require("../../lib/media-probe");
+const MP = require("../platform/media-probe");
 
 /** 一批最多几句。再多就该分集了，一次调用跑十几分钟，中途停下也不好接 */
 const SEG_MAX = 60;

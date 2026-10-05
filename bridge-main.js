@@ -49,7 +49,7 @@ function createShellBridge({ electron, getWin, pet, registerShortcuts, relaunch,
   const win = () => {
     try { const w = getWin && getWin(); return w && !w.isDestroyed() ? w : null; } catch { return null; }
   };
-  const toBuf = (v) => require("./electron-bridge").toBuf(v);
+  const toBuf = (v) => require("./src/platform/electron-bridge").toBuf(v);
   // 测试宿主（OWB_SHELL_HIDDEN=1）不弹系统框：弹出来就挡在用户桌面上，而且没人去点
   const noDialog = (op) => {
     if (!hidden) return;
@@ -232,7 +232,7 @@ function createShellBridge({ electron, getWin, pet, registerShortcuts, relaunch,
         (e) => {
           track.end(tk);
           counts.errors++;
-          reply({ t: "ret", id: msg.id, ok: false, error: require("./electron-bridge").serializeError(e) });
+          reply({ t: "ret", id: msg.id, ok: false, error: require("./src/platform/electron-bridge").serializeError(e) });
         }
       );
     return true;

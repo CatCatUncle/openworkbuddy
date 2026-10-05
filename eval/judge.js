@@ -18,7 +18,7 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const { dataPath } = require("../paths");
+const { dataPath } = require("../src/platform/paths");
 
 const DEFAULT_JUDGE_SYSTEM = `你是严格、公正的 AI 智能体评测评委。机器已经判过硬性对错，你只负责逐条回答「质量维度问题」：每条只判达标（true）或不达标（false），不打分。
 

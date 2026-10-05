@@ -19,7 +19,7 @@
 
 const path = require("path");
 const { rootPath } = require("./src/platform/root");
-const { dataPath } = require("./paths");
+const { dataPath } = require("./src/platform/paths");
 const sprites = require("./pet-sprites");
 const fs = require("fs");
 

@@ -223,7 +223,7 @@ function shrinkForVision(abs) {
  * 主进程不在或超时就原样发——跟纯 node 里缩不动时一个口径，看图不因为这个失败。
  */
 async function shrinkForVisionAsync(abs) {
-  const bridge = require("../../electron-bridge");
+  const bridge = require("../platform/electron-bridge");
   if (!bridge.isRemote()) return shrinkForVision(abs);
   const raw = fs.readFileSync(abs);
   const ext = (abs.split(".").pop() || "png").toLowerCase();

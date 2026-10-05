@@ -22,7 +22,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { dataPath } = require("./paths");
+const { dataPath } = require("./src/platform/paths");
 
 const SPEC_VERSION = "1.0.0";
 const PLUGIN_SCHEMA = `https://agent-plugins.org/schemas/${SPEC_VERSION}/plugin.schema.json`;

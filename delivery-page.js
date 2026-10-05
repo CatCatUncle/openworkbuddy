@@ -197,7 +197,7 @@ function parseProbe(j) {
  * @type {Probe}
  */
 async function defaultProbe(abs, o = {}) {
-  const MP = require("./lib/media-probe");
+  const MP = require("./src/platform/media-probe");
   const bins = await MP.resolveMediaBins();
   if (!bins.ffprobe.bin) return { skip: `没装 ffprobe，没核对画幅${bins.install ? "（装法：" + bins.install + "）" : ""}` };
   let out;
@@ -780,7 +780,7 @@ async function runTool(input, ctx) {
   const html = render(m, { now: ctx.now });
   try {
     // 交付物不留 .bak：它会在成果卡里多出一个看不懂的文件
-    require("./store").writeTextAtomic(path.join(dir, outName), html, { backup: false });
+    require("./src/platform/store").writeTextAtomic(path.join(dir, outName), html, { backup: false });
   } catch (e) {
     return fail(`${outName} 写不进去：${String(e && e.message || e).slice(0, 160)}`);
   }

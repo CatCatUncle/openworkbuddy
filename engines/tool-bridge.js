@@ -51,7 +51,7 @@ console.info = toErr;
 console.warn = toErr;
 console.debug = toErr;
 
-const { dataPath } = require("../paths");
+const { dataPath } = require("../src/platform/paths");
 const tools = require("../tools");
 const security = require("../security");
 const mediaModels = require("../media-models");

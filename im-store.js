@@ -14,7 +14,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const store = require("./store");
+const store = require("./src/platform/store");
 
 function createImSessionStore({ dir, maxEntries = 120 } = {}) {
   const mem = new Map();

@@ -32,8 +32,8 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const perfHooks = require("perf_hooks");
-const { dataPath } = require("./paths");
-const log = require("./log");
+const { dataPath } = require("./src/platform/paths");
+const log = require("./src/platform/log");
 
 const DATA_DIR = process.env.OPENWORKBUDDY_DATA_DIR || dataPath("data");
 const DIR = path.join(DATA_DIR, "metrics");

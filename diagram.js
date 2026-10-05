@@ -15,7 +15,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { dataPath } = require("./paths");
+const { dataPath } = require("./src/platform/paths");
 const zlib = require("zlib");
 const vm = require("vm");
 const { spawnSync, spawn } = require("child_process");

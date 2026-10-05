@@ -18,8 +18,8 @@
  */
 
 const { spawn } = require("child_process");
-const { augmentedPath } = require("./which");
-const win = require("./win");
+const { augmentedPath } = require("../src/platform/which");
+const win = require("../src/platform/win");
 
 /** stderr 只留尾巴：CLI 报错前可能刷了几万行日志，全留住等于把内存喂给一次失败 */
 const STDERR_KEEP = 8000;

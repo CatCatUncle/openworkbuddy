@@ -395,7 +395,7 @@ const CLIENT_INFO = { name: "openworkbuddy", version: "0.1.0" };
 
 /** Windows：命令名 → 真正的文件（npx → C:\…\npm\npx.cmd）。认不出返回空 */
 function resolveWinCommand(cmd) {
-  const which = require("./engines/which");
+  const which = require("./src/platform/which");
   const s = String(cmd || "");
   if (!s) return "";
   if (/[\\/]/.test(s)) {
@@ -428,7 +428,7 @@ class StdioTransport {
       // 先认出真身，再走引擎同一套起法（拆垫片 / 直接起 / 实在不行才经 cmd），windowsHide 由它给
       const real = resolveWinCommand(this.command);
       if (real) {
-        const plan = require("./engines/win").launchPlan(real, this.args);
+        const plan = require("./src/platform/win").launchPlan(real, this.args);
         ({ bin, args, opts: extra, env } = plan);
       } else extra = { shell: true, windowsHide: true }; // 认不出：照旧让 cmd 自己去找，至少不弹窗
     }
@@ -484,7 +484,7 @@ class StdioTransport {
   close() {
     if (!this.proc) return;
     // Windows 上 kill() 只杀得到最外面一层（经 cmd 起的那种，真正的服务是它的孩子），得 taskkill /T
-    if (process.platform === "win32") require("./engines/win").killTree(this.proc, "SIGKILL");
+    if (process.platform === "win32") require("./src/platform/win").killTree(this.proc, "SIGKILL");
     else try { this.proc.kill(); } catch {}
   }
 

@@ -20,8 +20,8 @@ const path = require("path");
 const { execFileSync } = require("child_process");
 
 const ROOT = path.join(__dirname, "..");
-const OUT = path.join(ROOT, "lib", "builtin-skill-hashes.json");
-const { skillBlobHash, _SKIP_IN_SKILL: SKIP } = require("../paths");
+const OUT = path.join(ROOT, "src", "platform", "builtin-skill-hashes.json");
+const { skillBlobHash, _SKIP_IN_SKILL: SKIP } = require("../src/platform/paths");
 
 /** @param {string[]} args */
 const git = (args) => execFileSync("git", args, { cwd: ROOT, encoding: "utf8", maxBuffer: 64 << 20 });

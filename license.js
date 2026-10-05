@@ -22,8 +22,8 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const store = require("./store");
-const { dataPath } = require("./paths");
+const store = require("./src/platform/store");
+const { dataPath } = require("./src/platform/paths");
 
 /**
  * 验签用的公钥（Ed25519，SPKI DER 的 base64）。私钥在作者机器上，签发走 scripts/issue-license.js。

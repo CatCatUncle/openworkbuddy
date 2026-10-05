@@ -18,7 +18,7 @@
 const os = require("os");
 const fs = require("fs");
 const path = require("path");
-const which = require("./which");
+const which = require("../src/platform/which");
 
 const BACKENDS = [require("./claude-code"), require("./codex")];
 

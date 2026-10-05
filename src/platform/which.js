@@ -245,7 +245,7 @@ function regQuery(key, env) {
     try {
       execFile(exe, ["query", key, "/v", "Path"], { windowsHide: true, timeout: REG_TIMEOUT_MS, encoding: "buffer" }, (err, stdout, stderr) => {
         const decode = (/** @type {Buffer} */ b) => {
-          const d = require("../src/util/out-decode").outDecoder({ win: true });
+          const d = require("../util/out-decode").outDecoder({ win: true });
           return d.write(b || Buffer.alloc(0)) + d.end();
         };
         if (err) {
