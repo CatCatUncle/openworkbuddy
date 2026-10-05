@@ -2,7 +2,7 @@
 // Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 "use strict";
 /**
- * 参考模板库自己加的那几层（routes/prompt-tpls.js）：谁看得见、谁改得了。
+ * 参考模板库自己加的那几层（src/server/routes/prompt-tpls.js）：谁看得见、谁改得了。
  *
  *   ① 我的：只有本人看得见；同组织的人看不见、删不着
  *   ② 字段校验：标题、提示词不能空，超长拒，图标名不合规退回默认，分类空了记「其他」

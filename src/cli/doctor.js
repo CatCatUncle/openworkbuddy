@@ -383,7 +383,7 @@ async function probePython(which, run = runQuiet) {
 }
 
 /**
- * Windows：体检前先现读一次注册表里的 PATH（engines/which 的 refreshWinPath）。
+ * Windows：体检前先现读一次注册表里的 PATH（src/platform/which 的 refreshWinPath）。
  * 用户照这里给的 winget 命令装完再跑一次体检，终端手里那份 PATH 还是装之前的——不读的话，
  * 刚装好的东西永远显示「缺」。读不成就把原话带回去，由 verdictTools 如实写进报告。
  * @returns {Promise<string>} 读不成时的原因；没读的平台、读成了都是 ""
@@ -397,7 +397,7 @@ async function freshWinPath(which, platform) {
 /**
  * 去找这几个 CLI 到底在不在。
  *
- * 走 engines/which 而不是直接 `which`：双击图标起的桌面版 PATH 是残废的，
+ * 走 src/platform/which 而不是直接 `which`：双击图标起的桌面版 PATH 是残废的，
  * 用 shell 那套问出来的答案才跟用户在终端里看到的一致。这也是「我明明装了」类
  * 误报的唯一来源——体检自己先误报，就没人信剩下几条了。
  */

@@ -8,7 +8,7 @@
  * 这一步从来不花钱：不调模型、不调配音，只用本机 ffmpeg 拼盘上已有的文件（片头片尾卡、HTML 段
  * 再借一下本机浏览器）。所以这里没有额度闸门，也没有「上游收了单」这回事——挂了放心再跑一次。
  *
- * 分工：排片（时长、命令、字幕文本）在 lib/timeline-compose.js，纯函数；真跑在 lib/compose-jobs.js，
+ * 分工：排片（时长、命令、字幕文本）在 src/domains/media/timeline-compose.js，纯函数；真跑在 src/domains/media/compose-jobs.js，
  * 跟画布一键合成共用一把锁。这里只做工具这一层：读时间轴、按安全策略把每个路径认一遍、探时长、
  * 开跑、等一会儿、把结果说成人话。
  *

@@ -122,7 +122,7 @@ ok(dockerMisses(read(".gitignore"), "").length > 20,
   "反向对照：把 .dockerignore 清空会抓出一大把（证明上面那条不是因为解析失败才绿的）");
 
 // 反向对照：server.js 真正 require 的本地模块，一个都不许被排除掉。
-// v0.1.1 的装机包就是被白名单漏掉 engines/ 才「装完打不开」的，同一个坑不踩第二次。
+// v0.1.1 的装机包就是被白名单漏掉当时的 engines 目录才「装完打不开」的，同一个坑不踩第二次。
 const serverSrc = src("server");
 const localReqs = [...new Set([...serverSrc.matchAll(/require\("\.\/([^"]+)"\)/g)].map((m) => m[1]))]
   .filter((n) => n !== "package.json");
@@ -342,7 +342,7 @@ console.log("\n【6】装机包瘦身：既不能虚胖，也不能删过头");
   ok(/"!node_modules\/@types\/\*\*"/.test(cfg), "排除了 @types 整个作用域");
 
   // —— 绝不能按目录名删。这条不是洁癖，是踩过的坑：
-  // @iconify/utils 的运行时代码住在 lib/emoji/test/ 下、exceljs 的核心在 lib/doc/ 下，
+  // @iconify/utils 的运行时代码住在 @iconify/utils/lib/emoji/test/ 下、exceljs 的核心在 exceljs/lib/doc/ 下，
   // 按 test/doc/example 删完，mermaid 和 exceljs 当场 require 不起来，省下的只有 1 MB。
   ok(!/!node_modules[^"]*\{?[^"]*\b(tests?|__tests__|examples?|docs?)\b/.test(cfg),
      "没有按目录名删（test/doc/example 里住着真代码：@iconify/utils、exceljs 都栽在这儿）");
@@ -385,12 +385,12 @@ console.log("\n【6】装机包瘦身：既不能虚胖，也不能删过头");
   }
 
   // —— 按目录核的那一半：require 图只认字面量路径，按目录 readdirSync 挂路由/工具的写法它爬不到。
-  // 第 7 批要把 server.js / tools.js 拆进 routes/ lib/ src/tools/，白名单和闸门得先等在那儿
+  // 顶层只留入口文件，运行时源码全在 src/ 下：白名单那条 src/**/* 和闸门按目录核的名单得对得上
   const cfgFiles = require(path.join(ROOT, "electron-builder.config.js")).files;
   const noGlob = gate.SOURCE_DIRS.filter((d) => !cfgFiles.includes(d + "/**/*"));
   ok(noGlob.length === 0, "按目录核的每个目录，files 白名单里都有 dir/**/*（\"*.js\" 只匹配顶层）", noGlob.join("、"));
-  ok(["engines", "routes", "src", "lib"].every((d) => gate.SOURCE_DIRS.includes(d)),
-     "  └ routes/、src/、lib/ 和栽过一次的 engines/ 都在按目录核的名单里", gate.SOURCE_DIRS.join(","));
+  ok(gate.SOURCE_DIRS.includes("src"),
+     "  └ src/ 在按目录核的名单里（运行时源码全在这棵树下）", gate.SOURCE_DIRS.join(","));
   const fake = fs.mkdtempSync(path.join(os.tmpdir(), "owb-srcdir-"));
   try {
     const repo = path.join(fake, "repo");
@@ -399,21 +399,21 @@ console.log("\n【6】装机包瘦身：既不能虚胖，也不能删过头");
       fs.mkdirSync(path.dirname(path.join(base, rel)), { recursive: true });
       fs.writeFileSync(path.join(base, rel), "");
     };
-    for (const f of ["routes/chat.js", "lib/deep/x.json", "src/tools/a.cjs", "routes/README.md", "lib/.DS_Store", "src/tools/a.js.map"]) put(repo, f);
+    for (const f of ["src/server/routes/chat.js", "src/x/deep/x.json", "src/tools/a.cjs", "src/server/routes/README.md", "src/x/.DS_Store", "src/tools/a.js.map"]) put(repo, f);
     fs.mkdirSync(app);
     const listed = gate.sourceDirFiles(repo);
-    ok(listed.join(",") === "lib/deep/x.json,routes/chat.js,src/tools/a.cjs",
-       "按目录列的只有运行时文件（.md、隐藏文件、.map 不算，瘦身本来就该删 .map）", listed.join(","));
+    ok(listed.join(",") === "src/server/routes/chat.js,src/tools/a.cjs,src/x/deep/x.json",
+       "按目录列的只有运行时文件（.md、隐藏文件、.map 不算，瘦身本来就该删 .map），子目录多深都列", listed.join(","));
     const miss = gate.missingSourceDirFiles(app, repo);
-    ok(miss.length === 3, "反向对照：包里没带 routes/ lib/ src/，三个文件全被点名", miss.join(","));
+    ok(miss.length === 3, "反向对照：包里没带 src/，三个文件全被点名", miss.join(","));
     // assertPackComplete 用的是 missingFrom，得真把按目录核的并进去。拿本仓库验等于没验：
-    // engines/ 下那几个 require 图本来就都爬得到，不并也一样在清单里。这三个 require 图一个都爬不到
+    // 本仓库 src/ 下大多 require 图本来就爬得到，不并也一样在清单里。这三个 require 图一个都爬不到
     const merged = gate.missingFrom(app, repo).map((r) => r.split(path.sep).join("/"));
     ok(listed.every((f) => merged.includes(f)), "反向对照：require 图爬不到的，打包闸门的缺件清单照样点名",
        listed.filter((f) => !merged.includes(f)).join(","));
     for (const f of listed) put(app, f);
     ok(gate.missingSourceDirFiles(app, repo).length === 0, "  └ 都带上了就不报（不是恒红）");
-    // 本仓库的 engines/ 两边都爬得到：并进去之后不许同一个文件报两遍
+    // 本仓库 src/ 下的文件大多两边都爬得到：并进去之后不许同一个文件报两遍
     const all = gate.missingFrom(app).map((r) => r.split(path.sep).join("/"));
     ok(gate.sourceDirFiles().every((f) => all.includes(f)) && new Set(all).size === all.length,
        "打包闸门的缺件清单并上了按目录核的那份，没有重复", `${all.length} 条`);
@@ -726,7 +726,7 @@ if (BUILD) {
     ok(lsIn("/app/dist") === "NO", "镜像里没有 dist/（1.2G 的安装包没进去）");
     ok(lsIn("/app/server.js") === "YES", "反向对照：server.js 在（不是把什么都排除了）");
     ok(lsIn("/app/skills") === "YES", "反向对照：内置技能在");
-    ok(lsIn("/app/" + path.posix.dirname(mod.rel("engines"))) === "YES", "反向对照：engines/ 在（v0.1.1 就是漏了它才装完打不开）");
+    ok(lsIn("/app/" + path.posix.dirname(mod.rel("engines"))) === "YES", "反向对照：src/engines 在（v0.1.1 就是漏了引擎目录才装完打不开）");
 
     const size = +sh("docker", ["image", "inspect", TAG, "--format", "{{.Size}}"]).trim();
     console.log(`  · 镜像 ${(size / 1e9).toFixed(2)} GB`);

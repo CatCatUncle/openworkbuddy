@@ -32,11 +32,11 @@ const ROOT = path.join(__dirname, "..");
 const OUT_DIR = path.join(ROOT, "docs", "images");
 
 // ---- 场景：每个场景 = 一串事件 + 要裁的那块 DOM ----
-// 引擎那条「已启动」的措辞真源在 engines/claude-code.js，图上必须跟产品里一模一样。
+// 引擎那条「已启动」的措辞真源在 src/engines/claude-code.js，图上必须跟产品里一模一样。
 // 那边改了措辞这里就报错，别让 README 的图跟代码悄悄走岔。
 const ENGINE_SRC = fs.readFileSync(path.join(ROOT, "src", "engines", "claude-code.js"), "utf8");
 if (!/本机 Claude Code 已启动（模型 \$\{m\.model \|\| "默认"\}，\$\{\(m\.tools \|\| \[\]\)\.length\} 个工具），不消耗 API 额度/.test(ENGINE_SRC)) {
-  throw new Error("engines/claude-code.js 里那条「已启动」的措辞变了，先同步 scripts/shot-ui.js 的 ENGINE_STATUS");
+  throw new Error("src/engines/claude-code.js 里那条「已启动」的措辞变了，先同步 scripts/shot-ui.js 的 ENGINE_STATUS");
 }
 const ENGINE_STATUS = "本机 Claude Code 已启动（模型 claude-opus-5，102 个工具），不消耗 API 额度";
 

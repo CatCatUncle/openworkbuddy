@@ -9,10 +9,10 @@
  *   const SRC = fs.readFileSync(mod("tools"), "utf8");      // 原来是 path.join(ROOT, "tools.js")
  *   delete require.cache[require.resolve(mod("paths"))];    // 原来是 require.resolve("../paths")
  *
- * 为什么要有它：目录重整要把根目录和 lib/ engines/ routes/ 下的一百六十个模块搬进 src/ 分层。
+ * 为什么要有它：目录重整把根目录和老的 lib、engines、routes 三个目录下的一百六十个模块搬进了 src/ 分层。
  * 一百多个测试各自写死 "../agent"、path.join(ROOT, "lib", "x.js")，搬一批就得回头改几百处，
  * 漏一处的话有的当场红（好），有的「读不到就跳过」静悄悄变绿（坏）。所以先把所有引用收到这张表，
- * 之后每批搬家只改下面 TABLE 里的路径，测试文件本身不再动。
+ * 搬家时只改下面 TABLE 里的路径，测试文件本身不再动。
  *
  *   mod(名)            → 绝对路径（带扩展名）。require / require.resolve / require.cache 的键 /
  *                        readFileSync / spawn 都能直接用，跟原来的相对写法解析到同一个文件、同一个缓存键
@@ -23,9 +23,9 @@
  *   mod.names()        → 所有名字
  * 名字写错当场抛，不返回一个不存在的路径让断言空跑。
  *
- * 名字规则：文件名去掉扩展名（agent.js → agent，lib/compose-jobs.js → compose-jobs）；
- * 例外两类——engines/index.js 叫 engines（大家都是 require("../engines")），
- * routes/ 下的带 routes/ 前缀（routes/canvas），免得跟 src/tools/canvas.js 这种不搬的同名文件混。
+ * 名字规则：文件名去掉扩展名（src/agent/agent.js → agent，src/domains/media/compose-jobs.js → compose-jobs）；
+ * 例外两类——src/engines/index.js 叫 engines（大家都是 require("../engines")），
+ * src/server/routes/ 下的带 routes/ 前缀（routes/canvas），免得跟 src/tools/canvas.js 这种同名文件混。
  * 入口（server.js cli.js electron-main.js server-host.js eval/*）不在这里，走 test/lib/entry.js。
  * src/tools/ 一期不动，也不在这里。
  */
@@ -207,7 +207,7 @@ const TABLE = Object.freeze({
 const has = (name) => Object.prototype.hasOwnProperty.call(TABLE, name);
 
 function relOf(name) {
-  if (!has(name)) throw new Error(`mod() 不认识「${name}」：名字是文件名去掉扩展名（engines/index.js 叫 engines，routes/ 下带 routes/ 前缀）；入口走 test/lib/entry.js`);
+  if (!has(name)) throw new Error(`mod() 不认识「${name}」：名字是文件名去掉扩展名（src/engines/index.js 叫 engines，src/server/routes/ 下的带 routes/ 前缀）；入口走 test/lib/entry.js`);
   return TABLE[name];
 }
 

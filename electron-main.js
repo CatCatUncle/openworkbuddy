@@ -676,7 +676,7 @@ app.whenReady().then(async () => {
   // 首绘打磨：正常流程 ready-to-show 在 ~0.7s 内到，一次干净的整页亮相；
   // 服务端起不来时它可能永远不触发，3 秒兜底强制亮窗，让用户看到报错而不是什么都没有。
   // ⚠️ 这段必须排在 require("./server.js") 前面。放后面的话，服务端 require 一抛异常，
-  // 兜底定时器根本没来得及挂上，窗口就永远停在 show:false —— v0.1.1 装机包缺 engines/
+  // 兜底定时器根本没来得及挂上，窗口就永远停在 show:false —— v0.1.1 装机包缺引擎目录
   // 时用户看到的正是这个：任务管理器里有进程，屏幕上什么都没有。
   // 上次是最大化关的，这次亮相前先最大化。不能在建窗口那会儿就调：Windows 上 maximize() 会顺手把窗口亮出来，白屏就露了
   const showOnce = () => { if (win && !win.isVisible()) { if (place.maximized) win.maximize(); win.show(); } };

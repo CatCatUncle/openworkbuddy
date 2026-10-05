@@ -192,7 +192,7 @@ function parseProbe(j) {
 }
 
 /**
- * 默认的量法：lib/media-probe 找 ffprobe，量第一路视频流。
+ * 默认的量法：src/platform/media-probe 找 ffprobe，量第一路视频流。
  * 没 ffprobe / 跑不起来 → skip（说没核对）；跑了但读不懂 → bad（文件多半坏了，页面上也播不了）。
  * @type {Probe}
  */
@@ -807,7 +807,7 @@ const TOOL_DEFS = [
         out: { type: "string", description: "输出文件名（默认 交付.html，只写文件名，和成品放同一目录）" },
       },
       // 两个都可省，但 required 这个键得在：tools.js 把各家 TOOL_DEFS 摊进一张表，
-      // 借工具那边（engines/tool-bridge.js）按这张表的类型读 .required，缺了这个键类型检查就红
+      // 借工具那边（src/engines/tool-bridge.js）按这张表的类型读 .required，缺了这个键类型检查就红
       required: [],
     },
   },

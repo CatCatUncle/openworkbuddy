@@ -7,7 +7,7 @@
  * 本机多半不是 Windows，CI 也没有 Windows 机器，所以这些行为都做成按 platform 参数走：
  * 测试传 "win32" 验 Windows 那条路，再传 "darwin" 当反向对照——同一个输入在别的系统上必须跟改之前一样。
  *
- *   ① 文件名：冒号（NTFS 备用数据流）、保留名（含 `CON .txt`）、末尾的点和空格（lib/winname.js）
+ *   ① 文件名：冒号（NTFS 备用数据流）、保留名（含 `CON .txt`）、末尾的点和空格（src/util/winname.js）
  *   ② 工作区边界不分大小写、不分正反斜杠：设置里填 d:\work，模型写 D:\Work\a.md 是同一处
  *   ③ 文件黑名单在 Windows 命令行和代码里的写法：%USERPROFILE%、$env:USERPROFILE、反斜杠、大写
  *   ④ 存盘改名被杀毒软件、索引短暂占着（EPERM / EACCES / EBUSY）：等 10→20→40… 毫秒重试，攒满约 1 秒；

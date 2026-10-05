@@ -139,7 +139,7 @@ export interface StoryboardCheck {
 }
 
 // ────────────────────────────────────────────────────────────────
-// 画布状态：tools.js canvasNormalizeState 规整之后的形状
+// 画布状态：src/tools/canvas.js canvasNormalizeState 规整之后的形状
 // ────────────────────────────────────────────────────────────────
 
 /** 认得的节点类型。不认识的 kind 照原样留着（可能是别的版本建的），所以 CanvasNode.kind 是 string */

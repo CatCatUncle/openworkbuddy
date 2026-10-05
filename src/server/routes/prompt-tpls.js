@@ -19,7 +19,7 @@
  * 这个接口不在 admin.platformGuard 的写表里（那张表管的是整台服务器一份的设置），
  * 所以「公司」这一层的权限得在这儿自己判，不能指望前面那道闸。
  *
- * 写法照 routes/library.js：路由写在顶层、依赖由 createPromptTplsRouter(deps) 一次填上，
+ * 写法照 src/server/routes/library.js：路由写在顶层、依赖由 createPromptTplsRouter(deps) 一次填上，
  * 不回头 require server.js。
  */
 const fs = require("fs");

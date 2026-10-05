@@ -3,9 +3,9 @@
 "use strict";
 /**
  * 一键合成的任务队列：算计划、探 ffmpeg、一条一条跑、跑完认账写回画布。从 server.js 原样搬出来的。
- * 路由（/api/canvas/compose）在 routes/compose.js，只管把请求翻成这里的 plan / start / cancel / get / running。
+ * 路由（/api/canvas/compose）在 src/server/routes/compose.js，只管把请求翻成这里的 plan / start / cancel / get / running。
  *
- * 函数写在顶层、依赖做成模块级变量由 createComposeJobs(deps) 填上，缘故跟 routes/canvas.js 开头说的一样：
+ * 函数写在顶层、依赖做成模块级变量由 createComposeJobs(deps) 填上，缘故跟 src/server/routes/canvas.js 开头说的一样：
  * 测试按顶格的函数名切源码（composeWriteBack 连同 canvasTickPast 会被切出来放进沙盒里跑）。
  * 队列是进程里的一份内存：重启就没了，查旧 id 会拿到 404，跟搬家之前一样。
  */
@@ -13,7 +13,7 @@ const fs = require("fs");
 const path = require("path");
 const dramaCompose = require("./drama-compose");   // 短剧最后一步：把镜头真的拼成成片
 
-// 下面这几个由 createComposeJobs(deps) 填上。asset* / canvasTickPast 来自 routes/canvas.js
+// 下面这几个由 createComposeJobs(deps) 填上。asset* / canvasTickPast 来自 src/server/routes/canvas.js
 let getWorkspaceDir, outputFiles, safePath, shellPath, canvasReadState, canvasWriteState, assetBase, canvasAssetLocator, canvasAssetNear, canvasTickPast;
 
 /**
@@ -59,7 +59,7 @@ async function composeFilterSet(bin) {
 
 /**
  * ffmpeg / ffprobe 在哪、这台 ffmpeg 带了哪些滤镜。
- * 位置交给 lib/media-probe.js：按句配音、录屏配音用的也是那一份，找到一次整个进程都记住；
+ * 位置交给 src/platform/media-probe.js：按句配音、录屏配音用的也是那一份，找到一次整个进程都记住；
  * 那边出了岔子才退回老路子自己找——画布一键合成不能因为一个新模块坏了就整个用不了。
  */
 async function composeBins() {
@@ -372,7 +372,7 @@ function composeRunning(kind = "canvas") {
 }
 
 // ── 时间轴成片（对话里的 compose_video）────────────────────────────────────────
-// 计划在 lib/timeline-compose.js 里算好（纯函数、可单测），这里只管跑。跟画布一键合成共用同一个 Map、
+// 计划在 src/domains/media/timeline-compose.js 里算好（纯函数、可单测），这里只管跑。跟画布一键合成共用同一个 Map、
 // 同一把锁：ffmpeg 吃满 CPU，对话里起一条、画布上再点一条是真会发生的事，两条一起跑只会都慢
 
 let tlSeq = 0;
@@ -647,7 +647,7 @@ async function timelineWait(id, ms, { signal = null } = {}) {
 
 /**
  * deps：getWorkspaceDir / outputFiles / safePath / shellPath / canvasReadState / canvasWriteState 来自 tools.js；
- * assetBase / canvasAssetLocator / canvasAssetNear / canvasTickPast 来自 routes/canvas.js。
+ * assetBase / canvasAssetLocator / canvasAssetNear / canvasTickPast 来自 src/server/routes/canvas.js。
  */
 function createComposeJobs(deps) {
   ({ getWorkspaceDir, outputFiles, safePath, shellPath, canvasReadState, canvasWriteState, assetBase, canvasAssetLocator, canvasAssetNear, canvasTickPast } = deps);

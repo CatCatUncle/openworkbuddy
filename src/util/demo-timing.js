@@ -4,7 +4,7 @@
 /**
  * demo 录屏的时长整形：打字和最后停在结果上的那几秒保持原速，只把「等模型干活」那段压进目标时长。
  * 纯函数。原先在 scripts/demo-timing.js，可 scripts/ 不进安装包，record_web_demo 在装好的应用里
- * 也要用它，所以搬到 lib/；scripts/demo-timing.js 留一行转发，record-demo.js 和测试照旧 require 那边。
+ * 也要用它，所以搬进了 src/util/；scripts/demo-timing.js 留一行转发，record-demo.js 和测试照旧 require 那边。
  */
 "use strict";
 

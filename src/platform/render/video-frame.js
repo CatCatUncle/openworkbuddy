@@ -22,7 +22,7 @@ const DEFAULT_TIMEOUT_MS = 8000;
  * @param {string} file
  * @param {{width?: number, timeoutMs?: number, signal?: AbortSignal, spawn?: Function,
  *   ffmpeg?: string, tmpRoot?: string, platform?: string}} [opts]
- *   ffmpeg：给了就用这个，不给就按设置页那一套去找（lib/media-probe）；找不到回 null。
+ *   ffmpeg：给了就用这个，不给就按设置页那一套去找（src/platform/media-probe）；找不到回 null。
  * @returns {Promise<Buffer|null>}
  */
 async function videoFrame(file, opts = {}) {

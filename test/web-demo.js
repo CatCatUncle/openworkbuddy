@@ -2,7 +2,7 @@
 // Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 "use strict";
 /**
- * 网页演示录屏 record_web_demo —— 纯函数那一层（lib/web-demo-plan.js）+ 马赛克（lib/demo-mask.js）
+ * 网页演示录屏 record_web_demo —— 纯函数那一层（src/util/web-demo-plan.js）+ 马赛克（src/util/demo-mask.js）
  *
  * 这个工具出的东西（mp4、每步截图、steps.json）是要发给别人看的，所以钉死的主要是三件事：
  *   ① 步骤脚本写错了，报错要说清是「第几步、哪个动作、怎么改」，模型拿到能自己改对；
@@ -13,7 +13,7 @@
  *
  * 分段编号【1】【2】……，WEB_DEMO_ONLY=5,9 只跑其中几段。
  * 真 ffmpeg / 真 Chrome 那两段：机器上没有就跳过（OWB_REQUIRE_FFMPEG=1 时没有 ffmpeg 算红）。
- * 录制器那一层（lib/web-demo-recorder.js）的用例从【11】往下接，见文件末尾的标记。
+ * 录制器那一层（src/domains/media/web-demo-recorder.js）的用例从【11】往下接，见文件末尾的标记。
  */
 const fs = require("fs");
 const os = require("os");
@@ -381,7 +381,7 @@ function fakeDom({ withRoot }) {
 }
 
 section(7, "马赛克：搬家后两头一致、新文档一开头就能装、脚本里的字不动", () => {
-  ok(require(path.join(ROOT, "scripts", "demo-mask")) === MASK, "scripts/demo-mask.js 转发的就是 lib 那份（record-demo.js、老测试照旧能用）");
+  ok(require(path.join(ROOT, "scripts", "demo-mask")) === MASK, "scripts/demo-mask.js 转发的就是 src/util 那份（record-demo.js、老测试照旧能用）");
   ok(require(path.join(ROOT, "scripts", "demo-timing")) === TIMING, "scripts/demo-timing.js 同上");
   eq(Object.keys(MASK).sort(), ["defaultPairs", "maskScript"], "导出没少");
   const libSrc = fs.readFileSync(mod("web-demo-plan"), "utf8");
@@ -696,7 +696,7 @@ section(10, "真 Chrome：马赛克自检、泄漏扫描、假光标、找元素
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// demo-b 从这里往下接【11】起：录制器（lib/web-demo-recorder.js）的用例，用 section(11, "…", async () => { … }) 登记。
+// demo-b 从这里往下接【11】起：录制器（src/domains/media/web-demo-recorder.js）的用例，用 section(11, "…", async () => { … }) 登记。
 // 上面几段只测纯函数和注入脚本；泄漏扫描前先调 window.__demoMask.rescan()，理由见【7】【10】。
 // ─────────────────────────────────────────────────────────────────────────────
 //

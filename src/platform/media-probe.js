@@ -11,7 +11,7 @@
  * 解成同一采样率的 16 位单声道 WAV，数采样；整条音轨也用这同一份 PCM 按采样拼，
  * 字幕时间轴和声音用的是同一套数，就不可能对不上。
  *
- * 找二进制照 engines/which.js 的规矩：PATH → 常见安装位置 → 登录 shell。
+ * 找二进制照 src/platform/which.js 的规矩：PATH → 常见安装位置 → 登录 shell。
  */
 const fs = require("fs");
 const os = require("os");

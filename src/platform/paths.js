@@ -116,7 +116,7 @@ function copyIfMissing(from, to) {
 //   - 有一个不是：整份原样留着，记一行日志，告诉人想要新版怎么办。
 // 「发出去过的哪一版」有两个来源：
 //   ① .builtin-skills/manifest.json：这台机器上每次铺进去 / 换进去的那一版，逐文件记指纹；
-//   ② lib/builtin-skill-hashes.json：git 历史里每一版的指纹，给没有 ① 的老装机认老版本用。
+//   ② src/platform/builtin-skill-hashes.json：git 历史里每一版的指纹，给没有 ① 的老装机认老版本用。
 // 不靠修改时间猜：cp -c、解压、同步盘都会改 mtime，猜错一次就是丢用户的字。
 //
 // 同一个数据目录被新旧两版应用轮流打开时，没人动过的内置技能会跟着正在跑的那版来回换——

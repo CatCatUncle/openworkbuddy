@@ -5,8 +5,8 @@
  * 打包完整性闸门：装机包里少一个 require 得到的文件，应用就是打不开。
  *
  * v0.1.1 就栽在这儿——electron-builder.config.js 的 files 白名单只写了 "*.js"，
- * 那个通配符只匹配顶层，engines/ 那 7 个文件一个都没进包。装机后 server.js 在
- * `require("./engines")` 抛 MODULE_NOT_FOUND，异常被 whenReady 的 async 吞掉，
+ * 那个通配符只匹配顶层，当时 engines 目录那 7 个文件一个都没进包。装机后 server.js 在
+ * require 引擎时抛 MODULE_NOT_FOUND，异常被 whenReady 的 async 吞掉，
  * 端口没人监听、窗口也没亮相 —— 用户看到的就是「双击没反应 / 有进程没界面」。
  *
  * 白名单是手写的，require 图是一直在长的，两边迟早对不上。所以这里不去修白名单本身，
@@ -37,13 +37,12 @@ const ASSETS = [
 /**
  * 整个目录都是运行时源码、必须原样进包的那几个子目录。
  *
- * 光靠爬 require 图不够：它只认字面量路径，`for (const f of fs.readdirSync("routes")) require(...)`
+ * 光靠爬 require 图不够：它只认字面量路径，`for (const f of fs.readdirSync(dir)) require(...)`
  * 这种按目录挂路由/工具的写法它一个都爬不到——于是白名单漏了那个目录，这道闸门照样绿。
- * 第 7 批要把 server.js 拆进 routes/ + lib/、tools.js 拆进 src/tools/，正是这种形状；
- * engines/ 是 v0.1.1 栽过的那一个。"*.js" 只匹配顶层，所以这里按目录逐个核：
- * 盘上有的运行时文件，包里一个都不许少。目录还不存在的时候什么都不查。
+ * 顶层只留几个入口文件，其余运行时源码全在 src/ 下（分层见 docs/代码架构.md）；
+ * "*.js" 只匹配顶层，所以这里把 src/ 整棵树逐个文件核：盘上有的运行时文件，包里一个都不许少。
  */
-const SOURCE_DIRS = ["engines", "routes", "src", "lib"];
+const SOURCE_DIRS = ["src"];
 /** 只核运行时会读的类型；.map / .d.ts 本来就该被瘦身删掉，别让两道闸门互相打架 */
 const SOURCE_EXT = /\.(?:js|cjs|mjs|json)$/;
 

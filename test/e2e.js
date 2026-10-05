@@ -1986,7 +1986,7 @@ async function testCliMode() {
     assert.notStrictEqual(r8.status, 0, "-C 指了个用不了的目录却照跑，文件会被写到别处");
     assert(/工作目录用不了/.test(r8.stderr), "-C 失败时没说清是目录的问题：" + r8.stderr.slice(-300));
 
-    // 11）成果按对话分文件夹，口径跟网页端同一份（lib/task-dirs.js）。
+    // 11）成果按对话分文件夹，口径跟网页端同一份（src/util/task-dirs.js）。
     //     以前命令行一律摊在工作空间根上：两趟各写一份 报告.md，后一趟把前一趟的盖了，网页上「本对话」也认不出来
     const ws = path.join(home, "workspace");
     const real = (p) => fs.realpathSync(p);
@@ -4389,12 +4389,12 @@ function testTaskDirLifecycle() {
   const srv = srcLib.src("server");
 
   // ── 一、文件夹名从哪儿来 ──────────────────────────────────────
-  // 洗字和起名都在 lib/task-dirs.js（网页对话和命令行共用 newSessDir），
+  // 洗字和起名都在 src/util/task-dirs.js（网页对话和命令行共用 newSessDir），
   // 那里只剩「拿哪句话、洗完是空的叫什么」这一行；server.js 的 assignSessionDir 必须经它起名
   const taskDirs = require(modPath("task-dirs"));
   const tdSrc = fs.readFileSync(modPath("task-dirs"), "utf8");
   const sm = /function newSessDir\([\s\S]*?(const slug = [^\n]*\n)/.exec(tdSrc);
-  assert.ok(sm, "lib/task-dirs.js 里找不到取文件夹名的那一行（newSessDir 被改过？）");
+  assert.ok(sm, "src/util/task-dirs.js 里找不到取文件夹名的那一行（newSessDir 被改过？）");
   assert.ok(/function assignSessionDir\([\s\S]*?taskDirs\.newSessDir\(sess, getWorkspaceDir\(\), dataPath\("workspace"\), message, assignedDirs\)/.test(srv),
     "server.js 的 assignSessionDir 没经 taskDirs.newSessDir 起名（两头各起各的，终端和网页认不回同一格）");
   const slugOf = new Function("taskSlug", "sess", "text", sm[1] + "; return slug;").bind(null, taskDirs.taskSlug);
@@ -7259,10 +7259,10 @@ function enginePathProblems(src) {
   const has = (k, re, why) => { if (!re.test(src[k] || "")) bad.push(why); };
   // 真连一次的接口：--version 只证明文件在，证明不了能用（装了没登录长得一模一样）
   has("server", /\/api\/engines\/test/, "server.js 里没有真连一次的接口");
-  has("index", /testConnect/, "engines/index.js 里没有 testConnect");
+  has("index", /testConnect/, "src/engines/index.js 里没有 testConnect");
   // 找得到：三级找法那层必须真的被引擎用上
   const whichSpec = JSON.stringify(modPath.spec("engines", "which")).replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
-  has("index", new RegExp(`require\\(${whichSpec}\\)`), "engines/index.js 没接 which（GUI 启动时 PATH 是残废的）");
+  has("index", new RegExp(`require\\(${whichSpec}\\)`), "src/engines/index.js 没接 which（GUI 启动时 PATH 是残废的）");
   has("claude", /resolveBin/, "claude-code.js 没走 resolveBin，双击启动会说没装");
   has("codex", /resolveBin/, "codex.js 没走 resolveBin，双击启动会说没装");
   has("jsonl", /augmentedPath/, "jsonl.js 没给子进程补 PATH，CLI 起来了也会在第一个工具调用上死掉");
@@ -13720,7 +13720,7 @@ function testPackageAssetDrift() {
     ["新加了没登记的资源", () => packageAssetDrift({ ...sources, "server.js": sources["server.js"] + '\nrequire("fs").readFileSync(path.join(__dirname, "docs", "安装与启动.md"));' }, gate.ASSETS, cfg.files)],
     // "!electron-builder.config.js" 把它从 *.js 里排除掉了：谁在生产代码里按路径打开它，就是装完必炸
     ["引用了被 ! 排除掉的文件", () => packageAssetDrift({ ...sources, "server.js": sources["server.js"] + '\nrequire("fs").readFileSync(path.join(__dirname, "electron-builder.config.js"));' }, gate.ASSETS, cfg.files)],
-    // rootPath 相对仓库根：故意放在子目录的文件里，按本文件目录去拼就落到 engines/docs/（不存在）被跳过，这条就抓不到
+    // rootPath 相对仓库根：故意放在子目录的文件里，按本文件目录去拼就落到 src/engines/docs/（不存在）被跳过，这条就抓不到
     ["rootPath 写法引用了没登记的资源", () => packageAssetDrift({ ...sources, [modPath.rel("bridge")]: sources[modPath.rel("bridge")] + '\nrequire("fs").readFileSync(rootPath("docs", "安装与启动.md"));' }, gate.ASSETS, cfg.files)],
     ["files 去掉 public 通配符", () => packageAssetDrift(sources, gate.ASSETS.filter((a) => !a.startsWith("public/")), cfg.files.filter((g) => g !== "public/**/*"))],
     // 分镜表 schema 是 drama-pipeline 经 rootPath 引的、只靠 "skills/short-drama/**/*" 这条套了两层的通配收进包
@@ -13896,7 +13896,7 @@ async function testPortableTempSweep() {
  * Windows 就给它新开一个黑窗口——跑一条命令闪一下；MCP 服务这种常驻的，开着多久黑窗口就挂多久。
  * Mac 上这个选项什么都不做，所以漏了在这边永远看不出来，只能静态扫。
  *
- * 扫的范围就是进安装包、在 Node 里跑的那些（顶层 *.js、engines/routes/src/lib、eval 那两个）。
+ * 扫的范围就是进安装包、在 Node 里跑的那些（顶层 *.js、src/ 整棵树、eval 那几个）。
  * 每一处 child_process 调用要么自己带 windowsHide，要么摊开的是已知带它的 opts（pickShell / launchPlan 给的），
  * 要么上面三行内写明「不加 windowsHide：原因」（要的就是那扇窗口，或者那条路 Windows 上根本走不到）。
  * 经 run_shell 起的脚本自己再起的子进程不用管：它们挂在 cmd 那个已经藏起来的控制台上。
@@ -13950,7 +13950,7 @@ function windowsHideOffenders(rel, src) {
 
 function testWindowsHideStatic() {
   const ROOT = path.join(__dirname, "..");
-  const files = fs.readdirSync(ROOT).filter((f) => f.endsWith(".js") && !["electron-builder.config.js", "eslint.config.js", "market.js"].includes(f));
+  const files = fs.readdirSync(ROOT).filter((f) => f.endsWith(".js") && !["electron-builder.config.js", "eslint.config.js"].includes(f));
   const walk = (dir) => {
     if (!fs.existsSync(path.join(ROOT, dir))) return;
     for (const e of fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true })) {
@@ -13959,7 +13959,7 @@ function testWindowsHideStatic() {
       else if (e.name.endsWith(".js")) files.push(rel);
     }
   };
-  for (const d of ["engines", "routes", "src", "lib"]) walk(d);
+  walk("src");
   files.push(...["eval/run", "eval/tasks", "eval/judge", "eval/rejudge"].map((n) => entry.rel(n)));
   // 正向对照：清单是按目录扫 + 手写几个拼出来的，搬家后哪个目录没扫到，那一片就悄悄不查了。
   // 拿 test/lib/mod.js、entry.js 两张表对一遍：表里每个 .js 都得在清单里
@@ -14379,7 +14379,7 @@ function testI18n() {
   assert(!shortMiss2.length, "轨迹条短标没翻：" + JSON.stringify(shortMiss2));
   // 反向对照：编一个词典里没有的动词，闸门必须抓得到（证明它不是恒真）
   assert([...verbs, "瞎编个动词"].filter((v) => !I.lookup(v + " 演示.md", "en")).length === 1, "动词闸门对漏翻不敏感");
-  // 本机引擎那条状态：真源在 engines/*.js，照着它拼一条出来查
+  // 本机引擎那条状态：真源在 src/engines/*.js，照着它拼一条出来查
   for (const [f, sample] of [
     [modPath.rel("claude-code"), "本机 Claude Code 已启动（模型 claude-opus-5，102 个工具），不消耗 API 额度"],
     [modPath.rel("codex"), "本机 Codex 已启动（模型 gpt-5-codex），不消耗 API 额度"],
@@ -16249,7 +16249,7 @@ function testSkillRenameKeepsAssets() {
 }
 
 /**
- * Windows 上本机引擎起不起得来（engines/win.js）。
+ * Windows 上本机引擎起不起得来（src/platform/win.js）。
  *
  * 这条是「不少朋友下载之后打不开」里最硬的一块：npm 在 Windows 上装出来的不是可执行文件，
  * 是 claude.cmd 这种垫片，而 Node 从 18.20.2（CVE-2024-27980）起直接 spawn .cmd 一律 EINVAL。
@@ -16388,7 +16388,7 @@ function testWindowsLaunch() {
   // ---- 7) 接线：算得再对，jsonl.js 不用也是白搭 ----
   const src = fs.readFileSync(modPath("jsonl"), "utf8");
   assert.strictEqual((src.match(/win\.launchPlan\(/g) || []).length, 4,
-    "engines/jsonl.js 里有 spawn 没走 launchPlan：跑任务、探版本、探选项、探 --help 四处都得走，少一处 Windows 上就少一处能用");
+    "src/engines/jsonl.js 里有 spawn 没走 launchPlan：跑任务、探版本、探选项、探 --help 四处都得走，少一处 Windows 上就少一处能用");
   assert.ok(!/spawn\(bin,/.test(src), "★还有地方直接 spawn 那个 .cmd：Node 会当场 EINVAL★");
   assert.ok(!/process\.kill\(-child\.pid/.test(src), "★还在按进程组杀：Windows 上这句必抛★");
 

@@ -1565,7 +1565,7 @@ async function runOnce(runtime, text, mode, interactive, shown) {
   }
 }
 
-// ---------- 成果按对话分文件夹（口径跟网页端是同一份，见 lib/task-dirs.js） ----------
+// ---------- 成果按对话分文件夹（口径跟网页端是同一份，见 src/util/task-dirs.js） ----------
 // 应用自己建的根（默认工作空间、没填目录的项目、租户根）下，一条会话一格「任务_月日_标题」。
 // 以前命令行一律摊在根上：终端里跑十趟，十份「报告.html」后写的把先写的盖了，网页上「本对话」也一份都认不出来。
 // -C 进代码仓库、设置里挑的现成文件夹、分身目录照旧就地读写——那里要改的东西本来就在根上
@@ -1580,7 +1580,7 @@ function chatDirHere(asked) {
   if (!taskDirs.perChatRoot(root, anchors)) return null;
   if (!taskDirs.useSessDirAt(sess, root, dataPath("workspace"))) taskDirs.newSessDir(sess, root, dataPath("workspace"), asked);
   else try { fs.mkdirSync(path.join(root, sess.dir), { recursive: true }); } catch {}
-  // 分文件夹以前摊在根上的老产出：整篇重写时写回那份，不在新格里另起第二份（跟网页那头同一套，见 lib/task-dirs.js flatOutputs）
+  // 分文件夹以前摊在根上的老产出：整篇重写时写回那份，不在新格里另起第二份（跟网页那头同一套，见 src/util/task-dirs.js flatOutputs）
   try {
     const tools = require("./src/agent/tools");
     tools.ownRootFiles(sessionId, taskDirs.flatOutputs(sess, root, dataPath("workspace"), tools.workspaceKeyOf(root)).map((n) => path.join(root, n)));

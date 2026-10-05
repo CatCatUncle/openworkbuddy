@@ -2,7 +2,7 @@
 // Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 "use strict";
 /**
- * 音频量时长 + 句子拼接 —— lib/media-probe.js
+ * 音频量时长 + 句子拼接 —— src/platform/media-probe.js
  *
  * 按句配音的字幕要跟声音对齐到 150ms 以内。读 mp3 容器里写的时长，每段差 25–50ms，
  * 累加到第 4–6 句就超线了；所以时长一律按 PCM 采样数算，整条音轨也按采样拼。

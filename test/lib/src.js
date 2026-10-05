@@ -8,13 +8,13 @@
  *   const SERVER = src("server");   // 原来是 fs.readFileSync(path.join(ROOT, "server.js"), "utf8")
  *
  * 为什么要有它：几十个测试拿正则去切 server.js / tools.js / app-07-canvas.js 的源码，
- * 钉「某个函数里有没有那句话」。第 7 批要把这三个大文件拆开——
- *   server.js           → server.js + routes/ + lib/
- *   tools.js            → tools.js + src/tools/
+ * 钉「某个函数里有没有那句话」。这三个大文件后来都拆开了——
+ *   server.js           → server.js + src/server/routes/ + 散到 src/ 各层的服务端部件
+ *   tools.js            → src/agent/tools.js + src/tools/
  *   app-07-canvas.js    → app-07-canvas.js + app-07-canvas-*.js
  * 每个测试都写死一个文件名的话，拆一个文件就得回头改几十处，漏一处那条断言就切到空串：
- * 有的当场红（好），有的「找不到就跳过」静悄悄变绿（坏）。所以先把读法收到这儿，
- * 拆的时候只改这一个文件；目录还没建的时候就只读主文件，跟原来逐字一样。
+ * 有的当场红（好），有的「找不到就跳过」静悄悄变绿（坏）。所以读法收在这儿，
+ * 再拆、再搬都只改这一个文件。
  *
  * 拼接用 "\n" 连，不加分隔标记：加了标记，按「下一个 function」切片的正则会把标记切进去。
  * 这个文件不进 test/all.js 的 SUITES——它不是套件，是被 require 的库；
@@ -106,9 +106,9 @@ function publicScriptRefs(root = ROOT) {
 const CANVAS_MAIN = "public/js/app-07-canvas.js";
 const CANVAS_PART = /^public\/js\/app-07-canvas(?:-[^/]+)?\.js$/;
 
-// src("server") 拼进来的那些模块：原来住在 routes/ 和 lib/ 下，这里按 test/lib/mod.js 的名字点名，
-// 顺序就是原来按目录扫出来的顺序（routes 在前，各自按文件名）。
-// 为什么不接着按目录扫：目录重整会把这两个目录搬空，按目录扫就悄悄扫成零个，
+// src("server") 拼进来的那些模块：按 test/lib/mod.js 的名字点名（"routes/xxx" 是 mod 表里的逻辑名，
+// 文件在 src/server/routes/ 下），顺序沿用最早按目录扫出来的顺序（路由在前，各自按文件名）。
+// 为什么不按目录扫：目录重整把这些文件散到了 src/ 各层，按目录扫一搬就悄悄扫成零个，
 // 拼出来只剩 server.js，「找不到就跳过」的断言跟着静悄悄变绿。按名字取，少一个当场抛。
 const SERVER_PARTS = Object.freeze([
   "routes/canvas", "routes/compose", "routes/drama", "routes/library", "routes/prompt-tpls",
@@ -117,12 +117,11 @@ const SERVER_PARTS = Object.freeze([
   "web-demo-plan", "web-demo-recorder", "winname", "ws-browse",
 ]);
 
-// 兜底扫描：这几个目录下的 .js 都是服务端的部件，上面没点名的新文件也拼上（排在最后），别让新文件躲过测试。
-// 老布局是 routes/ 和 lib/；目录重整把它俩搬空——routes 搬进 src/server/routes/，lib/ 那些按层散到
-// src/util、src/platform、src/domains……。只扫老目录的话搬完兜底恒为空，所以加上服务端部件的新家 src/server/。
-// 散到别的层的不扫：那些目录大半不是服务端的，整个拼进来会把别的模块混进 server 组。新加的路由模块不管落在哪，
-// test/layout-invariants.js ⑦ 都要求它在 SERVER_PARTS 里点名，并且钉住 routes 组成文件都在这几个目录底下（扫描没扫空）。
-const SERVER_SCAN_DIRS = Object.freeze(["routes", "lib", "src/server"]);
+// 兜底扫描：这个目录下的 .js 都是服务端的部件，上面没点名的新文件也拼上（排在最后），别让新文件躲过测试。
+// 只扫服务端应用层 src/server/（含 src/server/routes/）；散到别的层的（src/util、src/platform、src/domains……）不扫：
+// 那些目录大半不是服务端的，整个拼进来会把别的模块混进 server 组。新加的路由模块不管落在哪，
+// test/layout-invariants.js ⑦ 都要求它在 SERVER_PARTS 里点名，并且钉住路由组成文件都在这个目录底下（扫描没扫空）。
+const SERVER_SCAN_DIRS = Object.freeze(["src/server"]);
 // src/server/ 里本来就不算 server 组的模块：原来住在仓库根、各有各的测试，src("server") 从没拼过它们。
 // 点名排除，它们搬进 src/server/ 之后 src("server") 拼出来的跟搬之前逐字一样；别的新文件照样拼上
 const NOT_SERVER_PARTS = Object.freeze(["relay", "relay-files", "static-compress", "json-compress", "backup-auto", "retention", "migrate", "updater"]);

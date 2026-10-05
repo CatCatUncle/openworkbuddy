@@ -14,7 +14,7 @@
  * 一律只在**请求人自己的**根下面找：`..`、绝对路径、软链接指到根外面的，统统拒绝——
  * safePathIn 只看字面，软链接它看不出来，所以最后再拿 realpath 复核一遍。
  *
- * 写法照 routes/canvas.js：路由写在顶层、依赖做成模块级变量，createLibraryRouter(deps) 一次填上
+ * 写法照 src/server/routes/canvas.js：路由写在顶层、依赖做成模块级变量，createLibraryRouter(deps) 一次填上
  * （测试按顶格函数名切源码，缩进进工厂函数就切不出来了）。依赖全从 server.js 递进来，不回头 require 它。
  */
 const fs = require("fs");

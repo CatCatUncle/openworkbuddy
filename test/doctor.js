@@ -406,7 +406,7 @@ try {
     run = fakeRun(9009);
     eq(await doctor.probePython(fakeWhich({ python: REAL }), run), REAL, "Program Files 里的 python 直接认");
     eq(run.calls.length, 0, "反向对照：不在 WindowsApps 里就不跑 -c 1");
-    // ③b WindowsApps 排在真 Python 前面：engines/which 现在认得出别名（stat 报错、lstat 在），resolveBin 先撞上的是占位程序。
+    // ③b WindowsApps 排在真 Python 前面：src/platform/which 现在认得出别名（stat 报错、lstat 在），resolveBin 先撞上的是占位程序。
     //     跑不起来就跳过 WindowsApps 再找一遍，后面那个真的照认，不能报「缺」
     const W = require(mod("which"));
     const APPS = "C:\\Users\\小王\\AppData\\Local\\Microsoft\\WindowsApps";

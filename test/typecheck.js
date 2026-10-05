@@ -421,7 +421,7 @@ async function main() {
     ok(whenMissing({ CI: "true" }) === "fail" && whenMissing({}) === "skip" && whenMissing({ CI: "false" }) === "skip",
       "没装 typescript：CI 上红、本地跳过（CI=false 也算本地）");
     const ignProbe = gitignoredDirMatcher("# x\nlogs/\neval/runs/\nskills/*-pro/\n!keep/\n*.log\n");
-    ok(ignProbe("eval/runs/2026/workspace/a.js") && ignProbe("engines/logs/a.js") && ignProbe("skills/abc-pro/x.js")
+    ok(ignProbe("eval/runs/2026/workspace/a.js") && ignProbe("src/engines/logs/a.js") && ignProbe("skills/abc-pro/x.js")
       && !ignProbe("eval/run.js") && !ignProbe("server.js") && !ignProbe("skills/abc/x.js") && !ignProbe("keep/a.js"),
       ".gitignore 目录行的判法：带斜杠的只认根下、不带的哪层都算、* 不跨目录、注释和 ! 行不算");
 

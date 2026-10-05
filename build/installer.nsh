@@ -1,6 +1,6 @@
 ; 安装向导的补充脚本：electron-builder 会自动带上 build/installer.nsh（只给安装版，免安装版不用），配置里不用写。
 ;
-; 不许装进数据文件夹。数据根是 ~/OpenWorkBuddy（设了 OPENWORKBUDDY_HOME 就是它，见 paths.js），
+; 不许装进数据文件夹。数据根是 ~/OpenWorkBuddy（设了 OPENWORKBUDDY_HOME 就是它，见 src/platform/paths.js），
 ; 账号、会话、工作区和成果全在里面；而升级、卸载时会把整个安装目录 RMDir /r。
 ; 装进去当时看不出问题，下次升级才连数据一起删光。最容易撞上的两种选法：
 ;   · 选了 C:\Users\<名字>：向导会在路径后面自动补一层 OpenWorkBuddy，正好补成数据文件夹

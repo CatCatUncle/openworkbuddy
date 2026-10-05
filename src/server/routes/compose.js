@@ -3,12 +3,12 @@
 "use strict";
 /**
  * 一键合成的两条接口：/api/canvas/compose 的 POST（算计划 / 开跑 / 叫停）和 GET（查进度）。
- * 从 server.js 搬出来的，URL、状态码、返回体一个字没动；队列本身在 lib/compose-jobs.js，这里只翻译请求。
- * 顶层登记、路由器变量叫 app 的缘故见 routes/canvas.js 开头。
+ * 从 server.js 搬出来的，URL、状态码、返回体一个字没动；队列本身在 src/domains/media/compose-jobs.js，这里只翻译请求。
+ * 顶层登记、路由器变量叫 app 的缘故见 src/server/routes/canvas.js 开头。
  */
 const express = require("express");
 
-// createComposeRouter(deps) 填上：lib/compose-jobs.js 的 createComposeJobs 造出来的那一份
+// createComposeRouter(deps) 填上：src/domains/media/compose-jobs.js 的 createComposeJobs 造出来的那一份
 let jobs;
 
 // 大小写敏感跟 server.js 一致：子路由器不继承外面那个 case sensitive routing 的设置

@@ -773,7 +773,7 @@ function parentMain() {
       for (const ent of fs.readdirSync(d, { withFileTypes: true })) {
         if (ent.name.startsWith(".") || ["node_modules", "test", "public", "data", "workspace", "dist", "build", "skills"].includes(ent.name)) continue;
         const p = path.join(d, ent.name);
-        if (ent.isDirectory()) { if (["src", "engines", "lib"].includes(ent.name) || d !== ROOT) walk(p); continue; }
+        if (ent.isDirectory()) { if (ent.name === "src" || d !== ROOT) walk(p); continue; }
         if (!/\.js$/.test(ent.name)) continue;
         const src = fs.readFileSync(p, "utf8");
         for (const m of src.matchAll(/\.(call|notify)\(\s*"([a-z]+\.[A-Za-z]+)"/g)) out.push({ kind: m[1] === "call" ? "call" : "note", op: m[2], file: path.relative(ROOT, p) });

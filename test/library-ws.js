@@ -2,7 +2,7 @@
 // Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 "use strict";
 /**
- * 资料库「工作区」那一栏（lib/ws-browse.js + /api/files/tree + /api/library/outputs 的全量计数）：
+ * 资料库「工作区」那一栏（src/domains/library/ws-browse.js + /api/files/tree + /api/library/outputs 的全量计数）：
  *
  *   ① 一层层列：第七层的文件从根一路点得到；从根往下点能到的文件，跟全量走一趟数出来的一个不差
  *   ② 该藏的藏：点开头的、临时区/依赖/版本库、应用自己的数据目录；用户自己叫 data 的文件夹不误伤
@@ -350,7 +350,7 @@ const LIST = { appDataDir: APPDATA };
     const src = fs.readFileSync(mod("tools"), "utf8");
     const body = src.slice(src.indexOf("function outputFiles()"), src.indexOf("function outputFiles()") + 3000);
     const wsSpec = JSON.stringify(mod.spec("tools", "ws-browse")).replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
-    ok(/skipEntry\(e\.name, full, APP_DATA_DIR\)/.test(body) && new RegExp(`require\\(${wsSpec}\\)`).test(body), "outputFiles 用的就是 lib/ws-browse 的 skipEntry，不是自己抄的一份");
+    ok(/skipEntry\(e\.name, full, APP_DATA_DIR\)/.test(body) && new RegExp(`require\\(${wsSpec}\\)`).test(body), "outputFiles 用的就是 src/domains/library/ws-browse 的 skipEntry，不是自己抄的一份");
   });
 
   await section("⑦ 两万个文件：走得多快、撞没撞线", () => {

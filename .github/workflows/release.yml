@@ -32,7 +32,7 @@ jobs:
           cache: npm
       - run: npm ci
       # 产物名来自 package.json 的 ${version}，流水线认的却是 tag。两边不一致 =
-      # Release v0.1.7 里挂着 0.1.6 的包；更糟的是 updater.js 的 currentVersion() 读的也是
+      # Release v0.1.7 里挂着 0.1.6 的包；更糟的是 src/server/updater.js 的 currentVersion() 读的也是
       # package.json，装完的用户「设置 → 关于 → 检查更新」会永远显示有新版，点过去下的还是同一个包。
       # 加 if 是为了不误杀第 11 行那条手动通道：workflow_dispatch 时 GITHUB_REF_NAME 是分支名 main，
       # 'main'.replace(/^v/,'') 仍然非空，不守卫的话手动跑一次流水线必红。

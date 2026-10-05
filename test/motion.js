@@ -1029,7 +1029,7 @@ async function executorTests() {
 
   console.log("【13】html_to_image 批量：名字跟 HTML 走、撞名接 _2、一张坏了不拖累别的、最后一条进度是收尾");
   {
-    // 真截图要开 Electron 窗口，这里拿替身顶掉：media.js 是用到时才 require("../../htmlshot")，先占住缓存就换得掉
+    // 真截图要开 Electron 窗口，这里拿替身顶掉：media.js 是用到时才 require("../platform/render/htmlshot")，先占住缓存就换得掉
     const shotPath = require.resolve(mod("htmlshot"));
     const prevShot = require.cache[shotPath];
     /** @type {Array<{ p: string, o: any }>} */

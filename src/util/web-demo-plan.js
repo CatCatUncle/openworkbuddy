@@ -5,7 +5,7 @@
 /**
  * record_web_demo 的纯函数层：步骤脚本校验、画幅预设、打码清单、打字/鼠标节奏、自动放大、
  * ffmpeg 滤镜串、要注入页面的几段脚本、泄漏扫描、steps.json。
- * 这里没有任何 I/O：录制器（lib/web-demo-recorder.js）只管开浏览器、收帧、调 ffmpeg，
+ * 这里没有任何 I/O：录制器（src/domains/media/web-demo-recorder.js）只管开浏览器、收帧、调 ffmpeg，
  * 能算的都在这儿算好，单测不用起 Chrome 也能把规矩钉死。
  */
 const { defaultPairs } = require("./demo-mask");

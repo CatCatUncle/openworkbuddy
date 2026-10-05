@@ -262,7 +262,7 @@ flowchart TB
  Trace -. optional .-> Langfuse["Langfuse"]
 ```
 
-The diagram doubles as a reading order: start at `server.js`, then see how `agent.js` orchestrates models and tools. Details → [实现细节](docs/实现细节.md) (Chinese)
+The diagram doubles as a reading order: start at `server.js`, then see how `src/agent/agent.js` orchestrates models and tools. Details → [实现细节](docs/实现细节.md), code layering → [代码架构](docs/代码架构.md) (both Chinese)
 
 ## What's new
 
@@ -338,7 +338,7 @@ Most docs are in Chinese; the code and comments are the source of truth.
 | [扩展](docs/扩展.md) | Skills, MCP, plugins, experts | [路线图](docs/路线图.md) | What's next, what counts as done |
 | [IM与定时任务](docs/IM与定时任务.md) | Feishu / QQ / WeCom / WeChat / DingTalk | [实现细节](docs/实现细节.md) | How the agent loop actually runs |
 | [安全基线](docs/安全基线.md) | Where data lands, who can read it, what isn't covered | [远程访问](docs/远程访问.md) | Reaching your machine from outside; both switches off by default |
-| [账号与部署运维](docs/账号与部署运维.md) | Accounts, offboarding, password recovery, backups, running several orgs | | |
+| [账号与部署运维](docs/账号与部署运维.md) | Accounts, offboarding, password recovery, backups, running several orgs | [代码架构](docs/代码架构.md) | How the code is layered, who may require whom, where new code goes |
 
 ## Also by the same author
 

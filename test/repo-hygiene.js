@@ -779,7 +779,7 @@ console.log("\n【10】public/js 下每个脚本都得有人加载：页面里�
 
 console.log("\n【11】test/lib/src.js：没拆时逐字等于原文件，拆了按规矩拼");
 {
-  // 几十个测试都经它读 server / tools / canvas。它自己不是套件，没人测的话，第 7 批拆完它漏拼一个文件，
+  // 几十个测试都经它读 server / tools / canvas。它自己不是套件，没人测的话，大文件拆完它漏拼一个文件，
   // 那些「源码里不许再有某句话」的反向断言会静悄悄全绿——所以在编的小仓库里把拼法钉死
   const os = require("os");
   const { src, files } = require("./lib/src");
@@ -798,13 +798,14 @@ console.log("\n【11】test/lib/src.js：没拆时逐字等于原文件，拆了
       && src("canvas", tmp) === fs.readFileSync(path.join(tmp, "public/js/app-07-canvas.js"), "utf8"),
       "目录还没建：三组都只读主文件，逐字一样（不多一个换行）");
 
+    // 老布局的两个目录（已搬空）里放几个 .js 当负对照：兜底扫描只认 src/server/，老目录里冒出来的不拼
     for (const [rel, text] of [["routes/b.js", "B"], ["routes/a/x.js", "AX"], ["lib/c.js", "C"], ["lib/note.txt", "不是 js"],
       ["src/server/routes/n.js", "N"], ["src/server/m.js", "M"],
       ["src/tools/z.js", "Z"], ["src/other.js", "不是 src/tools"], ["public/js/app-07-canvas-a.js", "PA"],
       ["public/js/app-07-canvas-z.js", "PZ"], ["public/js/app-07-canvas-orphan.js", "PO"]]) put(rel, text);
     const got = ["server", "tools", "canvas"].map((g) => files(g, tmp).join(","));
-    ok(got[0] === "server.js,routes/a/x.js,routes/b.js,lib/c.js,src/server/m.js,src/server/routes/n.js" && got[1] === "tools.js,src/tools/z.js",
-      "拆了之后：主文件打头，routes/ lib/ src/server/（目录重整后服务端部件的家）、src/tools/ 下的 .js 递归拼上，别的不拼", got.slice(0, 2).join(" | "));
+    ok(got[0] === "server.js,src/server/m.js,src/server/routes/n.js" && got[1] === "tools.js,src/tools/z.js",
+      "拆了之后：主文件打头，src/server/（服务端部件的家，含其下路由）、src/tools/ 下的 .js 递归拼上，老布局目录和别的都不拼", got.slice(0, 2).join(" | "));
     ok(got[2] === "public/js/app-07-canvas.js,public/js/app-07-canvas-z.js,public/js/app-07-canvas-a.js,public/js/app-07-canvas-orphan.js"
       && src("canvas", tmp).endsWith("\nPZ\nPA\nPO"),
       "画布按加载顺序拼（不是按文件名），没人加载的片也拼在最后，测试照样看得见", got[2]);
@@ -816,7 +817,7 @@ console.log("\n【11】test/lib/src.js：没拆时逐字等于原文件，拆了
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
-  // 真仓库不按目录扫，按 test/lib/mod.js 点名：routes/ lib/ 搬空以后不会悄悄只剩 server.js
+  // 真仓库不按目录扫，按 test/lib/mod.js 点名：文件再搬家也不会悄悄只剩 server.js
   const { SERVER_PARTS, mainOf } = require("./lib/src");
   const { mod } = require("./lib/mod");
   const real = files("server");

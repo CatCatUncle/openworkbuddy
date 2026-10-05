@@ -16,6 +16,7 @@ OpenWorkBuddy is a self-hostable desktop and local web workspace for office auto
 - Chinese README: /README.md
 - English README: /README.en.md
 - Contributing: /CONTRIBUTING.md
+- Code architecture (layers and dependency rules): /docs/代码架构.md
 - Feature list: /docs/功能清单.md
 - Install and startup: /docs/安装与启动.md
 - Model configuration: /docs/配置模型.md

@@ -226,7 +226,7 @@ const noteNoFfmpegFile = (install) => `本机没装 ffmpeg，视频按普通文�
 // ───────────────────────── 跑二进制 ─────────────────────────
 
 /**
- * 生产用的 ffmpeg / ffprobe：位置取 lib/media-probe 的 resolveMediaBins()，跑用它的 runBin
+ * 生产用的 ffmpeg / ffprobe：位置取 src/platform/media-probe 的 resolveMediaBins()，跑用它的 runBin
  * （补全过的 PATH，超时即杀子进程）。都在函数里才 require，理由见文件头。
  * @returns {Bins}
  */

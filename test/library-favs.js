@@ -2,7 +2,7 @@
 // Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 "use strict";
 /**
- * 资料库收藏（lib-favs.js + routes/library.js 的 /api/library/favorite(s)）和资料库列表上顺带多出来的字段：
+ * 资料库收藏（lib-favs.js + src/server/routes/library.js 的 /api/library/favorite(s)）和资料库列表上顺带多出来的字段：
  *
  *   ① 收藏 / 取消：来回点，状态对；取消一个本来没收藏的不写盘；重复收藏不改「收藏于」
  *   ② 20 下并发：20 个不同文件一起收藏一条不丢；同一个文件连点 20 下，最后的状态就是最后那一下

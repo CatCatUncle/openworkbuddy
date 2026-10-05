@@ -134,7 +134,7 @@ async function main() {
   for (const f of mustIgnore) if (!(await eslint.isPathIgnored(path.join(ROOT, f)))) notIgnored.push(f);
   ok(notIgnored.length === 0, "用户数据、构建产物、依赖、任务_* 临时目录、public/vendor 都不查", "漏了：" + notIgnored.join("、"));
   const wronglyIgnored = [];
-  for (const f of ["server.js", "public/js/app-01.js", "test/lint.js", "engines/__probe__.js"]) {
+  for (const f of ["server.js", "public/js/app-01.js", "test/lint.js", "src/engines/__probe__.js"]) {
     if (await eslint.isPathIgnored(path.join(ROOT, f))) wronglyIgnored.push(f);
   }
   ok(wronglyIgnored.length === 0, "反向对照：自己写的代码没被误忽略", "被忽略了：" + wronglyIgnored.join("、"));

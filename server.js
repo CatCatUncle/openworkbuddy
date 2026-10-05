@@ -375,11 +375,11 @@ function sweepInterruptedRuns() {
 }
 const assignedDirs = new Set(); // 刚分配、还没写出文件的对话文件夹名：两个新对话同时起步不许撞同名
 
-/** 当前工作目录下要不要按对话分成果文件夹（口径见 lib/task-dirs.js 开头） */
+/** 当前工作目录下要不要按对话分成果文件夹（口径见 src/util/task-dirs.js 开头） */
 function perChatHere() {
   return taskDirs.perChatRoot(getWorkspaceDir(), { workspace: dataPath("workspace"), projects: dataPath("projects"), tenants: org.tenantsDir() });
 }
-/** 会话记的成果文件夹还在不在「此刻这个根」下（口径在 lib/task-dirs.js，命令行那头用同一套） */
+/** 会话记的成果文件夹还在不在「此刻这个根」下（口径在 src/util/task-dirs.js，命令行那头用同一套） */
 function sessDirHere(sess) {
   return taskDirs.sessDirIn(sess, getWorkspaceDir(), dataPath("workspace"));
 }
@@ -1408,7 +1408,7 @@ app.get("/api/update", async (req, res) => {
 app.get("/api/files", (_req, res, next) => { scanOutputs(getWorkspaceDir()).then((f) => res.json(f), next); });
 
 // 资料库「工作区」那一栏：一次列一层，像访达那样一层层点进去。/api/files 是「最近动过的 500 个、
-// 最深 3 层」，拿它当全集的话，第 4 层往下和第 501 个往后的文件哪儿都找不到（细账在 lib/ws-browse.js 开头）。
+// 最深 3 层」，拿它当全集的话，第 4 层往下和第 501 个往后的文件哪儿都找不到（细账在 src/domains/library/ws-browse.js 开头）。
 // 根跟 /api/files 是同一个：getWorkspaceDir() 已经被 tenantScope 绑到这个人所属组织、当前项目的工作区上。
 // dir 里的 ..、绝对路径、链接一律 400；文件夹已经没了回 404，前端据此退回根。
 const wsBrowse = require("./src/domains/library/ws-browse");
@@ -1422,7 +1422,7 @@ app.get("/api/files/tree", (req, res) => {
   }
 });
 
-// 画布 / 短剧分镜表 / 一键合成三组路由在 routes/ 下，合成的任务队列在 lib/compose-jobs.js。
+// 画布 / 短剧分镜表 / 一键合成三组路由在 src/server/routes/ 下，合成的任务队列在 src/domains/media/compose-jobs.js。
 // 挂在这个位置不挪：登录、租户根、平台权限、脱敏这几道闸都在前面，过完了 getWorkspaceDir 才认得出是谁的工作区。
 // 三份之间互相要用的几样（素材定位、读分镜表、等时钟走过版本号）也在这儿递过去，路由文件不回头 require server.js
 app.use(canvasRoutes.createCanvasRouter({
@@ -3915,7 +3915,7 @@ app.get("/api/library", (req, res) => {
   const dir = (() => { try { return libRel((req.query || {}).dir); } catch { return ""; } })();
   let files = [];
   let dirs = [];
-  // 收藏跟着资料库的根走（routes/library.js），列的时候逐个打上 fav，前端不用再单独问一趟
+  // 收藏跟着资料库的根走（src/server/routes/library.js），列的时候逐个打上 fav，前端不用再单独问一趟
   const favs = libraryRoutes.libFavKeys(libraryRootOf(req.user));
   try {
     for (const e of fs.readdirSync(libPath(dir), { withFileTypes: true })) {
@@ -4644,7 +4644,7 @@ app.post("/api/open-workspace", async (_req, res) => {
 const LARK_TMP = path.join(require("os").tmpdir(), "openworkbuddy-lark");
 /**
  * lark-cli 在 Windows 上是 npm 装的 .cmd 垫片：按名字直接 execFile 找不到它（只认 .exe），
- * 找到了新版 Node 也不许不经 shell 起批处理。先认出全路径，再走引擎那套起法（engines/win.js，顺带不弹黑窗）
+ * 找到了新版 Node 也不许不经 shell 起批处理。先认出全路径，再走引擎那套起法（src/platform/win.js，顺带不弹黑窗）
  */
 function larkBin() {
   if (process.platform !== "win32") return "lark-cli";
@@ -7025,7 +7025,7 @@ app.post("/api/chat", async (req, res) => {
     if (!useSessionDirHere(sess)) assignSessionDir(sess, message);
     taskBaseDir = sess.dir;
   }
-  // 分文件夹以前摊在根上的老产出：整篇重写时写回那份，不在新格里另起第二份（见 lib/task-dirs.js flatOutputs）
+  // 分文件夹以前摊在根上的老产出：整篇重写时写回那份，不在新格里另起第二份（见 src/util/task-dirs.js flatOutputs）
   try { require("./src/agent/tools").ownRootFiles(sessionId, taskBaseDir ? rootFilesOf(sess).map((n) => path.join(getWorkspaceDir(), n)) : []); } catch {}
   // 成果面板标「本对话」用；不进回放记录。换到自选文件夹时发空串：面板手里还是上一个根里的文件夹名，
   // 拿它去筛这边摊在根上的文件，永远是「本对话 0」

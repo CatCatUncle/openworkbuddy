@@ -98,20 +98,15 @@ module.exports = {
   // 白名单：只有列出来的才进包。用户数据（data/ workspace/ config.json backups/ .tmp/
   // plugins/ eval/runs/）一个都不能进——那是本机的账号和聊天记录，装机态它们在 ~/OpenWorkBuddy
   files: [
-    // ⚠️ "*.js" 只匹配顶层，不含子目录。v0.1.1 就是漏了 engines/ 那 7 个文件：装机后
-    // server.js 在 require("./engines") 抛 MODULE_NOT_FOUND，端口没人监听、窗口不亮，
-    // 用户看到的是「双击没反应 / 任务管理器有进程但没界面」。子目录必须一个个写出来，
-    // 漏了由 afterPack 的完整性闸门当场拦下（scripts/check-package-files.js）。
+    // ⚠️ "*.js" 只匹配顶层，不含子目录。v0.1.1 就是漏了当时 engines 目录那 7 个文件：装机后
+    // server.js 在 require 引擎时抛 MODULE_NOT_FOUND，端口没人监听、窗口不亮，
+    // 用户看到的是「双击没反应 / 任务管理器有进程但没界面」。顶层只剩几个入口文件，
+    // 其余源码全在 src/ 下，由 "src/**/*" 一条带上；漏了由 afterPack 的完整性闸门当场拦下
+    // （scripts/check-package-files.js 按 SOURCE_DIRS 逐个文件核）。
     "*.js",
-    "!market.js",
     "!electron-builder.config.js",
     "!eslint.config.js", // 开发期的 lint 配置，运行时一个字节都不读，"*.js" 会把它顺手带进包
-    "engines/**/*",
-    // 第 7 批把 server.js 拆进 routes/ + lib/、tools.js 拆进 src/tools/。目录还没建时这三条什么都不匹配；
-    // 建了却漏写，afterPack 按 check-package-files.js 的 SOURCE_DIRS 逐个文件核，当场拦下
-    "routes/**/*",
     "src/**/*",
-    "lib/**/*",
     "public/**/*",
     "eval/run.js",
     "eval/tasks.js",
@@ -141,7 +136,7 @@ module.exports = {
     "!node_modules/**/*.d.mts",
     "!node_modules/**/*.d.cts",
     // ⚠️ 按目录名删（test/doc/example 之类）试过，当场炸：@iconify/utils 的运行时代码就住在
-    // lib/emoji/test/ 下、exceljs 的核心在 lib/doc/ 下，删完 mermaid 和 exceljs 都 require 不起来。
+    // @iconify/utils/lib/emoji/test/ 下、exceljs 的核心在 exceljs/lib/doc/ 下，删完 mermaid 和 exceljs 都 require 不起来。
     // 那条规则只省 1 MB，换的是整包打不开——不做。留下的三条只按「运行时永远不读的文件类型」删。
     // LICENSE / *.md 一律留着：MIT 之类的许可证要求随分发附上原文，省这几 MB 不值当
     //

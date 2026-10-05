@@ -6,7 +6,7 @@
  * 演示录屏的「马赛克层」：把临时目录、home 目录、用户名、主机名这些本机信息在页面里替换掉。
  * 纯函数，只产出一段要注入页面的 JS 字符串；录屏脚本和测试都从这里拿，保证录出去的和测过的是同一份。
  * 原先在 scripts/demo-mask.js，可 scripts/ 不进安装包，record_web_demo 在装好的应用里也要用它，
- * 所以搬到 lib/；scripts/demo-mask.js 留一行转发，record-demo.js 和各处测试照旧 require 那边。
+ * 所以搬进了 src/util/；scripts/demo-mask.js 留一行转发，record-demo.js 和各处测试照旧 require 那边。
  */
 const os = require("os");
 

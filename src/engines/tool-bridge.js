@@ -20,7 +20,7 @@
  * 只借 CLI 确实没有的那些。run_shell / write_file / read_file 这类一概不借：
  * CLI 自带的版本更好用，重复挂上去只会占它的上下文，还让模型在两套同名工具间犹豫。
  *
- * 环境变量（由 engines/bridge.js 拼好后传进来）：
+ * 环境变量（由 src/engines/bridge.js 拼好后传进来）：
  *   OPENWORKBUDDY_HOME  数据根目录（config.json / workspace 都在这儿找）
  *   OPENWORKBUDDY_BRIDGE_BASEDIR   本次对话的成果子目录（相对 workspace），产物落这里
  *   OPENWORKBUDDY_BRIDGE_TOOLS     借出去的工具名，逗号分隔
@@ -34,7 +34,7 @@
  * 但两个 CLI 都有 shell。所以同一份实现再开一个命令行入口：
  *     node tool-bridge.js list
  *     node tool-bridge.js call <工具名> '<json>'      # 也收 @文件 和 -（stdin）
- * engines/bridge.js 会把环境变量烘进一个叫 owb 的小脚本，
+ * src/engines/bridge.js 会把环境变量烘进一个叫 owb 的小脚本，
  * 提示词里直接给模型这条命令。MCP 挂不上时它照样能生图。
  *
  * ⚠️ stdout 是协议通道，一个字节的杂音都会让 CLI 认为服务器坏了。

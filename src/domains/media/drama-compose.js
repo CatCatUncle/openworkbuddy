@@ -40,7 +40,7 @@
 /** @typedef {import("../../../types/drama").ComposePlan} ComposePlan */
 /** @typedef {import("../../../types/drama").Blocker} Blocker */
 
-// 编码参数、起名、配乐混音图、缩放补边这些零件搬到了 lib/timeline-compose.js，和时间轴成片共用一套。
+// 编码参数、起名、配乐混音图、缩放补边这些零件搬到了 src/domains/media/timeline-compose.js，和时间轴成片共用一套。
 // 搬家是逐字节搬的：test/fixtures/drama-compose-golden.json 钉着这边的全部输出，差一个字就红
 const {
   VIDEO_EXT, AUDIO_EXT, AUDIO_ARGS, X264_ARGS, SLACK, MUSIC_GAIN,
@@ -56,7 +56,7 @@ const FALLBACK_SIZE = { w: 1080, h: 1920 };
 /**
  * 配乐。短剧没有配乐就只是一串会说话的画面——它是这条产线上最后一件「人一听就知道差在哪、
  * 但没人知道该敲哪条命令」的事，所以也得写成代码，不能留给模型临场发挥。
- * 音量、淡入淡出和混音图在 lib/timeline-compose.js（musicMixParts），这里只管「哪段算配乐」。
+ * 音量、淡入淡出和混音图在 src/domains/media/timeline-compose.js（musicMixParts），这里只管「哪段算配乐」。
  */
 /**
  * 哪些字眼算「这段音频是配乐」。

@@ -3,7 +3,7 @@
 // Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle)
 "use strict";
 /**
- * 内置技能历来出厂过的每一版，逐文件记下指纹，写进 lib/builtin-skill-hashes.json。
+ * 内置技能历来出厂过的每一版，逐文件记下指纹，写进 src/platform/builtin-skill-hashes.json。
  *
  * 为什么要这么个文件：装机版启动时要判断「数据目录里这份内置技能有没有人动过」——没动过的才换成新版
  * （paths.js 的 syncBuiltinSkills）。新装的机器有 manifest 记着当初铺进去的是哪一版；

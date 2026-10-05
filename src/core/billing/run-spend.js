@@ -9,7 +9,7 @@
  * 记账的地方（quota.record 算完钱那一行、im.js 收到整趟的 usage 那一刻）只管 note 一笔，
  * 不用知道自己在谁的任务里。没进过 track 的调用 note 是空操作 = 老行为一字不差。
  *
- * 只认得同一个进程里的账：CLI 引擎（Claude Code / Codex）的工具跑在 engines/tool-bridge.js
+ * 只认得同一个进程里的账：CLI 引擎（Claude Code / Codex）的工具跑在 src/engines/tool-bridge.js
  * 那个子进程里，这里看不见。所以调用方拿到的数只在「整趟都在本进程里跑」时才算完整，
  * 不完整的时候该不显示，不该当成完整的数给人看（im.js 就是这么做的）。
  *

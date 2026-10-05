@@ -211,8 +211,8 @@ console.log("\n⑥ 测试用的路径表（test/lib/mod.js、entry.js）对得�
 
 console.log("\n⑦ src(\"server\") 的兜底扫描没扫空、建路由的模块都点了名");
 // 几十个测试拿 src("server") 反向扫服务端源码（deploy 的 .dockerignore 检查、server-stall、tenant……）。
-// 它按 SERVER_PARTS 点名拼，再把 SERVER_SCAN_DIRS 下没点名的新文件补在后面。目录重整把 routes/ lib/ 搬空，
-// 扫描目录要是没跟上，兜底就恒为空；新路由模块要是落在扫描目录以外又没点名，测试就看不见它
+// 它按 SERVER_PARTS 点名拼，再把 SERVER_SCAN_DIRS 下没点名的新文件补在后面。扫描目录要是跟不上搬家，
+// 兜底就恒为空；新路由模块要是落在扫描目录以外又没点名，测试就看不见它
 {
   const { SERVER_PARTS, SERVER_SCAN_DIRS, NOT_SERVER_PARTS, files } = require("./lib/src");
   const { entry } = require("./lib/entry");

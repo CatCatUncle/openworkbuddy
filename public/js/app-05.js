@@ -294,7 +294,7 @@ const PROMPT_TPLS = [
  *   · 内置：上面这张表，谁都改不了。点「改」是另存一份到「我的」或「公司」，同一步把原来那条藏起来
  *   · 我的：只有自己看得见、改得了
  *   · 公司：全组织看得见，只有管理员改得了（个人桌面版没有这一层，服务端给的 org 是 null）
- * 能不能改以服务端为准（routes/prompt-tpls.js），这里只决定按钮摆不摆：
+ * 能不能改以服务端为准（src/server/routes/prompt-tpls.js），这里只决定按钮摆不摆：
  * 摆了按钮点下去才说「你没权限」，跟没有这个按钮一样气人。
  */
 const TPL_ICONS = ["file-text", "sparkles", "lightbulb", "pencil", "search", "chart-column", "presentation", "notebook-pen",
@@ -2917,7 +2917,7 @@ function engVerdictHtml(v, on) {
  * 这张卡的职责不是"列个单子"，是**让用户真的用上本机那份订阅**。三件事必须做到：
  *   ① 找得到 —— 双击图标启动的 App 拿到的 PATH 是残废的（只有 /usr/bin:/bin:…），
  *      claude/codex 装在 homebrew、nvm、~/.local/bin 里的一律看不见。这一层在
- *      engines/which.js 里补齐了，卡片这边把"从哪找到的"如实标出来。
+ *      src/platform/which.js 里补齐了，卡片这边把"从哪找到的"如实标出来。
  *   ② 说实话 —— `--version` 只证明文件在，不证明能用。装了没登录、订阅过期、
  *      被限流，在旧版卡片上全都显示"已装 ✓"，绿的。所以没真跑过之前徽章只说
  *      「本机有 2.1.278」，绿色留给连接测试真跑通的那一种；而那个测试挂在每一张

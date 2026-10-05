@@ -4,7 +4,7 @@
 /**
  * 短剧分镜表路由：/api/drama/storyboard(s)（读、整份存、剧本拆草稿、草稿落盘、单格回写）和
  * /api/drama/shot-history/*（一镜一镜的版本留底与恢复）。从 server.js 原样搬出来的，URL、状态码、返回体一个字没动。
- * 顶层登记、路由器变量叫 app、依赖做成模块级变量的缘故见 routes/canvas.js 开头。
+ * 顶层登记、路由器变量叫 app、依赖做成模块级变量的缘故见 src/server/routes/canvas.js 开头。
  */
 const fs = require("fs");
 const path = require("path");
@@ -481,12 +481,12 @@ app.post("/api/drama/shot-history/restore", (req, res) => {
 /**
  * deps：getWorkspaceDir / outputFiles / safePath 来自 tools.js；account / org / budget 是 server.js 手里那几份
  * （草稿接口真调模型，积分和预算两道闸跟 /api/chat 一样）；llm / llmForSession / addUsage / toolRunSubdir /
- * toolRunSubdirReady 是 server.js 的；canvasAssetNear 来自 routes/canvas.js。
+ * toolRunSubdirReady 是 server.js 的；canvasAssetNear 来自 src/server/routes/canvas.js。
  */
 function createDramaRouter(deps) {
   ({ getWorkspaceDir, outputFiles, safePath, account, org, budget, llm, llmForSession, addUsage, toolRunSubdir, toolRunSubdirReady, canvasAssetNear } = deps);
   return app;
 }
 
-// readDramaJson 画布的素材台账也要用（routes/canvas.js），由 server.js 通过 deps 递过去
+// readDramaJson 画布的素材台账也要用（src/server/routes/canvas.js），由 server.js 通过 deps 递过去
 module.exports = { createDramaRouter, readDramaJson };

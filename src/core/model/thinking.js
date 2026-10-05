@@ -125,7 +125,7 @@ function planFor(entry, level) {
  *
  * · claude：`--thinking enabled|adaptive|disabled`，但这是个**隐藏选项**，而且
  *   claude 对不认识的选项是**静默忽略**的（实测 `claude --nosuchflag x --version` 照样退出 0）。
- *   所以老版本上直接发等于什么也没发，必须先探一下支不支持（见 engines/claude-code.js 的 probeThinking）。
+ *   所以老版本上直接发等于什么也没发，必须先探一下支不支持（见 src/engines/claude-code.js 的 probeThinking）。
  * · codex：`-c model_reasoning_effort="..."`，取值取自 0.146.0 二进制里的枚举
  *   （none/minimal/low/medium/high/xhigh/max/ultra），关掉就是 none。
  *

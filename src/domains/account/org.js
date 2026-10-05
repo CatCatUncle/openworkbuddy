@@ -258,7 +258,7 @@ function rootDirOf(org, baseWorkspace) {
   if (org.root_dir) return path.resolve(org.root_dir);
   return path.join(DATA_DIR, "tenants", org.id);
 }
-/** 没指定目录的租户根都建在这下面一层（应用自己建的，成果按对话分文件夹，见 lib/task-dirs.js） */
+/** 没指定目录的租户根都建在这下面一层（应用自己建的，成果按对话分文件夹，见 src/util/task-dirs.js） */
 function tenantsDir() {
   return path.join(DATA_DIR, "tenants");
 }

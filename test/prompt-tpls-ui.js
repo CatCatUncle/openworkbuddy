@@ -12,7 +12,7 @@
  *   D 个人桌面版：没有「公司」那一栏
  *   E 切英文：按钮、栏目、编辑框、藏起那一问，一个汉字都不剩（内置模板正文本来就是中文，不算）
  *
- * 后端是真的 routes/prompt-tpls.js，登录那层换成「现在是谁」一个变量；页面是真的 index.html。
+ * 后端是真的 src/server/routes/prompt-tpls.js，登录那层换成「现在是谁」一个变量；页面是真的 index.html。
  *
  * 跑法：npx electron test/prompt-tpls-ui.js
  */

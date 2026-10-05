@@ -25,7 +25,7 @@ npm start       # 改前端就直接刷新浏览器；改后端重启这条命�
 - **注释写「为什么」，不写「是什么」。** 代码本身说得清做了什么，值钱的是当初为什么这么选、绕开了什么坑。中文注释。
 - **新功能要带测试。** 后端加到 `test/e2e.js`（模拟 LLM，不需要 Key）；纯前端的行为加到 `test/frontend.js`（在真 Chromium 里跑）。
   只跑其中几条：`E2E_ONLY=testDramaCompose,testI18n node test/e2e.js`（名字就是函数名）——有几条要跑真 ffmpeg、真开服务器，一条一分多钟，改一处不必连带跑完全部。**提交前还是要跑一遍完整的。**
-- **动到落盘的数据就走 `store.js`**，别自己 `fs.writeFileSync` 一个 JSON——原子写和 `.bak` 兜底都在那儿。
+- **动到落盘的数据就走 `src/platform/store.js`**，别自己 `fs.writeFileSync` 一个 JSON——原子写和 `.bak` 兜底都在那儿。
 - 提交信息用中文，一句话说清这次改了什么、解决了什么问题。
 
 ## 改了提示词或工具描述，得跑一遍评测
@@ -33,7 +33,7 @@ npm start       # 改前端就直接刷新浏览器；改后端重启这条命�
 这一条是硬规矩，因为它挡的是**看不见的退步**：系统提示词多一句、工具描述换个说法，
 单元测试一条都不会红——模型变笨是不报错的，只有把整个 agent 黑盒跑一遍才看得出来。
 
-**什么时候必须跑**：动了 `agent.js` 的系统提示词、`tools.js` 里任何工具的 `description`、
+**什么时候必须跑**：动了 `src/agent/agent.js` 的系统提示词、`src/agent/tools.js` 里任何工具的 `description`、
 技能/专家的提示词、上下文裁剪或记忆注入的逻辑。改 UI、改文档、改一个后端端点不用。
 
 ```bash
@@ -76,8 +76,8 @@ npm run eval -- --save-baseline            # 跑完把这次结果钉成基线
 | **补一个模型服务商预设** —— `config.example.json` 和 README 的表里加一行 | ⭐ |
 | **改文档 / 纠错别字** | ⭐ |
 | **加一个内置专家** —— `experts.json` 里加一份系统提示 | ⭐⭐ |
-| **接一个新的 IM 渠道** —— 照着 `im-qq.js` / `im-wechat.js` 的样子写 | ⭐⭐⭐ |
-| **加一个内置工具** —— `tools.js` 里加，记得过安全闸 | ⭐⭐⭐ |
+| **接一个新的 IM 渠道** —— 照着 `src/im/im-qq.js` / `src/im/im-wechat.js` 的样子写，在 `src/im/im.js` 里接上 | ⭐⭐⭐ |
+| **加一个内置工具** —— `src/agent/tools.js` 里加，大块实现放 `src/tools/`，记得过安全闸 | ⭐⭐⭐ |
 
 > **关于贡献的授权（一句话版）**：你提交的代码同样按 [PolyForm Noncommercial 1.0.0](LICENSE) 发布，
 > 同时你授予项目著作权人（开发者猫叔）一份**永久、全球、免费、可转授**的许可，
@@ -119,24 +119,24 @@ description: 把会议录音转写或聊天记录整理成结构化会议纪要�
 
 ## 项目结构
 
+仓库根只留入口，其余源码都在 `src/` 下，按「谁依赖谁」分七层：只许 require 同层或更低的层。
+每层放什么、谁能引谁、新代码该放哪，见 [代码架构](docs/代码架构.md)；`npm test` 里的 `test/layers.js` 盯着这条规矩。
+
 ```
-server.js        Web API + SSE + 各种端点
-agent.js         Agent 运行时（协调者/专家循环、工具路由、系统提示）
-llm.js           LLM 适配层（OpenAI 兼容 + Anthropic）
-tools.js         内置工具
-skills.js        技能加载器            skills/       技能包
-plugins.js       Agent Plugins 1.0.0   plugins/      已装插件
-mcp.js           MCP 客户端（stdio / Streamable HTTP）
-account.js       账号 / 鉴权 / 用量 / 积分
-security.js      安全中心（审批闸门、黑白名单、审计）
-store.js         JSON 落盘（原子写 + .bak 兜底）  im-store.js   IM 会话仓库
-experts.json     专家与专家团定义
-im.js            IM 总线            im-qq.js / im-wechat.js / im-ilink.js
-scheduler.js     定时任务
-electron-main.js 桌面壳             cli.js        命令行
-pet.js           桌面宠物窗口（透明置顶挂件）  pet-preload.js / public/pet.html
-public/          前端（单文件，没有构建步骤）
-workspace/       成果文件输出        data/         账号与会话
+入口 L6     server.js  cli.js  electron-main.js  server-host.js
+应用 L5     src/server/    服务端部件，routes/ 下是拆出来的路由
+            src/cli/       命令行与 REPL
+            src/im/        IM 总线 im.js，各渠道 im-qq.js / im-wechat.js / im-ilink.js
+            src/desktop/   桌面宠物、服务子进程看护
+智能体 L4   src/agent/     Agent 运行时 agent.js、内置工具 tools.js、MCP 客户端、gates/
+            src/tools/     从 tools.js 拆出来的大块工具实现（媒体、画布、合成…）
+            src/engines/   外部引擎（Claude Code / Codex）适配
+业务域 L3   src/domains/   account（账号、组织、授权）· media · content · library
+核心 L2     src/core/      config · model（llm.js）· billing · safety（security.js）· memory · ext（skills.js）· judge · obs · automation
+平台 L1     src/platform/  路径 paths.js、落盘 store.js、日志、渲染 render/
+工具 L0     src/util/      纯函数小工具
+数据与资源  experts.json  skills/  plugins/  public/（前端，没有构建步骤）
+运行时产物  workspace/（成果文件）  data/（账号与会话）
 ```
 
 ## 改了文档，两边都要改

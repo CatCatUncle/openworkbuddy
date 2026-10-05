@@ -2,7 +2,7 @@
 // Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 "use strict";
 /**
- * IM 回复发出去之前的两道整形（lib/im-reply.js），外加飞书那条真接线。
+ * IM 回复发出去之前的两道整形（src/util/im-reply.js），外加飞书那条真接线。
  *
  * 起因是飞书上的真事：一条 4000 多字的财报解读，卡片说「正文见下一条消息」，下一条在
  * 「**1. 客户合同负债」处戛然而止（im.js 里 out.slice(0, 3500) 直接砍）；正文里那张 ```svg 信息图

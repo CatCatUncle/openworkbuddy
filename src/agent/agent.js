@@ -3996,7 +3996,7 @@ const OUTPUT_FILES_CAP = 500;   // 跟 tools.js 的 FILES_CAP 同一个数：面
 /**
  * 真正走树的那段。**不许引用外面的任何变量**：它会被 toString() 塞进 worker 里跑，
  * 线程起不来时主线程也拿同一段跑——两条路是同一份代码，口径不会分叉。
- * @param {any} wsb lib/ws-browse
+ * @param {any} wsb src/domains/library/ws-browse
  * @param {any} sweep sweep.js
  * @param {typeof import("fs")} fs
  * @param {typeof import("path")} path

@@ -1,8 +1,8 @@
 /**
  * 时间轴成片（compose_video）的类型：timeline.json、排出来的计划、跑起来的任务。
  *
- * 真源是代码不是这里：输入的形状以 lib/timeline-compose.js 的 validateTimeline 为准（它收什么、怎么洗），
- * 计划和步骤以同一个文件的 timelinePlan / TimelineStep typedef 为准，任务以 lib/compose-jobs.js 的 startTimeline 为准。
+ * 真源是代码不是这里：输入的形状以 src/domains/media/timeline-compose.js 的 validateTimeline 为准（它收什么、怎么洗），
+ * 计划和步骤以同一个文件的 timelinePlan / TimelineStep typedef 为准，任务以 src/domains/media/compose-jobs.js 的 startTimeline 为准。
  * 那边改了形状这里跟着改——这份文件只给 JSDoc 和 tsc 看，运行时没有人读它，不会自己跟着变。
  *
  * 用法（CommonJS 文件里）：
@@ -175,7 +175,7 @@ export interface TimelinePlanFail {
 export type TimelinePlan = TimelinePlanOk | TimelinePlanFail;
 
 // ────────────────────────────────────────────────────────────────
-// 跑起来的任务（lib/compose-jobs.js startTimeline / timelineGet 交回来的那份）
+// 跑起来的任务（src/domains/media/compose-jobs.js startTimeline / timelineGet 交回来的那份）
 // ────────────────────────────────────────────────────────────────
 
 export interface ComposeFilm {

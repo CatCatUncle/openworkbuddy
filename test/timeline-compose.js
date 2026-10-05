@@ -61,7 +61,7 @@ const WRITE_GOLDEN = process.argv.includes("--write-golden");
 // ════════════════════════════════════════════════════════════════════════
 // 【1】drama-compose 搬家：逐字节一样
 // ════════════════════════════════════════════════════════════════════════
-// 通用的那几样（编码参数、字幕时间、起名、配乐混音图、缩放补边）要搬去 lib/timeline-compose.js
+// 通用的那几样（编码参数、字幕时间、起名、配乐混音图、缩放补边）要搬去 src/domains/media/timeline-compose.js
 // 给新的时间轴成片共用。搬的时候最怕的不是报错，是「差一个字」：配乐图里少一个 volume=2，
 // 片子照样出、照样能播，只是整条台词小了一半——e2e 那条真跑 ffmpeg 的测试量得出来，
 // 但它只覆盖一种画布。所以这里在**搬之前**把十几种画布的整份计划钉成 golden，搬完逐字节比。
@@ -200,7 +200,7 @@ function goldenSnapshot() {
   return { keys: Object.keys(C).sort(), internals: Object.keys(I).sort(), plans, music, srt, safe, free, srtText, exts };
 }
 
-section("【1】drama-compose 搬到 lib/timeline-compose.js 前后逐字节一样");
+section("【1】drama-compose 搬到 src/domains/media/timeline-compose.js 前后逐字节一样");
 {
   const snap = goldenSnapshot();
   const text = JSON.stringify(snap, null, 1) + "\n";
@@ -245,7 +245,7 @@ section("【1】drama-compose 搬到 lib/timeline-compose.js 前后逐字节一�
 }
 
 // 后面几节（【2】起）要用到的模块。golden 那一节必须在它们之前跑完：
-// 录 golden 的那一刻 lib/timeline-compose.js 还不存在
+// 录 golden 的那一刻 src/domains/media/timeline-compose.js 还不存在
 if (WRITE_GOLDEN) {
   console.log(`\n${pass} 过 / ${fail} 挂（只录 golden，后面几节没跑）`);
   globalThis.fetch = realFetch;

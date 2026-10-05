@@ -17,7 +17,7 @@
 老配置让每条模型自己抄一份地址和 Key，换 Key 时漏掉一条，那条就在下次对话时突然 401——
 而界面上它跟别的条目长得一模一样，人根本不知道该改哪儿。
 
-所以 `chat-models.js` 把「地址 + Key」抽到渠道那一层：
+所以 `src/core/model/chat-models.js` 把「地址 + Key」抽到渠道那一层：
 
 ```jsonc
 {
@@ -29,9 +29,9 @@
 
 关键的一招是**压平**：每次规整都把渠道的地址和 Key 写回模型条目上。
 所以下游那 **108 处**读 `m.base_url` / `m.api_key` 的代码一个字都不用改，老配置也照跑，
-升级不需要用户做任何事。四路媒体模型（`media-models.js`）跟它共用同一张 `providers` 表。
+升级不需要用户做任何事。四路媒体模型（`src/core/model/media-models.js`）跟它共用同一张 `providers` 表。
 
-三条红线写在 `chat-models.js` 开头：不删模型、协议归渠道管、同地址不同 Key 算两个渠道。
+三条红线写在 `src/core/model/chat-models.js` 开头：不删模型、协议归渠道管、同地址不同 Key 算两个渠道。
 
 ### 1.2 谁看得到 Key
 
@@ -41,7 +41,7 @@
 | 平台管理员（默认组织的 admin） | `key_hint`：前三位…末四位 | 能 |
 | 组织管理员 / 审计员 / 普通成员 | `********`，外加一个 `has_key` 布尔 | 不能（403「渠道归平台管理员配」） |
 
-个人桌面版故意不脱敏，理由写在 `admin.js`：能连上回环地址的人本来就能直接打开 config.json。
+个人桌面版故意不脱敏，理由写在 `src/domains/account/admin.js`：能连上回环地址的人本来就能直接打开 config.json。
 留着脱敏在那儿只有一个效果——界面把 Key 显示成空，用户随手一存就把真 Key 抹了。
 
 平台管理员那一档是 2026-09 改的：以前每打开一次设置页，九把明文 Key 就往浏览器里送一趟，
@@ -52,7 +52,7 @@
 1. `config.json` 的 `providers[].api_key`（设置页写的就是它）
 2. `OPENWORKBUDDY_KEY_<渠道id>` 环境变量 —— **这轮新加的**
 3. `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` —— 通用兜底，现在只发给这家自己的域名
-4. 搜索那一路另有三个：`JINA_API_KEY` / `TAVILY_API_KEY` / `BRAVE_API_KEY`（`tools.js`）
+4. 搜索那一路另有三个：`JINA_API_KEY` / `TAVILY_API_KEY` / `BRAVE_API_KEY`（`src/agent/tools.js`）
 
 ---
 
@@ -105,7 +105,7 @@ $ node keyleak.js          # 起本地监听器冒充 api.moonshot.cn
 | 渠道卡「测一下」 | 这个 Key 上游不认（HTTP 401），检查有没有复制全、是不是这家服务商的 Key |
 | 真跑一趟任务 | `LLM 接口错误 401: {"error":{"message":"Incorrect API key provided: sk-xxx. You can find your API key at https://platform.openai.com/...` |
 
-`llm.js` 里 400（上下文超限）和 402（欠费）都翻成人话了，唯独最常见的 401 漏了，
+`src/core/model/llm.js` 里 400（上下文超限）和 402（欠费）都翻成人话了，唯独最常见的 401 漏了，
 直接掉进兜底那句 `LLM 接口错误 ${status}` 里。
 
 ### 2.4 换 Key 不进审计
@@ -123,7 +123,7 @@ $ node keyleak.js          # 起本地监听器冒充 api.moonshot.cn
 
 ### 3.1 装凭证的文件一律 0600
 
-`store.js` 加了 `mode` 选项和一个 `tighten(file, mode)`：
+`src/platform/store.js` 加了 `mode` 选项和一个 `tighten(file, mode)`：
 
 ```js
 store.writeJsonAtomic(CONFIG_PATH, config, { pretty: true, mode: store.SECRET_MODE });
@@ -145,7 +145,7 @@ store.writeJsonAtomic(CONFIG_PATH, config, { pretty: true, mode: store.SECRET_MO
 
 ### 3.2 取 Key 分三级，越明确的越优先
 
-`llm.js` 新增 `resolveKey(cfg, which)`：
+`src/core/model/llm.js` 新增 `resolveKey(cfg, which)`：
 
 | 优先级 | 来源 | 认哪些地址 |
 |---|---|---|
@@ -168,7 +168,7 @@ store.writeJsonAtomic(CONFIG_PATH, config, { pretty: true, mode: store.SECRET_MO
 
 ### 3.3 401 跟「测一下」统一口径
 
-`llm.js` 补了 401/403 分支，点名是哪条渠道、指明去哪儿改，原始报错留在后面方便贴给客服。
+`src/core/model/llm.js` 补了 401/403 分支，点名是哪条渠道、指明去哪儿改，原始报错留在后面方便贴给客服。
 
 ### 3.4 换 Key 进审计，只留掩码
 
@@ -210,8 +210,8 @@ libsecret），那是另一个题目，而且 Docker 里没有钥匙串可接。
 **把压平那一步去掉。** 108 处读扁平字段，为一个「更干净的数据模型」全改一遍，
 收益是零、风险是每一处都可能漏。压平这招的全部意义就是让它们不用动。
 
-**每个成员自带 Key。** 当前设计是**一台服务器一套 Key**，用量靠 `quota.js`（按次计费的外部 API）
-和 `account.js`（模型 token 折算的积分）两本账分别记，闸门默认全关。
+**每个成员自带 Key。** 当前设计是**一台服务器一套 Key**，用量靠 `src/core/billing/quota.js`（按次计费的外部 API）
+和 `src/domains/account/account.js`（模型 token 折算的积分）两本账分别记，闸门默认全关。
 「成员自带 Key」是另一套模型，会同时动账本、闸门、归属三处，且跟「平台管理员统一管控」
 这个前提冲突。真有需求的时候单开一轮，不顺手塞进这次。
 

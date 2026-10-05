@@ -186,7 +186,7 @@ function bgStart({ command, cwd, spawnFn, logDir, owner = "", session = "", keep
     if (job.buf.length > BG_KEEP) { const cut = job.buf.length - BG_KEEP; job.buf = job.buf.slice(cut); job.dropped += cut; }
     if (log) { try { log.write(s); } catch {} }
   };
-  // 按流解码，两路各一个：半个汉字切在两块中间不变乱码；Windows 上 cmd 自带命令吐 GBK 也认得（lib/out-decode.js）
+  // 按流解码，两路各一个：半个汉字切在两块中间不变乱码；Windows 上 cmd 自带命令吐 GBK 也认得（src/util/out-decode.js）
   const decOut = outDecoder(), decErr = outDecoder();
   if (child.stdout) child.stdout.on("data", (d) => take(decOut.write(d)));
   if (child.stderr) child.stderr.on("data", (d) => take(decErr.write(d)));

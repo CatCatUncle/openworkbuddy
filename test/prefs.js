@@ -709,7 +709,7 @@ async function runSourcePins() {
   const bootHintRaw = new Function(slice("electron-main.js", "bootHint") + "\nreturn bootHint;")();
   const bootHint = (msg, port) => String(bootHintRaw(msg, port, zhText));
   ok(/重新下载/.test(bootHint("Cannot find module './engines/index.js'", 3800)),
-     "装机包缺文件 → 让用户重下（v0.1.1 缺 engines/ 时用户看到的正是「双击没反应」）");
+     "装机包缺文件 → 让用户重下（v0.1.1 缺引擎目录时用户看到的正是「双击没反应」）");
   const eacces = bootHint("listen EACCES: permission denied 0.0.0.0:3800", 3800);
   ok(/excludedportrange/.test(eacces), "EACCES → 提示 Hyper-V/WSL 预留了端口段，并给出查询命令", eacces.slice(0, 40));
   ok(/换成一个没被预留的/.test(eacces), "  └ 并且告诉他改哪个字段");

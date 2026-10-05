@@ -6,7 +6,7 @@
  *
  * 三件事都是「用户照着做了，结果还是不行」那一类：
  *  - 照体检给的 `winget install pandoc` 装完，点「重新检测」照样报没装，agent 的 run_shell 也找不到——
- *    进程里的 PATH 定格在启动那一刻，安装器改的是注册表（engines/which 的 refreshWinPath）
+ *    进程里的 PATH 定格在启动那一刻，安装器改的是注册表（src/platform/which 的 refreshWinPath）
  *  - 模型照 Mac 的习惯写 `python3 x.py`、行尾 `\` 续行，在 cmd 里一条都跑不起来（agent.js 的 shellNote）
  *  - 文件名带英文逗号，explorer 把它拆开、打开的是默认文件夹，还一声不吭（server.js 的 openWithSystem）
  *

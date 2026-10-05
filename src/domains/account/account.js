@@ -1102,7 +1102,7 @@ function topup(byUser, targetUsername, amount) {
 /**
  * 缓存读比输入还大，只有一种可能：这笔是按 Anthropic 口径报的（input_tokens 不含缓存读），
  * 得把缓存读补回输入里才是「这次真的喂进去多少」。以前没补：本机 Claude Code 跑的 4 笔账，
- * 界面算出「缓存命中 3209% / 1749%」。源头（engines/claude-code.js）已改口径，这里管老账。
+ * 界面算出「缓存命中 3209% / 1749%」。源头（src/engines/claude-code.js）已改口径，这里管老账。
  */
 function fixLegacyCache(e) {
   if (!e || !((e.cached || 0) > (e.prompt || 0))) return e;

@@ -1011,7 +1011,7 @@ function pruneOldOutLogs() {
 }
 
 function makeOutSink(kind, headMax, tailMax) {
-  // 一个中文字被切在两个 chunk 中间会变乱码，必须按流解码；Windows 上 cmd 自带命令吐的是 GBK，见 lib/out-decode.js
+  // 一个中文字被切在两个 chunk 中间会变乱码，必须按流解码；Windows 上 cmd 自带命令吐的是 GBK，见 src/util/out-decode.js
   const dec = outDecoder();
   let head = "", tail = "", total = 0, fd = null, rel = "", buf = [], bufLen = 0;
   function openSpill() {
@@ -1204,7 +1204,7 @@ function runNode(code, timeoutMs, cwd, stopSignal, session = "") {
 // GUI 启动的 Electron 拿到的 PATH 不含 homebrew，补齐否则 lark-cli/git 等命令找不到。
 // Windows 上 PATH 是全的，但定格在应用启动那一刻：用户照提示 winget 装完 ffmpeg / pandoc，注册表变了、
 // 进程里没变，体检找得到、run_shell 照样报「不是内部或外部命令」。所以跟体检用同一份——
-// engines/which 合并好的（「重新检测本机」时现读的注册表 PATH + 启动时那份 + winget/scoop/LibreOffice 的常见位置）。
+// src/platform/which 合并好的（「重新检测本机」时现读的注册表 PATH + 启动时那份 + winget/scoop/LibreOffice 的常见位置）。
 // platform 只给测试用
 function shellPath(platform = process.platform) {
   if (platform === "win32") return require("../platform/which").augmentedPath("win32");
@@ -1215,7 +1215,7 @@ function shellPath(platform = process.platform) {
 
 /**
  * 装依赖的护栏（2026-09-28 真实会话里 agent 在任务文件夹的 .tmp 底下反复 npm init + npm install；
- * 少了 init 那一步，npm 往上找项目根就找到应用自己的 package.json，来龙去脉见 lib/deps-guard.js）。
+ * 少了 init 那一步，npm 往上找项目根就找到应用自己的 package.json，来龙去脉见 src/platform/deps-guard.js）。
  * run_shell / 后台命令 / run_node 起子进程之前都过一遍：立围栏、PATH 前面垫拦截脚本。
  * 护栏自己出错不许拦住命令：退回老样子跑。depsAppDir 测试里换成临时的假应用目录
  */
@@ -1700,7 +1700,7 @@ function pdfHowTo(name, platform = process.platform) {
   // Windows 给 winget：系统自带。scoop、choco 都得先装包管理器本身，模型照着敲第一句就撞墙。
   // 这个包是解压即用的 zip，清单里标了 ArchiveBinariesDependOnPath：winget 不往 WinGet\Links 里放链接，
   // 而是把 WinGet\Packages\oschwartz10612.Poppler_…\poppler-<版本>\Library\bin 加进注册表 PATH。
-  // run_shell 的 PATH 会现去那里找（engines/which 的 popplerBins），装完 where 一般就找得到；
+  // run_shell 的 PATH 会现去那里找（src/platform/which 的 popplerBins），装完 where 一般就找得到；
   // 还找不到就让它按文件名把全路径搜出来，别去猜版本号那一层目录
   const install =
     platform === "darwin"
@@ -3868,7 +3868,7 @@ async function executeTool(name, input, opts = {}) {
 }
 
 /**
- * 会话 → 它以前在根上（不在任何对话文件夹里）写过的文件的绝对路径。每趟开头由调用方整份换掉（lib/task-dirs.js flatOutputs）。
+ * 会话 → 它以前在根上（不在任何对话文件夹里）写过的文件的绝对路径。每趟开头由调用方整份换掉（src/util/task-dirs.js flatOutputs）。
  * 写文件默认落进这条对话自己的文件夹；只有这里登记过的、或这趟读过的根上文件，写的时候才回到根上那份。
  * 只活在这个进程里，会话多了先进先出。
  */

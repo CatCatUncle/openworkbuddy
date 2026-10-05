@@ -2,7 +2,7 @@
 // Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 "use strict";
 /**
- * 资料库封面与正文摘录（lib-cover.js + routes/library.js）：
+ * 资料库封面与正文摘录（lib-cover.js + src/server/routes/library.js）：
  *
  *   ① 第二次问同一张：直接给地址，渲染器 0 次
  *   ② 文件改了（mtime 或体积）：重新出
@@ -130,7 +130,7 @@ function mkQueue({ clock = fakeClock(), lag = fakeLag(), fr = null, opt = {} } =
   });
   return { q, clock, lag, fr: r, cacheDir, logs };
 }
-/** ask 要的那一份：跟 routes/library.js 递进来的一样（abs 是 realpath 过的） */
+/** ask 要的那一份：跟 src/server/routes/library.js 递进来的一样（abs 是 realpath 过的） */
 function item(abs, { w = 320, userRoot = ROOT_A, src = "lib" } = {}) {
   const real = fs.realpathSync(abs);
   return { userRoot, src, rel: path.relative(userRoot, abs).split(path.sep).join("/"), abs: real, st: fs.statSync(real), w, root: userRoot };

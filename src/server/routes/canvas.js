@@ -3,11 +3,11 @@
 "use strict";
 /**
  * 画布路由：/api/canvas（读写、新建、删除）、素材台账 /api/canvas/assets、制片进度 /api/canvas/progress。
- * 一键合成 /api/canvas/compose 在 routes/compose.js，任务队列在 lib/compose-jobs.js。
+ * 一键合成 /api/canvas/compose 在 src/server/routes/compose.js，任务队列在 src/domains/media/compose-jobs.js。
  * 都是从 server.js 原样搬出来的，URL、状态码、返回体一个字没动。
  *
  * 写法跟 admin.js 那种「工厂函数里登记路由」不一样：路由和函数都写在顶层，路由器变量就叫 app。
- * 测试按源码切片验（test/lib/src.js 把 server.js + routes/ + lib/ 拼成一份），认的是顶格的函数名、
+ * 测试按源码切片验（test/lib/src.js 把 server.js 和 src/server/routes/ 等服务端部件拼成一份），认的是顶格的函数名、
  * 顶格的 app 登记和它后面那个顶格的「});」。缩进进工厂函数里，这些切片就全切不出来了。
  * 所以依赖做成模块级变量，createCanvasRouter(deps) 一次填上；路由器全进程就这一个，server.js 挂一次。
  * 依赖全从 deps 进来，不 require server.js：当前工作区、租户根这些状态都在 server 手里。
@@ -17,7 +17,7 @@ const path = require("path");
 const express = require("express");
 const dramaPipeline = require("../../domains/media/drama-pipeline");
 
-// 下面这几个由 createCanvasRouter(deps) 填上。readDramaJson 住在 routes/drama.js，素材台账要读分镜表
+// 下面这几个由 createCanvasRouter(deps) 填上。readDramaJson 住在 src/server/routes/drama.js，素材台账要读分镜表
 let getWorkspaceDir, outputFiles, safePath, rootedPath, canvasList, canvasReadState, canvasWriteState, canvasNormalizeState, canvasSafeName, readDramaJson;
 
 // 大小写敏感跟 server.js 一致：子路由器不继承外面那个 case sensitive routing 的设置
@@ -341,12 +341,12 @@ app.delete("/api/canvas/boards/:name", (req, res) => {
 /**
  * deps：getWorkspaceDir / outputFiles / safePath / canvasList / canvasReadState / canvasWriteState /
  * canvasNormalizeState / canvasSafeName 来自 tools.js；rootedPath 是 server.js 的（要按请求找租户根）；
- * readDramaJson 来自 routes/drama.js。
+ * readDramaJson 来自 src/server/routes/drama.js。
  */
 function createCanvasRouter(deps) {
   ({ getWorkspaceDir, outputFiles, safePath, rootedPath, canvasList, canvasReadState, canvasWriteState, canvasNormalizeState, canvasSafeName, readDramaJson } = deps);
   return app;
 }
 
-// 素材定位这几样合成那头也要用（lib/compose-jobs.js），由 server.js 通过 deps 递过去
+// 素材定位这几样合成那头也要用（src/domains/media/compose-jobs.js），由 server.js 通过 deps 递过去
 module.exports = { createCanvasRouter, assetBase, canvasAssetLocator, canvasAssetNear, canvasTickPast };
