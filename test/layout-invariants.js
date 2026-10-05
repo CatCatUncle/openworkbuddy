@@ -16,7 +16,7 @@
  *   ③ 外部工具那张表从 doctor.js 抽到 src/platform/known-tools.js：原名转导出是同一个对象，
  *      除了 cli.js 没有生产代码再 require 体检
  *   ④ root.js 零依赖、老写法（boot-check.js 是 server.js / cli.js 的第一句 require，它也靠 root.js）
- *   ⑤ 打包闸门认得 require(rootPath(...))：不认的话那条边从图上消失，闸门照样绿
+ *   ⑤ 打包闸门认得 require(rootPath(...))、tryRequire、require.resolve、new Worker：不认的话那条边从图上消失，闸门照样绿
  *   ⑥ 测试用的路径表（test/lib/mod.js、entry.js）对得上盘
  *   ⑦ src("server") 的兜底扫描没扫空；建 express 路由的模块都在 SERVER_PARTS 里点了名
  *
@@ -135,7 +135,7 @@ ok(/var ROOT = require\("\.\/src\/platform\/root"\)\.ROOT;/.test(bootSrc), "boot
 ok(!/__dirname/.test(stripJsComments(bootSrc)), "boot-check.js 代码里不再自己用 __dirname 找根");
 
 // ── ⑤ 打包闸门认得 rootPath ───────────────────────────────────────────────
-console.log("\n⑤ 打包闸门认得 require(rootPath(...))");
+console.log("\n⑤ 打包闸门认得 require(rootPath(...))、tryRequire、require.resolve、new Worker");
 const gate = require(path.join(REPO, "scripts", "check-package-files.js"));
 const viaRoot = gate.localRequires('const s = require(rootPath("skills", "x", "y.json"));');
 ok(viaRoot.includes(path.join(REPO, "skills", "x", "y.json")), "require(rootPath(...)) 解成仓库根下的绝对路径", viaRoot);
@@ -146,6 +146,42 @@ eq(gate.localRequires('const s = require(myrootPath("skills", "y.json"));').leng
 const graph = gate.walkGraph().map((f) => f.split(path.sep).join("/"));
 for (const f of ["src/platform/root.js", "src/platform/known-tools.js", "skills/short-drama/references/分镜表.schema.json", "package.json"]) {
   ok(graph.includes(f), `打包闸门从入口爬得到 ${f}`);
+}
+// 不走 require 的三种加载（方案 §10 风险 2）：tryRequire 吞错、require.resolve 交给 Worker、new Worker 按路径起线程。
+// 闸门不认的话这几个文件从图上消失，漏进包了照样绿——封面静默变灰、Worker 起不来
+{
+  const lr = (code) => gate.localRequires(code).map((s) => (path.isAbsolute(s) ? path.relative(REPO, s).split(path.sep).join("/") : s));
+  const got = lr([
+    'const q = tryRequire("./ql");',
+    'const r = require.resolve("./lib/wsb");',
+    'const s = require.resolve("./opt", { paths: [x] });',
+    'new Worker("./w1.js");',
+    'new Worker(path.join(__dirname, "w2.js"), { workerData: 1 });',
+    'const WF = path.join(__dirname, "w3.js");',
+    'const w = new Worker(WF);',
+    'win.loadFile(rootPath("public", "p.html"));',
+    'fs.readFileSync(paths.appPath("cfg.json"));',
+  ].join("\n"));
+  eq(got.join(","), "./ql,./lib/wsb,./opt,./w1.js,./w2.js,./w3.js,public/p.html,cfg.json",
+    "认得 tryRequire、require.resolve（带不带第二个参数）、new Worker（字面量 / path.join / 常量）、按路径打开的 rootPath / appPath");
+  eq(lr([
+    'const a = xtryRequire("./n1");',
+    'const b = require("./n2" + suffix);',
+    'const c = new Worker(someObj.file);',
+    'const d = new Worker(NOT_DEFINED);',
+    "function rootPath(...seg) { return 1; }",
+    'const e = myappPath("n3.json");',
+    'const f = require.resolve("mermaid/dist/x.js");',
+  ].join("\n")).join(","), "", "反向对照：别的函数、拼出来的、不认识的常量、rootPath 的定义、包名都不算");
+  // 真仓库：这几个只靠这三种写法挂在图上（模块名经 mod 表，搬了家照样认）
+  const viaPath = ["video-frame", "ql-thumb", "thumb-worker", "ws-browse", "sweep"].map((n) => mod.rel(n));
+  const missing = viaPath.filter((rel) => !graph.includes(rel));
+  ok(missing.length === 0, `打包闸门从入口爬得到 tryRequire / require.resolve / Worker 加载的 ${viaPath.length} 个文件`, missing);
+  // 不靠 ASSETS 也认得 thumb-worker：thumb.js 里那条 new Worker(常量) 自己就能把它挂上图
+  const thumbEdges = gate.localRequires(fs.readFileSync(mod("thumb"), "utf8"))
+    .map((s) => path.resolve(path.dirname(mod("thumb")), s));
+  ok(thumbEdges.includes(mod("thumb-worker")), "  └ thumb.js 的 new Worker(WORKER_FILE) 认得出 thumb-worker（不是只靠 ASSETS 手写）");
+  ok(gate.ASSETS.includes(mod.rel("thumb-worker")), "  └ thumb-worker 也手写在 ASSETS 里（htmlshot 的 new Worker(enc.file) 认不出常量）");
 }
 
 console.log("\n⑥ 测试用的路径表（test/lib/mod.js、entry.js）对得上盘");

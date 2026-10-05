@@ -29,6 +29,7 @@ const ASSETS = [
   "public/pet.html",         // 同上
   "public/index.html",       // 主界面
   "engines/tool-bridge.js",  // 被当成子进程 spawn，不走 require
+  "thumb-worker.js",         // 缩略图编码的 Worker 线程：thumb.js / htmlshot.js 按路径 new Worker，少了封面静默变灰
   "experts.json",            // 首次启动 seed 到 ~/OpenWorkBuddy
   "config.example.json",     // 同上
 ];
@@ -128,22 +129,42 @@ function missingDeps(deps) {
   return out;
 }
 
+/** 一段参数文本里的字符串字面量（path.join / rootPath 的各段）；带变量的那段不认 */
+const literalParts = (args) => [...args.matchAll(/["']([^"']+)["']/g)].map((p) => p[1]);
+
+/**
+ * 「把一个文件加载进来」的四种动作：require、require.resolve（交给 Worker 去 require 的路径）、
+ * tryRequire（lib-cover 那种吞错的可选依赖——少了不报错，封面静默变灰）、new Worker（按路径起线程）。
+ * 只认 require 的话后三种从图上消失，文件漏进包了闸门照样绿（目录重整方案 §10 风险 2）。
+ * \b 挡住 myrequire / xtryRequire 这种别的函数；tryRequire 里的 Require 前面是字母，\brequire 不会撞上它
+ */
+const LOADER = String.raw`(?:\brequire(?:\.resolve)?|\btryRequire|\bnew\s+Worker)`;
+
 /** 静态扒出一个文件里的本地 require；node_modules 和用户数据路径不算 */
 function localRequires(code) {
   const out = [];
-  // require("./x") / require("../x")
-  for (const m of code.matchAll(/require\(\s*["'](\.[^"']+)["']\s*\)/g)) out.push(m[1]);
-  // require(path.join(__dirname, "x", "y.js"))
-  for (const m of code.matchAll(/require\(\s*path\.join\(\s*__dirname\s*,([^)]*)\)\s*\)/g)) {
-    const parts = [...m[1].matchAll(/["']([^"']+)["']/g)].map((p) => p[1]);
+  // require("./x") / require.resolve("./x") / tryRequire("./x") / new Worker("./x")
+  // 后面只许跟 ) 或 ,（Worker、resolve 有第二个参数）：require("./x" + y) 这种拼出来的不算
+  for (const m of code.matchAll(new RegExp(LOADER + String.raw`\(\s*["'](\.[^"']+)["']\s*[,)]`, "g"))) out.push(m[1]);
+  // require(path.join(__dirname, "x", "y.js"))，上面四种动作都认
+  for (const m of code.matchAll(new RegExp(LOADER + String.raw`\(\s*path\.join\(\s*__dirname\s*,([^)]*)\)\s*[,)]`, "g"))) {
+    const parts = literalParts(m[1]);
     if (parts.length) out.push("./" + parts.join("/"));
   }
-  // require(rootPath("skills", "x.json"))：src/platform/root.js 那个锚点，相对的是仓库根而不是本文件，
-  // 所以直接给绝对路径（walkGraph 里 path.resolve 碰到绝对路径原样用）。不认的话这条边从图上消失，闸门照样绿。
-  // require(root.rootPath(…)) 这种挂在模块对象上的也认。不 require、按路径打开的那些（loadFile/readFileSync）
-  // 不在这里：它们得手写进 ASSETS，漏没漏由 test/e2e.js 的 packageAssetDrift 反查，那边两种写法都认
-  for (const m of code.matchAll(/require\(\s*(?:[\w$]+\.)?rootPath\(([^)]*)\)\s*\)/g)) {
-    const parts = [...m[1].matchAll(/["']([^"']+)["']/g)].map((p) => p[1]);
+  // new Worker(WORKER_FILE)：路径先放进一个常量再交给 Worker（thumb.js 就是这么写的）
+  const consts = {};
+  for (const m of code.matchAll(/\b(?:const|let|var)\s+([\w$]+)\s*=\s*path\.join\(\s*__dirname\s*,([^)]*)\)\s*;/g)) {
+    const parts = literalParts(m[2]);
+    if (parts.length) consts[m[1]] = "./" + parts.join("/");
+  }
+  for (const m of code.matchAll(/\bnew\s+Worker\(\s*([\w$]+)\s*[,)]/g)) if (consts[m[1]]) out.push(consts[m[1]]);
+  // rootPath("skills", "x.json") / paths.appPath("config.example.json")：src/platform/root.js、paths.js 那两个锚点，
+  // 相对的是仓库根（开发态 APP_DIR 就是仓库根）而不是本文件，所以直接给绝对路径（walkGraph 里 path.resolve
+  // 碰到绝对路径原样用）。不只认 require(rootPath(…))：loadFile(rootPath("public", "pet.html")) 这种按路径打开的
+  // 也是装机态要用的文件。root.rootPath(…) 这种挂在模块对象上的也认；myrootPath 这种别的函数、
+  // function rootPath(…) 的定义不认。指向目录、node_modules 的由 walkGraph 解析时滤掉
+  for (const m of code.matchAll(/(?<![\w$])(?<!function\s+)(?:[\w$]+\.)?(?:rootPath|appPath)\(([^)]*)\)/g)) {
+    const parts = literalParts(m[1]);
     if (parts.length) out.push(path.join(ROOT, ...parts));
   }
   return out;
@@ -164,6 +185,8 @@ function walkGraph() {
       continue; // 入口自己不存在的情况交给下面的断言去报
     }
     seen.add(rel);
+    // 按路径打开的 html / json 也算可达文件，但它们里面的字不是 Node 代码，不往下爬
+    if (!/\.[cm]?js$/.test(file)) continue;
     for (const spec of localRequires(code)) {
       let resolved;
       try {
