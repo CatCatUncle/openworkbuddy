@@ -10,7 +10,7 @@ OpenWorkBuddy 自身 Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle)，�
 ```
 Required Notice: Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle)
 Required Notice: https://github.com/CatCatUncle/openworkbuddy
-Required Notice: Use not permitted by the PolyForm Noncommercial License 1.0.0 or by the additional permissions in COMMERCIAL-LICENSE.md (including a company's use in real business) requires a separate commercial license — see COMMERCIAL-LICENSE.md
+Required Notice: Any use not permitted by the PolyForm Noncommercial License 1.0.0 or by the additional permissions in COMMERCIAL-LICENSE.md requires a separate commercial license; for example, a company using this software in its real business needs one — see COMMERCIAL-LICENSE.md
 ```
 
 ## 一、前端（直接放进 `public/`，跟着页面一起发出去）
