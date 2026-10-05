@@ -33,6 +33,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { execFileSync } = require("child_process");
+const { mod } = require("./lib/mod");
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "owb-stop-"));
 process.env.OPENWORKBUDDY_HOME = TMP;
@@ -40,10 +41,10 @@ process.env.OPENWORKBUDDY_DATA_DIR = path.join(TMP, "data");
 fs.mkdirSync(process.env.OPENWORKBUDDY_DATA_DIR, { recursive: true });
 
 const ROOT = path.join(__dirname, "..");
-const tools = require(path.join(ROOT, "tools"));
+const tools = require(mod("tools"));
 const { executeTool } = tools;
-const quota = require(path.join(ROOT, "quota"));
-const { McpManager, McpClient } = require(path.join(ROOT, "mcp"));
+const quota = require(mod("quota"));
+const { McpManager, McpClient } = require(mod("mcp"));
 
 let pass = 0, fail = 0;
 const ok = (cond, msg, detail) => {
@@ -188,8 +189,8 @@ async function videoChecks() {
     {
       // 上面几条直接打 executeTool，证明不了 agent.js 把信号往下传了。这里走 agent 的 runtime：
       // 画布上点「重新生成」走的就是 runTool，服务端给的是请求级 signal，任务里给的是 stopSignal，两路都得管用
-      const mm = require(path.join(ROOT, "media-models"));
-      const { createAgentRuntime } = require(path.join(ROOT, "agent"));
+      const mm = require(mod("media-models"));
+      const { createAgentRuntime } = require(mod("agent"));
       const cfg = { media: { video: { base_url: VBASE, api_key: "k-test", model: "wan2.2-t2v-plus" } },
         agent: { tool_timeout_ms: 120000 }, security: { gateway: false }, search: {} };
       mm.normalize(cfg);
@@ -279,7 +280,7 @@ async function genImage(filename, abortAfter) {
 async function imageChecks() {
   fs.mkdirSync(path.join(VWS, VOUT), { recursive: true });
   const realFetch = global.fetch;
-  const mediaHealth = require(path.join(ROOT, "media-health"));
+  const mediaHealth = require(mod("media-health"));
   try {
     console.log("\n— 生图：停在读正文那一截，也要说「已停止」，不说「没返回图片」—");
     mediaHealth.reset();
@@ -308,10 +309,10 @@ async function imageChecks() {
 // 循环里没有别的地方跟停止信号赛跑：信号没递到，一个挂着的 MCP 工具就能把「停止」吊到它自己的时限
 async function agentMcpChecks() {
   console.log("\n— agent 任务里调 MCP：点了停止，信号真递到了 mcpManager.call —");
-  const jev = require(path.join(ROOT, "jev"));
+  const jev = require(mod("jev"));
   const realAsk = jev.askMetered;
   jev.askMetered = async () => ({ ok: false, error: "测试桩：不发网络" });
-  const { createAgentRuntime } = require(path.join(ROOT, "agent"));
+  const { createAgentRuntime } = require(mod("agent"));
   const seen = { calls: 0, signal: null, byAbort: false };
   const mgr = {
     toolDefs: () => [{ name: "mcp__srv__hang", description: "[MCP:srv] 慢工具", input_schema: { type: "object", properties: {} } }],

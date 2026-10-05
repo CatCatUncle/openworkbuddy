@@ -15,6 +15,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const cp = require("child_process");
+const { mod } = require("./lib/mod");
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "owb-selfcheck-"));
 process.env.OPENWORKBUDDY_HOME = TMP;
@@ -22,7 +23,7 @@ process.env.OPENWORKBUDDY_DATA_DIR = path.join(TMP, "data");
 fs.mkdirSync(process.env.OPENWORKBUDDY_DATA_DIR, { recursive: true });
 
 const ROOT = path.join(__dirname, "..");
-const tools = require(path.join(ROOT, "tools"));
+const tools = require(mod("tools"));
 const { selfCheck, extCheck, EXT_CHECK_MAX } = tools._internals;
 
 let pass = 0, fail = 0;
@@ -54,7 +55,7 @@ const reset = () => { calls.sync = 0; calls.exec.length = 0; };
 
   console.log("\n① 源码守卫：自检里不许再出现同步起进程");
   {
-    const src = fs.readFileSync(path.join(ROOT, "tools.js"), "utf8");
+    const src = fs.readFileSync(mod("tools"), "utf8");
     const at = src.indexOf("async function selfCheck(");
     const body = at >= 0 ? src.slice(at, src.indexOf("\n}\n", at)) : "";
     const helpers = src.slice(src.indexOf("function execCheck("), src.indexOf("async function selfCheck("));

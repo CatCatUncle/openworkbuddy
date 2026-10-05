@@ -19,9 +19,11 @@
 
 const path = require("path");
 const fs = require("fs");
+const { mod } = require("./lib/mod");
+const { entry } = require("./lib/entry");
 
 const ROOT = path.join(__dirname, "..");
-const M = require(path.join(ROOT, "md-tty"));
+const M = require(mod("md-tty"));
 
 let pass = 0, fail = 0;
 function ok(cond, name, extra) {
@@ -187,7 +189,7 @@ console.log("\n【7】颜色：该加的时候加，不该加的时候一个转�
 
 console.log("\n【8】接进命令行：只在「那头真是终端」时渲染");
 {
-  const src = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
+  const src = fs.readFileSync(entry("cli"), "utf8");
   const line = (src.split("\n").find((l) => l.startsWith("const renderMd =")) || "");
   ok(line, "cli.js 里有一处统一的开关，而不是散在各处判断");
   ok(line.includes("process.stdout.isTTY"),
@@ -199,7 +201,7 @@ console.log("\n【8】接进命令行：只在「那头真是终端」时渲染"
   ok(/answer\(state\.md \? state\.md\.write\(text\) : text\)/.test(src), "渲染只加在「打到屏幕上」这一步");
   ok(/answer\(state\.md\.end\(\)\)/.test(src),
      "★收尾要把渲染器里压着的半行吐干净★ 不吐的话，最后一句没配平记号的话会整句消失");
-  const A = require(path.join(ROOT, "cli-args"));
+  const A = require(mod("cli-args"));
   ok(A.parse(["--raw", "问题"]).opts.raw === true, "openworkbuddy --raw 能解析出来");
   ok(A.parse(["问题"]).opts.raw === false, "反向对照：不写 --raw 时默认是关的（默认要渲染）");
   ok(A.helpText().includes("--raw"), "帮助里写着这条路");

@@ -28,6 +28,7 @@
  */
 
 const fs = require("fs");
+const { mod } = require("./lib/mod");
 // 单独跑这个文件时也别写进用户真账本（all.js 里已经设过一次，这里只兜底）
 if (!process.env.OPENWORKBUDDY_TRACE_FILE) {
   process.env.OPENWORKBUDDY_TRACE_FILE =
@@ -39,7 +40,7 @@ const http = require("http");
 
 const ROOT = path.join(__dirname, "..");
 const srcLib = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
-const tracing = require(path.join(ROOT, "trace"));
+const tracing = require(mod("trace"));
 const { messagesOf, cleanHost, readCfg, labelFromInput } = tracing._internals;
 
 let pass = 0, fail = 0;
@@ -428,7 +429,7 @@ async function main() {
     // ★这条是判据本身★ 源码里这一步的红/绿必须由 isError 决定。
     // 本项目的工具报错是**正常返回**（模型要看见错才知道换条路），靠 try/catch 判的话
     // trace 上会满屏绿色，真正出问题的那几步一个都标不出来
-    const src = fs.readFileSync(path.join(ROOT, "agent.js"), "utf8");
+    const src = fs.readFileSync(mod("agent"), "utf8");
     ok(/sp\.end\(\{[^}]*error:\s*r\.isError\s*\?/.test(src.replace(/\n/g, " ")),
        "★agent.js 里工具 span 的红绿是按 r.isError 判的，不是靠 catch★");
   }
@@ -615,9 +616,9 @@ async function main() {
   console.log("\n【13】真跑一趟任务：层级、工具、报错，一条不少");
   // ===================================================================
   {
-    const { createAgentRuntime } = require(path.join(ROOT, "agent"));
-    const { McpManager } = require(path.join(ROOT, "mcp"));
-    const { setWorkspaceDir } = require(path.join(ROOT, "tools"));
+    const { createAgentRuntime } = require(mod("agent"));
+    const { McpManager } = require(mod("mcp"));
+    const { setWorkspaceDir } = require(mod("tools"));
     const WS = setWorkspaceDir(fs.mkdtempSync(path.join(os.tmpdir(), "owb-trace-ws-")));
 
     // 剧本：读一个不存在的文件（工具报错）→ 写一个文件（成功）→ 收工

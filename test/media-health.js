@@ -18,8 +18,9 @@
 const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
+const { mod } = require("./lib/mod");
 const srcLib = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
-const mh = require("../media-health");
+const mh = require(mod("media-health"));
 
 let pass = 0, fail = 0;
 const eq = (a, b, m) => { try { assert.deepStrictEqual(a, b, m); pass++; } catch (e) { fail++; console.error("  ❌", m, "\n     实际:", JSON.stringify(a), "期望:", JSON.stringify(b)); } };
@@ -204,7 +205,7 @@ console.log("\n【8】tools.js 与 agent.js 的接线还在");
     ok(at > 0 && /viaMedia\("([a-z]+)"/.test(t.slice(at, at + 600)) && t.slice(at, at + 600).includes(`viaMedia("${cap}"`),
       `${tool} 这一路没穿过熔断闸（应当是 viaMedia("${cap}", …)）——漏一路，用户就会在那一路上继续撞`);
   }
-  const a = fs.readFileSync(path.join(__dirname, "..", "agent.js"), "utf8");
+  const a = fs.readFileSync(mod("agent"), "utf8");
   ok(/deadMedia/.test(a) && /r\.mediaBreaker/.test(a),
     "agent.js 要认 mediaBreaker 标记并在本轮停用那个工具，否则 trace 里还是四十条一模一样的失败");
   const s = srcLib.src("server");
@@ -250,7 +251,7 @@ console.log("\n【10】闸门那句话不许越过这一轮");
   ok(/如实说/.test(话), "闸门那句话没要求如实交代这一步没做成（不许把没拿到的当拿到过写进结论）");
 
   // agent.js 那一半：重新放开之后，系统提示词里得真有一段话把历史里那几句作废掉
-  const a2 = fs.readFileSync(path.join(__dirname, "..", "agent.js"), "utf8");
+  const a2 = fs.readFileSync(mod("agent"), "utf8");
   ok(/function reopenedMediaBlock\(/.test(a2), "agent.js 少了「刚放开的渠道」那段提示词");
   const i0 = a2.indexOf("function reopenedMediaBlock(");
   const i1 = a2.indexOf("\n}\n", i0);

@@ -19,6 +19,7 @@
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
+const { mod } = require("./lib/mod");
 
 const TMP = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "owb-winpaths-")));
 // 家目录也换成假的：黑名单 `~/.ssh` 会展开到家目录下，测试只该碰临时目录里那份
@@ -30,9 +31,9 @@ process.env.OPENWORKBUDDY_HOME = path.join(HOME, "OWB");
 process.env.OPENWORKBUDDY_DATA_DIR = path.join(HOME, "OWB", "data");
 
 const ROOT = path.join(__dirname, "..");
-const { badSegment, badPath, safeSegment } = require(path.join(ROOT, "lib", "winname"));
-const security = require(path.join(ROOT, "security"));
-const store = require(path.join(ROOT, "store"));
+const { badSegment, badPath, safeSegment } = require(mod("winname"));
+const security = require(mod("security"));
+const store = require(mod("store"));
 
 let pass = 0, fail = 0;
 process.on("exit", () => { try { fs.rmSync(TMP, { recursive: true, force: true }); } catch {} });

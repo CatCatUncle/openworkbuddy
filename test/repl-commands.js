@@ -17,13 +17,15 @@
 
 const path = require("path");
 const fs = require("fs");
+const { mod } = require("./lib/mod");
+const { entry } = require("./lib/entry");
 
 const ROOT = path.join(__dirname, "..");
-const R = require(path.join(ROOT, "repl-commands"));
+const R = require(mod("repl-commands"));
 // 模式清单从唯一真源取。在测试里抄一份的话，模式表加一个、测试还绿着——
 // 它验的是自己手里那份旧清单，而不是程序真认的那份
-const MODES = require(path.join(ROOT, "modes"));
-const { cols, padCols } = require(path.join(ROOT, "text-width"));
+const MODES = require(mod("modes"));
+const { cols, padCols } = require(mod("text-width"));
 
 let pass = 0, fail = 0;
 function ok(cond, name, extra) {
@@ -324,7 +326,7 @@ console.log("\n⑭ 历史");
 // ── ⑮ 这一层是纯的 ───────────────────────────────────────────────────────
 console.log("\n⑮ repl-commands 必须是纯的");
 {
-  const src = fs.readFileSync(path.join(ROOT, "repl-commands.js"), "utf8");
+  const src = fs.readFileSync(mod("repl-commands"), "utf8");
   ok(/require\("path"\)/.test(src), "（先证明读到的是这个文件）", src.slice(0, 40));
   ok(!/\bprocess\./.test(src), "★不碰 process★ 碰了就没法在测试里逐帧推时序");
   ok(!/require\("fs"\)/.test(src), "★不碰 fs★");
@@ -346,7 +348,7 @@ console.log("\n⑮之二 传进去的时钟真的在起作用");
 // ── ⑯ cli.js 真的接上了这一层 ────────────────────────────────────────────
 console.log("\n⑯ cli.js 接线");
 {
-  const src = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
+  const src = fs.readFileSync(entry("cli"), "utf8");
   ok(/require\("\.\/repl-commands"\)/.test(src), "（先证明读到的是这个文件）");
   ok(/repl\.parse\(/.test(src), "★一行输入先过 parse★ 不然这整个测试文件测的是没人用的代码");
   ok(/repl\.makeInbox\(/.test(src), "★输入走闸门★");
@@ -386,7 +388,7 @@ console.log("\n⑰ /model：这趟活儿谁来干");
 
   // ★口径必须跟 llm.js 算得一样★：active_model 写了个不存在的名字时，真正在跑的是第一条。
   // 这里如果各算各的，表上会一行箭头都没有，而用户明明正用着其中一条
-  const { createLLM } = require(path.join(ROOT, "llm"));
+  const { createLLM } = require(mod("llm"));
   const cfg = { models: [{ name: "甲", model: "m-1" }, { name: "乙", model: "m-2" }], active_model: "根本没这条" };
   eq(createLLM(cfg).model, "m-1", "（先证明 llm.js 的规则是「找不到就用第一条」）");
   const r2 = R.modelRows({ engines: ENG, models: MOD, engine: "builtin", activeModel: "根本没这条" });
@@ -422,7 +424,7 @@ console.log("\n⑰ /model：这趟活儿谁来干");
 // ── ⑰之二 cli.js 那头真的换得动 ─────────────────────────────────────────
 console.log("\n⑰之二 /model 换完真的换掉了");
 {
-  const src = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
+  const src = fs.readFileSync(entry("cli"), "utf8");
   ok(/let llmImpl = createLLM\(config\)/.test(src),
      "★模型客户端是个能换里层的活壳子★ 直接 const llm = createLLM(config) 的话，runtime 早把它拿在手里了，换完还是老的那条在跑");
   ok(/llmImpl = createLLM\(config\)/.test(src.split("v.name === \"model\"")[1] || ""),
@@ -525,7 +527,7 @@ console.log("\n⑰之三 /resume：接着之前那段往下聊");
 // ── ⑰之四 cli.js 那头真的接得过去 ───────────────────────────────────────
 console.log("\n⑰之四 /resume 换完真的换过去了");
 {
-  const src = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
+  const src = fs.readFileSync(entry("cli"), "utf8");
   const hand = (src.split('v.name === "resume"')[1] || "").split('v.name === "session"')[0];
   ok(hand.length > 100, "（先证明切到了 /resume 那段）", hand.length);
 
@@ -606,7 +608,7 @@ console.log("\n⑱ / 菜单：打一半就能看见有什么命令");
 // ── ⑱之一 档位条和不给值时的选择器 ──────────────────────────────────────
 console.log("\n⑱之一 /perm 的档位条、/mode 和 /rewind 的选择器");
 {
-  const SEC = require("../security");
+  const SEC = require(mod("security"));
   const stops = Object.entries(SEC.PERMISSION_MODES).map(([id, m]) => ({ id, ...m }));
   const v = R.sliderView(stops, 2, { cur: "auto", width: 80 });
   eq(v.track.filter((t) => t.kind === "on").length, 1, "★永远只有一档是亮的★");
@@ -614,7 +616,7 @@ console.log("\n⑱之一 /perm 的档位条、/mode 和 /rewind 的选择器");
   ok(v.desc.join("").includes("现在就是这档"), "现在这档标出来");
   ok(R.sliderView(stops, 3, { width: 60 }).desc.join("").includes("确定它在干什么再开"), "★说明折行摆全不截★ 全自动那句最要紧的提醒就在句尾");
   ok(/←\/→.*回车.*Esc/.test(v.foot), "脚注把能按的键写出来");
-  const { cols } = require("../text-width");
+  const { cols } = require(mod("text-width"));
   for (const w of [30, 44, 60, 80, 120]) {
     const x = R.sliderView(stops, 3, { cur: "auto", width: w });
     const line = x.track.map((t) => t.text).join("");
@@ -626,7 +628,7 @@ console.log("\n⑱之一 /perm 的档位条、/mode 和 /rewind 的选择器");
   eq(R.sliderView(stops, -5).at, 0, "越界夹回来");
   ok(!R.sliderView(stops, 1, { cur: "auto" }).desc.join("").includes("现在就是这档"), "挪开了就不说「现在」");
 
-  const MODES = require("../modes");
+  const MODES = require(mod("modes"));
   const mr = R.modePickerRows(MODES.EXEC_MODES, "plan");
   eq(mr.length, MODES.EXEC_MODES.length, "四个模式都列");
   ok(mr.find((r) => r.id === "plan").meta.startsWith("现在这个"), "现在这个标出来");
@@ -662,7 +664,7 @@ console.log("\n⑱之二 菜单里有的，Tab 一定补得出来");
 // ── ⑱之三 cli.js 那头真的把菜单画出来了 ─────────────────────────────────
 console.log("\n⑱之三 菜单的画法：不许把人的输入搞乱");
 {
-  const src = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
+  const src = fs.readFileSync(entry("cli"), "utf8");
   ok(/require\("\.\/repl-commands"\)\.menu\(/.test(src), "★画之前先问上面那个纯函数★ 不问的话这一整节测的是没人用的代码");
   ok(/const menuUsable = \(\) => [^\n]*process\.stdout\.isTTY[^\n]*process\.stdin\.isTTY/.test(src),
      "★不是终端就一行都不画★ openworkbuddy … | tee 里画菜单，出来的是一堆转义序列");
@@ -786,7 +788,7 @@ console.log("\n⑲ 选择器：算得对不对");
 // ── ⑲之二 选择器在 cli.js 那头真接上了 ──────────────────────────────────
 console.log("\n⑲之二 选择器接线：键归谁管");
 {
-  const src = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
+  const src = fs.readFileSync(entry("cli"), "utf8");
   ok(/v\.typing \? v\.search : dim\(v\.search\)/.test(src), "★搜索框真画出来了★ 纯层算得再对，cli.js 不画就等于没做；打了字那行不压暗——那几个字是人刚敲的");
   ok((src.match(/hint:/g) || []).length >= 3, "★三个选择器各给一句「这儿能搜什么」★ 只写「打字就筛」，人不知道筛的是标题还是 id");
   ok(/repl\.pickerView\(/.test(src) && /repl\.sessionPickerRows\(/.test(src) && /repl\.modelPickerRows\(/.test(src),
@@ -818,7 +820,7 @@ console.log("\n⑲之二 选择器接线：键归谁管");
 // ── ⑲之三 两个键位：Shift+Tab 和 Esc Esc ───────────────────────────────
 console.log("\n⑲之三 两个键位");
 {
-  const src = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
+  const src = fs.readFileSync(entry("cli"), "utf8");
   const tty = src.split("const ttyWriteOrig")[1] || "";
   const iTab = tty.indexOf('k.name === "tab" && k.shift');
   const i菜 = tty.indexOf("menuState.items.length");
@@ -901,7 +903,7 @@ console.log("\n⑳ /compact /diff /mcp");
   }
 
   // cli.js 那头
-  const src = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
+  const src = fs.readFileSync(entry("cli"), "utf8");
   const d = (src.split('v.name === "diff"')[1] || "").split('v.name === "mcp"')[0];
   ok(/c\.name !== "write_file" && c\.name !== "edit_file"/.test(d),
      "★「动过」以工具调用为准★ 模型嘴上说改了而没真调 write_file 的情况是存在的，听它自述等于替它圆谎");
@@ -932,7 +934,7 @@ console.log("\n⑳之二 /init");
      "★已经有就不许整篇盖掉★ 那份八成是人手写的，盖掉了 git 之外一点痕迹都没有");
   ok(旧.prompt.length > 新.prompt.length, "（反向对照：两种情况交出去的话确实不一样）");
 
-  const src = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
+  const src = fs.readFileSync(entry("cli"), "utf8");
   const h = (src.split('v.name === "init"')[1] || "").split('v.name === "compact"')[0];
   ok(/return t\.prompt/.test(h),
      "★/init 是把话交回主循环去跑，不是自己写文件★ 自己写的话，人按一下盘上就多个文件，中间什么都没问过");
@@ -990,7 +992,7 @@ console.log("\n⑳之三 !命令");
   ok(/最近这 5 条/.test(wm), "丢了前面的要说", wm.slice(0, 80));
 
   // cli.js 那头真接上了
-  const src = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
+  const src = fs.readFileSync(entry("cli"), "utf8");
   ok(/v\.kind === "shell"/.test(src), "★cli.js 主循环真的认 shell 这一类★ 不然 !ls 会落到「当任务发走」");
   ok(/repl\.withShellNotes\(/.test(src) && /repl\.shellNote\(/.test(src), "输出真的记下来、真的拼进下一句");
   const sig = src.slice(src.indexOf('rl.on("SIGINT"'), src.indexOf('rl.on("SIGINT"') + 300);
@@ -1022,7 +1024,7 @@ console.log("\n⑳之四 Plan 出完计划");
   ok(m({ typed: "x" }) === "" && m({ typed: "x", usable: false }) === "", "★输入行上已经打了字不问★ 他已经在说下一句了");
   ok(R.planNextMode(null) === "", "没参数不炸");
 
-  const src = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
+  const src = fs.readFileSync(entry("cli"), "utf8");
   const at = src.indexOf("repl.planNextMode(");
   const blk = src.slice(at, at + 1200);
   ok(at > 0 && /mode: 这趟模式/.test(blk) && /result: last/.test(blk) && /typed: repl\.composeText\(multi, rl\.line\)/.test(blk), "★cli.js 主循环真的问了★ 按这一趟的模式和结果问；攒着几行没发也算已经在打字", blk.slice(0, 200));
@@ -1111,14 +1113,14 @@ console.log("\n⑲之四 多行输入");
   eq(R.tickSuffix({ secs: 3, tokens: 0 }), " · 3s", "★token 没报上来就不写★ 不是 0，是还没记过；stop 空 = 收尾定格");
   eq(R.tickSuffix({}), " · 0s", "空的不崩");
   // 打头那个字转起来
-  const { cols: wcols } = require("../text-width");
+  const { cols: wcols } = require(mod("text-width"));
   ok(R.SPIN_FRAMES.every((g) => wcols(g) === 1), "★转的每一帧都只占一格★ 占两格的话行长一帧一变，尾巴跟着左右抖");
   eq(R.spinGlyph(0), "·", "第一帧就是定格时那个 ·：一开始转和没转长得一样，不跳");
   eq(R.SPIN_FRAMES[R.SPIN_FRAMES.length - 1], R.SPIN_FRAMES[1], "★来回呼吸★ 最后一帧挨着第一帧，转回头不跳");
   eq(R.spinGlyph(R.SPIN_FRAMES.length + 2), R.spinGlyph(2), "帧号一直往上加也循环");
   ok(R.SPIN_MS >= 80 && R.SPIN_MS <= 200, "一秒五到十来帧：再快是白写终端，再慢看着像卡");
   {
-    const cliSrc = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
+    const cliSrc = fs.readFileSync(entry("cli"), "utf8");
     const draw = cliSrc.split("function tickDraw()")[1].split("\nfunction ")[0];
     ok(/if \(!tick\.anim && sec === tick\.lastSec\) return;/.test(draw), "★不转的行秒数没跳就不画★ 定时器一秒跑八次，工具那行不能跟着写八次终端");
     ok(/if \(secs < 2\) \{ if \(glyph && tickPaint\(\{ bare: true, glyph \}\)\)/.test(draw), "★头两秒只转那个字、不挂尾巴★ 一眨眼就完的步骤照旧没有尾巴");
@@ -1131,7 +1133,7 @@ console.log("\n⑲之四 多行输入");
   ok(/粘进来的多行不会自己发出去/.test(help), "★/help 说清楚粘进来的不自己发★");
   ok(/Esc 或 Ctrl\+C 停这趟活儿/.test(help), "/help 写着 Esc 能停");
 
-  const src = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
+  const src = fs.readFileSync(entry("cli"), "utf8");
   const tty = src.split("rl._ttyWrite = (ch, key) =>")[1] || "";
   const hook = tty.slice(0, tty.indexOf("\n    };\n"));
   const at = (needle) => hook.indexOf(needle);
@@ -1182,13 +1184,13 @@ console.log("\n⑲之四 多行输入");
   ok(/if \(ev\.type === "step_usage"\) return;/.test(mk), "★--json 不多出 step_usage★ 那是终端走字用的，接 json 的脚本不认识");
   // `&& !wfp.st`：workflow 面板开着的时候这两条都闭嘴，屏幕归面板（见 test/workflow-panel.js）
   ok(/const prog = \(s\) => \{ if \(!opts\.quiet && !opts\.json(?: && !wfp\.st)?\) \{ tickSettle\(\);/.test(src) && /const answer = \(s\) => \{ if \(!opts\.json(?: && !wfp\.st)?\) \{ tickSettle\(\);/.test(src), "★往终端写东西之前先把走字那行定格★ 不定格的话下一次重画会把正文盖掉");
-  const agentSrc = fs.readFileSync(path.join(ROOT, "agent.js"), "utf8");
+  const agentSrc = fs.readFileSync(mod("agent"), "utf8");
   ok(/if \(depth === 0\) emit\(\{ type: "step_usage"/.test(agentSrc), "只报主线的用量：子任务的另算，混进来数字会跳");
 }
 
 console.log("\n【会话花了多少：/status /cost】");
 {
-  const P = require(path.join(ROOT, "pricing"));
+  const P = require(mod("pricing"));
   const costOf = (u) => P.costOf(u, { local: !!u.local });
   const u = (x) => ({ type: "assistant", events: [{ type: "text", delta: "…" }, { type: "usage", ...x }] });
   const tr = [{ type: "user", text: "a" }, u({ model: "deepseek-chat", prompt: 12000, completion: 800, cached: 9000, calls: 3 }), { type: "user", text: "b" }, u({ model: "deepseek-chat", prompt: 5000, completion: 200, calls: 1 })];
@@ -1204,7 +1206,7 @@ console.log("\n【会话花了多少：/status /cost】");
   eq(R.sessionUsageText(null, costOf), "这个会话还没花过 token", "没有记录也不崩");
   ok(tag("/cost") === "cmd:status" && tag("/usage") === "cmd:status", "/cost /usage 都落到 /status", [tag("/cost"), tag("/usage")]);
   ok(/\/cost/.test(R.helpText()), "/help 里写着能敲 /cost");
-  const src = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
+  const src = fs.readFileSync(entry("cli"), "utf8");
   const blk = src.slice(src.indexOf('if (v.name === "status")'), src.indexOf('if (v.name === "cd")'));
   ok(/repl\.sessionUsageText\(sess\.transcript/.test(blk) && /local: !!u\.local/.test(blk), "/status 真把这一行打出来，本机引擎按不花钱算", blk.slice(0, 300));
 }

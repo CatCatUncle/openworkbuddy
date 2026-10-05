@@ -22,15 +22,16 @@ const vm = require("vm");
 const http = require("http");
 const assert = require("assert");
 const { spawnSync } = require("child_process");
+const { mod } = require("./lib/mod");
 
 const ROOT = path.join(__dirname, "..");
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "owb-web-demo-"));
 // 不许碰真的用户数据目录：下面 require 的模块里有顺手读配置的
 process.env.OPENWORKBUDDY_HOME = TMP;
 
-const P = require(path.join(ROOT, "lib", "web-demo-plan"));
-const MASK = require(path.join(ROOT, "lib", "demo-mask"));
-const TIMING = require(path.join(ROOT, "lib", "demo-timing"));
+const P = require(mod("web-demo-plan"));
+const MASK = require(mod("demo-mask"));
+const TIMING = require(mod("demo-timing"));
 
 let pass = 0, fail = 0;
 const ok = (v, m, extra) => { if (v) pass++; else { fail++; console.error("  ❌", m, extra === undefined ? "" : "\n     " + extra); } };
@@ -269,7 +270,7 @@ section(4, "自动放大：镜头关键帧", () => {
 
 // ═════════════════════════════════════════ 【5】真 ffmpeg 渲放大 ═════════════════════════════════════════
 section(5, "真 ffmpeg：放大滤镜渲出来位置对、时间对", async () => {
-  const MP = require(path.join(ROOT, "lib", "media-probe"));
+  const MP = require(mod("media-probe"));
   const mb = await MP.resolveMediaBins();
   if (!mb.ffmpeg.bin) {
     if (process.env.OWB_REQUIRE_FFMPEG === "1") ok(false, "OWB_REQUIRE_FFMPEG=1：这台机器必须有 ffmpeg", mb.ffmpeg.why);
@@ -383,7 +384,7 @@ section(7, "马赛克：搬家后两头一致、新文档一开头就能装、�
   ok(require(path.join(ROOT, "scripts", "demo-mask")) === MASK, "scripts/demo-mask.js 转发的就是 lib 那份（record-demo.js、老测试照旧能用）");
   ok(require(path.join(ROOT, "scripts", "demo-timing")) === TIMING, "scripts/demo-timing.js 同上");
   eq(Object.keys(MASK).sort(), ["defaultPairs", "maskScript"], "导出没少");
-  const libSrc = fs.readFileSync(path.join(ROOT, "lib", "web-demo-plan.js"), "utf8");
+  const libSrc = fs.readFileSync(mod("web-demo-plan"), "utf8");
   ok(/require\("\.\/demo-mask"\)/.test(libSrc) && !/scripts\//.test(libSrc.split("\n").filter((l) => /require\(/.test(l)).join("\n")),
     "lib 里只 require lib：scripts/ 不进安装包");
 
@@ -572,7 +573,7 @@ section(9,"泄漏扫描只报类别、字幕页、输出目录、截图文件名
 
 // ═════════════════════════════════════════ 【10】真 Chrome ═════════════════════════════════════════
 section(10, "真 Chrome：马赛克自检、泄漏扫描、假光标、找元素", async () => {
-  const cdp = require(path.join(ROOT, "cdp"));
+  const cdp = require(mod("cdp"));
   if (!cdp.findChrome()) { console.log("  跳过：本机没有 Chrome"); return; }
   const HOME = os.homedir();
   const SECRET = "机密客户甲乙丙";
@@ -705,8 +706,8 @@ section(10, "真 Chrome：马赛克自检、泄漏扫描、假光标、找元素
 // 【15】真 Chrome + 真 ffmpeg 录本地页面（test/fixtures/web-demo/），没有就跳过；【16】【17】说明书和工具定义不跑偏。
 
 const crypto = require("crypto");
-const CDP = require(path.join(ROOT, "cdp"));
-const REC = require(path.join(ROOT, "lib", "web-demo-recorder"));
+const CDP = require(mod("cdp"));
+const REC = require(mod("web-demo-recorder"));
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const wsText = (s) => {
@@ -1171,7 +1172,7 @@ section(14, "录制器：录到一半拦下（没遮上、扫出原文、跳走�
 // ═════════════════════════════════════════ 【15】真 Chrome + 真 ffmpeg ═════════════════════════════════════════
 section(15, "真 Chrome + 真 ffmpeg：本地页面录一条竖屏，出片、验片；马赛克没装上、脚本赋值露原文都真拦得住", async () => {
   if (!CDP.findChrome()) { console.log("  跳过：本机没有 Chrome"); return; }
-  const MP = require(path.join(ROOT, "lib", "media-probe"));
+  const MP = require(mod("media-probe"));
   const mb = await MP.resolveMediaBins();
   if (!mb.ffmpeg.bin || !mb.ffprobe.bin) {
     if (process.env.OWB_REQUIRE_FFMPEG === "1") ok(false, "OWB_REQUIRE_FFMPEG=1：这台机器必须有 ffmpeg 和 ffprobe", mb.ffmpeg.why || mb.ffprobe.why);
@@ -1259,7 +1260,7 @@ section(15, "真 Chrome + 真 ffmpeg：本地页面录一条竖屏，出片、�
 // ═════════════════════════════════════════ 【16】技能说明书 ═════════════════════════════════════════
 section(16, "技能说明书 product-demo：跟工具定义对得上，过得了安检", () => {
   if (!process.env.OPENWORKBUDDY_TOOLWARD) process.env.OPENWORKBUDDY_TOOLWARD = "off";
-  const guard = require(path.join(ROOT, "skill-guard"));
+  const guard = require(mod("skill-guard"));
   const dir = path.join(ROOT, "skills", "product-demo");
   const md = fs.readFileSync(path.join(dir, "skill.md"), "utf8");
   const fm = /^---\n([\s\S]*?)\n---/.exec(md);
@@ -1277,7 +1278,7 @@ section(16, "技能说明书 product-demo：跟工具定义对得上，过得了
     } catch (e) { ok(false, "  └ 例子过得了 parseSteps", e.message); }
   }
   // 反引号里提到的参数名、动作名必须是工具真认的：改了参数名忘了改说明书，模型就照着旧名字调
-  const TOOLS_SRC = fs.readFileSync(path.join(ROOT, "tools.js"), "utf8");
+  const TOOLS_SRC = fs.readFileSync(mod("tools"), "utf8");
   const known = new Set([
     ...Object.keys(REC.TOOL_DEF.input_schema.properties), ...P.OPS,
     "label", "shot", "selector", "text", "enter", "nth", "ms", "hold", "scale", "rect", "by", "to", "timeout_ms", "key", "zoom", "path",
@@ -1304,7 +1305,7 @@ section(17, "工具定义 + 录制器源码闸门（浏览器只能是隔离的�
   throwsWith(() => REC.outDirRel({ out_dir: "/etc" }), /绝对路径/, "绝对路径不收");
   throwsWith(() => REC.outDirRel({ out_dir: "../x" }), /跳出工作区/, "跳出工作区不收");
 
-  const src = fs.readFileSync(path.join(ROOT, "lib", "web-demo-recorder.js"), "utf8");
+  const src = fs.readFileSync(mod("web-demo-recorder"), "utf8");
   const code = src.replace(/\/\*[\s\S]*?\*\//g, "").split("\n").map((l) => l.replace(/^\s*\/\/.*$/, "")).join("\n");
   ok(/cdp\.spawnIsolated\(/.test(code) && !/cdp\.(ensure|run|launch|probe)\(/.test(code) && !/9222/.test(code), "浏览器只从 spawnIsolated 来：不连 9222、不复用你开着的 Chrome");
   ok(/--force-device-scale-factor=\$\{preset\.dsf\}/.test(code), "启动时定死缩放：只靠模拟的倍数，无头 Chrome 的帧大多是 CSS 尺寸（成片糊、尺寸忽大忽小）");
@@ -1314,7 +1315,7 @@ section(17, "工具定义 + 录制器源码闸门（浏览器只能是隔离的�
   ok(!/\bsay\b/.test(code), "没有 say");
 
   // 接线（tools.js 的 case、TOOL_DEFS）归集成那一步；接上之后这里自动开始查
-  const tsrc = fs.readFileSync(path.join(ROOT, "tools.js"), "utf8");
+  const tsrc = fs.readFileSync(mod("tools"), "utf8");
   if (!tsrc.includes("web-demo-recorder")) { console.log("  跳过接线检查：tools.js 还没接 record_web_demo"); return; }
   ok(/require\("\.\/lib\/web-demo-recorder"\)\.TOOL_DEF/.test(tsrc), "TOOL_DEFS 里登记了");
   const i = tsrc.indexOf("case \"record_web_demo\"");
@@ -1327,8 +1328,8 @@ section(17, "工具定义 + 录制器源码闸门（浏览器只能是隔离的�
 // 【17】只看 tools.js 的源码里写没写；这里真从 executeTool 调一次。只把「开浏览器、找 ffmpeg」换成假的，
 // 工作区、写权限、网址闸、停止信号、进度回调全用 tools.js 递进来的那份——接线漏传一样，这里就红
 section(18, "接线：executeTool → 录制器（写权限闸、网址闸、停止、进度一路报到 onProgress）", async () => {
-  const tools = require(path.join(ROOT, "tools"));
-  const security = require(path.join(ROOT, "security"));
+  const tools = require(mod("tools"));
+  const security = require(mod("security"));
   const WS = path.join(TMP, "dispatch-ws");
   fs.mkdirSync(WS, { recursive: true });
   const orig = REC.runTool;

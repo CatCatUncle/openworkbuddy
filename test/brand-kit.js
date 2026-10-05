@@ -17,6 +17,7 @@ const path = require("path");
 const fs = require("fs");
 const os = require("os");
 const zlib = require("zlib");
+const { mod } = require("./lib/mod");
 
 // 全局档案、审计日志都跟着数据目录走，require 之前先把家搬到临时目录
 const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "owb-brandkit-"));
@@ -34,10 +35,10 @@ const sub = (/** @type {string} */ name) => {
 };
 
 const ROOT = path.join(__dirname, "..");
-const brand = require(path.join(ROOT, "brand-kit"));
-const security = require(path.join(ROOT, "security"));
-const guard = require(path.join(ROOT, "skill-guard"));
-const { crc32 } = require(path.join(ROOT, "thumb-png"));
+const brand = require(mod("brand-kit"));
+const security = require(mod("security"));
+const guard = require(mod("skill-guard"));
+const { crc32 } = require(mod("thumb-png"));
 
 let pass = 0, fail = 0, finished = false;
 process.on("exit", (code) => {
@@ -428,7 +429,7 @@ const OWB = {
   });
 
   // ════════════════════════════════════════════════════════════════════════
-  const tools = require(path.join(ROOT, "tools"));
+  const tools = require(mod("tools"));
   const wiredTools = Array.isArray(tools.TOOL_DEFS) && tools.TOOL_DEFS.some((t) => t && t.name === "brand_kit_save");
   const WS = sub("ws-");
   fs.writeFileSync(path.join(WS, "logo.png"), makePng(8, 8, () => [255, 106, 0]));
@@ -571,7 +572,7 @@ const OWB = {
     r = await call("brand_kit_read", { action: "check", file: "draft.txt" });
     ok(r && !r.isError && /按「晴天记账」的档案查/.test(r.content) && /最强/.test(r.content), "check file：稿子从本对话的成果子目录起算", r && r.content);
     eq(events.length, 0, "  └ 本地秒回、不花钱：onProgress 传进去了也一条不发");
-    const ag = require(path.join(ROOT, "agent"));
+    const ag = require(mod("agent"));
     eq(ag.toolHeadline("brand_kit_read", { action: "check", file: "draft.txt" }), "查品牌档案 draft.txt", "界面那一行：说查的是哪个文件，不说 check");
     eq(ag.toolHeadline("brand_kit_save", { scope: "project", kit: { name: "晴天记账" } }), "存品牌档案 晴天记账", "  └ 存档说存的是哪份");
     ok(/^结论：要改 \d+ 处/.test(ag.resultOutcome("brand_kit_read", r.content, false)), "  └ 结果那一格报结论，不报「按哪份档案查」", ag.resultOutcome("brand_kit_read", r.content, false));
@@ -603,7 +604,7 @@ const OWB = {
       if (wired) ok(cond, name);
       else console.log(`  · 待接线：${name}（${cond ? "已就位" : "还没接"}）`);
     };
-    const AGENT = fs.readFileSync(path.join(ROOT, "agent.js"), "utf8");
+    const AGENT = fs.readFileSync(mod("agent"), "utf8");
     soft((AGENT.match(/brandKit\.safePromptBlock\(/g) || []).length >= 2, "agent.js 两处都接上摘要（主循环易变段 + 外部引擎）");
     soft(/READ_ONLY_TOOLS[\s\S]{0,2000}"brand_kit_read"/.test(AGENT), "brand_kit_read 算只读工具");
     soft(wiredTools && tools.TOOL_DEFS.some((t) => t.name === "brand_kit_read"), "tools.js 注册了两个工具");
@@ -616,12 +617,12 @@ const OWB = {
   });
 
   // ════════════════════════════════════════════════════════════════════════
-  const AGENT_SRC = fs.readFileSync(path.join(ROOT, "agent.js"), "utf8");
+  const AGENT_SRC = fs.readFileSync(mod("agent"), "utf8");
   const agentWired = /brandKit\.safePromptBlock\(/.test(AGENT_SRC);
   await section(`【10】进提示词：只进易变段，不提不加（${agentWired ? "跑真的 agent" : "agent.js 还没接线，跳过"}）`, async () => {
     if (!agentWired) { console.log("  · 待接线：agent.js 接上之后这里跑真的 agent（本地假模型，不花钱）"); return; }
-    const { McpManager } = require(path.join(ROOT, "mcp"));
-    const { createAgentRuntime } = require(path.join(ROOT, "agent"));
+    const { McpManager } = require(mod("mcp"));
+    const { createAgentRuntime } = require(mod("agent"));
     const dir = sub("agent-");
     const catcher = () => {
       const seen = [];

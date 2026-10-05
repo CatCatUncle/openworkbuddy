@@ -33,6 +33,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { mod } = require("./lib/mod");
 
 // 这套量的是 skill-guard **自己**那把尺子。跑测试的机器上要是恰好全局装了 toolward，
 // 下面走 skills.js 的那几条就会变成两把尺子合出来的结论——同一份技能换台机器换个答案。
@@ -46,7 +47,7 @@ function ok(cond, msg, extra) {
   console.log("  ✗ " + msg + (extra ? "\n      " + String(extra).replace(/\n/g, "\n      ") : ""));
 }
 
-const guard = require("../skill-guard");
+const guard = require(mod("skill-guard"));
 const S = (text, rel) => guard.scanOne(rel || "skill.md", text);
 const rules = (r) => r.findings.map((f) => f.rule);
 const hit = (text, rule, rel) => rules(S(text, rel)).includes(rule);
@@ -184,7 +185,7 @@ process.env.OPENWORKBUDDY_HOME = home;
 // 跑一次留 8 个（其中 owb-odd-* 自带一个 2MB 的 big.txt），临时目录里已经堆了 48 个
 const TMP_DIRS = [home];
 process.on("exit", () => { for (const d of TMP_DIRS) { try { fs.rmSync(d, { recursive: true, force: true }); } catch {} } });
-const skills = require("../skills");
+const skills = require(mod("skills"));
 
 /** 造一个技能源目录（模拟 git clone 下来的样子） */
 function mkSrc(name, body, extra) {
@@ -360,7 +361,7 @@ console.log("\n【10】默认技能清单上的豁免，两个方向都得对得
   //   第二段量这台机器上碰巧装了的 —— 装了几个扫几个，一个没装也不算挂。
   // 以前这里最后一行写的是「对上 <5 个就算挂」，那等于让「我这台机器装没装」决定 CI 红绿：
   // 干净 checkout 上一个都没装，checked 恒为 0，必挂，且挂得跟安全毫无关系。
-  const { DEFAULT_SKILLS, defaultInstallOpts } = require("../skills");
+  const { DEFAULT_SKILLS, defaultInstallOpts } = require(mod("skills"));
   const ruleIds = guard.RULES.map((r) => r.id);
   const blockIds = new Set(guard.RULES.filter((r) => r.level === "block").map((r) => r.id));
 

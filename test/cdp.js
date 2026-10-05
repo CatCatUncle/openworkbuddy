@@ -17,7 +17,8 @@
 const assert = require("assert");
 const http = require("http");
 const crypto = require("crypto");
-const cdp = require("../cdp");
+const { mod } = require("./lib/mod");
+const cdp = require(mod("cdp"));
 
 let pass = 0, fail = 0;
 const ok = (v, m, extra) => { if (v) pass++; else { fail++; console.error("  ❌", m, extra === undefined ? "" : "\n     " + extra); } };

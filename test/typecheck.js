@@ -44,6 +44,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { spawn } = require("child_process");
+const { entry } = require("./lib/entry");
 
 const ROOT = path.join(__dirname, "..");
 const CONFIG = path.join(ROOT, "tsconfig.check.json");
@@ -413,7 +414,7 @@ async function main() {
       "样本 .d.ts 没报错：那一趟的 skipLibCheck 多半又开回去了，types/ 下写错什么都查不出来");
     ok(isRed({ file: null, line: 0, col: 0, code: 2688, msg: "" }), "没有位置的配置级错误（比如找不到 @types/node）一律红");
     const parsedProbe = parseTscOutput("a.js(3,7): error TS2304: Cannot find name 'q'.\n  补充说明\nerror TS5083: Cannot read file.\n"
-      + path.join(ROOT, "server.js") + "\n");
+      + entry("server") + "\n");
     ok(parsedProbe.errors.length === 2 && parsedProbe.errors[0].line === 3 && parsedProbe.errors[0].col === 7
       && parsedProbe.errors[1].file === null && parsedProbe.files.length === 1,
       "输出解析：带位置的、没位置的、缩进的补充行、--listFiles 的文件行各归各位");

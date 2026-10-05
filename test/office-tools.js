@@ -34,6 +34,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const zlib = require("zlib");
+const { mod } = require("./lib/mod");
 const ROOT = path.join(__dirname, "..");
 const srcLib = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
 
@@ -61,9 +62,9 @@ const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "owb-office-home-"));
 const WS = fs.mkdtempSync(path.join(os.tmpdir(), "owb-office-ws-"));
 process.env.OPENWORKBUDDY_HOME = HOME;
 
-const tools = require(path.join(ROOT, "tools"));
-const preview = require(path.join(ROOT, "preview"));
-const notify = require(path.join(ROOT, "notify"));
+const tools = require(mod("tools"));
+const preview = require(mod("preview"));
+const notify = require(mod("notify"));
 const LIB = path.join(HOME, "data", "library");
 
 /** 1×1 的透明 PNG。只用来证明「内嵌图变成了占位符」，内容是什么不重要 */
@@ -286,7 +287,7 @@ const run = (name, input) => tools.executeTool(name, input, { security: { gatewa
   // ── ⑤ 这台机器上用不了的工具，定义一起摘掉 ──────────────────────────
   console.log("\n⑤ 纯 node 模式下摘掉桌面专属工具");
   {
-    const { createAgentRuntime } = require(path.join(ROOT, "agent"));
+    const { createAgentRuntime } = require(mod("agent"));
     const mk = (cfg) => createAgentRuntime({
       config: { agent: {}, im: {}, security: {}, ...cfg },
       llm: {}, mcpManager: { toolDefs: () => [] }, experts: [], expertTeams: [],
@@ -304,7 +305,7 @@ const run = (name, input) => tools.executeTool(name, input, { security: { gatewa
 
     // 反向对照：把渲染器探测翻成「有」，三个工具必须回来。
     // 没有这条，过滤器写成「永远都摘掉」也照样全绿
-    const br = require(path.join(ROOT, "browser-render"));
+    const br = require(mod("browser-render"));
     const orig = br.available;
     br.available = () => true;
     try {
@@ -322,7 +323,7 @@ const run = (name, input) => tools.executeTool(name, input, { security: { gatewa
     } finally { br.available = orig; }
 
     // 桥接给外部 CLI 引擎的那份清单，同样不许挂必然失败的工具
-    const bridge = require(path.join(ROOT, "engines/tool-bridge"));
+    const bridge = require(mod("tool-bridge"));
     const lent = bridge._internals.lentDefs().map((d) => d.name);
     for (const t of ["html_to_image", "render_page"]) {
       ok(!lent.includes(t), `桥接清单里也没有 ${t}（桥是个纯 node 子进程，更没有 Electron）`, lent);
@@ -335,8 +336,8 @@ const run = (name, input) => tools.executeTool(name, input, { security: { gatewa
     br.available = () => true;
     let lentGui;
     try {
-      delete require.cache[require.resolve(path.join(ROOT, "engines/tool-bridge"))];
-      lentGui = require(path.join(ROOT, "engines/tool-bridge"))._internals.lentDefs();
+      delete require.cache[require.resolve(mod("tool-bridge"))];
+      lentGui = require(mod("tool-bridge"))._internals.lentDefs();
     } finally { br.available = br2; }
     const rp = lentGui.find((d) => d.name === "render_page");
     ok(!!rp, "★桥上有浏览器时 render_page 没借出去★ 外部 CLI 抓动态站点就只剩空壳了", lentGui.map((d) => d.name));
@@ -347,7 +348,7 @@ const run = (name, input) => tools.executeTool(name, input, { security: { gatewa
   // ── ⑥ notify_user：配了才挂，没配不挂 ──────────────────────────────
   console.log("\n⑥ notify_user 按配置挂载");
   {
-    const { createAgentRuntime } = require(path.join(ROOT, "agent"));
+    const { createAgentRuntime } = require(mod("agent"));
     const mk = (im) => createAgentRuntime({
       config: { agent: {}, im, security: {} },
       llm: {}, mcpManager: { toolDefs: () => [] }, experts: [], expertTeams: [],
@@ -359,7 +360,7 @@ const run = (name, input) => tools.executeTool(name, input, { security: { gatewa
     // 推送成功与否只能看返回的数组：pushBots 单通道失败只写一行 console.warn 就咽了。
     // 不看它就会出现「工具说成功、群里什么都没有」——比报错更难查
     eq(await notify.pushBots({}, "x"), [], "★一个通道都没配时 pushBots 返回空数组★ 这就是「没推出去」的唯一凭据");
-    const src = fs.readFileSync(path.join(ROOT, "agent.js"), "utf8");
+    const src = fs.readFileSync(mod("agent"), "utf8");
     ok(/if \(!sent\.length\)/.test(src), "notify_user 真去看了这个数组，而不是只要没抛异常就报成功");
     ok(/callout\.strip\(raw\)/.test(src), "推出去之前先剥掉提示条标记——那是给界面画图标用的，进了群就是一串乱标签");
     ok(/security\.audit\("对外推送"/.test(src), "★对外推送要留痕★ 出了门收不回来的动作必须进审计");
@@ -437,10 +438,10 @@ const run = (name, input) => tools.executeTool(name, input, { security: { gatewa
   // 每条正向断言后面照例跟一条反向对照——闸门写成「永远挡」或「永远放」也要能被抓出来。
   console.log("\n⑧ 定时任务工具（schedule_task / list_schedules）");
   {
-    const scheduler = require(path.join(ROOT, "scheduler"));
-    const security = require(path.join(ROOT, "security"));
-    const { createAgentRuntime } = require(path.join(ROOT, "agent"));
-    const { McpManager } = require(path.join(ROOT, "mcp"));
+    const scheduler = require(mod("scheduler"));
+    const security = require(mod("security"));
+    const { createAgentRuntime } = require(mod("agent"));
+    const { McpManager } = require(mod("mcp"));
 
     // 8.1 cron 说人话。说不清的一律返回空串，由调用方退回原样显示——
     //     猜错比不说更坏：用户会照着一句错的说明点「同意」
@@ -487,7 +488,7 @@ const run = (name, input) => tools.executeTool(name, input, { security: { gatewa
       const ask = mkList("ask");
       ok(ask.includes("list_schedules"), "只看不动的档位也答得上「我都定了些什么」", ask);
       ok(!ask.includes("schedule_task"), "★只看不动的档位不许排期★ 排期会自己跑起来，属于「动」", ask);
-      const lent = require(path.join(ROOT, "engines/tool-bridge"))._internals.lentDefs().map((d) => d.name);
+      const lent = require(mod("tool-bridge"))._internals.lentDefs().map((d) => d.name);
       ok(!lent.includes("schedule_task") && !lent.includes("list_schedules"),
         "桥给外部 CLI 引擎的那份清单里没有排期工具（桥是另一个进程，那边插座是空的）", lent);
 
@@ -695,7 +696,7 @@ const run = (name, input) => tools.executeTool(name, input, { security: { gatewa
 
 
       // 8.10 上限兜底：审批那道闸挡的是跑飞，这条挡的是用户连点几十次「同意」
-      const MAX = Number(/MAX_SCHEDULES = (\d+)/.exec(fs.readFileSync(path.join(ROOT, "agent.js"), "utf8"))[1]);
+      const MAX = Number(/MAX_SCHEDULES = (\d+)/.exec(fs.readFileSync(mod("agent"), "utf8"))[1]);
       ok(MAX > 0, "agent.js 里得有 MAX_SCHEDULES 这个上限", MAX);
       while (sch.list().length < MAX) sch.add({ cron: "0 9 * * *", task: "占位 " + sch.list().length });
       const askedAtCap = approvals.length;
@@ -737,10 +738,10 @@ const run = (name, input) => tools.executeTool(name, input, { security: { gatewa
   // 每条正向断言后面照例跟一条反向对照：闸门写成「永远挡」或「永远放」也要能被抓出来。
   console.log("\n⑨ 发邮件（send_email）");
   {
-    const mailer = require(path.join(ROOT, "mailer"));
-    const security = require(path.join(ROOT, "security"));
-    const { createAgentRuntime } = require(path.join(ROOT, "agent"));
-    const { McpManager } = require(path.join(ROOT, "mcp"));
+    const mailer = require(mod("mailer"));
+    const security = require(mod("security"));
+    const { createAgentRuntime } = require(mod("agent"));
+    const { McpManager } = require(mod("mcp"));
 
     const PASS = "hunter2-很长的授权码";
     const SMTP = { host: "smtp.example.com", port: "465", user: "me@example.com", pass: PASS, from: "", allow_to: "" };
@@ -790,9 +791,9 @@ const run = (name, input) => tools.executeTool(name, input, { security: { gatewa
     ok(!tools.TOOL_DEFS.some((t) => t.name === "send_email"),
       "send_email 不在通用工具表里（它要的是 server 那份 config.im.smtp）",
       tools.TOOL_DEFS.map((t) => t.name).filter((n) => /mail/.test(n)));
-    const lentM = require(path.join(ROOT, "engines/tool-bridge"))._internals.lentDefs().map((d) => d.name);
+    const lentM = require(mod("tool-bridge"))._internals.lentDefs().map((d) => d.name);
     ok(!lentM.includes("send_email"), "桥给外部 CLI 引擎的清单里也没有它", lentM);
-    const agentSrc = fs.readFileSync(path.join(ROOT, "agent.js"), "utf8");
+    const agentSrc = fs.readFileSync(mod("agent"), "utf8");
     const roLine = (agentSrc.split("\n").find((l) => /const READ_ONLY_TOOLS/.test(l)) || "");
     ok(roLine && !roLine.includes("send_email"),
       "★send_email 不算「只读」★ 进了那张表就会跟别的调用并发跑，一趟发出去好几封", roLine.trim());

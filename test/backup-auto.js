@@ -14,8 +14,9 @@
  * 不起服务、不碰磁盘：list/make/remove 全是注入的假货。
  */
 const path = require("path");
+const { mod } = require("./lib/mod");
 const ROOT = path.join(__dirname, "..");
-const { createAutoBackup, normalizeDays, isDue, toPrune, isAuto, KEEP } = require(path.join(ROOT, "backup-auto"));
+const { createAutoBackup, normalizeDays, isDue, toPrune, isAuto, KEEP } = require(mod("backup-auto"));
 
 let pass = 0, fail = 0;
 const ok = (cond, msg, extra) => {

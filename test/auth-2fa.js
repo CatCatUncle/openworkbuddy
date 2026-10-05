@@ -15,14 +15,15 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { mod } = require("./lib/mod");
 
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), "owb-2fa-"));
 process.env.OPENWORKBUDDY_DATA_DIR = DIR;
 process.env.OPENWORKBUDDY_LOG_DIR = path.join(DIR, "logs"); // 登录留痕那一段要读它
 
-const account = require(path.join(__dirname, "..", "account.js"));
-const org = require(path.join(__dirname, "..", "org.js"));
-const totp = require(path.join(__dirname, "..", "totp.js"));
+const account = require(mod("account"));
+const org = require(mod("org"));
+const totp = require(mod("totp"));
 const I = account._internals;
 
 let fail = 0;

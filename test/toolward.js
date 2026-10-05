@@ -29,6 +29,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { mod } = require("./lib/mod");
 
 let pass = 0, fail = 0;
 function ok(cond, msg, extra) {
@@ -47,7 +48,7 @@ process.env.OPENWORKBUDDY_HOME = HOME;      // 必须在 require("../skills") �
 const TMP_DIRS = [HOME];
 process.on("exit", () => { for (const d of TMP_DIRS) { try { fs.rmSync(d, { recursive: true, force: true }); } catch {} } });
 
-const tw = require("../toolward");
+const tw = require(mod("toolward"));
 const { toReport, redactServers, safeUrl, relTo } = tw._internals;
 
 /** 造一条 toolward 口径的命中 */
@@ -293,7 +294,7 @@ fs.writeFileSync(path.join(SRC, "skill.md"), "---\nname: demo\ndescription: 测�
 // ══════════════════════════════════════════════════════════════════
 console.log("\n【5】装技能那条路真的接上了");
 // ══════════════════════════════════════════════════════════════════
-const skills = require("../skills");
+const skills = require(mod("skills"));
 const installedDir = (n) => path.join(HOME, "skills", n);
 function tryInstall(srcDir, opts) {
   try { return { ok: true, r: skills._internals.installedFromDir(srcDir, opts || {}) }; }
@@ -355,7 +356,7 @@ function mkClean(name) {
 console.log("\n【6】doctor 那一行：没装不算毛病，装着没在用才算");
 // ══════════════════════════════════════════════════════════════════
 {
-  const { verdictToolward } = require("../doctor");
+  const { verdictToolward } = require(mod("doctor"));
   const a = verdictToolward({ installed: false, install: "npm i -g toolward" });
   ok(a.level === "ok", "★没装被报成了 " + a.level + "★ 它是可选的，而且公司用要另外授权，催人去装是不对的");
   ok(/npm i -g toolward/.test(a.detail), "没装的时候该顺一句怎么装", a.detail);

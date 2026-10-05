@@ -15,6 +15,7 @@
  */
 
 // 赶在 require 任何生产模块之前：tools.js / agent.js 一加载就把数据目录定死了
+const { mod } = require("./lib/mod");
 require("./lib/own-home")("win-env");
 
 const fs = require("fs");
@@ -22,7 +23,7 @@ const os = require("os");
 const path = require("path");
 const ROOT = path.join(__dirname, "..");
 const srcLib = require("./lib/src");
-const which = require(path.join(ROOT, "engines", "which"));
+const which = require(mod("which"));
 
 let pass = 0, fail = 0;
 const ok = (cond, msg, extra) => {
@@ -169,7 +170,7 @@ const USR_KEY = "HKEY_CURRENT_USER\\Environment";
     console.log("\n④ run_shell 子进程拿到的 PATH");
     which._resetWinPath();
     await which.refreshWinPath({ platform: "win32", env: REG_ENV, regQuery: fakeReg(GOOD), log: () => {} });
-    const tools = require(path.join(ROOT, "tools"));
+    const tools = require(mod("tools"));
     const winPath = tools.shellPath("win32").split(";");
     // 报错时只打开头一截：在 Mac 上跑，这串里装的是本机的整份 PATH
     ok(winPath[0] === "C:\\Windows\\system32", "★Windows：注册表那份打头★ 刚 winget 装的东西 run_shell 也找得到", winPath[0].slice(0, 60));
@@ -183,14 +184,14 @@ const USR_KEY = "HKEY_CURRENT_USER\\Environment";
 
     // ── ⑤ 提示词里怎么说 shell ─────────────────────────────────────────
     console.log("\n⑤ 提示词里 run_shell 那一句");
-    const { shellNote } = require(path.join(ROOT, "agent"));
+    const { shellNote } = require(mod("agent"));
     const w = shellNote("win32");
     ok(/没有 python3/.test(w) && /py -3/.test(w), "★Windows：说清没有 python3，用 python 或 py -3★", w);
     ok(/不认行尾 \\ 续行/.test(w) && /\^/.test(w), "★Windows：cmd 不认 \\ 续行，写成一行或用 ^★", w);
     ok(/del\/copy\/where/.test(w), "原来那几句还在");
     eq(shellNote("darwin"), "zsh/bash", "反向对照：Mac 上还是那句 zsh/bash");
     ok(!/python|\^/.test(shellNote("linux")), "反向对照：Linux 上不提 python、^");
-    const AGENT = fs.readFileSync(path.join(ROOT, "agent.js"), "utf8");
+    const AGENT = fs.readFileSync(mod("agent"), "utf8");
     ok(/- run_shell：执行 shell 命令（\$\{shellNote\(\)\}）/.test(AGENT), "提示词里那一行真用的是 shellNote()");
 
     // ── ⑥ 用系统程序打开 ───────────────────────────────────────────────

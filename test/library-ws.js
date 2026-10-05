@@ -25,6 +25,8 @@ const fs = require("fs");
 const os = require("os");
 const http = require("http");
 const crypto = require("crypto");
+const { mod } = require("./lib/mod");
+const { entry } = require("./lib/entry");
 
 // 工作区、数据目录、账号全跟着 OPENWORKBUDDY_HOME 走：require 任何项目模块之前先把家搬到临时目录，
 // 绝不碰用户真实的工作区和数据
@@ -32,7 +34,7 @@ const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "owb-library-ws-"));
 process.env.OPENWORKBUDDY_HOME = HOME;
 
 const ROOT = path.join(__dirname, "..");
-const wsb = require(path.join(ROOT, "lib", "ws-browse"));
+const wsb = require(mod("ws-browse"));
 
 let pass = 0, fail = 0, finished = false;
 /** @type {import("child_process").ChildProcess | null} */
@@ -336,7 +338,7 @@ const LIST = { appDataDir: APPDATA };
     fs.mkdirSync(path.join(HOME, "资料", "data"), { recursive: true });
     fs.writeFileSync(path.join(HOME, "资料", "data", "我的.csv"), "a,b");
     fs.writeFileSync(path.join(HOME, "资料", "报告.md"), "# 报告");
-    const tools = require(path.join(ROOT, "tools"));
+    const tools = require(mod("tools"));
     tools.setWorkspaceDir(HOME);
     const panel = tools.outputFiles().map((/** @type {{name:string}} */ f) => f.name);
     ok(panel.length > 0 && panel.length < 500, `文件面板那份没被 500 条截断（${panel.length} 条），下面的比对才算数`);
@@ -345,7 +347,7 @@ const LIST = { appDataDir: APPDATA };
     ok(!panel.some((n) => n.startsWith("data/")), "两边都不把应用数据目录当成果");
     ok(panel.includes("资料/data/我的.csv"), "两边都照列用户自己叫 data 的文件夹");
     ok(!panel.some((n) => segs(n) > 3) && mine.length === panel.length, "文件面板仍然只看三层（那几处要的是「最近动过什么」，这次不动它）");
-    const src = fs.readFileSync(path.join(ROOT, "tools.js"), "utf8");
+    const src = fs.readFileSync(mod("tools"), "utf8");
     const body = src.slice(src.indexOf("function outputFiles()"), src.indexOf("function outputFiles()") + 3000);
     ok(/skipEntry\(e\.name, full, APP_DATA_DIR\)/.test(body) && /require\("\.\/lib\/ws-browse"\)/.test(body), "outputFiles 用的就是 lib/ws-browse 的 skipEntry，不是自己抄的一份");
   });
@@ -421,8 +423,8 @@ const LIST = { appDataDir: APPDATA };
   await section("⑦c 本回合产出：第 4 层往下写的、改的都差得出来（不拿 outputFiles 做差）", () => {
     // 用户看到的：agent 把成品写进「任务_x/site/assets/img/」，文件在，对话里「本回合产出」一张卡都没有。
     // 以前拿 outputFiles()（最深 3 层、最新 500 条）前后各拍一份做差，第 4 层往下两份里都没有
-    const tools = require(path.join(ROOT, "tools"));
-    const { makeFilesEmitter, makeOwnership } = require(path.join(ROOT, "agent"));
+    const tools = require(mod("tools"));
+    const { makeFilesEmitter, makeOwnership } = require(mod("agent"));
     tools.setWorkspaceDir(HOME); // 跟 ⑥ 一样：应用数据目录 HOME/data 落在工作区里
     const BASE = "任务_深";
     const abs = (/** @type {string} */ rel) => path.join(HOME, rel);
@@ -499,8 +501,8 @@ const LIST = { appDataDir: APPDATA };
   });
 
   await section("⑦d 本回合产出：只有条数撞线才报 scan_capped；撞线时报过的产出不丢、自己文件夹照样补走", () => {
-    const tools = require(path.join(ROOT, "tools"));
-    const { makeFilesEmitter, makeOwnership } = require(path.join(ROOT, "agent"));
+    const tools = require(mod("tools"));
+    const { makeFilesEmitter, makeOwnership } = require(mod("agent"));
     tools.setWorkspaceDir(HOME);
     const abs = (/** @type {string} */ rel) => path.join(HOME, rel);
     const past = new Date(Date.now() - 60e3);
@@ -729,7 +731,7 @@ const LIST = { appDataDir: APPDATA };
   });
 
   await section("⑨ 路由接线：跟 /api/files 同一个根、同一个数据目录", () => {
-    const src = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+    const src = fs.readFileSync(entry("server"), "utf8");
     const at = src.indexOf('app.get("/api/files/tree"');
     const route = src.slice(at, src.indexOf("\n});", at));
     ok(at > 0 && /getWorkspaceDir\(\)/.test(route) && /appDataDir: dataPath\("data"\)/.test(route), "tree 路由：根是 getWorkspaceDir()（租户作用域），藏的是 dataPath(\"data\")");
@@ -766,7 +768,7 @@ const LIST = { appDataDir: APPDATA };
  */
 function bootRealServer(env, { timeoutMs = 60000, port = "0" } = {}) {
   const { spawn } = require("child_process");
-  const child = spawn(process.execPath, [path.join(ROOT, "server.js")], {
+  const child = spawn(process.execPath, [entry("server")], {
     env: { ...process.env, ...env, HOST: "127.0.0.1", PORT: String(port) },
     stdio: ["ignore", "pipe", "pipe"],
   });

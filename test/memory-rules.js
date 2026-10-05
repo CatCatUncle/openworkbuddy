@@ -14,13 +14,14 @@
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
+const { mod } = require("./lib/mod");
 
 const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "owb-memrules-"));
 process.env.OPENWORKBUDDY_HOME = HOME;
 process.env.OPENWORKBUDDY_DATA_DIR = path.join(HOME, "data");
 
 const ROOT = path.join(__dirname, "..");
-const memory = require(path.join(ROOT, "memory"));
+const memory = require(mod("memory"));
 const { isRule, save, load, MAX_PROMPT_CHARS, pendingHits } = memory._internals;
 
 let pass = 0, fail = 0, finished = false;

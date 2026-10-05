@@ -16,6 +16,7 @@
 
 const path = require("path");
 const http = require("http");
+const { mod } = require("./lib/mod");
 
 const ROOT = path.join(__dirname, "..");
 // 要赶在 require agent / quota 之前：不隔离的话 ⑤⑥ 记的账（quota.record）会进用户真实的
@@ -58,8 +59,8 @@ function fakeUpstream(answerFor) {
 
 /** 跑一趟真 agent：第一步调 decide，第二步收工。返回工具那条结果的正文 */
 async function runDecide(input, { cfg = {}, upstream } = {}) {
-  const { createAgentRuntime } = require(path.join(ROOT, "agent"));
-  const { McpManager } = require(path.join(ROOT, "mcp"));
+  const { createAgentRuntime } = require(mod("agent"));
+  const { McpManager } = require(mod("mcp"));
   let step = 0;
   const llm = {
     provider: "mock", model: "scripted",
@@ -94,8 +95,8 @@ const 工单 = "客服工单：我的收款账号连了三天都连不上，订�
   // ─────────────────────────────────────────────────────────
   console.log("① 配没配决定摆不摆出来——量的是真发给模型的那张工具表");
   {
-    const { createAgentRuntime } = require(path.join(ROOT, "agent"));
-    const { McpManager } = require(path.join(ROOT, "mcp"));
+    const { createAgentRuntime } = require(mod("agent"));
+    const { McpManager } = require(mod("mcp"));
     // 没配就不摆，而不是摆出来再拒：摆出来的话模型会先想一个方案、调一次、吃一条「没配」、再重想。
     // 这一组不看源码、不看内部函数，只看 llm.chat 真收到的 tools——发出去的那张表才算数。
     const 摆了什么 = async (config, mode) => {
@@ -212,8 +213,8 @@ const 工单 = "客服工单：我的收款账号连了三天都连不上，订�
   // ─────────────────────────────
   console.log("\n⑤ 额度按题数算，不按请求数");
   {
-    const quota = require(path.join(ROOT, "quota"));
-    const jev = require(path.join(ROOT, "jev"));
+    const quota = require(mod("quota"));
+    const jev = require(mod("jev"));
     const calls = [];
     const g0 = quota.gate, r0 = quota.record;
     quota.gate = (cap, c) => { calls.push(["gate", cap, c.n]); return g0.call(quota, cap, c); };
@@ -234,8 +235,8 @@ const 工单 = "客服工单：我的收款账号连了三天都连不上，订�
   // ─────────────────────────────────────────────────────────
   console.log("\n⑥ 发不出去的时候不许占着额度");
   {
-    const quota = require(path.join(ROOT, "quota"));
-    const jev = require(path.join(ROOT, "jev"));
+    const quota = require(mod("quota"));
+    const jev = require(mod("jev"));
     let undone = 0, recorded = 0;
     const u0 = quota.undo, r0 = quota.record;
     quota.undo = (h) => { undone++; return u0.call(quota, h); };
@@ -268,7 +269,7 @@ const 工单 = "客服工单：我的收款账号连了三天都连不上，订�
   {
     const fs = require("fs");
     const srv = src("server");
-    const ag = fs.readFileSync(path.join(ROOT, "agent.js"), "utf8");
+    const ag = fs.readFileSync(mod("agent"), "utf8");
     // 测活那条自己带着量（题数固定 3），其余都必须走 askMetered
     const hand = (srv.match(/quota\.gate\("decide"/g) || []).length;
     eq(hand, 1, "★server.js 里只剩测活那一处手写★ 每多抄一份，就多一个「占了没退 / 花了没记」的地方", hand);
@@ -281,17 +282,17 @@ const 工单 = "客服工单：我的收款账号连了三天都连不上，订�
   console.log("\n\u2467 技能里写的工具名，得是真实存在的工具");
   {
     const fs = require("fs");
-    const skills = require(path.join(ROOT, "skills.js"));
+    const skills = require(mod("skills"));
     const all = skills.loadSkills();
     const t = (Array.isArray(all) ? all : all.skills || []).find((x) => x.name === "triage");
     ok(!!t, "技能 triage 扫得到（skills/ 是自动发现的，不用登记）");
     ok(t && (t.description || "").length > 10, "  └ 带描述（模型就靠这句话决定要不要开它）");
 
     // 工具分两处：tools.js 里的是一直在的，agent.js 里的是按配置挂上去的
-    const { TOOL_DEFS } = require(path.join(ROOT, "tools.js"));
+    const { TOOL_DEFS } = require(mod("tools"));
     const fromTools = (Array.isArray(TOOL_DEFS) ? TOOL_DEFS : Object.values(TOOL_DEFS))
       .map((d) => d.name || (d.function && d.function.name)).filter(Boolean);
-    const agSrc = fs.readFileSync(path.join(ROOT, "agent.js"), "utf8");
+    const agSrc = fs.readFileSync(mod("agent"), "utf8");
     const fromAgent = [...new Set((agSrc.match(/name: "[a-z_]+"/g) || []).map((x) => x.slice(7, -1)))];
     const known = new Set([...fromTools, ...fromAgent]);
     ok(known.has("decide"), "  └ decide 真的是个工具名");

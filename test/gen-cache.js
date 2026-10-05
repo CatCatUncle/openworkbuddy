@@ -30,6 +30,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { mod } = require("./lib/mod");
 const ROOT = path.join(__dirname, "..");
 
 let pass = 0, fail = 0;
@@ -48,10 +49,10 @@ const WS = fs.mkdtempSync(path.join(os.tmpdir(), "owb-gencache-ws-"));
 const WS2 = fs.mkdtempSync(path.join(os.tmpdir(), "owb-gencache-ws2-"));
 process.env.OPENWORKBUDDY_HOME = HOME;
 
-const cache = require(path.join(ROOT, "gen-cache"));
-const mm = require(path.join(ROOT, "media-models"));
-const tools = require(path.join(ROOT, "tools"));
-const security = require(path.join(ROOT, "security"));
+const cache = require(mod("gen-cache"));
+const mm = require(mod("media-models"));
+const tools = require(mod("tools"));
+const security = require(mod("security"));
 
 const DIR = path.join(WS, "任务_1");
 fs.mkdirSync(DIR, { recursive: true });
@@ -346,7 +347,7 @@ async function e2e() {
   // ---------------------------------------------------------------- 10
   console.log("\n【10】直调这条口：不过模型也能重跑一格，但只准跑这四个");
   {
-    const { createAgentRuntime, DIRECT_TOOLS } = require(path.join(ROOT, "agent"));
+    const { createAgentRuntime, DIRECT_TOOLS } = require(mod("agent"));
 
     eq(DIRECT_TOOLS.length, 4, "能直调的就四个", DIRECT_TOOLS);
     for (const n of ["generate_image", "generate_video", "text_to_speech", "html_to_image"]) {

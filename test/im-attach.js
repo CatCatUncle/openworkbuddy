@@ -19,9 +19,10 @@
 const path = require("path");
 const os = require("os");
 const fs = require("fs");
+const { mod } = require("./lib/mod");
 const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "owb-im-attach-"));
 process.env.OPENWORKBUDDY_HOME = HOME;
-const { pickAttachments } = require(path.join(__dirname, "..", "im"))._internals;
+const { pickAttachments } = require(mod("im"))._internals;
 
 let pass = 0, fail = 0;
 const ok = (cond, msg, extra) => {
@@ -86,7 +87,7 @@ console.log("⑥ 收进来的附件名在 Windows 上能落盘");
 {
   // 手机上发来的「Q3:计划.docx」在 NTFS 上会写成 0 字节的 Q3 + 备用数据流，用户打不开。
   // 本机不是 Windows，靠 platform 参数测；每条都配 darwin 的反向对照，确认别的系统一点不变。
-  const { safeBaseName, saveInbound } = require(path.join(__dirname, "..", "im-media"));
+  const { safeBaseName, saveInbound } = require(mod("im-media"));
   const cases = [
     ["Q3:计划.docx", "Q3_计划.docx", "Q3:计划.docx"],
     ["CON.txt", "_CON.txt", "CON.txt"],

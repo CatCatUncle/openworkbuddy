@@ -25,10 +25,11 @@
  */
 
 const path = require("path");
+const { mod } = require("./lib/mod");
 
 const ROOT = path.join(__dirname, "..");
-const cm = require(path.join(ROOT, "chat-models"));
-const mm = require(path.join(ROOT, "media-models"));
+const cm = require(mod("chat-models"));
+const mm = require(mod("media-models"));
 
 let pass = 0, fail = 0;
 const ok = (cond, msg, extra) => {

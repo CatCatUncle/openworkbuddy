@@ -21,14 +21,15 @@
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
+const { mod } = require("./lib/mod");
 
 const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "owb-cmdgate-home-"));
 process.env.OPENWORKBUDDY_HOME = HOME;
 process.env.OPENWORKBUDDY_DATA_DIR = path.join(HOME, "data");
 
 const ROOT = path.join(__dirname, "..");
-const security = require(path.join(ROOT, "security"));
-const cmdRisk = require(path.join(ROOT, "cmd-risk"));
+const security = require(mod("security"));
+const cmdRisk = require(mod("cmd-risk"));
 
 let pass = 0, fail = 0;
 process.on("exit", () => { try { fs.rmSync(HOME, { recursive: true, force: true }); } catch {} });

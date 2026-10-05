@@ -25,6 +25,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { execFileSync, spawnSync } = require("child_process");
+const { mod } = require("./lib/mod");
 
 const ROOT = path.join(__dirname, "..");
 const { src } = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
@@ -223,7 +224,7 @@ ok(/^seedDataDir\(\);/m.test(serverSrc), "server.js 启动时真的调了 seedDa
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "owb-seed-"));
   const r = spawnSync(process.execPath, ["-e", `
     process.env.OPENWORKBUDDY_HOME = ${JSON.stringify(tmp)};
-    const p = require(${JSON.stringify(path.join(ROOT, "paths.js"))});
+    const p = require(${JSON.stringify(mod("paths"))});
     p.seedDataDir();
     const fs = require("fs"), path = require("path");
     const dirs = fs.readdirSync(path.join(${JSON.stringify(tmp)}, "skills"), { withFileTypes: true }).filter(e => e.isDirectory());
@@ -236,7 +237,7 @@ ok(/^seedDataDir\(\);/m.test(serverSrc), "server.js 启动时真的调了 seedDa
   ok(out.experts === true, "experts.json 也铺过去了");
   // 反向对照：数据目录就是代码目录时（开发态 / npm run app），它必须是空操作
   const r2 = spawnSync(process.execPath, ["-e", `
-    const p = require(${JSON.stringify(path.join(ROOT, "paths.js"))});
+    const p = require(${JSON.stringify(mod("paths"))});
     console.log(p.DATA_DIR === p.APP_DIR ? "noop" : "seeded");
   `], {
     encoding: "utf8",

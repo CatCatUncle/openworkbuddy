@@ -31,8 +31,9 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { mod } = require("./lib/mod");
 const ROOT = path.join(__dirname, "..");
-const sweep = require(path.join(ROOT, "sweep"));
+const sweep = require(mod("sweep"));
 
 let pass = 0, fail = 0;
 function ok(cond, name, extra) {

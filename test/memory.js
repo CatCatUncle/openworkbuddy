@@ -28,6 +28,7 @@
  */
 
 // 量堆要 global.gc。npm test 是拿 node 直接拉起来的，自己换身皮再跑一遍
+const { mod } = require("./lib/mod");
 if (!global.gc) {
   const r = require("child_process").spawnSync(process.execPath, ["--expose-gc", __filename], {
     stdio: ["ignore", "inherit", "inherit"], timeout: 300000,
@@ -40,7 +41,7 @@ const os = require("os");
 const path = require("path");
 const ROOT = path.join(__dirname, "..");
 const { src } = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
-const store = require(path.join(ROOT, "store.js"));
+const store = require(mod("store"));
 
 let pass = 0, fail = 0;
 const ok = (msg, cond, detail) => {

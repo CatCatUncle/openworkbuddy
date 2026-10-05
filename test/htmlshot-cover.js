@@ -26,6 +26,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { mod } = require("./lib/mod");
 const ROOT = path.join(__dirname, "..");
 
 let pass = 0, fail = 0;
@@ -68,11 +69,11 @@ async function nodePhase() {
   delete process.env.OWB_MOTION_BACKEND;
   delete process.env.OWB_BRIDGE;
   try {
-    const cdp = require(path.join(ROOT, "cdp.js"));
+    const cdp = require(mod("cdp"));
     let spawns = 0;
     cdp.findChrome = () => "/fake/chrome";
     cdp.spawnIsolated = async () => { spawns++; throw new Error("假 Chrome：只记一笔，不真起"); };
-    const H = require(path.join(ROOT, "htmlshot.js"));
+    const H = require(mod("htmlshot"));
     const html = path.join(tmp, "a.html");
     fs.writeFileSync(html, "<body>x</body>");
     eq(H.shotAvailable().backend, "chrome", "本机有 Chrome 时 shotAvailable 选 chrome（任务道还能出片头卡）");
@@ -123,7 +124,7 @@ async function run(TMP, cleanups) {
   const electron = require("electron");
   const { app, BrowserWindow, session, nativeImage, utilityProcess } = electron;
   const http = require("http");
-  const H = require(path.join(ROOT, "htmlshot.js"));
+  const H = require(mod("htmlshot"));
   const I = H._internals;
   const coverSes = session.fromPartition(H.COVER_PARTITION);
   const plainSes = "owb-test-plain"; // 反向对照用的普通窗口：内存分区、不加任何防护
@@ -398,12 +399,12 @@ try { navigator.sendBeacon("http://127.0.0.1:${P}/beacon", "x"); } catch (e) {}
 
   console.log("\n【10】服务进程里（utilityProcess 过桥）：窗口还是主进程那一个");
   {
-    const { createShellBridge } = require(path.join(ROOT, "bridge-main.js"));
+    const { createShellBridge } = require(mod("bridge-main"));
     const shell = createShellBridge({ electron, hidden: true });
     const childFile = path.join(TMP, "bridge-child.js");
     fs.writeFileSync(childFile, `"use strict";
-const H = require(${JSON.stringify(path.join(ROOT, "htmlshot.js"))});
-const bridge = require(${JSON.stringify(path.join(ROOT, "electron-bridge.js"))});
+const H = require(${JSON.stringify(mod("htmlshot"))});
+const bridge = require(${JSON.stringify(mod("electron-bridge"))});
 const post = (m) => process.parentPort.postMessage(m);
 process.parentPort.on("message", async (e) => {
   const m = e && e.data;

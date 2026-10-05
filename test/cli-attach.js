@@ -23,8 +23,10 @@
 
 const fs = require("fs");
 const path = require("path");
+const { mod } = require("./lib/mod");
+const { entry } = require("./lib/entry");
 const ROOT = path.join(__dirname, "..");
-const A = require(path.join(ROOT, "cli-attach"));
+const A = require(mod("cli-attach"));
 
 let pass = 0, fail = 0;
 function ok(cond, name, extra) {
@@ -36,8 +38,8 @@ function eq(got, want, name) {
   ok(same, name, same ? undefined : { got, want });
 }
 
-const CLI_SRC = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
-const ATTACH_SRC = fs.readFileSync(path.join(ROOT, "cli-attach.js"), "utf8");
+const CLI_SRC = fs.readFileSync(entry("cli"), "utf8");
+const ATTACH_SRC = fs.readFileSync(mod("cli-attach"), "utf8");
 
 // 一张假盘：路径在这张表里就算存在。二十几种写法能逐个对，不用真往盘上摆文件
 const DISK = new Set([
@@ -473,7 +475,7 @@ console.log("\n⑨ cli.js 接线：顺序和边界");
 // ── ⑩ 两条新命令在那张表里，Tab 和菜单都得认 ─────────────────────────────
 console.log("\n⑩ /paste 和 /drop：表里有、Tab 补得出、菜单列得出");
 {
-  const R = require(path.join(ROOT, "repl-commands"));
+  const R = require(mod("repl-commands"));
   const names = R.COMMANDS.map((c) => c.name);
   ok(names.includes("paste"), "/paste 在命令表里");
   ok(names.includes("drop"), "/drop 在命令表里");

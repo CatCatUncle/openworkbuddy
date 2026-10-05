@@ -23,17 +23,18 @@
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
+const { mod } = require("./lib/mod");
 
 const ROOT = path.join(__dirname, "..");
 // 赶在 require 生产模块之前：不然单独跑时 trace 记进用户真在用的 workspace/（见 test/lib/own-home.js）
 require("./lib/own-home")("continue-gate");
 const { src } = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
-const cg = require(path.join(ROOT, "continue-gate"));
-const systemone = require(path.join(ROOT, "systemone"));
-const jev = require(path.join(ROOT, "jev"));
-const tools = require(path.join(ROOT, "tools"));
-const { createAgentRuntime, stopNotice, unfinishedMilestones } = require(path.join(ROOT, "agent"));
-const { McpManager } = require(path.join(ROOT, "mcp"));
+const cg = require(mod("continue-gate"));
+const systemone = require(mod("systemone"));
+const jev = require(mod("jev"));
+const tools = require(mod("tools"));
+const { createAgentRuntime, stopNotice, unfinishedMilestones } = require(mod("agent"));
+const { McpManager } = require(mod("mcp"));
 const { needsGate, doneQuestions, gateState, readDone, skipNote, DONE_KEY, CONTINUE_MIN, GATE_STOP_PREFIX } = cg;
 
 let pass = 0, fail = 0, finished = false;
@@ -259,7 +260,7 @@ const out = (...answers) => ({ ok: true, answers });
   console.log("\n⑥ 接线扫一遍（别让这一整套只活在测试里）");
   // ─────────────────────────────────────────────────────────────
   {
-    const ag = fs.readFileSync(path.join(ROOT, "agent.js"), "utf8");
+    const ag = fs.readFileSync(mod("agent"), "utf8");
     ok(/askContinueGate\(stopNote, finalText\)/.test(ag), "★真挂在续跑那一步上★ 摆在「要不要续」和「续」之间");
     ok(/continueGate\.needsGate/.test(ag) && /continueGate\.readDone/.test(ag), "  └ 用的是这一层的纯函数，没在 agent 里另抄一份判据");
     ok(/if \(!\(config\.agent \|\| \{\}\)\.continue_gate\) return "";/.test(ag), "★默认关★ 后台自己花的钱，得用户先点头");
@@ -298,8 +299,8 @@ const out = (...answers) => ({ ok: true, answers });
   // 以前重试只有一句文字，前端要显示「3 秒后第 2/3 次重试」只能拿正则去抠。
   // 契约（3.4 界面那边照这个读）：retry = { attempt 从 1 数, total, delayMs }；text 一个字不改，老前端照读
   {
-    const llmMod = require(path.join(ROOT, "llm"));
-    const { retryField } = require(path.join(ROOT, "agent"));
+    const llmMod = require(mod("llm"));
+    const { retryField } = require(mod("agent"));
     const { chatWithRetry, RETRY_DELAYS } = llmMod._internals;
     const realAsk = jev.askMetered;
     jev.askMetered = async () => ({ ok: false, error: "测试桩：不发网络" });

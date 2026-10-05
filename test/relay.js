@@ -36,6 +36,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const http = require("http");
+const { mod } = require("./lib/mod");
 
 // 必须先于任何 require：这几个模块在加载的那一刻就把 DATA_DIR 定死了。
 // 不隔离的话，这套测试会往用户真正的 vkeys.json、账号表和流水账里写东西。
@@ -48,16 +49,16 @@ fs.mkdirSync(process.env.OPENWORKBUDDY_DATA_DIR, { recursive: true });
 const ROOT = path.join(__dirname, "..");
 const srcLib = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
 const express = require(path.join(ROOT, "node_modules/express"));
-const pricing = require(path.join(ROOT, "pricing"));
-const budget = require(path.join(ROOT, "budget"));
-const vkeys = require(path.join(ROOT, "vkeys"));
-const org = require(path.join(ROOT, "org"));
-const account = require(path.join(ROOT, "account"));
-const admin = require(path.join(ROOT, "admin"));
-const lifecycle = require(path.join(ROOT, "lifecycle"));
-const usageStore = require(path.join(ROOT, "usage-store"));
-const relay = require(path.join(ROOT, "relay"));
-const tools = require(path.join(ROOT, "tools"));
+const pricing = require(mod("pricing"));
+const budget = require(mod("budget"));
+const vkeys = require(mod("vkeys"));
+const org = require(mod("org"));
+const account = require(mod("account"));
+const admin = require(mod("admin"));
+const lifecycle = require(mod("lifecycle"));
+const usageStore = require(mod("usage-store"));
+const relay = require(mod("relay"));
+const tools = require(mod("tools"));
 
 admin.setDeployment({ shell: false, host: "0.0.0.0" }); // 服务器形态：平台/租户那道闸开着
 
@@ -623,7 +624,7 @@ console.log("\n【6】离职：停用账号关的是他本人的路，中转站�
      ============================================================ */
   console.log("\n【9】按量那几路：能力白名单、产出落盘、单价、失败不记账");
 
-  const relayFiles = require(path.join(ROOT, "relay-files"));
+  const relayFiles = require(mod("relay-files"));
   const ORG9 = "relay-co";          // 单独一个组织，预算那几格不跟前面几段互相干扰
   // 1×1 的合法 PNG。假上游回它，取回来的字节要跟它一个字节不差
   const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c6360000002000100ffff03000006000557bfabd40000000049454e44ae426082", "hex");

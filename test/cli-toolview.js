@@ -10,8 +10,10 @@
  *   3. 一行都不超过给的宽度（中文按两列算），折行会把缩进搅乱
  */
 const assert = require("assert");
-const tv = require("../cli-toolview");
-const { cols } = require("../text-width");
+const { mod } = require("./lib/mod");
+const { entry } = require("./lib/entry");
+const tv = require(mod("cli-toolview"));
+const { cols } = require(mod("text-width"));
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -53,7 +55,7 @@ async function cliRun(calls, withOut) {
   fs.writeFileSync(path.join(home, "config.json"), JSON.stringify(cfg));
   try {
     return await new Promise((resolve, reject) => {
-      const kid = spawn(process.execPath, [path.join(__dirname, "..", "cli.js"), "干活", "-C", ws, "--no-mcp"], {
+      const kid = spawn(process.execPath, [entry("cli"), "干活", "-C", ws, "--no-mcp"], {
         env: { ...process.env, OPENWORKBUDDY_HOME: home, NO_COLOR: "1" }, stdio: ["ignore", "pipe", "pipe"],
       });
       let err = "", out = "";

@@ -25,9 +25,10 @@ const os = require("os");
 const path = require("path");
 const http = require("http");
 const { spawn } = require("child_process");
+const { entry } = require("./lib/entry");
 
 const ROOT = path.join(__dirname, "..");
-const CLI = path.join(ROOT, "cli.js");
+const CLI = entry("cli");
 
 let pass = 0;
 const ok = (cond, name, extra) => {

@@ -22,6 +22,7 @@ const path = require("path");
 const http = require("http");
 const crypto = require("crypto");
 const { spawnSync } = require("child_process");
+const { mod } = require("./lib/mod");
 
 // 必须先于任何 require：org.js / vkeys.js 在加载的那一刻就把数据目录定死了
 const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "owb-license-"));
@@ -31,13 +32,13 @@ fs.mkdirSync(process.env.OPENWORKBUDDY_DATA_DIR, { recursive: true });
 
 const ROOT = path.join(__dirname, "..");
 const express = require(path.join(ROOT, "node_modules/express"));
-const license = require(path.join(ROOT, "license.js")); // 不带 .js 在 macOS 上会读到 LICENSE，见【12】
+const license = require(mod("license")); // 不带 .js 在 macOS 上会读到 LICENSE，见【12】
 const { sign } = require(path.join(ROOT, "scripts/issue-license"));
-const account = require(path.join(ROOT, "account"));
-const org = require(path.join(ROOT, "org"));
-const vkeys = require(path.join(ROOT, "vkeys"));
-const admin = require(path.join(ROOT, "admin"));
-const tools = require(path.join(ROOT, "tools"));
+const account = require(mod("account"));
+const org = require(mod("org"));
+const vkeys = require(mod("vkeys"));
+const admin = require(mod("admin"));
+const tools = require(mod("tools"));
 const srcLib = require("./lib/src");
 
 tools.setWorkspaceDir(path.join(HOME, "workspace"));

@@ -9,6 +9,8 @@
  */
 
 const fs = require("fs");
+const { mod: modPath } = require("./lib/mod");
+const { entry } = require("./lib/entry");
 // 单独跑这个文件时也别写进用户真账本（all.js 里已经设过一次，这里只兜底）
 if (!process.env.OPENWORKBUDDY_TRACE_FILE) {
   const dir = require("fs").mkdtempSync(require("path").join(require("os").tmpdir(), "owb-test-trace-"));
@@ -28,7 +30,7 @@ if (E2E_OWN_HOME) {
   // 只设 HOME、不设 OPENWORKBUDDY_DATA_DIR，跟 all.js 一个口径：好些用例起 server 时只换 HOME，
   // 这里设了 DATA_DIR 就会顺着 env 漏进去，把那台 server 的账本指回这个目录
   process.env.OPENWORKBUDDY_HOME = E2E_OWN_HOME;
-  require("../paths").seedDataDir();
+  require(modPath("paths")).seedDataDir();
   // 放在 exit 里收：审计、记忆命中数是防抖写盘，收早了会被它们再建出来
   process.on("exit", (code) => {
     if (code) {
@@ -45,11 +47,11 @@ const os = require("os");
 const path = require("path");
 const srcLib = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
 const assert = require("assert");
-const { createAgentRuntime, missingDeliverables, unseenVisualClaims, trimHistory, historyChars, collectSources } = require("../agent");
-const { McpManager } = require("../mcp");
-const { parseCron, cronMatches } = require("../scheduler");
-const { getWorkspaceDir, setWorkspaceDir } = require("../tools");
-const mediaModels = require("../media-models");
+const { createAgentRuntime, missingDeliverables, unseenVisualClaims, trimHistory, historyChars, collectSources } = require(modPath("agent"));
+const { McpManager } = require(modPath("mcp"));
+const { parseCron, cronMatches } = require(modPath("scheduler"));
+const { getWorkspaceDir, setWorkspaceDir } = require(modPath("tools"));
+const mediaModels = require(modPath("media-models"));
 /**
  * 画布那几条用例把 canvasGenerate 抠进沙箱跑。文件放上画布之后的步骤（回写分镜表、提示）出错时，
  * 它只 console.warn 一句就按成功返回——页面上这样对：钱花了、图有了，不能按「没成」算。
@@ -163,7 +165,7 @@ async function dropTempHome(dir, passed, child) {
  */
 function bootRealServer(env, { timeoutMs = 60000, port = "0" } = {}) {
   const { spawn } = require("child_process");
-  const child = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
+  const child = spawn(process.execPath, [entry("server")], {
     // PORT 摆在最后：外面 shell 里要是设了 PORT（跑着自己那台的人很常见），不能让它把 0 顶掉
     env: { ...process.env, ...env, HOST: "127.0.0.1", PORT: String(port) },
     stdio: ["ignore", "pipe", "pipe"],
@@ -308,7 +310,7 @@ const ExcelJS = require("exceljs");
  * 模型回了个空，三种都得带一条 compact 出去。少一条，界面那行就永远停在「正在压…已等 8 秒」。
  */
 async function testCompactProgress() {
-  const { dataPath } = require("../paths");
+  const { dataPath } = require(modPath("paths"));
   const archive = dataPath("data", "compact-archive");
   const before = new Set(fs.existsSync(archive) ? fs.readdirSync(archive) : []);
   try {
@@ -408,7 +410,7 @@ async function testAgentPipeline() {
 }
 
 async function testOfficeLibs() {
-  const { executeTool } = require("../tools");
+  const { executeTool } = require(modPath("tools"));
   const code = `
 const { Document, Packer, Paragraph } = require("docx");
 const pptxgen = require("pptxgenjs");
@@ -432,8 +434,8 @@ const fs = require("fs");
 // 这一层要能真的拆开真库生成的文件——所以不喂手搓的假样本，喂 docx/exceljs/pptxgenjs 的真产物，
 // 拆出来的结构再跟写进去的内容逐条对上（写"标题一"就得回"标题一"，级别、粗体、表格一个不能丢）。
 async function testPreviewExtract() {
-  const { executeTool } = require("../tools");
-  const { previewData } = require("../preview");
+  const { executeTool } = require(modPath("tools"));
+  const { previewData } = require(modPath("preview"));
   const code = `
 const { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell } = require("docx");
 const ExcelJS = require("exceljs");
@@ -513,7 +515,7 @@ const fs = require("fs");
 // run_node 语法预检：模型最常翻车的写法是用模板字符串拼 HTML，正文里的反引号/${}/</script> 会截断字面量。
 // 预检要在开进程之前拦下来，并且明确指路 write_file；同时不能误伤正常代码。
 async function testNodeSyntaxPrecheck() {
-  const { executeTool } = require("../tools");
+  const { executeTool } = require(modPath("tools"));
   const broken = [
     'const fs = require("fs");',
     "const html = `<html><script>",
@@ -538,7 +540,7 @@ async function testNodeSyntaxPrecheck() {
 // 没匹配上就连同后面的收尾一起不执行；`curl http://a/x?id=1` 不加引号（? 和 [] 在 zsh 里
 // 也是通配符）直接不跑。所以这里守的是行为不是措辞：**命令必须真的执行到**。
 async function testShellGlobCompat() {
-  const tools = require("../tools");
+  const tools = require(modPath("tools"));
   const run = (command) => tools.executeTool("run_shell", { command }, { timeoutMs: 30000 });
 
   // ① 循环里的通配符没匹配上，后面的收尾必须照跑（旧行为：整个复合命令 exit 1，收尾丢失）
@@ -581,7 +583,7 @@ async function testShellGlobCompat() {
 // PATH= 是为了让这条断言在装了 ffmpeg 的机器上也成立——把 PATH 清空，
 // 任何机器上都必然是「找不到」，而不是「这台碰巧没装」。
 async function testMissingBinHintWired() {
-  const tools = require("../tools");
+  const tools = require(modPath("tools"));
   const run = (command) => tools.executeTool("run_shell", { command }, { timeoutMs: 30000 });
 
   const miss = await run("PATH= ffmpeg -version");
@@ -610,7 +612,7 @@ async function testMissingBinHintWired() {
 // ② 判重不许误报。误报的代价不是"多显示一行"，是**把用户唯一一份文件搬进 .trash**：
 //    清理按钮认的就是 dup_of 这个标记。所以"大小一样但内容不同"必须判不重，这条是数据安全线。
 async function testSessionFileLayout() {
-  const tools = require("../tools");
+  const tools = require(modPath("tools"));
   const { savedAt, markDuplicates } = tools._internals;
   const DIR = "任务_0901_e2e判重";
   const full = path.join(WORKSPACE, DIR);
@@ -1023,7 +1025,7 @@ const REFERENCE_REPOS = new Set(["CatCatUncle/toolward"]);
  * 该放行的必须放行（误判 = 面板一片红，比一片绿更没人看）。
  */
 function testVerdictGate() {
-  const { judgeRun, explainRunError } = require("../task-verdict");
+  const { judgeRun, explainRunError } = require(modPath("task-verdict"));
   // 正文足够长，长到能验证「长篇汇报里提一嘴限流不算失败」这条豁免
   const long = "今天的行业晨报已经生成并推送到飞书。过程中第一次调用撞了 429 rate limit，等 20 秒重试后拿到了全部数据。".padEnd(420, "。补充说明");
   const cases = [
@@ -1182,7 +1184,7 @@ function testDocLinkGate() {
 async function testImageWatermarkGate() {
   const http = require("http");
   const os = require("os");
-  const { generateImage } = require("../tools")._internals;
+  const { generateImage } = require(modPath("tools"))._internals;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-wm-"));
   const seen = [];
   let mode = "accept";
@@ -1253,7 +1255,7 @@ async function testImageWatermarkGate() {
 async function testVideoWatermarkGate() {
   const http = require("http");
   const os = require("os");
-  const { generateVideo } = require("../tools")._internals;
+  const { generateVideo } = require(modPath("tools"))._internals;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-vwm-"));
   const submits = [];
   let mode = "accept";
@@ -1327,7 +1329,7 @@ async function testVideoWatermarkGate() {
 async function testMediaImageInputGate() {
   const http = require("http");
   const os = require("os");
-  const { generateImage, generateVideo } = require("../tools")._internals;
+  const { generateImage, generateVideo } = require(modPath("tools"))._internals;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-refimg-"));
   // 1×1 的真 PNG。内容无所谓，但扩展名和「是个文件不是目录」这两关是真要过的
   fs.writeFileSync(path.join(dir, "参考.png"),
@@ -1522,7 +1524,7 @@ async function testMediaImageInputGate() {
 async function testVideoProtocols() {
   const http = require("http");
   const os = require("os");
-  const { generateVideo } = require("../tools")._internals;
+  const { generateVideo } = require(modPath("tools"))._internals;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-vproto-"));
   fs.writeFileSync(path.join(dir, "首帧.png"),
     Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64"));
@@ -1728,7 +1730,7 @@ async function testVideoProtocols() {
 async function testMediaKeyHygiene() {
   const http = require("http");
   const os = require("os");
-  const T = require("../tools")._internals;
+  const T = require(modPath("tools"))._internals;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-mkey-"));
   fs.writeFileSync(path.join(dir, "图.png"),
     Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64"));
@@ -1873,7 +1875,7 @@ async function testCliMode() {
     mcp_servers: [],
     workspace_dir: path.join(home, "workspace"),
   }));
-  const CLI = path.join(__dirname, "..", "cli.js");
+  const CLI = entry("cli");
   // 这里不能用 spawnSync：它把本进程的事件循环整个堵住，上面那个假接口就永远轮不到
   // accept 连接，子进程一头等到超时——测试会以「模型没响应」的样子失败，跟被测代码无关。
   const run = (args, input = "") => new Promise((resolve) => {
@@ -2212,7 +2214,7 @@ function testCtxMeterWiring() {
 // 这对消息是分两次 push 进历史的，中间进程被 kill（重启 app、崩溃）就会留下半截——
 // 会话是落盘的，于是之后每一次请求都 400，整个会话永久报废。发请求前必须自己修回来。
 function testToolPairRepair() {
-  const { repairToolPairs, toOpenAIMessages, toAnthropicMessages } = require("../llm")._internals;
+  const { repairToolPairs, toOpenAIMessages, toAnthropicMessages } = require(modPath("llm"))._internals;
   // 把接口那条硬规矩写成校验器，两侧各来一遍
   const badOpenAI = (msgs) => {
     const bad = [];
@@ -2293,7 +2295,7 @@ function testToolPairRepair() {
 // 上游一抖就白跑：生图/下载这类慢又贵的调用必须自己扛重试，指望模型重来是指望不上的
 // （它通常会改用别的方案交差，用户就永远拿不到那张图）。
 async function testFetchRetry() {
-  const { fetchRetry, nearestTool } = require("../tools")._internals;
+  const { fetchRetry, nearestTool } = require(modPath("tools"))._internals;
   const realFetch = global.fetch;
   const mk = (codes) => {
     let i = 0;
@@ -2350,7 +2352,7 @@ async function testFetchRetry() {
   // 参数根本不是合法 JSON：本机 96 段会话里出现过 4 次，四种坏法各不相同，
   // 但模型收到的反馈全是某个工具的必填校验（「缺少 prompt」之类）——它以为自己漏填了字段，
   // 于是把同样坏的东西原样再发一遍。必须如实说「你发的参数坏了」，还要说清是不是被截断的。
-  const { badToolArgs } = require("../tools")._internals;
+  const { badToolArgs } = require(modPath("tools"))._internals;
   let bt = badToolArgs("write_file", '{"path": "a.html", "content": "<html>没写完就断了', "Unterminated string in JSON at position 19486");
   assert.ok(/参数不是合法 JSON/.test(bt), bt);
   assert.ok(/Unterminated string/.test(bt), "解析器原话丢了，模型没法自查：" + bt);
@@ -2362,7 +2364,7 @@ async function testFetchRetry() {
   assert.ok(bt.length < 900 && /共 5013 字/.test(bt), "把坏参数整坨贴回去，报错本身就吃掉一大块上下文：" + bt.length);
   // 坏参数会原封不动躺进 history，而 history 每一轮都整份重发：真实会话里有一次 write_file 被
   // 输出长度截断，19482 字的残缺 JSON 在之后 12 轮里每轮重发一遍，白烧掉 23 万字上下文。只留个头。
-  const { keepBadArgs } = require("../llm")._internals;
+  const { keepBadArgs } = require(modPath("llm"))._internals;
   const kept = keepBadArgs('{"content": "' + "y".repeat(19000), new Error("Unterminated string"));
   assert.strictEqual(kept._raw.length, 400, "坏参数没截，会在 history 里一轮轮重发：" + kept._raw.length);
   assert.strictEqual(kept._rawLen, 19013, "截了却没记住原来多长，报错里就说不出「共 N 字」");
@@ -2374,7 +2376,7 @@ async function testFetchRetry() {
   // 本机真实会话里 ask_user 出现过一次 374 字的参数：前 372 字是一个完整合法的对象，
   // 后面孤零零跟着一个 "]}"。以前整条丢掉 → 界面先红一条空白的「问你一句」，
   // 那一轮几千字推理全白烧，模型再把同样的东西重写一遍才问出来。
-  const { parseToolArgs } = require("../llm")._internals;
+  const { parseToolArgs } = require(modPath("llm"))._internals;
   const tail = '{"question": "走哪条路？", "options": [{"label": "A", "detail": "甲"}, {"label": "B", "detail": "乙"}]}]}';
   const saved = parseToolArgs(tail, "ask_user");
   assert.strictEqual(saved.question, "走哪条路？", "尾巴多两个字符就整条丢掉，一轮推理白烧：" + JSON.stringify(saved).slice(0, 120));
@@ -2397,7 +2399,7 @@ async function testFetchRetry() {
   // ask_user / use_skill / MCP / 委派专家是在 agent.js 的 runToolCall 里直接接住的，
   // 根本走不到 tools.executeTool 里那道闸；以前一路掉进 ask_user 自己的必填校验，
   // 报出来的是「question 不能为空」——模型以为自己漏填字段，原样重发，再坏一次。
-  const agentSrc = fs.readFileSync(path.join(__dirname, "..", "agent.js"), "utf8");
+  const agentSrc = fs.readFileSync(modPath("agent"), "utf8");
   const runIdx = agentSrc.indexOf("async function runToolCall(");
   const askIdx = agentSrc.indexOf('if (tc.name === "ask_user")', runIdx);
   const guardIdx = agentSrc.indexOf("badToolArgs(tc.name", runIdx);
@@ -2420,7 +2422,7 @@ async function testFetchRetry() {
  * 段要 Electron 才跑得起来，这里锁住判读逻辑本身（噪声过滤 + 两套事件签名 + 错/警分级）。
  */
 function testCheckPageConsole() {
-  const { isRuntimeNoise, readConsoleEvent, cleanConsoleText } = require("../tools")._internals;
+  const { isRuntimeNoise, readConsoleEvent, cleanConsoleText } = require(modPath("tools"))._internals;
 
   const ELECTRON_WARN = "%cElectron Security Warning (Insecure Content-Security-Policy) font-weight: bold; This renderer process has either no Content Security Policy set…";
   assert.ok(isRuntimeNoise("node:electron/js2c/sandbox_bundle", ELECTRON_WARN), "Electron 自己的安全警告没被认成噪声");
@@ -2451,7 +2453,7 @@ function testCheckPageConsole() {
 }
 
 async function testLookAtImage() {
-  const tools = require("../tools");
+  const tools = require(modPath("tools"));
   const { lookAtImage, pickEye, mainCanSee } = tools._internals;
   const os = require("os");
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-vision-"));
@@ -2582,7 +2584,7 @@ async function testLookAtImage() {
     // 「主模型」是这个对话此刻用的那个。全局默认是纯文本的 DeepSeek、这个对话单独选了会看图的模型时，
     // 以前拿的是全局那条，于是明明自己会看图还被绕到单配的看图模型上
     {
-      const { activeChannel } = require("../agent.js");
+      const { activeChannel } = require(modPath("agent"));
       const cfg = { active_model: "DeepSeek", models: [
         { name: "DeepSeek", base_url: "https://ds/v1", api_key: "k", model: "deepseek-chat" },
         { name: "兔子", base_url: "https://or/v1", api_key: "k", model: "stealth/bunny", caps: ["tools", "vision"] },
@@ -2593,7 +2595,7 @@ async function testLookAtImage() {
       assert.strictEqual(activeChannel(cfg).model, "deepseek-chat", "没单独选模型的对话该跟全局默认");
       assert.strictEqual(activeChannel(cfg, { provider: "已删掉的", model: "x" }).model, "deepseek-chat", "对话选的模型不在列表里了，该退回全局默认");
       // 接线也得在：工具那层拿到的是这个对话的模型，不是全局那个
-      const src = fs.readFileSync(path.join(__dirname, "..", "agent.js"), "utf8");
+      const src = fs.readFileSync(modPath("agent"), "utf8");
       assert.ok(/visionFallback: activeChannel\(config, llmOverride\)/.test(src), "看图的「主模型」又变回了全局默认");
       assert.ok(/execOpts\(\{[^}]*callId: tc\.id[^}]*llmOverride \}\)/.test(src), "agent 调工具时没把这个对话的模型传下去");
     }
@@ -2654,7 +2656,7 @@ async function testLookAtImage() {
 // 于是他去换 Key、换模型名、怀疑中转挂了——唯独不会怀疑这两步压根没走同一条路。
 async function testAnthropicEndpointAgreement() {
   const http = require("http");
-  const { createLLM, anthropicBase } = require("../llm");
+  const { createLLM, anthropicBase } = require(modPath("llm"));
 
   // 纯函数那一层：填法五花八门，归一之后只有一个根
   for (const [given, want] of [
@@ -2696,7 +2698,7 @@ async function testAnthropicEndpointAgreement() {
     const srvSrc = srcLib.src("server");
     // 地址算法只在 llm.js 的 pingRequest 里有一份（它再调 anthropicBase），server.js 只许调它
     assert.ok(/pingRequest\(m\)/.test(srvSrc) && !/\/chat\/completions"/.test(srvSrc.slice(srvSrc.indexOf("async function probeModel"), srvSrc.indexOf("async function probeModel") + 1500)), "probeModel 又自己拼地址了");
-    assert.ok(/anthropicBase\(m\.base_url\)\.messagesUrl/.test(fs.readFileSync(path.join(__dirname, "..", "llm.js"), "utf8")), "pingRequest 没走 anthropicBase，验活和真跑会各算各的");
+    assert.ok(/anthropicBase\(m\.base_url\)\.messagesUrl/.test(fs.readFileSync(modPath("llm"), "utf8")), "pingRequest 没走 anthropicBase，验活和真跑会各算各的");
     assert.ok(!/https:\/\/api\.anthropic\.com\/v1["'`]/.test(srvSrc), "server.js 里又写死了一个 Anthropic 端点");
   } finally {
     await new Promise((r) => srv.close(r));
@@ -2714,7 +2716,7 @@ async function testAnthropicEndpointAgreement() {
 // 规范的核心是「失败隔离在最小范围」：清单里的未知字段不该否掉整个插件，
 // 一个坏技能不该拖垮兄弟技能，一条坏 MCP 条目不该关掉整个 MCP 组件。
 // 这些边界全靠测试钉死，不然改着改着就退化成「有问题就整个不加载」。
-const plugins = require("../plugins");
+const plugins = require(modPath("plugins"));
 
 function mkPlugin(spec) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-plugin-"));
@@ -2911,7 +2913,7 @@ function testPluginSkillsIntegration() {
   );
   fs.writeFileSync(path.join(dir, "skills", "e2e-plugin-skill", "helper.py"), "print('x')\n");
   try {
-    const skillsMgr = require("../skills");
+    const skillsMgr = require(modPath("skills"));
     const all = skillsMgr.loadSkills();
     const mine = all.find((s) => s.name === "e2e-plugin-skill");
     assert(mine, "插件技能没并进技能表");
@@ -3028,7 +3030,7 @@ async function startFakeMcpHttp(opts = {}) {
 
 // Streamable HTTP 传输：起一个假 MCP 服务器，JSON 和 SSE 两种响应体都要能吃
 async function testMcpStreamableHttp() {
-  const { McpClient } = require("../mcp");
+  const { McpClient } = require(modPath("mcp"));
   const { url, seen, close } = await startFakeMcpHttp();
   try {
     const client = new McpClient("fake", { transport: "streamable-http", url });
@@ -3093,7 +3095,7 @@ async function testMcpManagerLifecycle() {
  * ③ 游标原地打转（每次给回同一个）不许一直翻下去。
  */
 async function testMcpPagination() {
-  const { McpClient, MAX_TOOL_PAGES } = require("../mcp");
+  const { McpClient, MAX_TOOL_PAGES } = require(modPath("mcp"));
   assert.strictEqual(MAX_TOOL_PAGES, 20, "翻页上限应当是 20 页");
   const paged = await startFakeMcpHttp({ toolPages: [["a1", "a2"], ["b1", "a1"], ["c1"]] });
   const endless = await startFakeMcpHttp({ endlessPages: true });
@@ -3151,8 +3153,8 @@ async function testMcpPagination() {
  * .openworkbuddy/mcp-media/，文字里给路径和 mimeType，结果上另带一份 media 清单。
  */
 async function testMcpImageContent() {
-  const { renderContent, MEDIA_REL } = require("../mcp");
-  const { withWorkspace } = require("../tools");
+  const { renderContent, MEDIA_REL } = require(modPath("mcp"));
+  const { withWorkspace } = require(modPath("tools"));
   const fake = await startFakeMcpHttp();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "owb-mcp-media-"));
   const other = fs.mkdtempSync(path.join(os.tmpdir(), "owb-mcp-media-ws-"));
@@ -3220,7 +3222,7 @@ async function testMcpImageContent() {
  * stop 连缓存那条一起清，所以照旧当场连。
  */
 async function testMcpLazyConnect() {
-  const { TOOLS_CACHE_REL, cfgFingerprint } = require("../mcp");
+  const { TOOLS_CACHE_REL, cfgFingerprint } = require(modPath("mcp"));
   const fake = await startFakeMcpHttp();
   const slow = await startFakeMcpHttp({ initDelayMs: 600 });
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "owb-mcp-lazy-"));
@@ -3478,7 +3480,7 @@ function testDesktopAppIdentity() {
   const os = require("os");
   const { execFileSync } = require("child_process");
   // ---- 开发态（npm run app）：electron-main.js 的三件事 ----
-  const main = fs.readFileSync(path.join(__dirname, "..", "electron-main.js"), "utf8");
+  const main = fs.readFileSync(entry("electron-main"), "utf8");
   const iSetPath = main.indexOf('app.setPath("userData"');
   const iSetName = main.indexOf('app.setName("OpenWorkBuddy")');
   assert.ok(iSetPath > 0 && iSetName > 0, "electron-main.js 少了 setPath(userData) / setName");
@@ -3578,7 +3580,7 @@ function testDesktopAppIdentity() {
 }
 
 function testDefaultSkillsManifest() {
-  const skillsMgr = require("../skills");
+  const skillsMgr = require(modPath("skills"));
   const list = skillsMgr.listDefaultSkills();
   assert(list.length > 0, "默认技能清单是空的");
   for (const s of list) {
@@ -3666,7 +3668,7 @@ function testCron() {
 
 /** 调度器运行时：补跑、不叠跑、跑完的结果要真存下来 */
 async function testSchedulerRuntime() {
-  const { createScheduler } = require("../scheduler");
+  const { createScheduler } = require(modPath("scheduler"));
   // 绝不能碰真的 schedules.json
   const storePath = path.join(fs.mkdtempSync(path.join(require("os").tmpdir(), "e2e-sched-")), "schedules.json");
   let runs = [];
@@ -3728,7 +3730,7 @@ async function testSchedulerRuntime() {
  * **记住的批准要按「命令+子命令」记**（批了 git status 不等于批了 git push --force）。
  */
 function testPermissionModes() {
-  const security = require("../security");
+  const security = require(modPath("security"));
   const base = { ...security.DEFAULTS };
   const mode = (m) => ({ ...base, permission_mode: m });
 
@@ -3774,7 +3776,7 @@ function testPermissionModes() {
   //   ① 覆盖之后闸门真的按新档判（不是只把状态行那行字改了）；
   //   ② 原来那份配置一个字节都没被写回去。
   {
-    const cliSrc = fs.readFileSync(path.join(__dirname, "..", "cli.js"), "utf8");
+    const cliSrc = fs.readFileSync(entry("cli"), "utf8");
     assert(/if \(opts\.perm\)/.test(cliSrc), "cli.js 里没有 --perm 的落地：参数表上有这个选项、真跑起来却不认");
     assert(!/writeJson\w*\([^)]*CONFIG_PATH[^)]*permission_mode/.test(cliSrc), "cli.js 把 --perm 回写进 config.json 了：这就成了长期设置，跟 -C 的规矩不一致");
     // cli.js 读完配置得先补默认策略，换档也得在补齐的那份上改。原来它自己拼
@@ -3892,7 +3894,7 @@ function testEvolveLoop() {
     const assert = require("assert");
     const fs = require("fs");
     const path = require("path");
-    const ev = require(${JSON.stringify(path.join(__dirname, "..", "evolve.js"))});
+    const ev = require(${JSON.stringify(modPath("evolve"))});
     const DATA = process.env.OPENWORKBUDDY_DATA_DIR;
     const SESS = path.join(DATA, "sessions");
     fs.mkdirSync(SESS, { recursive: true });
@@ -4047,7 +4049,7 @@ function testEvolveRecency() {
     const assert = require("assert");
     const fs = require("fs");
     const path = require("path");
-    const ev = require(${JSON.stringify(path.join(__dirname, "..", "evolve.js"))});
+    const ev = require(${JSON.stringify(modPath("evolve"))});
     const SESS = path.join(process.env.OPENWORKBUDDY_DATA_DIR, "sessions");
     fs.mkdirSync(SESS, { recursive: true });
 
@@ -4152,7 +4154,7 @@ function testEvolvePromptBudget() {
     const assert = require("assert");
     const fs = require("fs");
     const path = require("path");
-    const ev = require(${JSON.stringify(path.join(__dirname, "..", "evolve.js"))});
+    const ev = require(${JSON.stringify(modPath("evolve"))});
     const DATA = process.env.OPENWORKBUDDY_DATA_DIR;
     const SESS = path.join(DATA, "sessions");
     const RULES = path.join(DATA, "learned");
@@ -4276,8 +4278,8 @@ function testEvolvePromptBudget() {
  * 测的是发布出去的那份字符串，不是抄一份到测试里的复制品。
  */
 function testAgentPromptDrift() {
-  const src = fs.readFileSync(path.join(__dirname, "..", "agent.js"), "utf8");
-  const { TOOL_DEFS } = require(path.join(__dirname, "..", "tools.js"));
+  const src = fs.readFileSync(modPath("agent"), "utf8");
+  const { TOOL_DEFS } = require(modPath("tools"));
   const pkg = require(path.join(__dirname, "..", "package.json"));
 
   const cut = (from, to, what) => {
@@ -4389,8 +4391,8 @@ function testTaskDirLifecycle() {
   // ── 一、文件夹名从哪儿来 ──────────────────────────────────────
   // 洗字和起名都在 lib/task-dirs.js（网页对话和命令行共用 newSessDir），
   // 那里只剩「拿哪句话、洗完是空的叫什么」这一行；server.js 的 assignSessionDir 必须经它起名
-  const taskDirs = require(path.join(__dirname, "..", "lib", "task-dirs.js"));
-  const tdSrc = fs.readFileSync(path.join(__dirname, "..", "lib", "task-dirs.js"), "utf8");
+  const taskDirs = require(modPath("task-dirs"));
+  const tdSrc = fs.readFileSync(modPath("task-dirs"), "utf8");
   const sm = /function newSessDir\([\s\S]*?(const slug = [^\n]*\n)/.exec(tdSrc);
   assert.ok(sm, "lib/task-dirs.js 里找不到取文件夹名的那一行（newSessDir 被改过？）");
   assert.ok(/function assignSessionDir\([\s\S]*?taskDirs\.newSessDir\(sess, getWorkspaceDir\(\), dataPath\("workspace"\), message, assignedDirs\)/.test(srv),
@@ -4494,8 +4496,8 @@ async function testCodingTools() {
   const script = `
     const assert = require("assert");
     const fs = require("fs"), path = require("path");
-    const tools = require(${JSON.stringify(path.join(__dirname, "..", "tools.js"))});
-    const security = require(${JSON.stringify(path.join(__dirname, "..", "security.js"))});
+    const tools = require(${JSON.stringify(modPath("tools"))});
+    const security = require(${JSON.stringify(modPath("security"))});
     const ws = ${JSON.stringify(ws)};
     tools.setWorkspaceDir(ws);
     const call = (n, i, o) => tools.executeTool(n, i, o || {});
@@ -4654,7 +4656,7 @@ async function testDeliverableQuality() {
   const script = `
     const assert = require("assert");
     const fs = require("fs"), path = require("path");
-    const tools = require(${JSON.stringify(path.join(__dirname, "..", "tools.js"))});
+    const tools = require(${JSON.stringify(modPath("tools"))});
     tools.setWorkspaceDir(${JSON.stringify(ws)});
     const ws = ${JSON.stringify(ws)};
     const call = (n, i) => tools.executeTool(n, i, {});
@@ -4843,7 +4845,7 @@ async function testDeliverableQuality() {
  * 纯字符串断言只能证明纠错器跟自己对上了答案，改坏了照样绿。
  */
 function testDiagramRepair() {
-  const { repairMermaid, mermaidError } = require("../diagram");
+  const { repairMermaid, mermaidError } = require(modPath("diagram"));
   const { bad, ok } = require("./fixtures/mermaid");
   const fix = (s) => repairMermaid(s);
 
@@ -4918,7 +4920,7 @@ function testDiagramRepair() {
   assert.ok(!/第 \d+ 行/.test(mermaidError(new Error("something else"), doomed).message), "没有行号时不该编一个出来");
 
   // 六、真正接线的是 renderDiagram 里的 mermaid 分支：纠错器再好，没接上等于没有
-  const dsrc = fs.readFileSync(path.join(__dirname, "..", "diagram.js"), "utf8");
+  const dsrc = fs.readFileSync(modPath("diagram"), "utf8");
   const mb = dsrc.slice(dsrc.indexOf('} else if (k === "mermaid")'), dsrc.indexOf('} else if (k === "plantuml")'));
   assert.ok(mb.length > 200, "diagram.js 里 mermaid 分支找不到了（结构被改过？）");
   assert.ok(mb.includes("repairMermaid(src)"), "mermaid 渲染失败后没有走自动纠错重试");
@@ -4950,7 +4952,7 @@ function testEvolveCaliberAndSpread() {
     const assert = require("assert");
     const fs = require("fs");
     const path = require("path");
-    const ev = require(${JSON.stringify(path.join(__dirname, "..", "evolve.js"))});
+    const ev = require(${JSON.stringify(modPath("evolve"))});
     const SESS = path.join(process.env.OPENWORKBUDDY_DATA_DIR, "sessions");
     fs.mkdirSync(SESS, { recursive: true });
     const NOW = Date.now();
@@ -5050,7 +5052,7 @@ function testEvolveCaliberAndSpread() {
     if (!/toolNames\.set\(b\.id, b\.name\)/.test(src)) problems.push("claude-code 引擎没在 tool_use 时登记名字");
     return problems;
   };
-  const ccSrc = fs.readFileSync(path.join(__dirname, "..", "engines", "claude-code.js"), "utf8");
+  const ccSrc = fs.readFileSync(modPath("claude-code"), "utf8");
   assert.deepStrictEqual(engineNameCheck(ccSrc), [], engineNameCheck(ccSrc).join("；"));
   const mutated = ccSrc.replace('toolNames.get(b.tool_use_id) || ""', '""');
   assert.ok(engineNameCheck(mutated).length >= 1, "把名字改回空串闸门竟然没抓到");
@@ -5065,7 +5067,7 @@ function testMemoryLayer() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-mem-"));
   const script = `
     const assert = require("assert");
-    const mem = require(${JSON.stringify(path.join(__dirname, "..", "memory.js"))});
+    const mem = require(${JSON.stringify(modPath("memory"))});
     (async () => {
 
     // 记一条 + 去重（大小写/空白/句末标点不同不算两条）
@@ -5248,7 +5250,7 @@ function testMemoryNearDup() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-memdup-"));
   const script = `
     const assert = require("assert");
-    const mem = require(${JSON.stringify(path.join(__dirname, "..", "memory.js"))});
+    const mem = require(${JSON.stringify(modPath("memory"))});
     (async () => {
     const a = mem.add({ text: "AI Builders 日报推送：直接把完整的 .md 日报文件发到群里，不要只发摘要", user: "甲" });
     assert.strictEqual(a.similar, null, "第一条就说跟谁很像");
@@ -5294,7 +5296,7 @@ function testMemoryNearDup() {
 }
 
 function testCommandGate() {
-  const security = require("../security");
+  const security = require(modPath("security"));
   const sec = { ...security.DEFAULTS };
   // 都是以前能一句话绕过去的：换行 / $() / 反引号 / 子 shell / 环境变量前缀 / 绝对路径 / 包装词
   const mustAsk = [
@@ -5361,7 +5363,7 @@ function testCommandGate() {
 }
 
 function testAccountStore() {
-  const { readStore, writeStoreAtomic, createLimiter, isHttps } = require("../account")._internals;
+  const { readStore, writeStoreAtomic, createLimiter, isHttps } = require(modPath("account"))._internals;
   const dir = fs.mkdtempSync(path.join(require("os").tmpdir(), "e2e-acct-"));
   const file = path.join(dir, "users.json");
 
@@ -5400,7 +5402,7 @@ function testAccountStore() {
 
   // 谁在敲门：一挂反代，两道 IP 闸就从「防连打」变成「全公司互相锁死」，
   // 所以要能认出真客户端；但认的方式不能是「信 X-Forwarded-For 最左边那个」——那个正好是唯一能伪造的。
-  const { clientIp, isPrivateAddr } = require("../account")._internals;
+  const { clientIp, isPrivateAddr } = require(modPath("account"))._internals;
   const req = (peer, xff) => ({ socket: { remoteAddress: peer }, headers: xff ? { "x-forwarded-for": xff } : {} });
   const withTrust = (n, fn) => {
     const old = process.env.OPENWORKBUDDY_TRUST_PROXY;
@@ -5436,8 +5438,8 @@ function testCreditsGate() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-credits-"));
   const script = `
     const assert = require("assert");
-    const acc = require(${JSON.stringify(path.join(__dirname, "..", "account.js"))});
-    const orgs = require(${JSON.stringify(path.join(__dirname, "..", "org.js"))});
+    const acc = require(${JSON.stringify(modPath("account"))});
+    const orgs = require(${JSON.stringify(modPath("org"))});
     const { register, loadUsers, saveUsers, loadUsage } = acc._internals;
     // 开关从 users.json 搬到了组织设置里（企业版一个组织一个开关）。
     // 老版本写在 users.json.settings 里的那份由 migrateLegacySettings 搬过来，下面单独验。
@@ -5508,8 +5510,8 @@ function testCachedLedger() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-cached-"));
   const script = `
     const assert = require("assert");
-    const acc = require(${JSON.stringify(path.join(__dirname, "..", "account.js"))});
-    const orgs = require(${JSON.stringify(path.join(__dirname, "..", "org.js"))});
+    const acc = require(${JSON.stringify(modPath("account"))});
+    const orgs = require(${JSON.stringify(modPath("org"))});
     const { register, loadUsers, saveUsers, loadUsage, saveUsage } = acc._internals;
     const setOn = (on) => orgs.updateOrg(orgs.DEFAULT_ORG, { settings: { credits_enabled: on } }, "test");
 
@@ -5567,8 +5569,8 @@ function testRenameLogin() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-rename-"));
   const script = `
     const assert = require("assert");
-    const acc = require(${JSON.stringify(path.join(__dirname, "..", "account.js"))});
-    const orgs = require(${JSON.stringify(path.join(__dirname, "..", "org.js"))});
+    const acc = require(${JSON.stringify(modPath("account"))});
+    const orgs = require(${JSON.stringify(modPath("org"))});
     const { register, renameUser, loadUsers, saveUsers, loadUsage, saveUsage, issueToken } = acc._internals;
     const names = () => loadUsers().users.map((u) => u.username);
 
@@ -5613,7 +5615,7 @@ function testRenameLogin() {
 
 // 头像校验：用户头像和助理头像共用这一份规则，它松了两边一起松
 function testAvatarRules() {
-  const { normalizeAvatar } = require("../account")._internals;
+  const { normalizeAvatar } = require(modPath("account"))._internals;
   assert.strictEqual(normalizeAvatar(""), "", "空值应当原样放过（= 用默认头像）");
   assert.strictEqual(normalizeAvatar("  🐱  "), "🐱", "emoji 前后空格没去掉");
   assert.strictEqual(normalizeAvatar("猫"), "猫", "汉字当头像也该收");
@@ -5633,7 +5635,7 @@ function testAvatarRules() {
 
 // JSON 小仓库：坏文件先拿 .bak 顶，顶不住就隔离——绝不静默当空的然后覆盖掉
 function testJsonStore() {
-  const { readJson, writeJsonAtomic } = require("../store");
+  const { readJson, writeJsonAtomic } = require(modPath("store"));
   const dir = fs.mkdtempSync(path.join(require("os").tmpdir(), "e2e-store-"));
   const file = path.join(dir, "sess.json");
 
@@ -5704,7 +5706,7 @@ function testJsonStore() {
   writeJsonAtomic(keep, { v: 5 });
   assert.strictEqual(bakV(), 4, "正本好好的却没留成 .bak，上面两条测的就不是「读不出来才不拷」");
   // 纯文本那条路（审计 jsonl）同理：空的正本不配当上一版
-  const { writeTextAtomic } = require("../store");
+  const { writeTextAtomic } = require(modPath("store"));
   const jl = path.join(dir, "audit.jsonl");
   writeTextAtomic(jl, '{"a":1}\n');
   writeTextAtomic(jl, '{"a":2}\n');                   // .bak = a1
@@ -5732,7 +5734,7 @@ function testJsonStore() {
 
 // IM 会话：重启不丢上下文；历史砍长度只能从一整轮的开头下刀
 function testImSessionStore() {
-  const { createImSessionStore } = require("../im-store");
+  const { createImSessionStore } = require(modPath("im-store"));
   const dir = fs.mkdtempSync(path.join(require("os").tmpdir(), "e2e-imsess-"));
 
   const s1 = createImSessionStore({ dir });
@@ -5789,7 +5791,7 @@ function testImSessionStore() {
     fs.writeFileSync(path.join(d2, "feishu_oc_big.json"), JSON.stringify(big));
     const st = createImSessionStore({ dir: d2 });
     let parses = 0;
-    const realRead = require("../store").readJson, storeMod = require("../store");
+    const realRead = require(modPath("store")).readJson, storeMod = require(modPath("store"));
     storeMod.readJson = (...a) => { parses++; return realRead(...a); };
     try {
       assert.strictEqual(st.keys().length, 1, "冷读没数到");
@@ -5809,7 +5811,7 @@ function testImSessionStore() {
   }
 
   // 路由和界面闸门：清空接口在、状态里带会话数、助理设置页是卡片分区而不是九段说明平铺
-  const imSrc = fs.readFileSync(path.join(__dirname, "..", "im.js"), "utf8");
+  const imSrc = fs.readFileSync(modPath("im"), "utf8");
   assert(imSrc.includes('router.get("/im/sessions"') && imSrc.includes('router.post("/im/sessions/clear"'), "im.js 缺会话数 / 清空接口");
   assert(/sessions:\s*\{\s*count:/.test(imSrc), "/im/status 没带 sessions.count");
   // 这个轮询是常开的，窗口没在看就别问——服务端那头要扫一遍会话目录
@@ -5941,7 +5943,7 @@ function testCollectSources() {
 
 // 网关 HTTP 200 之后流里才给错误 / 直接断流给空——都必须抛错，不能当成「模型答了个空」
 async function testLlmStreamFailures() {
-  const { openaiChat } = require("../llm")._internals;
+  const { openaiChat } = require(modPath("llm"))._internals;
   const http = require("http");
   const srv = http.createServer((req, res) => {
     res.writeHead(200, { "Content-Type": "text/event-stream" });
@@ -5981,7 +5983,7 @@ async function testLlmStreamFailures() {
 }
 
 function testLeakedToolCallRescue() {
-  const { rescueLeakedToolCalls, createLeakGuard } = require("../llm")._internals;
+  const { rescueLeakedToolCalls, createLeakGuard } = require(modPath("llm"))._internals;
   // DeepSeek 经中转层时的真实翻车样本：工具调用的特殊 token 被当正文解码了
   const leaked =
     "稍等，我先抓取该UP主的视频列表进行分析。\n\n" +
@@ -6018,7 +6020,7 @@ function testLeakedToolCallRescue() {
 
 async function testFetchUrlShapes() {
   const http = require("http");
-  const { fetchUrl } = require("../tools");
+  const { fetchUrl } = require(modPath("tools"));
   const routes = {
     "/json": [200, "application/json", '{"code":0,"data":{"title":"<b>标签不能被洗掉</b>"}}'],
     "/html": [200, "text/html", "<html><head><style>p{}</style></head><body><h1>标题</h1><p>正文一</p><p>正文二</p>" + "内容".repeat(200) + "</body></html>"],
@@ -6172,7 +6174,7 @@ async function testParallelToolBatch() {
 }
 
 function testPathSafety() {
-  const { safePath } = require("../tools");
+  const { safePath } = require(modPath("tools"));
   let threw = false;
   try { safePath("..\\..\\windows\\system32\\evil.txt"); } catch { threw = true; }
   assert(threw, "路径越界未被拦截");
@@ -6185,7 +6187,7 @@ function testPathSafety() {
  *    它一抛，整条任务就跟着炸）；② desktop_pet 工具在服务端模式下必须如实报错，绝不能假装做好了。
  */
 async function testDesktopPet() {
-  const pet = require("../pet");
+  const pet = require(modPath("pet"));
   // ① 空壳降级：全套方法在纯 node 下都得安静地什么都不做
   assert.strictEqual(pet.create(), null, "纯 node 模式不该真造出宠物窗口");
   assert.strictEqual(pet.isVisible(), false, "没有窗口时 isVisible 必须是 false");
@@ -6206,7 +6208,7 @@ async function testDesktopPet() {
   //     这条钉的是写法而不是结果：真正的失败只在 Electron 里才看得见，而这套测试跑的是纯 node。
   //     手抄清单这种写法的毛病是「加字段的人不会想到回来改它」，所以直接禁掉这种写法。
   {
-    const src = fs.readFileSync(path.join(__dirname, "..", "electron-main.js"), "utf8");
+    const src = fs.readFileSync(entry("electron-main"), "utf8");
     const call = src.slice(src.indexOf("const petCfg = require(dataPath(\"config.json\")).pet"));
     assert.ok(call, "electron-main.js 里那段开机读宠物配置的代码不见了（挪了位置就把这条锚点一起改掉）");
     const boot = call.slice(0, call.indexOf("\n  } catch"));
@@ -6219,7 +6221,7 @@ async function testDesktopPet() {
   }
 
   // ② 工具层：没有落地实现时如实报错
-  const { executeTool } = require("../tools");
+  const { executeTool } = require(modPath("tools"));
   const saved = global.__openworkbuddyPetTool;
   delete global.__openworkbuddyPetTool;
   const noImpl = await executeTool("desktop_pet", { action: "status" }, {});
@@ -6236,7 +6238,7 @@ async function testDesktopPet() {
   if (saved) global.__openworkbuddyPetTool = saved; else delete global.__openworkbuddyPetTool;
 
   // ④ 工具声明本身：模型只能看到这五个动作，且 action 必填
-  const { TOOL_DEFS } = require("../tools");
+  const { TOOL_DEFS } = require(modPath("tools"));
   const def = TOOL_DEFS.find((t) => t.name === "desktop_pet");
   assert(def, "工具表里没有 desktop_pet");
   assert.deepStrictEqual(def.input_schema.properties.action.enum, ["create", "show", "hide", "remove", "status", "sprite"], "desktop_pet 动作枚举变了");
@@ -6258,7 +6260,7 @@ async function testDesktopPet() {
   assert(/#pet\.s-asking[^{]*\{[^}]*opacity:\s*1/.test(petHtml), "提问时 #pet 必须回到不透明，否则最该被看见的那一刻反而看不清");
   assert(/body\.hot #pet/.test(petHtml) && /classList\.toggle\("hot", hovering\)/.test(petHtml), "光标压在宠物身上时也该回到不透明（body.hot 没接上）");
   // 窗口跟着放大时，位置得按「底边中点不动」重算——否则每调一次大小猫就往右下挪一截
-  const petJs = fs.readFileSync(path.join(__dirname, "..", "pet.js"), "utf8");
+  const petJs = fs.readFileSync(modPath("pet"), "utf8");
   assert(/setBounds\(\{ x: p2\.x/.test(petJs) && /sanePos\(\{ x: Math\.round\(x \+ \(ow - w\) \/ 2\)/.test(petJs),
     "改大小时没有保持底边中点不动，猫会一路往右下角挪出屏幕");
   assert(!/defaultPos\(PET_W, PET_H\)/.test(petJs), "「回到右下角」要按窗口真实尺寸算，放大到 200% 时用基准尺寸会摆到屏幕外");
@@ -6323,7 +6325,7 @@ async function testDesktopPet() {
 async function testConnectorToggleAndTools() {
   const os = require("os");
   const http = require("http");
-  const { McpManager, whyFailed } = require("../mcp");
+  const { McpManager, whyFailed } = require(modPath("mcp"));
 
   // ---- ① mcp.js 这一层：关掉 = 不去连，而且真收摊 ----
   {
@@ -6549,7 +6551,7 @@ async function testConnectorToggleAndTools() {
 async function testScheduleRunTrace() {
   const os = require("os");
   const http = require("http");
-  const { createScheduler, SCHEDULE_LABEL } = require("../scheduler");
+  const { createScheduler, SCHEDULE_LABEL } = require(modPath("scheduler"));
 
   // ---- ① 调度器这一层：录像机插上了，过程才有地方去 ----
   {
@@ -6761,7 +6763,7 @@ async function testScheduleRunsAsOwner() {
 
   // ---- 调度器这一层：负责人用不了就关掉并写明原因；替谁跑就把谁报给 runtime；组织按负责人算 ----
   {
-    const { createScheduler } = require("../scheduler");
+    const { createScheduler } = require(modPath("scheduler"));
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-sched-who-"));
     const seen = [];
     const bad = new Set(["tuiguo"]);
@@ -6958,7 +6960,7 @@ async function testScheduleRunsAsOwner() {
 }
 
 async function testMcpFailureReason() {
-  const { McpManager } = require("../mcp");
+  const { McpManager } = require(modPath("mcp"));
   const mgr = new McpManager();
   // 假服务器：往 stderr 喊一句就带着非零退出码死掉，跟真实的 filesystem 一个形状
   await mgr.startAll([
@@ -6980,7 +6982,7 @@ async function testMcpFailureReason() {
   assert(/ENOENT/.test(rawByName["命令根本不存在的"] || ""), "技术原文（ENOENT）没留在 raw 里，排障时就查不到了");
   // filesystem 那类服务器把要开放的目录当参数收，路径写错时只甩一串 Warning 加一句
   // 英文总结。直接把路径拎出来说，比让人到 stderr 里找那行 Warning 快得多。
-  const { whyFailed } = require("../mcp");
+  const { whyFailed } = require(modPath("mcp"));
   const dirWhy = whyFailed(new Error("MCP 服务器 filesystem 已退出（退出码 1）：Warning: Cannot access directory /nope/培训材料, skipping / Warning: Cannot access directory /also-nope, skipping / Error: None of the specified directories are accessible"), { command: "npx" });
   assert(dirWhy.includes("/nope/培训材料") && dirWhy.includes("/also-nope"), "目录打不开时没把是哪几个目录拎出来: " + dirWhy);
   assert(!/Warning:|skipping/.test(dirWhy), "还是把原样的 stderr 扒给用户看: " + dirWhy);
@@ -6990,7 +6992,7 @@ async function testMcpFailureReason() {
 
 function testPetSprites() {
   const os = require("os");
-  const sprites = require("../pet-sprites");
+  const sprites = require(modPath("pet-sprites"));
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-pets-"));
   const mk = (dir, meta, sheetName, buf) => {
     fs.mkdirSync(path.join(dir), { recursive: true });
@@ -7144,7 +7146,7 @@ async function capturePrompts(mod) {
     .runTask({ history: [{ role: "user", content: "你是？" }], emit: () => {} });
 
   // 往注册表里塞一个假引擎，让 runViaEngine 真的走一遍——不去碰用户本机的 claude/codex
-  const engines = require("../engines");
+  const engines = require(modPath("engines"));
   const probe = {
     id: "e2e-probe", label: "探针", bin: null, note: "", install: "", launchHeader: "", supportsResume: false,
     async detect() { return { id: "e2e-probe", installed: true, path: "", version: "0" }; },
@@ -7162,7 +7164,7 @@ async function capturePrompts(mod) {
 }
 
 async function testPromptQuestionVsWork() {
-  const cur = await capturePrompts(require("../agent"));
+  const cur = await capturePrompts(require(modPath("agent")));
   assert(cur.builtin, "没截到内置系统提示词");
   assert(cur.engineSide, "没截到给 CLI 的系统提示词");
   const bad = questionVsWorkProblems(cur.builtin, cur.engineSide);
@@ -7283,7 +7285,7 @@ function enginePathProblems(src) {
  */
 function e2ePng(w, h, pixel) {
   const zlib = require("zlib");
-  const { crc32 } = require("../thumb-png");   // CRC 不是被测的东西，借一下不影响判卷
+  const { crc32 } = require(modPath("thumb-png"));   // CRC 不是被测的东西，借一下不影响判卷
   const raw = Buffer.alloc(h * (w * 3 + 1));
   // xorshift32（不是随手写的线性同余：seed * 1103515245 会越过 53 位有效位，
   // 低位被抹掉之后序列很快退化成重复花样，deflate 一压 780 KB 只剩 19 KB，
@@ -7467,7 +7469,7 @@ async function testFilePathRouting() {
     const real = await get(enc(DIR + "/真图.png") + "?thumb=320");
     assert(real.code === 200, "纯 node 下真 PNG 的缩略图取不到（HTTP " + real.code + "）");
     const shrunk = real.buf;
-    const meta = require("../thumb-png").pngInfo(shrunk);
+    const meta = require(modPath("thumb-png")).pngInfo(shrunk);
     assert(meta, "纯 node 发回来的不是一张 PNG —— 缩略图那条路把图弄坏了");
     assert(Math.max(meta.width, meta.height) === 320,
       "缩出来的长边是 " + meta.width + "×" + meta.height + "，不是 320");
@@ -8575,8 +8577,8 @@ async function testConfigExternalEdit() {
 async function testKeyGuard() {
   const os = require("os");
   const http = require("http");
-  const store = require("../store");
-  const llm = require("../llm");
+  const store = require(modPath("store"));
+  const llm = require(modPath("llm"));
   const { resolveKey, channelEnvName, warnedEnvSkip } = llm._internals;
 
   // ---------- ① 落盘的位：0600，不是 0644 ----------
@@ -8845,10 +8847,10 @@ async function testPortCollision() {
   // ---- ④ 签名这件事必须只在一个地方写死：壳判断「是不是自己人」靠的就是它 ----
   const srvSrc = srcLib.src("server");
   assert(/app: "openworkbuddy"/.test(srvSrc), "没有身份签名，壳就没法区分自己人和陌生人");
-  assert(/"\/api\/ping"/.test(fs.readFileSync(path.join(__dirname, "..", "account.js"), "utf8")),
+  assert(/"\/api\/ping"/.test(fs.readFileSync(modPath("account"), "utf8")),
          "/api/ping 没在登录闸的放行名单里，没登录的实例会回 401，握手就废了");
   assert(/global\.__wbOnListen/.test(srvSrc), "服务端没把真正绑上的端口交给壳");
-  const shellSrc = fs.readFileSync(path.join(__dirname, "..", "electron-main.js"), "utf8");
+  const shellSrc = fs.readFileSync(entry("electron-main"), "utf8");
   assert(/__wbOnListen/.test(shellSrc), "壳没在等服务端报端口，还在用自己算出来的那个（换了口就连不上）");
 
   fs.rmSync(home, { recursive: true, force: true });
@@ -8867,7 +8869,7 @@ async function testPortCollision() {
  * 先按形状比两本字典，再把三处文案在沙箱里真跑一遍，最后反过来查有没有人又写死了一句。
  */
 function testShellI18n() {
-  const src = fs.readFileSync(path.join(__dirname, "..", "electron-main.js"), "utf8");
+  const src = fs.readFileSync(entry("electron-main"), "utf8");
   const CJK = /[一-鿿　-〿＀-￯]/;
   const 抠 = (from, to) => {
     const i = src.indexOf(from), j = src.indexOf(to, i + 1);
@@ -8941,9 +8943,9 @@ function testShellI18n() {
 
 async function testLocalEngineConnect() {
   const os = require("os");
-  const which = require("../engines/which");
-  const { probeVersion } = require("../engines/jsonl");
-  const engines = require("../engines");
+  const which = require(modPath("which"));
+  const { probeVersion } = require(modPath("jsonl"));
+  const engines = require(modPath("engines"));
 
   // ① 把 PATH 换成双击图标启动时那一份，补全之后还得找得到东西。
   // 拿 node 当靶子：这台机器上跑得起测试就说明 node 装了，它在哪儿都行——
@@ -9100,7 +9102,7 @@ async function testAskUser() {
  * 必须真的把那 8 个新文件全丢掉；丢不掉说明这棵树没复现事故，测试本身就是假绿。
  */
 function testOutputFilesRecency() {
-  const { outputFiles, filesScope, getWorkspaceDir, setWorkspaceDir } = require("../tools");
+  const { outputFiles, filesScope, getWorkspaceDir, setWorkspaceDir } = require(modPath("tools"));
   const CAP = 500;
   const prev = getWorkspaceDir();
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "owb-recency-"));
@@ -9211,9 +9213,9 @@ function testOutputFilesRecency() {
  * 回退能退到「新建之前」把文件删掉。纯函数那半在 test/checkpoints.js，这里钉的是**接线**。
  */
 async function testCheckpoints() {
-  const tools = require("../tools");
-  const security = require("../security");
-  const ck = require("../checkpoints");
+  const tools = require(modPath("tools"));
+  const security = require(modPath("security"));
+  const ck = require(modPath("checkpoints"));
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "owb-ckw-"));
   const sid = "sess_ck_" + Date.now().toString(36);
   const ask = { ...security.DEFAULTS, permission_mode: "ask" };
@@ -9542,7 +9544,7 @@ async function testBackupRoundTrip() {
  */
 function testThumbPng() {
   const zlib = require("zlib");
-  const { shrinkPng, pngInfo, crc32 } = require("../thumb-png");
+  const { shrinkPng, pngInfo, crc32 } = require(modPath("thumb-png"));
   const SIG = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
   const CH = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 };
 
@@ -9741,8 +9743,8 @@ function testThumbPng() {
  */
 async function testThumbPool() {
   const os = require("os");
-  const thumb = require("../thumb");
-  const { pngInfo } = require("../thumb-png");
+  const thumb = require(modPath("thumb"));
+  const { pngInfo } = require(modPath("thumb-png"));
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-pool-"));
   const cache = path.join(dir, "thumbs");
@@ -9788,7 +9790,7 @@ async function testThumbPool() {
     };
 
     // 对照组：搁主线程上同步缩——这正是没有 thumb-worker.js 时会发生的事
-    const { shrinkPng } = require("../thumb-png");
+    const { shrinkPng } = require(modPath("thumb-png"));
     const ctl = heartbeat();
     const ctlT0 = Date.now();
     for (const f of batch) shrinkPng(fs.readFileSync(f), 320);
@@ -9953,7 +9955,7 @@ async function testThumbPool() {
     // 就算没 unref 也一样能退，等于什么都没验
     const exitProbe = path.join(dir, "probe.js");
     fs.writeFileSync(exitProbe, [
-      'const thumb = require(' + JSON.stringify(path.join(__dirname, "..", "thumb.js")) + ');',
+      'const thumb = require(' + JSON.stringify(modPath("thumb")) + ');',
       'thumb.thumbFileAsync(' + JSON.stringify(big) + ', 640, ' + JSON.stringify(path.join(dir, "probe-cache")) + ')',
       '  .then((r) => { console.log(r ? "缩出来了" : "没缩"); });',
       '// 故意不调 closeThumbPool：模拟 CLI 跑完一条命令就撒手不管',
@@ -10190,7 +10192,7 @@ testCanvasEdgeVersion();
  * 连到镜头后，下一次同步就会退化成无意义的「输入」。
  */
 function testCanvasCreativeLineage() {
-  const tools = require("../tools");
+  const tools = require(modPath("tools"));
   const valid = tools.canvasNormalizeState({ nodes: [
     { id: "char", kind: "character", payload: {}, position: { x: 1, y: 2 } },
     { id: "shot", kind: "shot", payload: {}, position: { x: 3, y: 4 } },
@@ -10377,7 +10379,7 @@ async function testCanvasMissingAssets() {
  * 分法：新建出来那一下 updatedAt 留 0，此后任何一次保存都盖上时间戳，清空也算保存。
  */
 async function testCanvasPristineBoard() {
-  const tools = require("../tools");
+  const tools = require(modPath("tools"));
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "owb-canvas-pristine-"));
   tools.withWorkspace(tmp, () => {
     // 名字里带 0 的画布是合法的。以前 canvasSafeName 的字符类多写了个反斜杠，匹配的是字符「0」
@@ -10531,7 +10533,7 @@ async function bootCanvasServer(prefix) {
 }
 
 function testCanvasEdgeVersion() {
-  const tools = require("../tools");
+  const tools = require(modPath("tools"));
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "owb-canvas-edgever-"));
   tools.withWorkspace(tmp, () => {
     // 版本 2 的意思是「这份画布把连线记全了」。落盘再读回来还得是 2——
@@ -10633,11 +10635,11 @@ function testCanvasThumb() {
  *   ② 问挂了要留痕（warn），不许静默——「后台飞轮吞异常必须留痕」。
  */
 async function testGoalOnLocalEngine() {
-  const engines = require("../engines");
+  const engines = require(modPath("engines"));
   const src = srcLib.src("server");
   // 判定逻辑后来整段搬去了 goal.js（网页和命令行共用一份），只有「这句话问谁」还留在 server.js。
   // 所以下面分两头看：问谁看 server.js 的 goalThink，拆解/验收的骨头看 goal.js。
-  const gsrc = fs.readFileSync(path.join(__dirname, "..", "goal.js"), "utf8");
+  const gsrc = fs.readFileSync(modPath("goal"), "utf8");
 
   // ① 两处「动脑」都改走 goalThink，源码里不许再直接钉死 sessLLM
   const think = src.match(/async function goalThink\(([\s\S]*?)\n}/);
@@ -10685,7 +10687,7 @@ async function testGoalOnLocalEngine() {
  * （每个 CLI 起一个 --version）。「装没装 claude」不是每秒都在变的事。
  */
 async function testDetectCache() {
-  const engines = require("../engines");
+  const engines = require(modPath("engines"));
   let calls = 0;
   const stub = {
     id: "e2e-slow", label: "慢桩", bin: "x", note: "", install: "", launchHeader: "", supportsResume: true, models: [],
@@ -10755,7 +10757,7 @@ async function testEmbedFailoverResilience() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-vec-"));
   const script = `
     const assert = require("assert");
-    const mem = require(${JSON.stringify(path.join(__dirname, "..", "memory.js"))});
+    const mem = require(${JSON.stringify(modPath("memory"))});
     (async () => {
       for (let i = 0; i < 5; i++) mem.add({ text: "条目" + i, user: "甲" });
 
@@ -10803,7 +10805,7 @@ async function testEmbedFailoverResilience() {
   assert.strictEqual(r.status, 0, "向量库存活测试失败：\n" + (r.stderr || r.stdout));
 
   // ② 死渠道要有进程级记性，否则每建一个实例就白撞一次 + 刷一行重复日志
-  const { markEmbedChannelDead, embedChannelDead, deadEmbedChannels } = require("../llm")._internals;
+  const { markEmbedChannelDead, embedChannelDead, deadEmbedChannels } = require(modPath("llm"))._internals;
   deadEmbedChannels.clear();
   const ch = { base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "text-embedding-v4", api_key: "sk-aaaabbbbcccc", label: "视频渠道的 key" };
   assert(!embedChannelDead(ch), "还没标记就说它死了");
@@ -10822,7 +10824,7 @@ async function testEmbedFailoverResilience() {
   // ②b 上面验的是记性本身，这里验**接线**：真收到一个 4xx，有没有真的登记下来。
   //     （只对着 markEmbedChannelDead 断言的话，catch 里那一行删掉了也测不出来）
   deadEmbedChannels.clear();
-  const { createEmbedder } = require("../llm");
+  const { createEmbedder } = require(modPath("llm"));
   let hits = 0;
   const srv = http.createServer((req, res) => {
     hits++;
@@ -10853,7 +10855,7 @@ async function testEmbedFailoverResilience() {
 
   // ②c 一次塞太多条：DashScope 的 text-embedding-v4 一次最多 10 条，memory 补向量一批 16 条，
   //     整批 400「batch size is invalid」→ 被当成渠道不通拉黑 → 明明 key 好好的却退到了 Ollama
-  const { embedCandidates } = require("../llm")._internals;
+  const { embedCandidates } = require(modPath("llm"))._internals;
   const ds = embedCandidates({ models: [{ name: "通义", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", api_key: "sk-test-not-a-real-key" }] });
   assert.strictEqual(ds[0].batch, 10, "DashScope 渠道的单次条数上限不是 10");
   const sizes = [];
@@ -10883,7 +10885,7 @@ async function testEmbedFailoverResilience() {
   } finally { srv2.close(); deadEmbedChannels.clear(); }
 
   // ③ 同一条坏配对每轮都要补，但只该喊一次 —— 否则真正的新问题被重复日志淹了
-  const { repairToolPairs, warnedLeakedPairs } = require("../llm")._internals;
+  const { repairToolPairs, warnedLeakedPairs } = require(modPath("llm"))._internals;
   warnedLeakedPairs.clear();
   const orig = console.warn;
   const said = [];
@@ -10923,9 +10925,9 @@ async function testEmbedFailoverResilience() {
  *      deepseek-reasoner 根本没有开关，老版本 claude 会把 --thinking 静默吞掉）。
  */
 async function testThinkingSwitch() {
-  const thinking = require("../thinking");
+  const thinking = require(modPath("thinking"));
   const http = require("http");
-  const { openaiChat } = require("../llm")._internals;
+  const { openaiChat } = require(modPath("llm"))._internals;
 
   const M = {
     claude: { provider: "anthropic", model: "claude-sonnet-4-5" },
@@ -10990,8 +10992,8 @@ async function testThinkingSwitch() {
   assert(/升级|没有 --thinking/.test(oldCli.note), "没告诉用户为什么不生效：" + oldCli.note);
 
   // ⑦ 探测本身：claude 对不认识的选项静默退出 0，这是整条链路的地基，塌了上面全是空的
-  const { probeOption } = require("../engines/jsonl");
-  const claudeBin = await require("../engines/which").resolveBin("claude", "");
+  const { probeOption } = require(modPath("jsonl"));
+  const claudeBin = await require(modPath("which")).resolveBin("claude", "");
   if (claudeBin.bin) {
     assert(await probeOption(claudeBin.bin, "--thinking"), "本机 claude 探不到 --thinking（探测逻辑坏了，或者该升级 claude 了）");
     assert(!(await probeOption(claudeBin.bin, "--owb-no-such-flag")), "探测把不存在的选项也说成支持——那它就永远只会说 yes");
@@ -11033,7 +11035,7 @@ async function testThinkingSwitch() {
 
   // ⑨ 接线：本机引擎那条路要真把档位传进去，而且要排在 opts 前面 ——
   //    排在后面的话，engine_options 里没写 thinking 的用户（绝大多数）会被 undefined 覆盖成不生效
-  const src = fs.readFileSync(path.join(__dirname, "..", "agent.js"), "utf8");
+  const src = fs.readFileSync(modPath("agent"), "utf8");
   // 认的是 backend.run({ 本身，不认它前面怎么接：以前写死「const r = await backend.run({」，
   // 调用包进 runWith（线程失效时重开一根）以后就找不到了。每一处调用都得带上档位
   const sites = [...src.matchAll(/backend\.run\(\{/g)].map((m) => m.index);
@@ -11453,7 +11455,7 @@ async function testOnboardingWizardApi() {
     assert(/id="about-onb"/.test(app06) && /openOnboarding\(\)/.test(app06), "设置 → 关于 里缺「重新打开新手引导」");
     const readme = fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8");
     assert(/## 命令行也能用/.test(readme) && /openworkbuddy engines use/.test(readme) && /--json/.test(readme) && /命令行用法\.md/.test(readme), "README 缺命令行一节（openworkbuddy 单发 / --json / engines use / 链到 docs）");
-    const cliHelp = fs.readFileSync(path.join(__dirname, "..", "cli.js"), "utf8");
+    const cliHelp = fs.readFileSync(entry("cli"), "utf8");
     for (const flag of ["--json", "-q", "-c", "-C", "engines use", "sessions"]) assert(cliHelp.includes(flag), "README 里写的 " + flag + " 在 cli.js 里找不到");
 
     console.log("✅ 首次开箱向导 API：新装体检表(不泄 Key)·大脑没接上 done 拒且不落盘·本机 CLI 算大脑·done 落 done_at+skipped 清洗+切工作目录·seen 留存 needs_setup 随大脑翻转·向导填 Key 落在渠道行不分叉、设置页当场认账·匿名 401 + 前端五步/关于页重开/README 命令行一节 静态闸门");
@@ -11720,8 +11722,8 @@ async function testThinkingSettingsApi() {
  */
 async function testFilesEmitter() {
   const os = require("os");
-  const tools = require("../tools");
-  const { makeOwnership, makeFilesEmitter } = require("../agent");
+  const tools = require(modPath("tools"));
+  const { makeOwnership, makeFilesEmitter } = require(modPath("agent"));
 
   const prevWs = tools.getWorkspaceDir();
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "owb-emit-"));
@@ -11939,7 +11941,7 @@ async function testFilesEmitter() {
  */
 async function testHeavyTools() {
   const os = require("os");
-  const tools = require("../tools");
+  const tools = require(modPath("tools"));
   const { SEARCH_BUDGET } = tools._internals;
 
   const prevWs = tools.getWorkspaceDir();
@@ -12126,7 +12128,7 @@ async function testHeavyTools() {
  * 检测顺序两种都跑一遍——顺序反过来还能判对，才说明判据换成了确定性的那一个。
  */
 function testOutputOwnership() {
-  const { makeOwnership } = require("../agent");
+  const { makeOwnership } = require(modPath("agent"));
   const A = "任务_0905_给我做一个网站介绍湖南的"; // 先起跑、正在写文件的那条
   const B = "任务_0907_复制支付墙网站难易度分析"; // 用户新开的那条
   const REAL = ["_have.txt", "_r2.txt", "_dh.txt", "dist/index.html", "hunan_travel.html"].map((n) => A + "/" + n);
@@ -12210,7 +12212,7 @@ function testOutputOwnership() {
   //    一道关都没接，别人正在写的文件整批挂进了新对话。两条引擎路径都得：开跑先登记自己的
   //    文件夹，每个差异出来的文件都过一遍 mine()。
   {
-    const src = fs.readFileSync(path.join(__dirname, "..", "agent.js"), "utf8");
+    const src = fs.readFileSync(modPath("agent"), "utf8");
     for (const [fn, label] of [["runViaEngine", "本机 CLI 引擎"], ["runTask", "内置引擎"]]) {
       const at = src.indexOf("async function " + fn + "(");
       assert(at > 0, "agent.js 里找不到 " + fn);
@@ -12247,8 +12249,8 @@ function testOutputOwnership() {
 async function testEngineToolBridge() {
   const os = require("os");
   const { execFileSync } = require("child_process");
-  const bridge = require("../engines/bridge");
-  const tb = require("../engines/tool-bridge");
+  const bridge = require(modPath("bridge"));
+  const tb = require(modPath("tool-bridge"));
 
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-bridge-home-"));
   const BASE = "任务_甲";
@@ -12353,7 +12355,7 @@ async function testEngineToolBridge() {
 
   // ⑩ 提示词得真把这条路告诉模型。挂了工具却不点名，等于把东西锁柜子里不给钥匙——
   //    真实会话里模型就是翻完工具表说「本会话依旧没有任何生图工具，请你自己把图放进去」。
-  const agentSrc = fs.readFileSync(path.join(__dirname, "..", "agent.js"), "utf8");
+  const agentSrc = fs.readFileSync(modPath("agent"), "utf8");
   const fm = agentSrc.match(/function bridgedLine\(bridged\) \{[\s\S]*?\n  \}/);
   assert(fm, "agent.js 里找不到 bridgedLine —— 那模型就永远不知道自己有这些工具");
   const bridgedLine = new Function("return " + fm[0].replace("function bridgedLine", "function") + ";")();
@@ -12391,7 +12393,7 @@ async function testEngineToolBridge() {
   fs.chmodSync(fake, 0o755);
   const cc2 = bridge.attach("claude-code", { home, baseDir: BASE, user: "e2e" });
   try {
-    await require("../engines/claude-code").run({ prompt: "hi", cwd: home, bin: fake, ...cc2.runOpts });
+    await require(modPath("claude-code")).run({ prompt: "hi", cwd: home, bin: fake, ...cc2.runOpts });
     const argv = JSON.parse(fs.readFileSync(argvOut, "utf8"));
     const pairs = argv.map((a, i) => (a === "--allowed-tools" ? argv[i + 1] : null)).filter(Boolean);
     assert(pairs.includes("Bash(owb:*)"), "没给命令行入口下放行规则，模型敲了也是「需要审批」：" + JSON.stringify(pairs));
@@ -12417,7 +12419,7 @@ async function testEngineToolBridge() {
  */
 async function testEngineSecurityGuard() {
   const os = require("os");
-  const security = require("../security");
+  const security = require(modPath("security"));
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-guard-"));
 
   // ① 四个档位各翻成什么。名单里写的是前缀（"sudo "、"diskutil erase"），
@@ -12474,7 +12476,7 @@ async function testEngineSecurityGuard() {
   fs.chmodSync(fakeClaude, 0o755);
 
   const ccArgv = async (opts) => {
-    await require("../engines/claude-code").run({ prompt: "hi", cwd: home, bin: fakeClaude, shimBin: "owb", ...opts });
+    await require(modPath("claude-code")).run({ prompt: "hi", cwd: home, bin: fakeClaude, shimBin: "owb", ...opts });
     return JSON.parse(fs.readFileSync(argvOut, "utf8"));
   };
   const pairsOf = (argv, flag) => argv.map((a, i) => (a === flag ? argv[i + 1] : null)).filter(Boolean);
@@ -12516,7 +12518,7 @@ async function testEngineSecurityGuard() {
   fs.chmodSync(fakeCodex, 0o755);
 
   const cxArgv = async (opts) => {
-    await require("../engines/codex").run({ prompt: "hi", cwd: home, bin: fakeCodex, ...opts });
+    await require(modPath("codex")).run({ prompt: "hi", cwd: home, bin: fakeCodex, ...opts });
     return JSON.parse(fs.readFileSync(argvOut, "utf8"));
   };
   const sandboxOf = (argv) => {
@@ -12902,8 +12904,8 @@ function testNoticeCoverage() {
  */
 async function testIntranet() {
   const root = path.join(__dirname, "..");
-  const { isIntranet } = require("../intranet");
-  const { catalog, ITEMS } = require("../mcp-catalog");
+  const { isIntranet } = require(modPath("intranet"));
+  const { catalog, ITEMS } = require(modPath("mcp-catalog"));
 
   // ---- ① 开关 ----
   assert(isIntranet({ env: {}, cfg: {} }) === false, "默认居然是内网模式");
@@ -12923,7 +12925,7 @@ async function testIntranet() {
   assert(isIntranet({ env: { OPENWORKBUDDY_INTRANET: "1" }, cfg: {} }), "OPENWORKBUDDY_INTRANET=1 没打开内网模式");
   assert(isIntranet({ env: { OPENWORKBUDDY_INTRANET: "0" }, cfg: { intranet: true } }) === false, "显式 OPENWORKBUDDY_INTRANET=0 没能压过 config");
   assert(isIntranet({ env: { OPENWORKBUDDY_INTRANET: "", OWB_INTRANET: "1" }, cfg: {} }), "新名字留了个空串，旧名字就不认了——只改了一半的机器会被这行救回来");
-  assert(/OPENWORKBUDDY_INTRANET/.test(fs.readFileSync(path.join(root, "skills.js"), "utf8")),
+  assert(/OPENWORKBUDDY_INTRANET/.test(fs.readFileSync(modPath("skills"), "utf8")),
     "skills.js 那句给用户看的提示还在教人设旧名字 OWB_INTRANET");
 
   // ---- ② 连接器目录 ----
@@ -13060,7 +13062,7 @@ async function testIntranet() {
 
   // ⑤ 内网里从 GitHub 装技能：当场说清楚，别让人白等 30 秒超时再去猜是不是链接填错了
   {
-    const skills = require("../skills");
+    const skills = require(modPath("skills"));
     const save = process.env.OWB_INTRANET;
     try {
       process.env.OWB_INTRANET = "1";
@@ -13131,7 +13133,7 @@ function styleDirectionDrift(src) {
   {
     // 光改提示词不改检查器没用：模型照样会写，没人拦得住。
     // auditHtml 是 check_page 背后那个纯静态分析，直接喂它一页就行
-    const { auditHtml } = require("../tools")._internals;
+    const { auditHtml } = require(modPath("tools"))._internals;
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-font-"));
     const page = (head) => '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
       '<meta name="viewport" content="width=device-width, initial-scale=1"><title>标题</title>' + head +
@@ -13303,14 +13305,14 @@ function testShortDrama() {
   const src = {};
   for (const f of files) src[f] = fs.readFileSync(path.join(root, f), "utf8");
 
-  const defs = require(path.join(root, "tools.js")).TOOL_DEFS;
+  const defs = require(modPath("tools")).TOOL_DEFS;
   const params = {};
   for (const n of ["generate_image", "generate_video", "text_to_speech"]) {
     const d = defs.find((x) => x.name === n);
     assert(d, `工具 ${n} 不见了，短剧这条链整条断了`);
     params[n] = Object.keys((d.input_schema || {}).properties || {});
   }
-  const genMax = require(path.join(root, "agent.js")).GEN_PARALLEL_MAX;
+  const genMax = require(modPath("agent")).GEN_PARALLEL_MAX;
 
   const r = shortDramaDrift(src, params, genMax);
   assert(r.miss.length === 0, "AI 短剧这条链断了：\n  " + r.miss.join("\n  "));
@@ -13800,7 +13802,7 @@ function testPackagingAndDemoGate() {
   const pkg = fs.readFileSync(path.join(root, "package.json"), "utf8");
   const chk = spawnSync(process.execPath, ["--check", path.join(root, "scripts", "record-demo.js")], { encoding: "utf8" });
   assert(chk.status === 0, "scripts/record-demo.js 语法不过：" + chk.stderr);
-  const win = { nsh: fs.readFileSync(path.join(root, "build", "installer.nsh"), "utf8"), mainSrc: fs.readFileSync(path.join(root, "electron-main.js"), "utf8") };
+  const win = { nsh: fs.readFileSync(path.join(root, "build", "installer.nsh"), "utf8"), mainSrc: fs.readFileSync(entry("electron-main"), "utf8") };
   const problems = packagingCheck(cfg, docs, recorder, pkg, win);
   assert(problems.length === 0, "安装包命名/录制脚本闸门：\n  " + problems.join("\n  "));
   // 反向对照：把 portable 改回撞名、README 写回旧名、录制脚本把 im 拷进去——每种坏法都得被抓
@@ -13836,7 +13838,7 @@ function testPackagingAndDemoGate() {
  */
 async function testPortableTempSweep() {
   const os = require("os");
-  const PT = require("../portable-temp");
+  const PT = require(modPath("portable-temp"));
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "owb-ptemp-"));
   try {
     const app = (dir, name = "openworkbuddy") => {
@@ -13874,7 +13876,7 @@ async function testPortableTempSweep() {
     for (const w of want) assert(!left.includes(w), "说删了其实还在：" + w);
     for (const k of ["nsC3D4.tmp", "nsE5F6.tmp", "nsG7H8.tmp", "nsI9J0.tmp", "random-folder", "nsK1L2.tmp"]) assert(left.includes(k), "误删了：" + k);
     // 接线：页面加载完以后在 Windows 装包态才扫，不在启动关键路径上
-    const main = fs.readFileSync(path.join(__dirname, "..", "electron-main.js"), "utf8");
+    const main = fs.readFileSync(entry("electron-main"), "utf8");
     const at = main.indexOf('bootLog("页面加载完成 ✓ 启动成功")');
     const sw = main.indexOf('require("./portable-temp").sweepStale()');
     assert(at > 0 && sw > at && sw - at < 800, "electron-main.js 没在页面加载完以后收拾免安装版的临时目录");
@@ -13982,9 +13984,9 @@ function testWindowsHideStatic() {
 
 async function testWindowsChildProcess() {
   const os = require("os");
-  const tools = require("../tools");
-  const { outDecoder } = require("../lib/out-decode");
-  const win = require("../engines/win");
+  const tools = require(modPath("tools"));
+  const { outDecoder } = require(modPath("out-decode"));
+  const win = require(modPath("win"));
 
   // ① cmd 的引号：/s 剥最外面一对，所以整条再包一层；windowsHide 跟着走
   const sh = tools._internals.pickShell('"C:\\Program Files\\x.exe" "a b"', "win32");
@@ -13997,7 +13999,7 @@ async function testWindowsChildProcess() {
   assert.deepStrictEqual(winTextEnv({}, "win32"), { PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" }, "Windows 上没让 Python 写 UTF-8");
   assert.deepStrictEqual(winTextEnv({ PYTHONIOENCODING: "gbk" }, "win32").PYTHONIOENCODING, "gbk", "用户自己设的 PYTHONIOENCODING 被盖掉了");
   assert.deepStrictEqual(winTextEnv({}, "darwin"), {}, "macOS 上也塞了 Python 编码变量");
-  const toolsSrc = fs.readFileSync(path.join(__dirname, "..", "tools.js"), "utf8");
+  const toolsSrc = fs.readFileSync(modPath("tools"), "utf8");
   assert((toolsSrc.match(/\.\.\.process\.env, \.\.\.winTextEnv\(\)/g) || []).length >= 2, "run_shell / 后台命令的 env 里没接上 winTextEnv");
 
   // ③ 输出解码：中文 Windows 上 cmd 自带命令写 GBK；一个字被切成好几块也不能出 �
@@ -14044,17 +14046,17 @@ async function testWindowsChildProcess() {
   // ⑤ MCP 服务：命令名 → 真身（npx → npx.cmd）；认得出就走拆垫片那套
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "owb-winproc-"));
   try {
-    const { resolveWinCommand } = require("../mcp");
+    const { resolveWinCommand } = require(modPath("mcp"));
     fs.writeFileSync(path.join(tmp, "srv.cmd"), "@echo off\n");
     fs.chmodSync(path.join(tmp, "srv.cmd"), 0o755);
     assert.strictEqual(resolveWinCommand(path.join(tmp, "srv")), path.join(tmp, "srv.cmd"), "带路径的命令没补出 .cmd");
     assert.strictEqual(resolveWinCommand(path.join(tmp, "nope")), "", "不存在的命令没返回空");
     assert.strictEqual(resolveWinCommand(""), "", "空命令没返回空");
-    const mcpSrc = fs.readFileSync(path.join(__dirname, "..", "mcp.js"), "utf8");
+    const mcpSrc = fs.readFileSync(modPath("mcp"), "utf8");
     assert(/const real = resolveWinCommand\(this\.command\);\s*if \(real\) \{\s*const plan = require\("\.\/engines\/win"\)\.launchPlan\(real, this\.args\);/.test(mcpSrc), "MCP 在 Windows 上没走 launchPlan");
 
     // ⑥ 工作区不是 git 仓库：往上一个 .git 都没有就不起 git（Windows 上起一次几十毫秒，每轮好几次）
-    const { hasGitAbove } = require("../worktree")._internals;
+    const { hasGitAbove } = require(modPath("worktree"))._internals;
     const deep = path.join(tmp, "a", "b");
     fs.mkdirSync(deep, { recursive: true });
     const gd = process.env.GIT_DIR;
@@ -14198,7 +14200,7 @@ function testKeySourcesGate() {
   const app03 = fs.readFileSync(path.join(pub, "app-03.js"), "utf8");
   const app05 = fs.readFileSync(path.join(pub, "app-05.js"), "utf8");
   const toolsSrc = srcLib.src("tools");
-  const mmSrc = fs.readFileSync(path.join(__dirname, "..", "media-models.js"), "utf8");
+  const mmSrc = fs.readFileSync(modPath("media-models"), "utf8");
   const r = keySourcesCheck(app03, app05, toolsSrc, mmSrc);
   assert(r.problems.length === 0, "取 Key 链接缺口：\n  " + r.problems.join("\n  "));
   assert(r.searchIds.length >= 3 && r.imSrcs >= 4 && r.presets >= 9, "覆盖面不对：" + JSON.stringify({ search: r.searchIds.length, im: r.imSrcs, presets: r.presets }));
@@ -14314,7 +14316,7 @@ function testI18n() {
   assert(save.nodeValue === "删除", "假 DOM：中文模式重复 apply 不动");
   // 5. 接线闸：脚本顺序 / 内容区标记 / lang 从输入框一路到系统提示词 / 外观页与向导有开关
   const a01 = rd(path.join("js", "app-01.js")), a02 = rd(path.join("js", "app-02.js")), a03 = rd(path.join("js", "app-03.js")), a06 = rd(path.join("js", "app-06.js"));
-  const srv = srcLib.src("server"), ag = fs.readFileSync(path.join(__dirname, "..", "agent.js"), "utf8");
+  const srv = srcLib.src("server"), ag = fs.readFileSync(modPath("agent"), "utf8");
   assert(html.indexOf('src="js/i18n.js"') > 0 && html.indexOf('src="js/i18n.js"') < html.indexOf('src="js/app-00-ui.js"'), "i18n.js 必须在 app-00-ui.js 之前加载");
   assert(/class="bubble" translate="no"/.test(a01) && /currentText\.setAttribute\("translate", "no"\)/.test(a01), "用户气泡 / AI 正文没标 translate=no（内容区会被当界面翻掉）");
   assert(/lang: typeof I18N !== "undefined" \? I18N\.getLang\(\) : "zh"/.test(a02), "聊天请求体没带 lang");
@@ -14350,7 +14352,7 @@ function testI18n() {
     assert(d === 0 && j < src.length, head + " 的花括号没配平");
     return vmI.runInNewContext("(" + src.slice(i + head.length, j + 1) + ")");
   };
-  const agSrc = fs.readFileSync(path.join(__dirname, "..", "agent.js"), "utf8");
+  const agSrc = fs.readFileSync(modPath("agent"), "utf8");
   const verbs = Object.values(grabObj(agSrc, "const TOOL_VERB = "));
   const shorts = Object.values(grabObj(a01, "const TOOL_SHORT = "));
   assert(verbs.length >= 20 && shorts.length >= 20, `工具动词/短标抓取异常：${verbs.length}/${shorts.length}`);
@@ -14387,8 +14389,8 @@ function testI18n() {
 
 // ---- #58 连接器预设目录 + 专家批量扩充 + 升级合并 + 录屏遮罩 ----
 function testConnectorsAndExperts() {
-  const { validateExperts, mergeBuiltinExperts } = require("../experts-lib");
-  const catalogMod = require("../mcp-catalog");
+  const { validateExperts, mergeBuiltinExperts } = require(modPath("experts-lib"));
+  const catalogMod = require(modPath("mcp-catalog"));
   const demoMask = require("../scripts/demo-mask");
   const meta = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "experts.json"), "utf8"));
   // 大小写要跟 skills.js 里的 /^skill\.md$/i 对齐。原来写死 "SKILL.md"：macOS 的文件系统
@@ -14494,7 +14496,7 @@ function testConnectorsAndExperts() {
   // 3.5) 连不上的时候，界面上得写「下一步干什么」，不能只甩一句 fetch failed。
   // Node 的 fetch 把所有网络层错误都压成 `fetch failed`，真凶在 e.cause.code 里；
   // 以前直接把 e.message 存进 failures，用户看到的就是那句废话。
-  const { whyFailed } = require(path.join(__dirname, "..", "mcp.js"));
+  const { whyFailed } = require(modPath("mcp"));
   const mkErr = (msg, code, agg) => {
     const e = new Error(msg);
     if (code) e.cause = agg ? new AggregateError([Object.assign(new Error("x"), { code })]) : { code };
@@ -14520,7 +14522,7 @@ function testConnectorsAndExperts() {
   // 阴性对照：认不出来的错要原样回，不许硬编一个故事
   assert(whyFailed(new Error("完全没见过的错"), {}) === "完全没见过的错", "不认识的错被瞎翻译了");
   // 存进 failures 的必须是翻译过的那句，原文另存 raw
-  const mcpSrc = fs.readFileSync(path.join(__dirname, "..", "mcp.js"), "utf8");
+  const mcpSrc = fs.readFileSync(modPath("mcp"), "utf8");
   assert(/this\.failures\.push\(\{[^}]*error: why[^}]*raw: e\.message/.test(mcpSrc), "startAll 还在把 e.message 当 error 存给界面");
 
   // 4) 令牌不回前端：GET 只给 env_keys；POST 没带 env 沿用原来的（和 headers 同一套规矩）
@@ -14717,7 +14719,7 @@ function testLookPrefsStatic() {
   assert(rows.length === 14 && rows.every((m) => m[3].length && m[2].length <= 4), "设置目录每项都要 [id, ≤4字短名, 图标] 三元组，现在：" + rows.length + " 项");
   // 第三格从 emoji 换成图标名之后，多了一种新的翻车方式：忘了套 ic() 就直接把 "palette" 这几个字母印在目录上。
   // 这事只有人打开设置页才看得见，所以两头都钉死：名字得是 sprite 里真有的 symbol，画的时候得走 ic()。
-  const { iconNames } = require("../icons");
+  const { iconNames } = require(modPath("icons"));
   const sprite = iconNames();
   const strayIcons = rows.map((m) => m[3]).filter((n) => !sprite.has(n));
   assert(strayIcons.length === 0, "设置目录里这几个图标名 sprite 里没有，画出来会是一个空框：" + strayIcons.join("、"));
@@ -14852,8 +14854,8 @@ main()
  * 带足反向对照：正常跑完的任务不许平白多出这半句，也不许多发 limit 事件。
  */
 async function testEngineStoppedSurfacing() {
-  const engines = require("../engines");
-  const { judgeRun } = require("../task-verdict");
+  const engines = require(modPath("engines"));
+  const { judgeRun } = require(modPath("task-verdict"));
 
   let scripted = { finalText: "", stopped: null };
   const probe = {
@@ -14880,7 +14882,7 @@ async function testEngineStoppedSurfacing() {
       "CLI 引擎撞上限，正文里一个字都没提，用户看到的就是一条正常回复：" + A.r.finalText);
     // 两条路（内置循环 / 本机 CLI 引擎）各自拼这句话，措辞一旦漂开，用户在 Web 和 IM 上看到的就是两种说法。
     // 所以措辞只许存在一份——agent.js 里的 stopNotice()，两条路都去叫它。谁再手抄一遍，这里当场红。
-    const agentSrc = fs.readFileSync(path.join(__dirname, "..", "agent.js"), "utf8");
+    const agentSrc = fs.readFileSync(modPath("agent"), "utf8");
     const seen = (agentSrc.match(/stopNotice\(/g) || []).length;
     assert.strictEqual(seen, 3, `agent.js 里 stopNotice 应当是「一处定义 + 两处调用」共 3 次，实际 ${seen} 次——两条路又各拼各的了`);
     const inline = (agentSrc.match(/，任务强制收尾。/g) || []).length;
@@ -14939,12 +14941,12 @@ async function testEngineStoppedSurfacing() {
 }
 
 async function testEngineContextParity() {
-  const engines = require("../engines");
-  const memory = require("../memory");
-  const evolve = require("../evolve");
-  const cc = require("../engines/claude-code");
-  const { probeHelp } = require("../engines/jsonl");
-  const { SKILLS_DIR, loadSkills } = require("../skills");
+  const engines = require(modPath("engines"));
+  const memory = require(modPath("memory"));
+  const evolve = require(modPath("evolve"));
+  const cc = require(modPath("claude-code"));
+  const { probeHelp } = require(modPath("jsonl"));
+  const { SKILLS_DIR, loadSkills } = require(modPath("skills"));
 
   let seen = null;
   const probe = {
@@ -15038,7 +15040,7 @@ async function testEngineContextParity() {
   fs.rmSync(tmp, { recursive: true, force: true });
 
   // ⑥ 设置页：每个引擎自己的模型候选 + 思考/effort 档位要能存、能回显
-  const idx = fs.readFileSync(path.join(__dirname, "..", "engines", "index.js"), "utf8");
+  const idx = fs.readFileSync(modPath("engines"), "utf8");
   assert(/thinking:\s*\(overrides\[b\.id\]\s*\|\|\s*\{\}\)\.thinking/.test(idx), "detectAll 没把 engine_options[id].thinking 回显给前端");
   assert(/models:\s*Array\.isArray\(r\.models\)/.test(idx), "detectAll 没把探测到的真实模型候选带给前端");
   for (const id of ["claude-code", "codex"]) {
@@ -15054,7 +15056,7 @@ async function testEngineContextParity() {
   const lv = ui.match(/ENGINE_THINK_LEVELS = \[([\s\S]*?)\];/);
   assert(lv, "找不到档位表");
   const vals = [...lv[1].matchAll(/\["([a-z]*)"/g)].map((m) => m[1]);
-  const TL = require("../thinking").LEVELS;
+  const TL = require(modPath("thinking")).LEVELS;
   assert.deepStrictEqual(vals, ["", ...TL], "前端档位表跟 thinking.LEVELS 对不上：" + JSON.stringify(vals) + " vs " + JSON.stringify(TL));
   console.log("  ✓ 本机引擎接管时提示词带齐偏好/规则/记忆/项目指令/技能索引；--add-dir 过滤与探测；设置页模型候选+思考档");
 }
@@ -15083,7 +15085,7 @@ async function testFeedbackAndUsage() {
     'process.stdout.write(JSON.stringify({ type: "result", subtype: "success", result: "ok", usage: { input_tokens: 1000, cache_creation_input_tokens: 200, cache_read_input_tokens: 30000, output_tokens: 50 } }) + String.fromCharCode(10));',
   ].join("\n"));
   fs.chmodSync(fake, 0o755);
-  const r1 = await require("../engines/claude-code").run({ prompt: "hi", cwd: home, bin: fake });
+  const r1 = await require(modPath("claude-code")).run({ prompt: "hi", cwd: home, bin: fake });
   assert.strictEqual(r1.usage.prompt, 31200, "claude-code 的 prompt 没把缓存读/缓存写加回来：" + JSON.stringify(r1.usage));
   assert.strictEqual(r1.usage.cached, 30000, "cached 没记：" + JSON.stringify(r1.usage));
   assert.strictEqual(r1.usage.completion, 50, "completion 不对：" + JSON.stringify(r1.usage));
@@ -15100,7 +15102,7 @@ async function testFeedbackAndUsage() {
 
   run(`
     const assert = require("assert");
-    const acc = require(${JSON.stringify(path.join(__dirname, "..", "account.js"))});
+    const acc = require(${JSON.stringify(modPath("account"))});
     const { register, loadUsers, loadUsage, saveUsage } = acc._internals;
     // 老口径的一笔：cached > prompt → prompt 补成 prompt+cached；正常的一笔原样返回（同一个对象）
     assert.deepStrictEqual(acc.fixLegacyCache({ prompt: 1000, cached: 30000, completion: 5 }), { prompt: 31000, cached: 30000, completion: 5 }, "老口径没修");
@@ -15135,7 +15137,7 @@ async function testFeedbackAndUsage() {
     const assert = require("assert");
     const fs = require("fs");
     const path = require("path");
-    const ev = require(${JSON.stringify(path.join(__dirname, "..", "evolve.js"))});
+    const ev = require(${JSON.stringify(modPath("evolve"))});
     const DATA = process.env.OPENWORKBUDDY_DATA_DIR;
     fs.mkdirSync(path.join(DATA, "sessions"), { recursive: true });
     fs.mkdirSync(path.join(DATA, "learned"), { recursive: true });
@@ -15231,7 +15233,7 @@ async function testFeedbackAndUsage() {
   // ④ 源码闸门：归属改回设置页模型、百分比不封顶、回放不亮反馈——这几处哪个被改回去都会复现
   const src = {
     server: srcLib.src("server"),
-    agent: fs.readFileSync(path.join(__dirname, "..", "agent.js"), "utf8"),
+    agent: fs.readFileSync(modPath("agent"), "utf8"),
     app01: fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-01.js"), "utf8"),
     app02: fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-02.js"), "utf8"),
     app03: fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-03.js"), "utf8"),
@@ -15279,8 +15281,8 @@ async function testFeedbackAndUsage() {
  */
 async function testImInboundMedia() {
   const crypto = require("crypto");
-  const M = require("../im-media");
-  const IM = require("../im");
+  const M = require(modPath("im-media"));
+  const IM = require(modPath("im"));
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-im-media-"));
 
   // ---- 飞书重投：SDK 直传 / HTTP 回调包裹的载荷必须拿到同一条 message_id ----
@@ -15353,7 +15355,7 @@ async function testImInboundMedia() {
     "附带的文字被吞了");
 
   // ---- 微信 iLink 解析：表情包这类认不出的类型，绝不能整条丢掉 ----
-  const { describeItems } = require("../im-ilink");
+  const { describeItems } = require(modPath("im-ilink"));
   const cdn = { encrypt_query_param: "p", aes_key: "k" };
   assert.strictEqual(describeItems([{ type: 1, text_item: { text: "你好" } }]).text, "你好", "纯文本解析错了");
   const withFile = describeItems([{ type: 4, file_item: { file_name: "报价.xlsx", media: cdn } }]);
@@ -15376,7 +15378,7 @@ async function testImInboundMedia() {
     "已经解析出文字了还硬加一句「解析不了」，属于没事找事");
 
   // ---- 企微/公众号：加密回调里的附件字段要抠得出来 ----
-  const { createWecomApp, msgSignature, encryptMsg } = require("../im-wechat");
+  const { createWecomApp, msgSignature, encryptMsg } = require(modPath("im-wechat"));
   const aesKey = crypto.randomBytes(32).toString("base64").slice(0, 43); // EncodingAESKey 是 43 位
   const wecom = createWecomApp({ getConfig: () => ({ corp_id: "c", agent_id: "1", secret: "s", token: "tk", aes_key: aesKey }) });
   const mkCallback = (xml) => {
@@ -15400,7 +15402,7 @@ async function testImInboundMedia() {
   assert.throws(() => wecom.parseCallback({ ...q, msg_signature: "0".repeat(40) }, body), /签名/, "签名错了居然放行");
 
   // ---- 源码闸：入站路由不许再对非文本消息提前 return ----
-  const imSrc = fs.readFileSync(path.join(__dirname, "..", "im.js"), "utf8");
+  const imSrc = fs.readFileSync(modPath("im"), "utf8");
   assert(!/msgType\s*!==\s*"text"[\s\S]{0,60}return\s*;/.test(imSrc),
     "企微/公众号路由又对非文本消息提前 return 了，文件/语音会静默丢失");
   assert(/wxInboundText/.test(imSrc), "企微/公众号没走统一的附件处理");
@@ -15411,13 +15413,13 @@ async function testImInboundMedia() {
   assert(/drive\.notice\.comment_add_v1/.test(imSrc) && /is_mentioned/.test(imSrc) && /feishuReplyDocComment/.test(imSrc),
     "飞书文档评论 @ 没走事件 → 读评论 → 原评论回复的闭环");
   // 只盯代码里的字面量：注释里写「以前是本版暂不下载」是留档，留档不该算回归
-  const ilkSrc = fs.readFileSync(path.join(__dirname, "..", "im-ilink.js"), "utf8")
+  const ilkSrc = fs.readFileSync(modPath("im-ilink"), "utf8")
     .replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/[^\n]*/g, "$1");
   assert(!/本版暂不下载/.test(ilkSrc),
     "微信还留着「本版暂不下载」的占位，说明附件没真下载");
   assert(/downloadMedia/.test(ilkSrc) && /require\("\.\/im-media"\)/.test(ilkSrc),
     "微信侧没接下载：拆出来的附件得真交给 im-media 落盘，不能只留一行描述");
-  assert(/attachments/.test(fs.readFileSync(path.join(__dirname, "..", "im-qq.js"), "utf8")),
+  assert(/attachments/.test(fs.readFileSync(modPath("im-qq"), "utf8")),
     "QQ 没接 attachments，手机上发的图进不来");
 
   fs.rmSync(dir, { recursive: true, force: true });
@@ -15525,7 +15527,7 @@ async function testImCredentialGuard() {
  * 这里最要紧的一条负向对照：网络不通时绝不能悄悄报成「已是最新」。
  */
 async function testUpdaterVersions() {
-  const U = require("../updater");
+  const U = require(modPath("updater"));
 
   assert.strictEqual(U.cmpVer("0.1.1", "0.1.0"), 1, "补丁号大小比错了");
   assert.strictEqual(U.cmpVer("0.2.0", "0.10.0"), -1, "版本号被当字符串比了（0.2 > 0.10 是错的）");
@@ -15674,7 +15676,7 @@ async function testUpdaterVersions() {
     "装机版没说清该下哪个包");
 
   // 不做静默自动更新，是因为构建没签名 —— 这条理由必须写在代码里，不然下次有人顺手加个 autoUpdater
-  const src2 = fs.readFileSync(path.join(__dirname, "..", "updater.js"), "utf8");
+  const src2 = fs.readFileSync(modPath("updater"), "utf8");
   assert(/签名/.test(src2), "updater.js 里没写清「为什么不做自动更新」，后人会踩回去");
   const pkgJson = require("../package.json");
   assert(!/electron-updater/.test(JSON.stringify(pkgJson.dependencies || {})),
@@ -15717,7 +15719,7 @@ async function testUpdaterVersions() {
  * 判错一次就是把已经做完的任务反复打回去，烧的是用户的钱和时间。
  */
 async function testCompletionGate() {
-  const { unfinishedMilestones, UNFINISHED_RE } = require("../agent");
+  const { unfinishedMilestones, UNFINISHED_RE } = require(modPath("agent"));
 
   // ---- 进度档解析 ----
   const probe = fs.mkdtempSync(path.join(os.tmpdir(), "owb-gate-"));
@@ -15831,7 +15833,7 @@ async function testCompletionGate() {
  * 等于把用户文件里的第一句话贴到过程区——既没信息量又漏内容。
  */
 function testStepLines() {
-  const { toolHeadline, resultOutcome, splitParallelRuns } = require("../agent");
+  const { toolHeadline, resultOutcome, splitParallelRuns } = require(modPath("agent"));
 
   assert.strictEqual(toolHeadline("read_file", { path: "报告.md" }), "读 报告.md", "读文件那一行不对");
   assert.strictEqual(toolHeadline("run_shell", { command: "npm test\necho done" }), "命令 npm test", "命令只取第一行");
@@ -15875,7 +15877,7 @@ function testStepLines() {
   // 为什么单独一类而不是并进只读：这两类的约束正好相反。只读便宜、快、重来一次不心疼；
   // 生成类每条都花钱（视频按条计费）、慢的以分钟计，而且**会写文件**。上限不同是一层，
   // 更要紧的是混进同一段就等于把「先写后读」的先后依赖交给了调度器。
-  const { GEN_TOOLS } = require("../agent");
+  const { GEN_TOOLS } = require(modPath("agent"));
   const genGroups = splitParallelRuns(
     [{ name: "generate_video" }, { name: "generate_video" }, { name: "generate_video" }], RO, GEN_TOOLS);
   assert.strictEqual(genGroups.length, 1, "三条生成视频没合成一段：一集短剧十几个镜头一条条排，最坏要等一两个小时");
@@ -15953,7 +15955,7 @@ async function testStepLinesWired() {
 }
 
 function testLarkCliParse() {
-  const L = require("../lark-cli");
+  const L = require(modPath("lark-cli"));
 
   // ---- config show：真实输出是 JSON + 空行 + 「Config file path: …」 ----
   const real = '{\n  "appId": "cli_a1b2c3d4",\n  "appSecret": "s3cret",\n  "brand": "feishu"\n}\n\n  Config file path: /home/u/.lark-cli/config.json\n';
@@ -16137,7 +16139,7 @@ exit 1
  * 判据是「同一类东西的后缀就算数」，不是「必须是我指定的那一个」。
  */
 function testOutNameKeepsExt() {
-  const { safeOutName } = require("../tools")._internals;
+  const { safeOutName } = require(modPath("tools"))._internals;
   const eq = (got, want, why) => assert.strictEqual(got, want, why);
 
   // 同一族：图就是图，别再接一个
@@ -16249,7 +16251,7 @@ function testSkillRenameKeepsAssets() {
  * 注入 win=true 和一份假文件系统，断言算出来的 bin/args/opts。
  */
 function testWindowsLaunch() {
-  const winmod = require("../engines/win");
+  const winmod = require(modPath("win"));
 
   const NPM_SHIM = [
     "@ECHO off", "GOTO start", ":find_dp0", "SET dp0=%~dp0", "EXIT /b", ":start", "SETLOCAL", "CALL :find_dp0", "",
@@ -16371,7 +16373,7 @@ function testWindowsLaunch() {
   assert.deepStrictEqual(nixKill, [-777, "SIGTERM"], "非 Windows 上不再按进程组杀了");
 
   // ---- 7) 接线：算得再对，jsonl.js 不用也是白搭 ----
-  const src = fs.readFileSync(path.join(__dirname, "..", "engines", "jsonl.js"), "utf8");
+  const src = fs.readFileSync(modPath("jsonl"), "utf8");
   assert.strictEqual((src.match(/win\.launchPlan\(/g) || []).length, 4,
     "engines/jsonl.js 里有 spawn 没走 launchPlan：跑任务、探版本、探选项、探 --help 四处都得走，少一处 Windows 上就少一处能用");
   assert.ok(!/spawn\(bin,/.test(src), "★还有地方直接 spawn 那个 .cmd：Node 会当场 EINVAL★");
@@ -16400,7 +16402,7 @@ function testSessionCacheReload() {
   if (a < 0 || b <= a) throw new Error("server.js 里的会话读写找不到了（改名/挪走？），测试没法定位真源码");
   const SLICE = src.slice(a, b);
 
-  const store = require(path.join(__dirname, "..", "store.js"));
+  const store = require(modPath("store"));
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-sesscache-"));
   const SESS_DIR = path.join(home, "sessions");
   fs.mkdirSync(SESS_DIR, { recursive: true });
@@ -16738,7 +16740,7 @@ function auditShortcuts(app02, emain) {
 
 function testShortcutsAllLive() {
   const app02 = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-02.js"), "utf8");
-  const emain = fs.readFileSync(path.join(__dirname, "..", "electron-main.js"), "utf8");
+  const emain = fs.readFileSync(entry("electron-main"), "utf8");
   const bad = auditShortcuts(app02, emain);
   assert.strictEqual(bad.length, 0, "设置页上摆着按不动的快捷键：\n    - " + bad.join("\n    - "));
   const d0 = app02.indexOf("const SHORTCUT_DEFS = [");
@@ -16779,7 +16781,7 @@ async function testSessionIndex() {
     };
     const live = new Map();
     // lanes 注真模块，不给桩：「老会话该不该被替他填一条线」正是下面要验的事
-    const lanesMod = require("../lanes");
+    const lanesMod = require(modPath("lanes"));
     // account 只被「老会话算谁的」用到：这台机器上第一个注册的人（平台管理员）
     const account = { defaultUser: () => ({ username: "boss" }) };
     const build = () => new Function("fs", "path", "store", "sessions", "SESS_DIR", "lanes", "account",
@@ -17280,7 +17282,7 @@ async function _testUpgradeMigrationBody(mktmp) {
   } finally { boot2.child.kill(); }
 
   // ── ⑦ 撞名一律跳过。宁可这一个不整理，也不能盖掉那边那份 ─────────────────
-  const migrate = require(path.join(__dirname, "..", "migrate.js"));
+  const migrate = require(modPath("migrate"));
   const ws2 = mktmp("owb-upgrade2-");
   const dst = path.join(ws2, "以前的文件_" + migrate._internals.stampToday());
   fs.mkdirSync(dst, { recursive: true });
@@ -17658,7 +17660,7 @@ async function testDramaPipeline() {
     assert(stage("script").done === 1 && stage("script").total === 1, "剧本这一档算错了：" + JSON.stringify(stage("script")));
     // 反向对照：模板原样没动、或者只敲了两个字，都不能算「剧本写好了」——
     // 算成写好了，下一步就会指到拆场次上去，而那一步必然拆不出东西
-    const stub = require(path.join(__dirname, "..", "drama-pipeline.js"));
+    const stub = require(modPath("drama-pipeline"));
     for (const [text, why] of [["", "空的"], ["在这里写一句话概念、人物关系、冲突、对白和结局。", "模板原样"], ["随便写两句", "只敲了几个字"]]) {
       const g = stub.dramaProgress({ nodes: [{ id: "s", kind: "script", payload: { text } }] }, { onDisk: new Set() });
       assert(g.stages.find((x) => x.key === "script").done === 0, `★${why}也算剧本写好了★：` + JSON.stringify(g.stages[0]));
@@ -17724,7 +17726,7 @@ async function testDramaPipeline() {
   } finally { boot.child.kill(); await dropTempHome(home, passed, boot.child); }
 
   // ── ⑦ 反向对照：一次都没跑过的画布，宁可不给时间也不许编 ─────────────────
-  const pipeline = require(path.join(__dirname, "..", "drama-pipeline.js"));
+  const pipeline = require(modPath("drama-pipeline"));
   const bare = pipeline.dramaProgress({ nodes: [{ id: "x", kind: "shot", payload: { id: "S1", prompt: "有提示词" } }] }, { onDisk: new Set() });
   assert(bare.eta === null, "★没跑过也硬给一个时间★：" + JSON.stringify(bare.eta));
   assert(bare.pending.image === 1 && bare.pending.video === 0, "没首帧的镜头不该排进生视频的队：" + JSON.stringify(bare.pending));
@@ -17899,7 +17901,7 @@ async function testDramaPipeline() {
 async function testDramaCompose() {
   const http = require("http"), crypto = require("crypto");
   const { spawnSync, execFileSync } = require("child_process");
-  const C = require(path.join(__dirname, "..", "drama-compose.js"));
+  const C = require(modPath("drama-compose"));
 
   // ── 计划这一层不碰 ffmpeg，全是纯函数，跑起来是毫秒级 ────────────────────
   const planOf = (shots, ex = {}) => {
@@ -18500,7 +18502,7 @@ async function testDramaCompose() {
  * 镜头节点上的 reference 是**喂进去的**参考图，绝不许被当成产出的首帧算完成。
  */
 async function testDramaCast() {
-  const pipeline = require(path.join(__dirname, "..", "drama-pipeline.js"));
+  const pipeline = require(modPath("drama-pipeline"));
   const node = (id, kind, payload) => ({ id, kind, payload, position: { x: 0, y: 0 } });
 
   // ── ① 算得对：「参考图」里挑的定妆照就是定妆照 ─────────────────────────
@@ -18581,7 +18583,7 @@ async function testDramaCast() {
     // 一边说「这句还是模板、不许开枪」，另一边说「写了，算你做完了」
     const pick = (src, re) => (re.exec(src) || [])[1] || "";
     const cp = pick(fe, /const CANVAS_PROMPT_PLACEHOLDERS = \[([\s\S]*?)\];/);
-    const sp = pick(fs.readFileSync(path.join(__dirname, "..", "drama-pipeline.js"), "utf8"), /const PLACEHOLDERS = \[([\s\S]*?)\];/);
+    const sp = pick(fs.readFileSync(modPath("drama-pipeline"), "utf8"), /const PLACEHOLDERS = \[([\s\S]*?)\];/);
     const norm = (t) => (t.match(/"[^"]*"/g) || []).map((x) => x.slice(1, -1)).sort().join("|");
     assert(norm(cp) && norm(cp) === norm(sp),
       "★占位文字两边对不上了★ 一边拦、一边放，同一句话在两处判得不一样：\n前端 " + norm(cp) + "\n服务端 " + norm(sp));
@@ -19095,8 +19097,8 @@ async function testStoryboardDraft() {
   //   · 盘上已有分镜表时 new 照样写 —— 生了半部戏的首帧路径一声不响全没了；
   //   · replace 之前不留底 —— 换错了，上一版的镜头再也找不回来。
   const http = require("http"), crypto = require("crypto");
-  const pipeline = require(path.join(__dirname, "..", "drama-pipeline.js"));
-  const shotHistory = require(path.join(__dirname, "..", "shot-history.js"));
+  const pipeline = require(modPath("drama-pipeline"));
+  const shotHistory = require(modPath("shot-history"));
   let n = 0;
   const check = (cond, msg) => { assert(cond, msg); n++; };
 

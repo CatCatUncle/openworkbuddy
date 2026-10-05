@@ -20,6 +20,8 @@ const os = require("os");
 const path = require("path");
 const { spawn, execFileSync } = require("child_process");
 const { EventEmitter } = require("events");
+const { mod } = require("./lib/mod");
+const { entry } = require("./lib/entry");
 
 if (process.platform === "win32") { console.log("跳过：Windows 没有进程组这回事（taskkill /T 走另一条路）"); process.exit(0); }
 
@@ -30,8 +32,8 @@ fs.mkdirSync(process.env.OPENWORKBUDDY_DATA_DIR, { recursive: true });
 
 const ROOT = path.join(__dirname, "..");
 const T0 = Date.now();
-const tools = require(path.join(ROOT, "tools"));
-const CT = require(path.join(ROOT, "code-tools"));
+const tools = require(mod("tools"));
+const CT = require(mod("code-tools"));
 const I = tools._internals;
 
 let pass = 0, fail = 0;
@@ -201,7 +203,7 @@ function fakeChild() {
     await until(() => { try { return fs.readFileSync(w.job.logFile, "utf8").includes("line 199"); } catch { return false; } }, 2000);
     const txt = fs.readFileSync(w.job.logFile, "utf8");
     ok(txt.split("\n").filter(Boolean).length === 200, "200 块输出一块不少地落进日志", txt.length);
-    const src = fs.readFileSync(path.join(ROOT, "code-tools.js"), "utf8");
+    const src = fs.readFileSync(mod("code-tools"), "utf8");
     const bgSec = src.slice(src.indexOf("function bgStart"), src.indexOf("function bgReapSession"));
     const syncWrite = /fs\.appendFileSync\(/;
     ok(/fs\.createWriteStream\(/.test(bgSec) && !syncWrite.test(bgSec), "bgStart 里是写入流、没有 fs.appendFileSync(");
@@ -251,8 +253,8 @@ function fakeChild() {
 
   console.log("\n⑧ 接线：网页对话、IM / 定时任务、命令行三条路都收尾");
   {
-    const SRV = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
-    const CLI = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
+    const SRV = fs.readFileSync(entry("server"), "utf8");
+    const CLI = fs.readFileSync(entry("cli"), "utf8");
     const chatFinally = (s) => /finally \{[\s\S]{0,400}releaseOwner\(sessionId\)[\s\S]{0,300}releaseRun\(sessionId, \{ browser: false \}\)/.test(s);
     // finally 里除了放手还会收这一趟的空文件夹（settleRunDir），所以只认「finally 一进来先 release()」
     const accounted = (s) => /function accountedRuntime[\s\S]{0,4000}holdRun\(rest\.sessionId\)[\s\S]{0,1500}\} finally \{\s*release\(\);/.test(s);
@@ -301,7 +303,7 @@ function fakeChild() {
     // 真崩一次：另起一个 node 当「服务进程」，让它起后台命令、账落盘，然后 SIGKILL 它
     const fake = path.join(TMP, "fake-host.js");
     fs.writeFileSync(fake, `
-const tools = require(${JSON.stringify(path.join(ROOT, "tools"))});
+const tools = require(${JSON.stringify(mod("tools"))});
 const I = tools._internals;
 (async () => {
   const r = I.startBackground("sleep " + process.env.MK, ${JSON.stringify(WS)}, { sessionId: "crash" }, true);

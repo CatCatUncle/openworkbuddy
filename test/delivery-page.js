@@ -18,12 +18,13 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const vm = require("vm");
+const { mod } = require("./lib/mod");
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "owb-delivery-page-"));
 process.env.OPENWORKBUDDY_HOME = TMP;
 
 const ROOT = path.join(__dirname, "..");
-const DP = require(path.join(ROOT, "delivery-page"));
+const DP = require(mod("delivery-page"));
 const { normalize, render, runTool, TOOL_DEFS, MANIFEST_NAME, PAGE_NAME, _internals: I } = DP;
 
 let pass = 0, fail = 0;
@@ -313,7 +314,7 @@ const FULL_FILES = ["成片_9x16.mp4", "成片_16x9.mp4", "封面_A.png", "封�
 
     // 没有 emoji
     const PICT = /\p{Extended_Pictographic}/u;
-    const src = fs.readFileSync(path.join(ROOT, "delivery-page.js"), "utf8");
+    const src = fs.readFileSync(mod("delivery-page"), "utf8");
     const bad = [...html].filter((c) => PICT.test(c) && !"©®".includes(c));
     eq(bad.length, 0, "页面没有 emoji", bad);
     eq([...src].filter((c) => PICT.test(c) && !"©®".includes(c)).length, 0, "源码没有 emoji");
@@ -536,7 +537,7 @@ const FULL_FILES = ["成片_9x16.mp4", "成片_16x9.mp4", "封面_A.png", "封�
   // ───────────────────────── ⑤ 真 ffprobe ─────────────────────────
   console.log("\n⑤ 真 ffprobe");
   {
-    const MP = require(path.join(ROOT, "lib", "media-probe"));
+    const MP = require(mod("media-probe"));
     const bins = await MP.resolveMediaBins();
     const need = process.env.OWB_REQUIRE_FFMPEG === "1";
     if (!bins.ffmpeg.bin || !bins.ffprobe.bin) {
@@ -598,7 +599,7 @@ const FULL_FILES = ["成片_9x16.mp4", "成片_16x9.mp4", "封面_A.png", "封�
     has(t.description, "missing", "描述里告诉模型没做出来写 missing");
     has(t.description, MANIFEST_NAME, "描述里写清单文件名");
     ok(Array.from(t.description).length < 1200, "描述别太长", Array.from(t.description).length);
-    const src = fs.readFileSync(path.join(ROOT, "delivery-page.js"), "utf8");
+    const src = fs.readFileSync(mod("delivery-page"), "utf8");
     ok(!/\bsay\b/.test(src), "不用 macOS say");
     ok(!/https?:\/\//.test(src), "源码里没有外链");
     eq(src.split("\n")[0], "// @ts-check", "第一行 @ts-check");
@@ -610,7 +611,7 @@ const FULL_FILES = ["成片_9x16.mp4", "成片_16x9.mp4", "封面_A.png", "封�
   // 清单只放图不放视频：不量画幅，本机有没有 ffprobe 结论都一样
   console.log("\n⑦ 工具分派（tools.executeTool）");
   {
-    const tools = require(path.join(ROOT, "tools"));
+    const tools = require(mod("tools"));
     const W = path.join(TMP, "ws-dispatch");
     const base = "任务_分派";
     const d = path.join(W, base);

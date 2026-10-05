@@ -16,6 +16,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { mod } = require("./lib/mod");
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "owb-code-"));
 process.env.OPENWORKBUDDY_HOME = TMP;
@@ -23,8 +24,8 @@ process.env.OPENWORKBUDDY_DATA_DIR = path.join(TMP, "data");
 fs.mkdirSync(process.env.OPENWORKBUDDY_DATA_DIR, { recursive: true });
 
 const ROOT = path.join(__dirname, "..");
-const tools = require(path.join(ROOT, "tools"));
-const CT = require(path.join(ROOT, "code-tools"));
+const tools = require(mod("tools"));
+const CT = require(mod("code-tools"));
 const { executeTool, TOOL_DEFS } = tools;
 
 let pass = 0, fail = 0;
@@ -276,15 +277,15 @@ async function until(fn, ms = 5000) {
     for (const n of ["find_files", "multi_edit", "shell_output", "shell_kill", "todo_write"]) ok(names.includes(n), `${n} 在 TOOL_DEFS 里`);
     const rs = TOOL_DEFS.find((t) => t.name === "run_shell");
     ok(rs.input_schema.properties.background, "run_shell 有 background 参数");
-    const agentSrc = fs.readFileSync(path.join(ROOT, "agent.js"), "utf8");
+    const agentSrc = fs.readFileSync(mod("agent"), "utf8");
     ok(/READ_ONLY_TOOLS = \[[^\]]*"find_files"/.test(agentSrc), "find_files 算只读（问答/规划模式可用、可并发）");
     ok(!/READ_ONLY_TOOLS = \[[^\]]*"(multi_edit|shell_kill|todo_write)"/.test(agentSrc), "会动东西的不在只读名单里（反向对照）");
   }
 
   console.log("\n⑧ 清单没勾完不许收尾");
   {
-    const { createAgentRuntime } = require(path.join(ROOT, "agent"));
-    const { McpManager } = require(path.join(ROOT, "mcp"));
+    const { createAgentRuntime } = require(mod("agent"));
+    const { McpManager } = require(mod("mcp"));
     const run = async (script) => {
       let step = 0;
       const seen = [];
@@ -427,7 +428,7 @@ async function until(fn, ms = 5000) {
     ok(ms < 5000 && /执行超时被终止/.test(r.content) && /background:true/.test(r.content), "管道同样到点就回，并指一条路：不会自己结束的用 background", { ms, c: r.content });
     ok(await until(() => !alive(mark(13)), 3000), "管道里的 sleep 也收掉了");
     // run_node 里开子进程要人点头；这里先替它点了，不然两条都卡在审批上
-    const security = require(path.join(ROOT, "security"));
+    const security = require(mod("security"));
     security.addSessionAllow("code:child_process");
     ({ r, ms } = await timed("run_node", { code: `require("child_process").spawn("sleep", ["${mark(14)}"], { stdio: "inherit" });` }));
     ok(ms < 5000 && r.isError && /执行超时被终止/.test(r.content), "★run_node 脚本拉起的子进程攥着输出，也到点就回★", { ms, c: r.content });
@@ -607,7 +608,7 @@ async function until(fn, ms = 5000) {
 
   console.log("\n⑰ 工作区里的符号链接不能把文件工具带出去");
   {
-    const security = require(path.join(ROOT, "security"));
+    const security = require(mod("security"));
     const OUT = fs.mkdtempSync(path.join(os.tmpdir(), "owb-code-out-"));
     const BL = fs.mkdtempSync(path.join(os.tmpdir(), "owb-code-bl-"));
     fs.writeFileSync(path.join(OUT, "secret.txt"), "TOP-SECRET\n");

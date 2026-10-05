@@ -11,8 +11,9 @@
  *   4. 安静满 IDLE_SHOW_MS 才说「安静 Ns」；子智能体的动静不改主线那一行
  *   5. 前面挂了、后面没跑的不算「做完」，进度条不能走满
  */
-const wp = require("../workflow-panel");
-const { cols } = require("../text-width");
+const { mod } = require("./lib/mod");
+const wp = require(mod("workflow-panel"));
+const { cols } = require(mod("text-width"));
 
 let n = 0;
 const bad = [];

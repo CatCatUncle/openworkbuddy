@@ -22,10 +22,11 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { mod } = require("./lib/mod");
 
 const ROOT = path.join(__dirname, "..");
-const mm = require(path.join(ROOT, "media-models"));
-const prefs = require(path.join(ROOT, "prefs"));
+const mm = require(mod("media-models"));
+const prefs = require(mod("prefs"));
 
 let pass = 0, fail = 0;
 const ok = (cond, msg, extra) => {
@@ -224,7 +225,7 @@ console.log("\n【5】工具派发：点名真的打到那个渠道");
   mm.normalize(c);
   const media = mm.resolve(c);
 
-  const tools = require(path.join(ROOT, "tools"));
+  const tools = require(mod("tools"));
   const { generateImage, generateVideo } = tools._internals;
   const saveDir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-media-"));
   const PNG_B64 = Buffer.from("fake-png-bytes").toString("base64");
@@ -435,7 +436,7 @@ function rest() {
   // 而失效的样子跟「一切正常」一模一样——用户只会看到上游报个错，钱照扣。
   console.log("\n【9】视频目录的型号名 ↔ 图生/文生判别式");
   {
-    const { I2V_RE, T2V_RE } = require(path.join(ROOT, "tools"))._internals;
+    const { I2V_RE, T2V_RE } = require(mod("tools"))._internals;
     // 标签怎么写是给人看的，判别式认的是 id。两边必须是同一个结论
     for (const m of mm.CATALOG.video) {
       const byLabel = /图生视频|首尾帧/.test(m.label);
@@ -856,7 +857,7 @@ function rest() {
  */
 async function asrChecks() {
   console.log("\n【5b】转写：该拦的在本机就拦住，该发的打到对的渠道");
-  const tools = require(path.join(ROOT, "tools"));
+  const tools = require(mod("tools"));
   const { transcribeAudio, srtTime } = tools._internals;
 
   // 时间轴格式先单独钉住：它决定字幕文件对不对得上，错了肉眼看不出来
@@ -986,9 +987,9 @@ async function asrChecks() {
  */
 async function videoParamChecks() {
   console.log("\n【5c】生视频参数：按型号表夹紧、按实际秒数计价、五家字段各自映射");
-  const tools = require(path.join(ROOT, "tools"));
+  const tools = require(mod("tools"));
   const { generateVideo, unitsFor, videoPlan } = tools._internals;
-  const pricing = require(path.join(ROOT, "pricing"));
+  const pricing = require(mod("pricing"));
 
   const ZP = "https://open.bigmodel.cn/api/paas/v4";
   const MX = "https://api.minimax.chat/v1";
@@ -1205,8 +1206,8 @@ async function catalogLoadChecks() {
  */
 async function gateChecks() {
   console.log("\n【5e】派发前的闸：写法不对、挂错家，发请求之前就拦");
-  const { viaMedia } = require(path.join(ROOT, "tools"))._internals;
-  const mh = require(path.join(ROOT, "media-health"));
+  const { viaMedia } = require(mod("tools"))._internals;
+  const mh = require(mod("media-health"));
   mh.reset();
   let ran = 0;
   const run = async () => { ran++; return { content: "【看图】好的", isError: false }; };
@@ -1241,10 +1242,10 @@ async function gateChecks() {
  */
 async function runtimeChecks() {
   console.log("\n【12】运行时：通义地址 / 看图协议 / 按型号点名 / 万相异步出图");
-  const tools = require(path.join(ROOT, "tools"));
+  const tools = require(mod("tools"));
   const { lookAtImage, generateImage } = tools._internals;
   const MEDIA = require(path.join(ROOT, "src/tools/media"));
-  const agent = require(path.join(ROOT, "agent"));
+  const agent = require(mod("agent"));
 
   // ── 通义的地址：国际站、*.maas 专属地址、选了百炼类型的中转，都要换对接口层
   const INTL = "https://dashscope-intl.aliyuncs.com/api/v1";

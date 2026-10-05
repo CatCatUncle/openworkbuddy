@@ -28,6 +28,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { mod } = require("./lib/mod");
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "owb-lifecycle-"));
 process.env.OPENWORKBUDDY_DATA_DIR = path.join(TMP, "data");
@@ -35,12 +36,12 @@ fs.mkdirSync(process.env.OPENWORKBUDDY_DATA_DIR, { recursive: true });
 
 const ROOT = path.join(__dirname, "..");
 const express = require("express");
-const account = require(path.join(ROOT, "account"));
-const org = require(path.join(ROOT, "org"));
-const admin = require(path.join(ROOT, "admin"));
-const scheduler = require(path.join(ROOT, "scheduler"));
-const lifecycle = require(path.join(ROOT, "lifecycle"));
-const totp = require(path.join(ROOT, "totp"));
+const account = require(mod("account"));
+const org = require(mod("org"));
+const admin = require(mod("admin"));
+const scheduler = require(mod("scheduler"));
+const lifecycle = require(mod("lifecycle"));
+const totp = require(mod("totp"));
 
 let pass = 0, fail = 0;
 const ok = (cond, msg, extra) => {

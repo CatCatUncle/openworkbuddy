@@ -17,10 +17,12 @@
 const path = require("path");
 const { spawnSync } = require("child_process");
 const fs = require("fs");
+const { mod } = require("./lib/mod");
+const { entry } = require("./lib/entry");
 
 const ROOT = path.join(__dirname, "..");
-const A = require(path.join(ROOT, "cli-args"));
-const { cols } = require(path.join(ROOT, "text-width"));
+const A = require(mod("cli-args"));
+const { cols } = require(mod("text-width"));
 
 let pass = 0, fail = 0;
 function ok(cond, name, extra) {
@@ -78,7 +80,7 @@ console.log("\n② 要跟值的选项不许吞掉后面的选项");
 // ── ③ --mode 只认模式表里那几个值 ────────────────────────────────────────
 // 值从 modes.js 取，不在这儿抄一份：抄一份的结果就是模式表加了一个，
 // 测试还绿着——它验的是自己手里那份旧清单，而不是程序真认的那份
-const MODES = require("../modes");
+const MODES = require(mod("modes"));
 console.log(`\n③ --mode 只认 ${MODES.MODE_IDS.join(" / ")}`);
 {
   const r = A.parse(["--mode", "crat", "x"]);
@@ -237,7 +239,7 @@ console.log("\n⑩ 老用法回归：跟改造前的解析器逐条对齐");
 // 不纯的话，每一句报错都只能靠起一个进程去撞，撞不出来的那些就永远没人验证。
 console.log("\n⑪ cli-args.js 是纯的：不退出、不读盘");
 {
-  const src = fs.readFileSync(path.join(ROOT, "cli-args.js"), "utf8");
+  const src = fs.readFileSync(mod("cli-args"), "utf8");
   ok(!/process\.exit/.test(src), "★不自己 exit★ 退不退、退几，是 cli.js 的事");
   ok(!/require\(["']fs["']\)/.test(src), "不读盘");
   ok(!/process\.stderr|process\.stdout|console\./.test(src), "不自己打印");
@@ -247,7 +249,7 @@ console.log("\n⑪ cli-args.js 是纯的：不退出、不读盘");
 // ── ⑫ 真跑一遍：退出码得说实话 ──────────────────────────────────────────
 console.log("\n⑫ 真跑：退出码");
 {
-  const run = (args) => spawnSync(process.execPath, [path.join(ROOT, "cli.js"), ...args], { encoding: "utf8" });
+  const run = (args) => spawnSync(process.execPath, [entry("cli"), ...args], { encoding: "utf8" });
   const h = run(["--help"]);
   eq(h.status, 0, "openworkbuddy --help 退 0");
   ok(/OpenWorkBuddy CLI/.test(h.stdout), "帮助走的是 stdout（能 | less）");
@@ -344,7 +346,7 @@ console.log("\n⑬ openworkbuddy completion：三种 shell");
     fishLines.find((l) => (l.match(/'/g) || []).length % 2));
 
   // 真跑 openworkbuddy completion：拿不认识的 shell 要当场停，别生成一份谁也用不了的东西
-  const run = (args, env) => spawnSync(process.execPath, [path.join(ROOT, "cli.js"), ...args],
+  const run = (args, env) => spawnSync(process.execPath, [entry("cli"), ...args],
     { encoding: "utf8", env: Object.assign({}, process.env, env || {}) });
   const bad = run(["completion", "powershell"]);
   eq(bad.status, 2, "不认识的 shell 退 2");
@@ -362,7 +364,7 @@ console.log("\n⑬ openworkbuddy completion：三种 shell");
 // 用的人是屏幕阅读器、日志收集器，以及一切分不清 ESC[33m 和正文的下游。
 console.log("\n⑭ NO_COLOR");
 {
-  const run = (env) => spawnSync(process.execPath, [path.join(ROOT, "cli.js"), "--qiet", "写周报"],
+  const run = (env) => spawnSync(process.execPath, [entry("cli"), "--qiet", "写周报"],
     { encoding: "utf8", env: Object.assign({}, process.env, { NO_COLOR: "", FORCE_COLOR: "" }, env) });
   const colored = run({ FORCE_COLOR: "1" });
   ok(/\u001b\[/.test(colored.stderr), "★反向对照：FORCE_COLOR 下确实是有颜色的★ 没这条，下面那句等于没测");

@@ -18,6 +18,7 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { mod } = require("./lib/mod");
 // 要赶在任何 require 之前：cli-live 按 OPENWORKBUDDY_HOME 找目录（不看 OPENWORKBUDDY_DATA_DIR），
 // 不设的话 ⑤ 摆出去的题会落进用户真实的 data/cli-live/，开着的网页上就多一道测试题
 const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "owb-approve-home-"));
@@ -27,7 +28,7 @@ process.on("exit", (code) => {
   if (code === 0) { try { fs.rmSync(HOME, { recursive: true, force: true }); } catch {} }
   else console.log("留着现场（数据目录）：" + HOME);
 });
-const ap = require("../cli-approve");
+const ap = require(mod("cli-approve"));
 
 function fakeIO(inputs) {
   const out = [];
@@ -114,9 +115,9 @@ async function run() {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "owb-approve-"));
     const oldData = process.env.OPENWORKBUDDY_DATA_DIR;
     process.env.OPENWORKBUDDY_DATA_DIR = tmp;
-    delete require.cache[require.resolve("../paths")];
-    delete require.cache[require.resolve("../cli-live")];
-    const live = require("../cli-live");
+    delete require.cache[require.resolve(mod("paths"))];
+    delete require.cache[require.resolve(mod("cli-live"))];
+    const live = require(mod("cli-live"));
     try {
       const h = live.announce({ id: "s1", title: "t", cwd: tmp, mode: "craft" });
       assert.ok(h.live, "实时目录起得来（起不来后面都不用验了）");
@@ -160,8 +161,8 @@ async function run() {
     } finally {
       if (oldData === undefined) delete process.env.OPENWORKBUDDY_DATA_DIR;
       else process.env.OPENWORKBUDDY_DATA_DIR = oldData;
-      delete require.cache[require.resolve("../paths")];
-      delete require.cache[require.resolve("../cli-live")];
+      delete require.cache[require.resolve(mod("paths"))];
+      delete require.cache[require.resolve(mod("cli-live"))];
       fs.rmSync(tmp, { recursive: true, force: true });
     }
   }
@@ -202,7 +203,7 @@ async function run() {
       assert.strictEqual(v.scope, ap.CHOICES[i].scope);
     }
 
-    const { cols } = require("../text-width");
+    const { cols } = require(mod("text-width"));
     const m = ap.menu(1, { width: 100, wait: "2 分钟" });
     assert.strictEqual(m.filter((l) => l.includes("❯")).length, 1, "光标只有一个");
     assert.ok(m[1].includes("❯ 2. 这类都允许") && m[1].includes(ap.CHOICES[1].sub), "光标那条带说明");
@@ -239,7 +240,7 @@ async function run() {
 
   // ---- ⑥ security 那个钩子：命令行怎么知道有人正等着点头 ----
   {
-    const security = require("../security");
+    const security = require(mod("security"));
     const seen = [];
     const off = security.watchApprovals((ev) => seen.push(ev));
     const p = security.requestApproval("命令执行", DANGER, { timeoutMs: 5000, rule: "删除保护", ruleKey: "rm_test_x" });
@@ -272,7 +273,7 @@ async function run() {
   // ---- ⑦ 没人批时那句「下回加 --allow …」：照抄回去必须真能放行同一类 ----
   // 提示里给的写法 --allow 自己不认、或者认成了另一类，比不给还糟：用户照抄了，半夜照样被拒
   {
-    const security = require("../security");
+    const security = require(mod("security"));
     const { execFileSync } = require("child_process");
     const ask = { ...security.DEFAULTS, permission_mode: "ask" };
     const def = { ...security.DEFAULTS };

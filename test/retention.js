@@ -17,6 +17,7 @@
  *
  * 全部夹具都在自己的临时家里（test/lib/own-home.js），不碰 data/ 一个文件。
  */
+const { mod } = require("./lib/mod");
 const HOME = require("./lib/own-home")("retention");
 
 const fs = require("fs");
@@ -25,11 +26,11 @@ const http = require("http");
 const { spawnSync } = require("child_process");
 const ROOT = path.join(__dirname, "..");
 const { src } = require("./lib/src");
-const store = require(path.join(ROOT, "store.js"));
-const R = require(path.join(ROOT, "retention.js"));
-const thumb = require(path.join(ROOT, "thumb.js"));
-const metrics = require(path.join(ROOT, "metrics.js"));
-const { createImSessionStore } = require(path.join(ROOT, "im-store.js"));
+const store = require(mod("store"));
+const R = require(mod("retention"));
+const thumb = require(mod("thumb"));
+const metrics = require(mod("metrics"));
+const { createImSessionStore } = require(mod("im-store"));
 
 let pass = 0, fail = 0;
 const ok = (cond, msg, detail) => {
@@ -230,7 +231,7 @@ function buildSess(body = SLICE) {
     ok(exists(path.join(dir2, "big-user-file.json")), "★反向对照★ 名字对不上的大文件不算进总量，也不被删");
     ok(R.ARCHIVE_RE.test("s_1730000000000_t-1727000000000.json") && R.ARCHIVE_RE.test("1727000000000.json") && !R.ARCHIVE_RE.test("notes-2026.json"),
       "归档名的正则：新旧两种都认，别的不认");
-    const AG = fs.readFileSync(path.join(ROOT, "agent.js"), "utf8");
+    const AG = fs.readFileSync(mod("agent"), "utf8");
     ok(/`\$\{sid \? sid \+ "-" : ""\}\$\{Date\.now\(\)\}\.json`\), JSON\.stringify\(old\)\)/.test(AG),
       "agent.js 写归档：文件名带会话 id、不缩进");
     ok((AG.match(/compactHistory\(history, \{[^}]*sessionId \}\)/g) || []).length >= 2, "两处自动压缩都把会话 id 递进去了");
@@ -378,7 +379,7 @@ function buildSess(body = SLICE) {
     ok(/backupExcludeArgs\(\)\.then\(\(excludes\) => [^\n]*\n\s*"tar", \["-czf", path\.join\(BACKUP_DIR, name\), \.\.\.excludes, "-C"/.test(SRC)
       && /tarExcludeArgs\(v, BACKUP_EXCLUDES\)/.test(SRC),
     "打包命令用的是按本机 tar 换算过的那组参数，而且摆在文件参数前面（GNU tar 规定 --exclude 只管后面的参数）");
-    const { tarExcludeArgs } = require(path.join(ROOT, "backup-auto.js"));
+    const { tarExcludeArgs } = require(mod("backup-auto"));
     const bsd = tarExcludeArgs("bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12", EX);
     const gnu = tarExcludeArgs("tar (GNU tar) 1.35\nCopyright (C) 2023 Free Software Foundation, Inc.", EX);
     ok(bsd.length === 5 && bsd.every((a) => a.startsWith("--exclude=^data/")), "bsdtar：每条前面加 ^ 锚定开头", bsd);

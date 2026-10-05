@@ -22,10 +22,11 @@
 
 const fs = require("fs");
 const path = require("path");
+const { mod } = require("./lib/mod");
 const ROOT = path.join(__dirname, "..");
 const srcLib = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
-const { iconNames, isIconName } = require(path.join(ROOT, "icons"));
-const callout = require(path.join(ROOT, "callout"));
+const { iconNames, isIconName } = require(mod("icons"));
+const callout = require(mod("callout"));
 
 let pass = 0, fail = 0;
 const ok = (cond, msg, extra) => {
@@ -227,7 +228,7 @@ ok(!isIconName("definitely-not-an-icon"), "编一个名字查不到（反向对�
 ok(!isIconName(""), "空串不算图标名");
 ok(!isIconName("\u{1F680}"), "emoji 不算图标名");
 
-const catalog = require(path.join(ROOT, "mcp-catalog.js"));
+const catalog = require(mod("mcp-catalog"));
 const badCat = (catalog.ITEMS || []).filter((x) => x.icon && !isIconName(x.icon)).map((x) => x.id + ":" + x.icon);
 ok((catalog.ITEMS || []).length > 20, "MCP 目录有 " + (catalog.ITEMS || []).length + " 条", (catalog.ITEMS || []).length);
 ok(badCat.length === 0, "MCP 目录里的图标名全查得到", badCat);
@@ -389,7 +390,7 @@ console.log("\n④'' toast(文字, \"图标名\") 里写死的那个名字也都
 
 // ⑤ 存盘与转换 ────────────────────────────────────────────────────────
 console.log("\n⑤ 存盘认图标名、提示条记号不漏给用户");
-const normalizeAvatar = require(path.join(ROOT, "account"))._internals.normalizeAvatar;
+const normalizeAvatar = require(mod("account"))._internals.normalizeAvatar;
 const accepts = (v) => { try { normalizeAvatar(v); return true; } catch { return false; } };
 ok(accepts("rocket"), "六个字母的图标名存得进去");
 ok(accepts("chart-column"), "带横杠的长图标名也存得进去（以前被「最多两个字符」拦掉）");

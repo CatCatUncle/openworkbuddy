@@ -18,6 +18,7 @@
  * 【2】起真 server.js（临时家，不配模型），预加载一个数 25 秒定时器的探针，各种时机掐 30 次：一个不剩。
  *     ★反向对照★ 一条正常连着的直播，探针数得到 1——探针真看得见心跳，0 不是没数到。
  */
+const { entry } = require("./lib/entry");
 const HOME = require("./lib/own-home")("live-abort");
 
 const fs = require("fs");
@@ -171,7 +172,7 @@ set0(() => process.stdout.write("PROBE hb=" + live.size + "\\n"), 100).unref();
   const env = { ...process.env, ELECTRON_RUN_AS_NODE: "", OPENWORKBUDDY_HOME: HOME, OPENWORKBUDDY_DATA_DIR: dataDir, HOST: "127.0.0.1", PORT: "0" };
   // electron 当 node 跑这个套件时别拿它的 execPath 起 server（ELECTRON_RUN_AS_NODE 清空了会起一个 Electron 应用）
   const nodeBin = process.env.OWB_NODE || (process.versions.electron ? "node" : process.execPath);
-  const child = spawn(nodeBin, ["-r", probe, path.join(ROOT, "server.js")], { cwd: ROOT, env, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(nodeBin, ["-r", probe, entry("server")], { cwd: ROOT, env, stdio: ["ignore", "pipe", "pipe"] });
   process.on("exit", () => { try { child.kill("SIGKILL"); } catch {} });
   let log = "", hb = -1;
   const eat = (c) => {

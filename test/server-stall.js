@@ -25,6 +25,7 @@
  */
 
 // C 组要 global.gc 看合成信号回收了几个。npm test 拿 node 直接拉起来的，自己换身皮再跑一遍
+const { mod } = require("./lib/mod");
 if (!global.gc) {
   const r = require("child_process").spawnSync(process.execPath, ["--expose-gc", __filename], {
     stdio: ["ignore", "inherit", "inherit"], timeout: 300000,
@@ -48,7 +49,7 @@ process.env.OPENWORKBUDDY_HOME = HOME;
 
 const ROOT = path.join(__dirname, "..");
 const { src } = require("./lib/src");
-const store = require(path.join(ROOT, "store.js"));
+const store = require(mod("store"));
 
 let pass = 0, fail = 0, finished = false;
 process.on("exit", (code) => {
@@ -209,7 +210,7 @@ async function partA() {
       '"use strict";',
       'const fs = require("fs"), path = require("path");',
       "const [, , mode, ROOT, SLICE_FILE, SESS_DIR] = process.argv;",
-      'const store = require(path.join(ROOT, "store.js"));',
+      "const store = require(" + JSON.stringify(mod("store")) + ");",
       'const body = fs.readFileSync(SLICE_FILE, "utf8");',
       'const g = new Function("fs", "path", "SESS_DIR", "store", "sessions", "activeRuns", "console", body)(fs, path, SESS_DIR, store, new Map(), new Map(), { log() {}, warn() {} });',
       'const ID = "s_1759100000000_a5";',
@@ -246,7 +247,7 @@ async function partA() {
       '"use strict";',
       'const fs = require("fs"), path = require("path"), Module = require("module");',
       "const [, , mode, ROOT, FILE] = process.argv;",
-      'const file = path.join(ROOT, "store.js");',
+      "const file = " + JSON.stringify(mod("store")) + ";",
       "let store;",
       'if (mode === "nodrop") {',
       '  let code = fs.readFileSync(file, "utf8");',
@@ -387,16 +388,16 @@ function put(root, rel, body) {
 
 async function partD(agent) {
   console.log("\n— D. 翻工作目录：后台线程走、几条对话共用一趟、结果逐条对得上 —");
-  const tools = require(path.join(ROOT, "tools"));
-  const wsb = require(path.join(ROOT, "lib", "ws-browse"));
-  const sweep = require(path.join(ROOT, "sweep"));
-  const { dataPath } = require(path.join(ROOT, "paths"));
+  const tools = require(mod("tools"));
+  const wsb = require(mod("ws-browse"));
+  const sweep = require(mod("sweep"));
+  const { dataPath } = require(mod("paths"));
   const { makeFilesEmitter, makeOwnership, scanOutputs, sweepPlanOffThread, _scan } = agent;
   const S = _scan.stats;
   // 把 agent.js 某一行换回老写法、另载一份（线程、hub、账本都是它自己的）：反向对照用
   const Module = require("module");
   const patchedAgent = (re, to, what) => {
-    const file = path.join(ROOT, "agent.js");
+    const file = mod("agent");
     let code = fs.readFileSync(file, "utf8");
     if (!re.test(code)) throw new Error(`agent.js 里「${what}」那一行找不到了，反向对照没法做`);
     code = code.replace(re, to);
@@ -683,7 +684,7 @@ async function partD(agent) {
 function partE() {
   console.log("\n— E. 接线：服务端真走的是新路 —");
   const S = src("server");
-  const AG = fs.readFileSync(path.join(ROOT, "agent.js"), "utf8");
+  const AG = fs.readFileSync(mod("agent"), "utf8");
   // 注释里会提到老写法，钉代码只看不是注释的行
   const code = (t) => t.split("\n").filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l)).join("\n");
   ok("回合收尾：面板清单走 scanOutputs、清理卡走 sweepPlanOffThread",
@@ -697,8 +698,8 @@ function partE() {
     (AG.match(/scan: true/g) || []).length >= 2 && (AG.match(/await filesOut\.ready;/g) || []).length === 2);
   ok("每一步的中止信号是 stepSignal，finally 里 release；agent.js 代码里不再有 AbortSignal.any(",
     /stepSignal\(\[stallCtl\.signal, stopSignal\]/.test(AG) && /stepSig\.release\(\);/.test(AG) && !/AbortSignal\.any\(/.test(code(AG)));
-  const CC = fs.readFileSync(path.join(ROOT, "engines", "claude-code.js"), "utf8");
-  const CX = fs.readFileSync(path.join(ROOT, "engines", "codex.js"), "utf8");
+  const CC = fs.readFileSync(mod("claude-code"), "utf8");
+  const CX = fs.readFileSync(mod("codex"), "utf8");
   ok("点名写的文件记上是谁写的：自带工具看 editedFile，两个 CLI 引擎各自回调 onWrite",
     /if \(res && res\.editedFile\) noteWrote\(res\.editedFile, runToken\);/.test(AG) && /onWrite: \(abs\) => noteWrote\(abs, runToken\)/.test(AG)
       && /onWrite\(path\.resolve\(cwd, target\)\)/.test(CC) && /for \(const p of changedPaths\(item, cwd\)\)[^\n]*onWrite\(p\)/.test(CX));
@@ -708,7 +709,7 @@ function partE() {
 (async () => {
   await partA();
   await partB();
-  const agent = require(path.join(ROOT, "agent"));
+  const agent = require(mod("agent"));
   await partC(agent);
   await partD(agent);
   partE();

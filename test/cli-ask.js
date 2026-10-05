@@ -12,7 +12,8 @@
  * 整个来回都在 cli-ask.run 里，io 是注进去的，所以这一套不需要伪终端也能逐帧验。
  */
 const assert = require("assert");
-const ask = require("../cli-ask");
+const { mod } = require("./lib/mod");
+const ask = require(mod("cli-ask"));
 
 const OPTS = [
   { label: "Word", detail: "甲方能直接批注改动，但排版在不同机器上会跑" },
@@ -144,7 +145,7 @@ async function run() {
     assert.deepStrictEqual(key(0, K("c", { ctrl: true }), "\x03", 0), { cancel: true }, "Ctrl+C 什么时候都是停这趟");
     assert.deepStrictEqual(key(0, K("d", { ctrl: true }), "\x04", 0), { cancel: true });
 
-    const { cols } = require("../text-width");
+    const { cols } = require(mod("text-width"));
     const m = ask.menu(1, OPTS, { width: 100, wait: "5 分钟" });
     assert.strictEqual(m.filter((l) => l.includes("❯")).length, 1, "光标只有一个");
     assert.ok(m.some((l) => l.includes("❯ 2. PDF")), "光标停在第 2 条");

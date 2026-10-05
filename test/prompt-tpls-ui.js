@@ -17,6 +17,7 @@
  * 跑法：npx electron test/prompt-tpls-ui.js
  */
 
+const { mod } = require("./lib/mod");
 if (!process.versions.electron) {
   const fs0 = require("fs");
   let bin = null;
@@ -43,8 +44,8 @@ const { app, BrowserWindow } = require("electron");
 if (process.platform === "darwin" && app.dock && app.dock.hide) app.dock.hide();
 
 const ROOT = path.join(__dirname, "..");
-const rbac = require(path.join(ROOT, "rbac.js"));
-const tpls = require(path.join(ROOT, "routes", "prompt-tpls.js"));
+const rbac = require(mod("rbac"));
+const tpls = require(mod("routes/prompt-tpls"));
 
 let pass = 0, fail = 0;
 const ok = (cond, msg, detail) => {

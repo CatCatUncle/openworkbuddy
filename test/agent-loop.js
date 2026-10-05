@@ -17,11 +17,13 @@
 
 const fs = require("fs");
 const path = require("path");
+const { mod } = require("./lib/mod");
+const { entry } = require("./lib/entry");
 // 赶在 require agent 之前：不然单独跑时 trace 记进用户真在用的 workspace/（见 test/lib/own-home.js）
 require("./lib/own-home")("agent-loop");
 const ROOT = path.join(__dirname, "..");
-const { deadLoop, findCycle, stopNotice, DEAD_LOOP_LIMITS: L } = require(path.join(ROOT, "agent"));
-const AGENT_SRC = fs.readFileSync(path.join(ROOT, "agent.js"), "utf8");
+const { deadLoop, findCycle, stopNotice, DEAD_LOOP_LIMITS: L } = require(mod("agent"));
+const AGENT_SRC = fs.readFileSync(mod("agent"), "utf8");
 
 let pass = 0, fail = 0;
 function ok(cond, name, extra) {
@@ -164,13 +166,13 @@ console.log("\n⑥ 接线：判出来了要真停，而且要告诉用户");
 // 要真跑 runTask，所以从这里开始是异步的。模型全是桩，一分钱不花、一个字节不出网。
 // ════════════════════════════════════════════════════════════════════════════
 const os = require("os");
-const tools = require(path.join(ROOT, "tools"));
-const jev = require(path.join(ROOT, "jev"));
-const llmMod = require(path.join(ROOT, "llm"));
-const skillGate = require(path.join(ROOT, "skill-gate"));
-const continueGate = require(path.join(ROOT, "continue-gate"));
-const { McpManager } = require(path.join(ROOT, "mcp"));
-const { createAgentRuntime, currentAsk, normalizeEntry, TRUNC_STOP } = require(path.join(ROOT, "agent"));
+const tools = require(mod("tools"));
+const jev = require(mod("jev"));
+const llmMod = require(mod("llm"));
+const skillGate = require(mod("skill-gate"));
+const continueGate = require(mod("continue-gate"));
+const { McpManager } = require(mod("mcp"));
+const { createAgentRuntime, currentAsk, normalizeEntry, TRUNC_STOP } = require(mod("agent"));
 const { toOpenAIMessages, toAnthropicMessages, sendableHistory, outputCap, outputCapField, DEFAULT_MAX_TOKENS, openaiChat } = llmMod._internals;
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "owb-agentloop-")); // 只动自己这一个临时目录
@@ -589,7 +591,7 @@ const emptyAN = (m) => m.role === "assistant" && (!m.content || (Array.isArray(m
       // H 说到一半就断（DeepSeek 忙时的 insufficient_system_resource / 流断了没收到结束标记）：
       //   以前只认 length，这种一律当答完了——界面上一句话停在「这是 Apple Developer 的身」，任务照样报完成
       {
-        const { CUT_STOP, cutShortWhy } = require(path.join(ROOT, "agent"));
+        const { CUT_STOP, cutShortWhy } = require(mod("agent"));
         const llm = scripted([
           { text: "明白了，这是 Apple Developer 的身", toolCalls: [], stopReason: "insufficient_system_resource" },
           { text: "份核验页面。", toolCalls: [], stopReason: "stop" },
@@ -634,8 +636,8 @@ const emptyAN = (m) => m.role === "assistant" && (!m.content || (Array.isArray(m
     //   ⑪ 历史能带多少字以前写死 12 万，跟模型窗口没关系：64k 的模型塞爆、1M 的模型用不上
     //   ⑫ 一次工具结果几万字，整段进历史，之后每一步都重发一遍
     // ════════════════════════════════════════════════════════════════════════
-    const memory = require(path.join(ROOT, "memory"));
-    const { contextBudgetChars, spillToolResult, SPILL_OVER, SPILL_KEEP } = require(path.join(ROOT, "agent"));
+    const memory = require(mod("memory"));
+    const { contextBudgetChars, spillToolResult, SPILL_OVER, SPILL_KEEP } = require(mod("agent"));
     const { anthropicSystemBlocks, parseWindowSize, CONTEXT_WINDOW_DEFAULT } = llmMod._internals;
     /** 同一个工作目录里跑（工作目录的路径写在 system 的稳定段里，换目录前缀本来就该变） */
     async function runIn(dir, { llm, history, config, ...rest }) {
@@ -850,7 +852,7 @@ const emptyAN = (m) => m.role === "assistant" && (!m.content || (Array.isArray(m
     // llm.js 的 repairToolPairs 只在转换层临时补一条，还劝模型「重新调用一次」——断在生成视频上，就是再扣一次钱。
     console.log("\n⑬ 上次断在工具执行中间：结果补进历史，会动东西的不重放，没断过的历史一字不动");
     {
-      const { closeDanglingCalls, resumeNotice, INTERRUPTED_RESULT, REDO_SAFE_TOOLS } = require(path.join(ROOT, "agent"));
+      const { closeDanglingCalls, resumeNotice, INTERRUPTED_RESULT, REDO_SAFE_TOOLS } = require(mod("agent"));
       const U = (content) => ({ role: "user", content });
       const A = (text, toolCalls) => ({ role: "assistant", text, toolCalls: toolCalls || [] });
       const T = (...results) => ({ role: "tool", results });
@@ -1090,7 +1092,7 @@ const emptyAN = (m) => m.role === "assistant" && (!m.content || (Array.isArray(m
     console.log("\n⑮ 工具参数是 null 不许带走整个任务；并发一批里一个炸了，别的结果照实记");
     {
       const { parseToolArgs, rescueLeakedToolCalls } = llmMod._internals;
-      const { mapPool } = require(path.join(ROOT, "agent"));
+      const { mapPool } = require(mod("agent"));
       eq(parseToolArgs("null"), {}, "★parseToolArgs：\"null\" 当成没带参数★（有的本地服务无参工具就这么发）");
       eq([parseToolArgs("[1]"), parseToolArgs("7"), parseToolArgs("\"x\"")], [{}, {}, {}], "  └ 数组、数字、字符串也一样");
       eq([parseToolArgs('{"path":"a"}'), parseToolArgs(""), parseToolArgs(undefined)], [{ path: "a" }, {}, {}], "  └（对照）正常对象、空参数照旧");
@@ -1368,8 +1370,8 @@ const emptyAN = (m) => m.role === "assistant" && (!m.content || (Array.isArray(m
     {
       // agent.js 加载时就把 executeTool 解构走了，换不了现成那份：让 require 缓存临时吐一份换过 executeTool 的
       // tools，重新加载一份 agent，再把两份缓存原样放回去（放回去之后别的测试拿到的还是真的）
-      const toolsPath = require.resolve(path.join(ROOT, "tools"));
-      const agentPath = require.resolve(path.join(ROOT, "agent"));
+      const toolsPath = require.resolve(mod("tools"));
+      const agentPath = require.resolve(mod("agent"));
       const realTools = require.cache[toolsPath].exports;
       const realAgent = require.cache[agentPath];
       const calls = [];
@@ -1395,7 +1397,7 @@ const emptyAN = (m) => m.role === "assistant" && (!m.content || (Array.isArray(m
       delete require.cache[agentPath];
       try { A2 = require(agentPath); } finally { require.cache[toolsPath].exports = realTools; require.cache[agentPath] = realAgent; }
       ok(A2 && A2.createAgentRuntime !== createAgentRuntime, "换上假工具的是新加载的一份 agent（不然下面测的还是真工具）");
-      ok(require(path.join(ROOT, "tools")).executeTool === realTools.executeTool && require(path.join(ROOT, "agent")).createAgentRuntime === createAgentRuntime,
+      ok(require(mod("tools")).executeTool === realTools.executeTool && require(mod("agent")).createAgentRuntime === createAgentRuntime,
         "  └ 缓存原样放回去了：别的测试拿到的还是真的");
       const runFake = async (llm, emit) => {
         const dir = path.join(TMP, "run-" + (++runSeq));
@@ -1474,7 +1476,7 @@ const emptyAN = (m) => m.role === "assistant" && (!m.content || (Array.isArray(m
         "★探索子智能体里的进度 id 也带父调用前缀★ 跟它那张卡的 id 一字不差，界面才找得到", p5.map((e) => [e.id, e.depth, e.expert]));
 
       // 只直播不存盘：两张「要存 / 要回放」的表里都没有它。一次渲染几百条，存进会话就是几百行噪音
-      const SERVER_SRC = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+      const SERVER_SRC = fs.readFileSync(entry("server"), "utf8");
       const APP02_SRC = fs.readFileSync(path.join(ROOT, "public", "js", "app-02.js"), "utf8");
       const recList = (SERVER_SRC.match(/\[("tool_use", "tool_result",[^\]]*)\]\.includes\(ev\.type\)/) || [])[1] || "";
       const keepList = (APP02_SRC.match(/const KEEP = \[([^\]]*)\]/) || [])[1] || "";
@@ -1482,13 +1484,13 @@ const emptyAN = (m) => m.role === "assistant" && (!m.content || (Array.isArray(m
       ok(!recList.includes("tool_progress") && !keepList.includes("tool_progress"), "★tool_progress 不进服务端存盘表、也不进回放表★");
 
       // 终端走字那行：调用行后面挂进度，任何宽度都不许超出给的列数（超一格折行，原地重画就擦不干净）
-      const CLI_SRC = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
+      const CLI_SRC = fs.readFileSync(entry("cli"), "utf8");
       const c0 = CLI_SRC.indexOf("function toolTickLine(");
       const c1 = CLI_SRC.indexOf("\n}\n", c0);
       ok(c0 > 0 && c1 > c0, "cli.js 里找得到 toolTickLine（找不到就是改名了，下面几条会失去意义）");
       if (c0 > 0 && c1 > c0) {
-        const { cols } = require(path.join(ROOT, "text-width"));
-        const toolView = require(path.join(ROOT, "cli-toolview"));
+        const { cols } = require(mod("text-width"));
+        const toolView = require(mod("cli-toolview"));
         const line = new Function("cols", "toolView", CLI_SRC.slice(c0, c1 + 2) + "\nreturn toolTickLine;")(cols, toolView);
         const ev = { type: "tool_use", name: "run_shell", input_preview: JSON.stringify({ command: "node render.js --fps 30 --out 成片/动效演示-最终版.mp4" }) };
         const LONG = "渲染帧 432/900 · 30fps · 预计还要两分钟左右，别关窗口";

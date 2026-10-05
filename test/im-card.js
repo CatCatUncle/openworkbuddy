@@ -16,7 +16,8 @@
  *   9. 卡头「已花 ¥0.84」：每趟只数自己的（两趟同时跑互不串账）；有一项没单价就绝不写 ¥0，
  *      一分钱没花就不出这一格；这一格排在 tokens 前面，收尾、出错、停下的卡都带着
  */
-const c = require("../im-card");
+const { mod } = require("./lib/mod");
+const c = require(mod("im-card"));
 
 let n = 0;
 const bad = [];
@@ -187,7 +188,7 @@ for (const s of ["停车场在哪", "帮我写个停止按钮", "不要停", "",
 
 // ---- 9. 这一趟花了多少（run-spend.js + 卡头那一格） ----
 async function spendChecks() {
-  const rs = require("../run-spend");
+  const rs = require(mod("run-spend"));
   const tick = () => new Promise((r) => setImmediate(r));
 
   // 两趟同时跑、await 交错：各记各的，回调也只听到自己那趟

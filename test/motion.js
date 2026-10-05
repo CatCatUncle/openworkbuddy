@@ -23,11 +23,12 @@ const vm = require("vm");
 const zlib = require("zlib");
 const assert = require("assert");
 const { spawnSync } = require("child_process");
+const { mod } = require("./lib/mod");
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "owb-motion-test-"));
 process.env.OPENWORKBUDDY_HOME = path.join(TMP, "home");
-const M = require("../motion-clock");
-const MP = require("../lib/media-probe");
+const M = require(mod("motion-clock"));
+const MP = require(mod("media-probe"));
 
 let pass = 0, fail = 0;
 const ok = (v, m, extra) => { if (v) pass++; else { fail++; console.error("  ×", m, extra === undefined ? "" : "\n     " + extra); } };
@@ -780,7 +781,7 @@ function solidPng(w, h, [r, g, b]) {
     ok(M.CHROME_EXTRA_ARGS.includes("--force-device-scale-factor=1") && Object.isFrozen(M.CHROME_EXTRA_ARGS), "无头 Chrome 钉 1 倍像素，参数表冻住");
     ok(M.CHROME_EXTRA_ARGS.includes("--disable-background-timer-throttling"), "后台节流关掉");
 
-    const modSrc = fs.readFileSync(path.join(__dirname, "..", "motion-clock.js"), "utf8");
+    const modSrc = fs.readFileSync(mod("motion-clock"), "utf8");
     ok(!/require\(\s*["']electron["']\s*\)/.test(modSrc), "motion-clock.js 不碰 Electron");
     ok(!Object.keys(require.cache).some((k) => /[\\/]node_modules[\\/]electron[\\/]/.test(k)), "加载它不会顺带加载 Electron");
     const src = M.runtimeSource();
@@ -882,9 +883,9 @@ async function executorTests() {
   const crypto = require("crypto");
   const { pathToFileURL, fileURLToPath } = require("url");
   const media = require("../src/tools/media");
-  const security = require("../security");
+  const security = require(mod("security"));
   const TM = require("../src/tools/motion");
-  const HV = require("../htmlvideo");
+  const HV = require(mod("htmlvideo"));
   const ORIG = { ...HV._internals };
   const envBackend = process.env.OWB_MOTION_BACKEND;
   const restoreEnv = () => { if (envBackend === undefined) delete process.env.OWB_MOTION_BACKEND; else process.env.OWB_MOTION_BACKEND = envBackend; };
@@ -1029,7 +1030,7 @@ async function executorTests() {
   console.log("【13】html_to_image 批量：名字跟 HTML 走、撞名接 _2、一张坏了不拖累别的、最后一条进度是收尾");
   {
     // 真截图要开 Electron 窗口，这里拿替身顶掉：media.js 是用到时才 require("../../htmlshot")，先占住缓存就换得掉
-    const shotPath = require.resolve("../htmlshot");
+    const shotPath = require.resolve(mod("htmlshot"));
     const prevShot = require.cache[shotPath];
     /** @type {Array<{ p: string, o: any }>} */
     const shots = [];
@@ -1465,9 +1466,9 @@ document.getElementById("rnd").style.left = Math.floor(100 + Math.random() * 150
  * 这里从 executeTool 和 toolList 进去，执行层（浏览器、ffmpeg、截图窗口）全换成替身：不开窗口、不花钱。
  */
 async function wiringTests() {
-  const tools = require("../tools");
-  const ag = require("../agent");
-  const HV = require("../htmlvideo");
+  const tools = require(mod("tools"));
+  const ag = require(mod("agent"));
+  const HV = require(mod("htmlvideo"));
   // 建在 TMP 里面、跟着 TMP 一起收（TMP 本身就是 owb- 开头的 mkdtemp）
   const WS2 = path.join(TMP, "wire");
   fs.mkdirSync(WS2, { recursive: true });
@@ -1542,7 +1543,7 @@ async function wiringTests() {
     }
 
     // html_to_image 批量：截图窗口换替身（media.js 用到时才 require htmlshot，先占住缓存就换得掉）
-    const shotPath = require.resolve("../htmlshot");
+    const shotPath = require.resolve(mod("htmlshot"));
     const prevShot = require.cache[shotPath];
     /** @type {string[]} */
     const shots = [];

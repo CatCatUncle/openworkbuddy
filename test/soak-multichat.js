@@ -46,6 +46,8 @@ const fs = require("fs");
 const path = require("path");
 const http = require("http");
 const cp = require("child_process");
+const { mod } = require("./lib/mod");
+const { entry } = require("./lib/entry");
 
 const ROOT = path.join(__dirname, "..");
 const J = JSON.stringify;
@@ -335,7 +337,7 @@ function childMain() {
   // 认法：它是在 htmlshot 正跑任务道时建出来的（道是串行的，同一时刻只有一单）；浸泡自己开的漏窗不算
   const taskWins = new WeakSet();
   let ownWin = false;
-  const shotLane = () => { try { return require(path.join(ROOT, "htmlshot.js"))._internals.state().running; } catch { return ""; } };
+  const shotLane = () => { try { return require(mod("htmlshot"))._internals.state().running; } catch { return ""; } };
   app.on("browser-window-created", (_e, w) => {
     if (!mainWin) { mainWin = w; return; }
     if (!ownWin && shotLane() === "task") taskWins.add(w);
@@ -343,7 +345,7 @@ function childMain() {
   let gone = null;
   app.on("render-process-gone", (_e, wc, d) => { if (mainWin && !mainWin.isDestroyed() && wc === mainWin.webContents) { gone = d; fail("页面进程没了：" + J(d)); } });
 
-  require(path.join(ROOT, "electron-main.js"));
+  require(entry("electron-main"));
 
   const until = async (fn, ms, step = 200) => {
     const end = Date.now() + ms;
@@ -518,7 +520,7 @@ function childMain() {
         all: { main: mstats(phases.map((p) => p.ph).filter((p) => /^w\d+$/.test(p))), slept: mslept },
         stall: stall ? { counts: { ...stall.counts }, max: stall.maxMs, list: stall.stalls.slice() } : null,
         ops: ops ? ops.stats() : null,
-        shot: (() => { try { return require(path.join(ROOT, "htmlshot.js"))._internals.state().stats; } catch { return null; } })(),
+        shot: (() => { try { return require(mod("htmlshot"))._internals.state().stats; } catch { return null; } })(),
       });
       const end = await js(`__soak.stopAll()`, 90000).catch((e) => ({ err: e.message }));
       try { dbg.detach(); } catch {}

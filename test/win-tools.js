@@ -10,13 +10,14 @@
  *
  * 每一条都配反向对照：同一个输入换成 darwin（或者去掉那一处修复的样子）结论必须翻过来。
  */
+const { mod } = require("./lib/mod");
 const HOME = require("./lib/own-home")("win-tools");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
 const ROOT = path.join(__dirname, "..");
-const tools = require(path.join(ROOT, "tools"));
+const tools = require(mod("tools"));
 const MEDIA = require(path.join(ROOT, "src", "tools", "media"));
 const TTSB = require(path.join(ROOT, "src", "tools", "tts-batch"));
 const { executeTool } = tools;
@@ -74,7 +75,7 @@ const put = (p, body = "", mode) => { fs.mkdirSync(path.dirname(p), { recursive:
 
     // 技能名：小写字母数字那条正则放得过 con、nul
     const sk = await executeTool("save_skill", { name: "nul", content: "# nul\n测试用的技能\n" }, W32);
-    ok(sk.isError && /保留名/.test(sk.content) && !fs.existsSync(require(path.join(ROOT, "paths")).dataPath("skills", "nul")), "win32：save_skill 叫 nul 拦下，技能文件夹没建", sk.content);
+    ok(sk.isError && /保留名/.test(sk.content) && !fs.existsSync(require(mod("paths")).dataPath("skills", "nul")), "win32：save_skill 叫 nul 拦下，技能文件夹没建", sk.content);
     const skm = await executeTool("save_skill", { name: "nul", content: "# nul\n测试用的技能\n" }, MAC);
     ok(!/保留名/.test(String(skm.content)), "★反向对照★ darwin：同名不提保留名", skm.content);
 
@@ -129,7 +130,7 @@ const put = (p, body = "", mode) => { fs.mkdirSync(path.dirname(p), { recursive:
     let threw = "";
     try { tools.safePath("../越界.md"); } catch (e) { threw = e.message; }
     ok(/路径越界/.test(threw), "★反向对照★ 本机 safePath 越界照样拦", threw);
-    const src = fs.readFileSync(path.join(ROOT, "tools.js"), "utf8");
+    const src = fs.readFileSync(mod("tools"), "utf8");
     ok(/function safePath\([\s\S]{0,200}underRoot\(p, ws\(\)\)/.test(src) && /function safePathIn\([\s\S]{0,300}underRoot\(p, base\)/.test(src), "safePath / safePathIn 都走 underRoot");
 
     fs.mkdirSync(path.join(BASE, "CaseDir"), { recursive: true });
@@ -276,7 +277,7 @@ const put = (p, body = "", mode) => { fs.mkdirSync(path.dirname(p), { recursive:
     tools.setWorkspaceDir(outside);
     const base = [stubApps, realPy].join(";");
     const ew = I.depsGuardEnv(path.join(outside, "任务_py"), "python3 a.py", base, "win32");
-    const shimDir = require(path.join(ROOT, "paths")).dataPath("data", "pm-guard");
+    const shimDir = require(mod("paths")).dataPath("data", "pm-guard");
     ok(shimDir.startsWith(HOME), "垫片目录在套件自己的临时数据家里", shimDir);
     ok(ew.PATH === shimDir + ";" + base && read(shimDir) !== null, "win32：depsGuardEnv 把垫片目录垫在 PATH 最前面，原来的接在后面", ew);
     ok(ew.OWB_PYTHON3 === realExe, "★win32：垫片目录垫上 PATH 的同时带上 OWB_PYTHON3★ 不然垫片转给的是空的", ew);
@@ -286,7 +287,7 @@ const put = (p, body = "", mode) => { fs.mkdirSync(path.dirname(p), { recursive:
     const em = I.depsGuardEnv(path.join(outside, "任务_py"), "python3 a.py", base, "darwin");
     ok(!Object.keys(em).length, "★反向对照★ darwin：还是空的，跟以前一样（没有 OWB_PYTHON3）", em);
     tools.setWorkspaceDir(WS);
-    const src = fs.readFileSync(path.join(ROOT, "tools.js"), "utf8");
+    const src = fs.readFileSync(mod("tools"), "utf8");
     ok(/function runShell\([\s\S]*?\.\.\.depsGuardEnv\(cwd, command, shellPath\(\)\)/.test(src), "run_shell 那处调用的写法没变（deps-guard 套件按字面认它）");
     // 垫片目录只从 depsGuardEnv 这一处垫上 PATH，变量也在这一处带；run_shell / 后台命令 / run_node 都并进它的结果
     ok((src.match(/\bwinPython3Shim\(/g) || []).length === 2, "winPython3Shim 只有定义和 depsGuardEnv 里那一处调用", (src.match(/\bwinPython3Shim\(/g) || []).length);
@@ -334,7 +335,7 @@ const put = (p, body = "", mode) => { fs.mkdirSync(path.dirname(p), { recursive:
     ok(I.missingBinHint("", "darwin", { code: 9009, command: "python3 x.py" }) === "", "★反向对照★ darwin：同样的 9009 + python3 不说");
     ok(I.runsPython("python3 x.py") && I.runsPython("a & PY.EXE -3 x.py") && !I.runsPython("node build.py.js") && !I.runsPython("") && !I.runsPython(undefined),
       "runsPython：只看每段打头的程序名");
-    const src = fs.readFileSync(path.join(ROOT, "tools.js"), "utf8");
+    const src = fs.readFileSync(mod("tools"), "utf8");
     ok(!/\\bpy\(\?:thon3\?\)\?\\b/.test(src.slice(src.indexOf("function missingBinHint"), src.indexOf("function runShell"))), "missingBinHint 里不再拿 \\bpy(thon3?)?\\b 去刮整条命令");
     ok(/missingBinHint\(o \+ "\\n" \+ e, process\.platform, \{ code: code2, command \}\)/.test(src), "run_shell 把退出码和命令递给 missingBinHint");
   }
@@ -355,7 +356,7 @@ const put = (p, body = "", mode) => { fs.mkdirSync(path.dirname(p), { recursive:
     let boom = false;
     try { I.reapBgJob({ pid: 1 }, "win32", () => { throw new Error("x"); }); } catch { boom = true; }
     ok(!boom, "taskkill 自己出错不往外抛（exit 回调里抛了，后面几条就收不到了）");
-    const src = fs.readFileSync(path.join(ROOT, "tools.js"), "utf8");
+    const src = fs.readFileSync(mod("tools"), "utf8");
     ok(/function hookBgExit\([\s\S]{0,600}CT\.bgKillAll\(\(c\) => reapBgJob\(c\)\)/.test(src), "hookBgExit 的 exit 回调走的是 reapBgJob");
   }
 
@@ -367,7 +368,7 @@ const put = (p, body = "", mode) => { fs.mkdirSync(path.dirname(p), { recursive:
     // 这个包不往 WinGet\Links 放链接（清单里是 ArchiveBinariesDependOnPath），找不到时让它按文件名去 Packages 下搜
     ok(w.includes('dir /s /b "%LOCALAPPDATA%\\Microsoft\\WinGet\\Packages\\pdftotext.exe"'), "★win32：where 找不到时给 dir /s /b 到 WinGet\\Packages 下按文件名搜★", w);
     ok(!/WinGet\\Links/.test(w), "★win32：不再说装在 WinGet\\Links 下★（那里没有它）", w);
-    const which = require(path.join(ROOT, "engines", "which"));
+    const which = require(mod("which"));
     const L = "C:\\Users\\张三\\AppData\\Local";
     const pkg = L + "\\Microsoft\\WinGet\\Packages";
     const io = { readdirSync: (d) => {
@@ -384,7 +385,7 @@ const put = (p, body = "", mode) => { fs.mkdirSync(path.dirname(p), { recursive:
 
   console.log("\n⑩ run_node 的 PATH 跟 run_shell 同一份");
   {
-    const src = fs.readFileSync(path.join(ROOT, "tools.js"), "utf8");
+    const src = fs.readFileSync(mod("tools"), "utf8");
     const body = src.slice(src.indexOf("function runNode("), src.indexOf("function runNode(") + 3000);
     ok(/env: \{[^}]*PATH: shellPath\(\)[^}]*\.\.\.depsGuardEnv\(cwd, code, shellPath\(\)\)/.test(body), "run_node：PATH 和 depsGuardEnv 的底子都是 shellPath()，不是 process.env.PATH");
     // 实跑一次：服务进程的 PATH 只剩系统那两个，脚本里看到的得是 run_shell 那份（补上了 /opt/homebrew/bin 这些）

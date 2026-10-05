@@ -32,6 +32,7 @@ const path = require("path");
 const Module = require("module");
 const zlib = require("zlib");
 const { fork } = require("child_process");
+const { mod } = require("./lib/mod");
 
 const ROOT = path.join(__dirname, "..");
 const PNG_SIG = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
@@ -51,7 +52,7 @@ function childMain() {
     /** @type {any} */ (process).type = "utility";
     Object.assign(process.versions, { electron: "43.0.0" });
   }
-  const bridge = require("../electron-bridge");
+  const bridge = require(mod("electron-bridge"));
   const seen = { states: 0, ctl: /** @type {any[]} */ ([]) };
   // 桥走 IPC 时会 unref 通道（纯 node 里别吊着不退），测试子进程得自己撑着，等父进程说退再退
   const alive = setInterval(() => {}, 1 << 30);
@@ -98,12 +99,12 @@ function childMain() {
       await sleep(1500);
       return { settled };
     },
-    available: () => require("../browser-render").available(),
-    svg: async () => b64(await require("../browser-render").svgToPng('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="20"></svg>', 3)),
-    mermaid: async (a) => require("../browser-render").renderMermaid("graph TD; A-->B", a.theme),
-    shot: async (a) => b64(await require("../htmlshot").renderHtmlToPng(at(a.name), { width: 300, height: 200 })),
+    available: () => require(mod("browser-render")).available(),
+    svg: async () => b64(await require(mod("browser-render")).svgToPng('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="20"></svg>', 3)),
+    mermaid: async (a) => require(mod("browser-render")).renderMermaid("graph TD; A-->B", a.theme),
+    shot: async (a) => b64(await require(mod("htmlshot")).renderHtmlToPng(at(a.name), { width: 300, height: 200 })),
     motion: async () => {
-      const d = await require("../htmlvideo").remoteElectronDriver({ width: 4, height: 3, runtime: "rt-main" });
+      const d = await require(mod("htmlvideo")).remoteElectronDriver({ width: 4, height: 3, runtime: "rt-main" });
       await d.load("file:///owb-bridge-test/page.html");
       const ev = await d.evaluate("window.__frame(3)");
       const f = await d.capture();
@@ -115,30 +116,30 @@ function childMain() {
       return { backend: d.backend, format: d.format, ev, rawLen: f.buf.length, raw0: [...f.buf.subarray(0, 4)], png: png.toString("base64"), after };
     },
     motionShort: async () => {
-      const d = await require("../htmlvideo").remoteElectronDriver({ width: 5, height: 3, runtime: "short" });
+      const d = await require(mod("htmlvideo")).remoteElectronDriver({ width: 5, height: 3, runtime: "short" });
       try { await d.capture(); return { threw: "" }; } catch (e) { return { threw: String(e.message) }; } finally { await d.close(); }
     },
-    motionLeft: async () => { await require("../htmlvideo").remoteElectronDriver({ width: 2, height: 2, runtime: "left" }); return true; },
+    motionLeft: async () => { await require(mod("htmlvideo")).remoteElectronDriver({ width: 2, height: 2, runtime: "left" }); return true; },
     thumb: async (a) => {
-      const out = await require("../thumb").thumbFileAsync(at("photo-800x600.jpg"), 160, path.join(dir, a.cache || "thumbs"));
+      const out = await require(mod("thumb")).thumbFileAsync(at("photo-800x600.jpg"), 160, path.join(dir, a.cache || "thumbs"));
       return { out, body: out && fs.existsSync(out) ? fs.readFileSync(out, "utf8") : null };
     },
     vision: async (a) => {
       const got = await require("../src/tools/media").readImageInput(a.name, (s) => at(s), "图片");
       return { err: got.err || "", mime: got.mime, note: got.note, head: got.b64 ? Buffer.from(got.b64, "base64").subarray(0, 24).toString("latin1") : "" };
     },
-    checkPage: async (a) => require("../tools")._internals.checkPage(at(a.name), a.name),
+    checkPage: async (a) => require(mod("tools"))._internals.checkPage(at(a.name), a.name),
     renderPage: async () => {
-      try { return { ok: true, v: await require("../tools").renderPage("https://owb-bridge-test.invalid/a", { waitMs: 5, maxWaitMs: 10 }) }; }
+      try { return { ok: true, v: await require(mod("tools")).renderPage("https://owb-bridge-test.invalid/a", { waitMs: 5, maxWaitMs: 10 }) }; }
       catch (e) { return { ok: false, error: errOf(e) }; }
     },
-    awakeHold: () => { (keep.rel = keep.rel || []).push(require("../awake").hold()); return keep.rel.length; },
+    awakeHold: () => { (keep.rel = keep.rel || []).push(require(mod("awake")).hold()); return keep.rel.length; },
     awakeRelease: () => { for (const r of (keep.rel || []).splice(0)) r(); return true; },
     // 断线：先挂两个调用（一个走真调用点），父进程随后断开通道。结果只能打到 stdout 上（IPC 已经没了）
     goneArm: () => {
       const report = (k, p) => p.then((v) => console.log(`GONE ${JSON.stringify({ k, ok: true, v: String(v).slice(0, 40) })}`),
         (e) => console.log(`GONE ${JSON.stringify({ k, ok: false, error: errOf(e) })}`));
-      report("svg", require("../browser-render").svgToPng("<svg/>", 1));
+      report("svg", require(mod("browser-render")).svgToPng("<svg/>", 1));
       report("raw", bridge.call("test.anything", null, { timeoutMs: 60000 }));
       process.once("disconnect", () => setTimeout(() => {
         report("after", bridge.call("svg.png", {}, { timeoutMs: 60000 }));
@@ -160,11 +161,11 @@ function childMain() {
     },
     // 服务进程里要当 node 用的子进程：用主进程递过来的应用本体，不用 Helper（process.execPath）
     exec: () => {
-      const paths = require("../paths");
+      const paths = require(mod("paths"));
       const r = {
         nodeExec: bridge.nodeExec(),
-        launcher: require("../engines/bridge").nodeLauncher(),
-        pickNode: require("../engines/win").pickNode(path.join(dir, "no-such-shim"), { findIn: () => "", searchDirs: () => [] }).bin,
+        launcher: require(mod("bridge")).nodeLauncher(),
+        pickNode: require(mod("win")).pickNode(path.join(dir, "no-such-shim"), { findIn: () => "", searchDirs: () => [] }).bin,
         packaged1: paths.isPackaged(),
         dataDir: paths.DATA_DIR,
       };
@@ -173,7 +174,7 @@ function childMain() {
       r.packaged0 = paths.isPackaged();
       process.env.OWB_PACKAGED = was;
       // ★反向对照★ 同一份 paths.js 删掉 utility 那一行，重新编一个模块
-      const src = fs.readFileSync(path.join(ROOT, "paths.js"), "utf8");
+      const src = fs.readFileSync(mod("paths"), "utf8");
       const cut = src.replace(/^[ \t]*if \([^\n]*process\)\.type === "utility"\)[^\n]*$/m, "");
       const file = path.join(ROOT, "paths.old-for-test.js");
       const m = new Module(file, module);
@@ -184,10 +185,10 @@ function childMain() {
       r.oldPackaged1 = m.exports.isPackaged();
       return r;
     },
-    runNode: async () => (await require("../tools")._internals.runNode("console.log('owb-bridge-node-ok')", 20000)).content,
+    runNode: async () => (await require(mod("tools"))._internals.runNode("console.log('owb-bridge-node-ok')", 20000)).content,
     selfCheckMjs: async () => {
       fs.writeFileSync(at("probe.mjs"), "export const a = 1;\n");
-      return require("../tools")._internals.selfCheck(at("probe.mjs"), "probe.mjs");
+      return require(mod("tools"))._internals.selfCheck(at("probe.mjs"), "probe.mjs");
     },
     exit: () => { setTimeout(() => process.exit(0), 20); return true; },
   };
@@ -328,7 +329,7 @@ function parentMain() {
     hide: () => rec("pet.hide", true),
   };
   const bootLogs = [];
-  const { createShellBridge } = require("../bridge-main");
+  const { createShellBridge } = require(mod("bridge-main"));
   const testOps = {
     "test.echo": async (a) => a,
     "test.slow": (a) => new Promise((r) => setTimeout(() => r("迟到的回信"), (a && a.ms) || 500)),
@@ -391,7 +392,7 @@ function parentMain() {
     return { c, out, ready, exited, run, v, bye };
   }
 
-  const toBuf = require("../electron-bridge").toBuf;
+  const toBuf = require(mod("electron-bridge")).toBuf;
   const fromB64 = (s) => (typeof s === "string" ? Buffer.from(s, "base64") : Buffer.alloc(0));
   /** PNG → {w,h,rows}（只认 8 位 RGBA、过滤类型 0，bgraToPng 编的就是这种） */
   function decodePng(buf) {
@@ -768,7 +769,7 @@ function parentMain() {
   }
   /** bridge-main.js 里 calls / notes 两张表的键 */
   function scanHandled() {
-    const src = fs.readFileSync(path.join(ROOT, "bridge-main.js"), "utf8");
+    const src = fs.readFileSync(mod("bridge-main"), "utf8");
     return [...new Set([...src.matchAll(/^\s+"([a-z]+\.[A-Za-z]+)":/gm)].map((m) => m[1]))];
   }
   /** 拿一个不带测试 op 的 bridge-main 实打实问一遍：call 回 NO_OP、note 记「不认识」就算没接住 */

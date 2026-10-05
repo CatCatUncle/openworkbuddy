@@ -23,12 +23,13 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { mod } = require("./lib/mod");
 
 const ROOT = path.join(__dirname, "..");
 const { src } = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
-const pg = require(path.join(ROOT, "push-gate"));
-const so = require(path.join(ROOT, "systemone"));
-const { createScheduler } = require(path.join(ROOT, "scheduler"));
+const pg = require(mod("push-gate"));
+const so = require(mod("systemone"));
+const { createScheduler } = require(mod("scheduler"));
 const { screen, newsQuestions, newsState, readNews, sameNote, skipNote, NEWS_KEY, KIND_KEY, NEWS_MIN } = pg;
 
 let pass = 0, fail = 0, finished = false;

@@ -17,9 +17,10 @@
 
 const http = require("http");
 const assert = require("assert");
-const { createLLM, pingRequest, _internals } = require("../llm");
-const mediaModels = require("../media-models");
-const chatModels = require("../chat-models");
+const { mod } = require("./lib/mod");
+const { createLLM, pingRequest, _internals } = require(mod("llm"));
+const mediaModels = require(mod("media-models"));
+const chatModels = require(mod("chat-models"));
 
 let pass = 0, fail = 0;
 async function check(name, fn) {

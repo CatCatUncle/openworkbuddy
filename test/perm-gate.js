@@ -33,6 +33,8 @@ const fs = require("fs");
 const os = require("os");
 const http = require("http");
 const { spawn, spawnSync } = require("child_process");
+const { mod } = require("./lib/mod");
+const { entry } = require("./lib/entry");
 
 // 技能目录、审计日志都跟着数据目录走，require 之前先把家搬到临时目录
 const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "owb-permgate-home-"));
@@ -43,9 +45,9 @@ process.env.OPENWORKBUDDY_TOOLWARD = "off";
 
 const ROOT = path.join(__dirname, "..");
 const { src } = require("./lib/src");
-const security = require(path.join(ROOT, "security"));
-const tools = require(path.join(ROOT, "tools"));
-const cliApprove = require(path.join(ROOT, "cli-approve"));
+const security = require(mod("security"));
+const tools = require(mod("tools"));
+const cliApprove = require(mod("cli-approve"));
 const { BRIDGE, havePty } = require("./lib/pty");
 
 let pass = 0, fail = 0, finished = false;
@@ -196,7 +198,7 @@ async function cliRun(args, call, { stopAt, pty } = {}) {
   const before = fs.readFileSync(path.join(home, "config.json"), "utf8");
   try {
     const out = await new Promise((resolve, reject) => {
-      const argv = [path.join(ROOT, "cli.js"), "干活", "-C", ws, "--no-mcp", ...args];
+      const argv = [entry("cli"), "干活", "-C", ws, "--no-mcp", ...args];
       const env = { ...process.env, OPENWORKBUDDY_HOME: home, NO_COLOR: "1" };
       const kid = pty
         ? spawn("python3", ["-c", BRIDGE, process.execPath, ...argv], { env: { ...env, TERM: "xterm-256color" }, stdio: ["pipe", "pipe", "pipe"] })
@@ -483,7 +485,7 @@ async function cliRun(args, call, { stopAt, pty } = {}) {
       ok(/acme\/kit/.test(prov.source || "") && /^[0-9a-f]{7,40}$/.test(prov.commit || ""), "  └ 留了回执：从哪儿装的、上游哪个 commit", prov);
       ok(!fs.existsSync(path.join(WS, "skills")) && !fs.existsSync(path.join(WS, "kit")), "  └ 工作目录里没留 clone 下来的东西");
       ok(r.content.includes(path.join(SKILLS, "alpha")) && /技能页/.test(r.content) && /\//.test(r.content), "  └ 回给模型的话里有装到哪儿、去哪儿找", r.content);
-      const skills = require(path.join(ROOT, "skills"));
+      const skills = require(mod("skills"));
       const listed = skills.loadSkills().map((s) => s.name);
       ok(listed.includes("alpha") && listed.includes("beta"), "★技能库当场列得出来（技能页、/ 搜的就是这份）★", listed);
 
@@ -546,7 +548,7 @@ async function cliRun(args, call, { stopAt, pty } = {}) {
       const viaBridge = (sec) => {
         fs.writeFileSync(path.join(BH, "config.json"), JSON.stringify(sec ? { security: sec } : {}));
         const t0 = Date.now();
-        const p = spawnSync(process.execPath, [path.join(ROOT, "engines", "tool-bridge.js"), "call", "install_skill", JSON.stringify({ url: KIT })], {
+        const p = spawnSync(process.execPath, [mod("tool-bridge"), "call", "install_skill", JSON.stringify({ url: KIT })], {
           encoding: "utf8", timeout: 90000,
           env: { ...process.env, OPENWORKBUDDY_HOME: BH, OPENWORKBUDDY_DATA_DIR: path.join(BH, "data"), OPENWORKBUDDY_BRIDGE_TOOLS: "install_skill" },
         });
@@ -571,11 +573,11 @@ async function cliRun(args, call, { stopAt, pty } = {}) {
   });
 
   await section("⑦ 组织里不归平台管理员的人：install_skill 连定义都不摆", async () => {
-    const jev = require(path.join(ROOT, "jev"));
+    const jev = require(mod("jev"));
     const realAsk = jev.askMetered;
     jev.askMetered = async () => ({ ok: false, error: "测试桩：不发网络" });
-    const { createAgentRuntime } = require(path.join(ROOT, "agent"));
-    const { McpManager } = require(path.join(ROOT, "mcp"));
+    const { createAgentRuntime } = require(mod("agent"));
+    const { McpManager } = require(mod("mcp"));
     const seen = [];
     const llm = {
       provider: "mock", model: "stub",
@@ -600,7 +602,7 @@ async function cliRun(args, call, { stopAt, pty } = {}) {
       const off = await once({ allow_shell: true, net_allow: [], net_deny: [], skills_write: false });
       ok(off.names.length > 0 && !off.names.includes("install_skill"), "★策略关了装技能：工具表里摘掉★", off.names.length);
       ok(!/install_skill/.test(off.system), "  └ 提示词里也不提");
-      const tb = require(path.join(ROOT, "engines", "tool-bridge"));
+      const tb = require(mod("tool-bridge"));
       ok(tb.LENDABLE.includes("install_skill"), "命令行引擎借得到 install_skill（不借它只会照上游 README 装进自己的 ~/.claude/skills）");
 
       // 加连接器同一个道理：连接器整台服务器一份，接进来所有人的任务都多一批工具
@@ -620,7 +622,7 @@ async function cliRun(args, call, { stopAt, pty } = {}) {
         "★组织关了命令行：add_connector 只留 url / headers，command、env 摘掉★", { names: offSh.names.includes("add_connector"), shProps });
       ok(propsOf(on).includes("command"), "  └ 反向对照：没关命令行的，command 照摆", propsOf(on));
       // 命令行引擎那条桥是个子进程，组织策略（命令行开关、网络名单）跟不过去，执行层那两道闸在那边不灵：干脆不借
-      const agentSrc = fs.readFileSync(path.join(ROOT, "agent.js"), "utf8");
+      const agentSrc = fs.readFileSync(mod("agent"), "utf8");
       const lend = (agentSrc.match(/const connectorsLendOff = \(\) => \{[\s\S]*?\n\};/) || [""])[0];
       ok(/allow_shell === false/.test(lend) && /net_allow/.test(lend) && /net_deny/.test(lend) && /connectorsWriteOff\(\)/.test(lend)
         && /connectorsLendOff\(\) && n === "add_connector"/.test(agentSrc), "  └ 关了命令行或设了网络名单的组织：add_connector 不借给命令行引擎", lend);
@@ -630,8 +632,8 @@ async function cliRun(args, call, { stopAt, pty } = {}) {
   });
 
   await section("⑧ add_connector：对话里接 MCP，接进的是连接器页那份；Key 不进卡片、回话、过程区、日志", async () => {
-    const mcpLib = require(path.join(ROOT, "mcp"));
-    const agentMod = require(path.join(ROOT, "agent"));
+    const mcpLib = require(mod("mcp"));
+    const agentMod = require(mod("agent"));
     const CFG = path.join(HOME, "config.json");
     const disk = () => { try { return JSON.parse(fs.readFileSync(CFG, "utf8")); } catch { return {}; } };
     const conn = (n) => (disk().mcp_servers || []).find((s) => s && s.name === n);
@@ -795,7 +797,7 @@ async function cliRun(args, call, { stopAt, pty } = {}) {
       ok(!r.isError && !!conn("netb") && srv.seen.length > n2, "  └ 反向对照：名单都不沾的，同一个地址照加、真连了", r.content);
 
       // 用户配的 before_shell 钩子管「跑什么命令」：换个工具起进程也得过它
-      const hooks = require(path.join(ROOT, "hooks")).normalize({ before_shell: [{ match: "--hooky", run: 'echo "拦：$OWB_COMMAND"; exit 1' }] });
+      const hooks = require(mod("hooks")).normalize({ before_shell: [{ match: "--hooky", run: 'echo "拦：$OWB_COMMAND"; exit 1' }] });
       const runHooked = (input) => tools.withWorkspace(WS, () => tools.executeTool("add_connector", input,
         { security: security.getSecurity({ security: { approval_timeout_s: 5, permission_mode: "full" } }), timeoutMs: 20000, hooks }));
       fresh(); answer = () => "allow";
@@ -872,7 +874,7 @@ async function cliRun(args, call, { stopAt, pty } = {}) {
       ok(!st2.includes(SENT) && /^spawn failed: npx --header/.test(st2), "scrubText：不知道 Key 是什么，这几种写法也认得出", st2);
 
       // 跑一趟真的 agent 循环：接上的连接器同一趟下一步就该看得见，过程区事件里不该有 Key
-      const jev = require(path.join(ROOT, "jev"));
+      const jev = require(mod("jev"));
       const realAsk = jev.askMetered;
       jev.askMetered = async () => ({ ok: false, error: "测试桩：不发网络" });
       const mgr2 = new mcpLib.McpManager();
@@ -931,7 +933,7 @@ async function cliRun(args, call, { stopAt, pty } = {}) {
     const viaBridge = (sec) => {
       fs.writeFileSync(CFG, JSON.stringify({ ...(sec ? { security: sec } : {}), mcp_servers: [{ name: "old", command: "npx", args: ["-y", "old-mcp"] }] }, null, 2));
       const t0 = Date.now();
-      const p = spawnSync(process.execPath, [path.join(ROOT, "engines", "tool-bridge.js"), "call", "add_connector", JSON.stringify(IN)], {
+      const p = spawnSync(process.execPath, [mod("tool-bridge"), "call", "add_connector", JSON.stringify(IN)], {
         encoding: "utf8", timeout: 60000,
         env: { ...process.env, OPENWORKBUDDY_HOME: BH, OPENWORKBUDDY_DATA_DIR: path.join(BH, "data"), OPENWORKBUDDY_BRIDGE_TOOLS: "add_connector" },
       });
@@ -1008,7 +1010,7 @@ async function cliRun(args, call, { stopAt, pty } = {}) {
       cfg.server = { ...(cfg.server || {}), port: 41000 + Math.floor(Math.random() * 20000) };
       if (mut) mut(cfg);
       fs.writeFileSync(path.join(home, "config.json"), JSON.stringify(cfg, null, 2));
-      const child = spawn(process.execPath, [path.join(ROOT, "server.js")], {
+      const child = spawn(process.execPath, [entry("server")], {
         env: { ...process.env, OPENWORKBUDDY_HOME: home, OPENWORKBUDDY_DATA_DIR: path.join(home, "data"), HOST: "127.0.0.1", PORT: "0", TMPDIR: path.join(home, "tmp"), OWB_CONFIG_POLL_MS: String(pollMs) },
         stdio: ["ignore", "pipe", "pipe"],
       });
@@ -1129,7 +1131,7 @@ async function cliRun(args, call, { stopAt, pty } = {}) {
       ok(await until(async () => (await view(S)).some((s) => s.name === "ext5" && !s.enabled && !s.connected)), "  └ 外面在 mcp_disabled 里关掉一台：页上显示关着，也断开了", await view(S));
 
       // 7) 手写坏了形状的一条（"args" 写成了字符串，常见笔误）：只这一台连不上，同步不许卡死，后面手加的照样连
-      const mcpFp = require(path.join(ROOT, "mcp")).cfgFingerprint;
+      const mcpFp = require(mod("mcp")).cfgFingerprint;
       const sortedKv = (o) => Object.keys(o || {}).sort().map((k) => [k, String(o[k])]);
       const oldFp = (c) => crypto.createHash("sha256").update(JSON.stringify({ transport: c.transport || "", command: c.command || "", args: (c.args || []).map(String), env: sortedKv(c.env), cwd: c.cwd || "", url: c.url || "", headers: sortedKv(c.headers), plugin: c.plugin || "" })).digest("hex");
       const goodCfg = { name: "a", transport: "stdio", command: "npx", args: ["-y", "x"], env: { K: "v" } };

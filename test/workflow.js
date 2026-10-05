@@ -13,9 +13,11 @@ const os = require("os");
 const path = require("path");
 const http = require("http");
 const { spawn } = require("child_process");
+const { mod } = require("./lib/mod");
+const { entry } = require("./lib/entry");
 
 const ROOT = path.join(__dirname, "..");
-const WF = require(path.join(ROOT, "workflow"));
+const WF = require(mod("workflow"));
 
 let pass = 0, fail = 0;
 const ok = (c, m, extra) => { if (c) { pass++; console.log("  ✓ " + m); } else { fail++; console.log("  ✗ " + m + (extra !== undefined ? "  ← " + JSON.stringify(extra).slice(0, 400) : "")); } };
@@ -158,7 +160,7 @@ const ok = (c, m, extra) => { if (c) { pass++; console.log("  ✓ " + m); } else
     const run = (flow, extra = []) => new Promise((resolve) => {
       const f = path.join(home, "flow-" + Math.random().toString(36).slice(2, 7) + ".json");
       fs.writeFileSync(f, typeof flow === "string" ? flow : JSON.stringify(flow));
-      const kid = spawn(process.execPath, [path.join(ROOT, "cli.js"), "workflow", f, "-C", ws, "--no-mcp", ...extra], {
+      const kid = spawn(process.execPath, [entry("cli"), "workflow", f, "-C", ws, "--no-mcp", ...extra], {
         env: { ...process.env, OPENWORKBUDDY_HOME: home, NO_COLOR: "1" }, stdio: ["ignore", "pipe", "pipe"],
       });
       let out = "", err = "";
@@ -190,14 +192,14 @@ const ok = (c, m, extra) => { if (c) { pass++; console.log("  ✓ " + m); } else
     r = await run({ steps: [{ prompt: "{{nope}}" }] });
     ok(r.code === 2 && asked.length === 0 && /一步都没跑/.test(r.err), "文件有错：一步都不跑，退出码 2", { code: r.code, err: r.err.slice(-300) });
     r = await new Promise((resolve) => {
-      const kid = spawn(process.execPath, [path.join(ROOT, "cli.js"), "workflow", path.join(home, "没有这个.json"), "--no-mcp"], { env: { ...process.env, OPENWORKBUDDY_HOME: home, NO_COLOR: "1" } });
+      const kid = spawn(process.execPath, [entry("cli"), "workflow", path.join(home, "没有这个.json"), "--no-mcp"], { env: { ...process.env, OPENWORKBUDDY_HOME: home, NO_COLOR: "1" } });
       let err = ""; kid.stderr.on("data", (b) => (err += b)); kid.on("close", (code) => resolve({ code, err }));
     });
     ok(r.code === 2 && /读不了/.test(r.err), "文件不存在：直说，退出码 2", r);
 
     console.log("\n【3b】inputs 真跑：-i 填值、缺了就停、内置配方");
     const runArgs = (args) => new Promise((resolve) => {
-      const kid = spawn(process.execPath, [path.join(ROOT, "cli.js"), ...args, "-C", ws, "--no-mcp"], {
+      const kid = spawn(process.execPath, [entry("cli"), ...args, "-C", ws, "--no-mcp"], {
         cwd: home, env: { ...process.env, OPENWORKBUDDY_HOME: home, NO_COLOR: "1" }, stdio: ["ignore", "pipe", "pipe"],
       });
       let err = "";
@@ -250,7 +252,7 @@ const ok = (c, m, extra) => { if (c) { pass++; console.log("  ✓ " + m); } else
     const ttyRun = (keys) => new Promise((resolve) => {
       const f = path.join(home, "flow-tty.json");
       fs.writeFileSync(f, JSON.stringify(INFLOW));
-      const kid = spawn("python3", ["-c", BRIDGE, process.execPath, path.join(ROOT, "cli.js"), "workflow", f, "-C", ws, "--no-mcp"], {
+      const kid = spawn("python3", ["-c", BRIDGE, process.execPath, entry("cli"), "workflow", f, "-C", ws, "--no-mcp"], {
         cwd: home, env: { ...process.env, OPENWORKBUDDY_HOME: home, NO_COLOR: "1" }, stdio: ["pipe", "pipe", "pipe"],
       });
       let out = "", k = 0;

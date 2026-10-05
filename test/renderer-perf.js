@@ -19,6 +19,7 @@
  * 撤回用的是从真源码上做字符串替换（找不到替换点也判红——说明代码改了，这条测试得跟着看一眼）。
  */
 
+const { entry } = require("./lib/entry");
 if (!process.versions.electron) {
   const fs0 = require("fs");
   let bin = null;
@@ -100,7 +101,7 @@ llm.listen(0, "127.0.0.1", () => {
   cfg.active_model = "假模型";
   cfg.mcp_servers = [];
   fs.writeFileSync(path.join(home, "config.json"), J(cfg));
-  child = spawn(process.env.OWB_NODE || "node", [path.join(ROOT, "server.js")], {
+  child = spawn(process.env.OWB_NODE || "node", [entry("server")], {
     cwd: ROOT,
     env: { ...process.env, ELECTRON_RUN_AS_NODE: "", OPENWORKBUDDY_HOME: home, OPENWORKBUDDY_DATA_DIR: dataDir, HOST: "127.0.0.1", PORT: "0" },
   });

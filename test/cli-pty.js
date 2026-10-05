@@ -31,6 +31,8 @@ const os = require("os");
 const path = require("path");
 const http = require("http");
 const { spawn, spawnSync } = require("child_process");
+const { mod } = require("./lib/mod");
+const { entry } = require("./lib/entry");
 
 const ROOT = path.join(__dirname, "..");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -88,7 +90,7 @@ async function ptyRun({ args, reply, env: more }, drive) {
 
   const env = { ...process.env, OPENWORKBUDDY_HOME: home, OPENWORKBUDDY_CLI_LIVE: "1", NO_COLOR: "1", TERM: "xterm-256color", ...(more || {}) };
   delete env.FORCE_COLOR;
-  const kid = spawn("python3", ["-c", BRIDGE, process.execPath, path.join(ROOT, "cli.js"), ...args, "-C", ws, "--no-mcp"], { env, stdio: ["pipe", "pipe", "pipe"] });
+  const kid = spawn("python3", ["-c", BRIDGE, process.execPath, entry("cli"), ...args, "-C", ws, "--no-mcp"], { env, stdio: ["pipe", "pipe", "pipe"] });
   let out = "";
   let exited = null;
   kid.stdout.setEncoding("utf8");
@@ -135,7 +137,7 @@ async function ptyRun({ args, reply, env: more }, drive) {
         }
         return false;
       }, `手机上看得到那道${type}`);
-      const r = spawnSync(process.execPath, ["-e", `process.exit(require(${JSON.stringify(path.join(ROOT, "cli-live"))}).answer(${JSON.stringify(hit.sid)}, ${JSON.stringify(hit.id)}, ${JSON.stringify(value)}) ? 0 : 1)`], { env, stdio: "inherit" });
+      const r = spawnSync(process.execPath, ["-e", `process.exit(require(${JSON.stringify(mod("cli-live"))}).answer(${JSON.stringify(hit.sid)}, ${JSON.stringify(hit.id)}, ${JSON.stringify(value)}) ? 0 : 1)`], { env, stdio: "inherit" });
       assert.strictEqual(r.status, 0, "手机那头写得进去");
     },
     exited: () => exited,
@@ -380,7 +382,7 @@ async function run() {
   // ---- ⑦ Plan 出完计划：摆「开干 / 接着改」，回车就照计划做，不用自己去敲 /mode craft ----
   {
     let t7 = null;
-    const GO = require("../repl-commands").PLAN_GO_TEXT;
+    const GO = require(mod("repl-commands")).PLAN_GO_TEXT;
     const PICK = /计划写好了，接下来？/;
     await ptyRun({
       args: ["--mode", "plan"],

@@ -18,6 +18,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { mod } = require("./lib/mod");
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "owb-tenant-"));
 // 两个口子得一起指过来，少一个就会写到仓库里去：
@@ -32,15 +33,15 @@ fs.mkdirSync(process.env.OPENWORKBUDDY_DATA_DIR, { recursive: true });
 const express = require("express");
 const ROOT = path.join(__dirname, "..");
 const srcLib = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
-const account = require(path.join(ROOT, "account"));
-const org = require(path.join(ROOT, "org"));
-const admin = require(path.join(ROOT, "admin"));
-const tools = require(path.join(ROOT, "tools"));
-const security = require(path.join(ROOT, "security"));
-const agentMod = require(path.join(ROOT, "agent"));
-const memory = require(path.join(ROOT, "memory"));
-const { createImRouter } = require(path.join(ROOT, "im"));
-const { createImSessionStore } = require(path.join(ROOT, "im-store"));
+const account = require(mod("account"));
+const org = require(mod("org"));
+const admin = require(mod("admin"));
+const tools = require(mod("tools"));
+const security = require(mod("security"));
+const agentMod = require(mod("agent"));
+const memory = require(mod("memory"));
+const { createImRouter } = require(mod("im"));
+const { createImSessionStore } = require(mod("im-store"));
 
 // 默认组织的根：单机版原来是什么样，这里就是什么样
 const BASE_WS = path.join(TMP, "workspace");
@@ -59,8 +60,8 @@ const eq = (got, want, msg) => ok(got === want, msg, { got, want });
  * 拄过来的副本只会在 server.js 改了之后继续给绿灯。按函数名切源码，切不到就当场报错。
  */
 const SERVER_SRC = srcLib.src("server");
-const prefs = require(path.join(ROOT, "prefs"));
-const { dataPath } = require(path.join(ROOT, "paths"));
+const prefs = require(mod("prefs"));
+const { dataPath } = require(mod("paths"));
 const libraryRootOf = (() => {
   const i0 = SERVER_SRC.indexOf("function libraryRootOf(user) {");
   const i1 = SERVER_SRC.indexOf("\n}\n", i0);
@@ -863,7 +864,7 @@ async function login(username, password) {
   eq(r.status, 403, "负向对照：技能照旧拦着（skills/ 真是整台机器一份，装进去全公司的 agent 都吃）");
 
   // 别让这条判断退回去：两张表里都不许再出现 /api/library
-  const ADM = fs.readFileSync(path.join(ROOT, "admin.js"), "utf8");
+  const ADM = fs.readFileSync(mod("admin"), "utf8");
   const readTbl = (ADM.match(/const PLATFORM_READ = \[([\s\S]*?)\];/) || [])[1] || "";
   const writeTbl = (ADM.match(/const PLATFORM_WRITE = \[([\s\S]*?)\];/) || [])[1] || "";
   ok(readTbl.length > 0 && writeTbl.length > 0, "admin.js 里的两张平台表都读得出来（改名了就该在这儿挂）");
@@ -1104,7 +1105,7 @@ async function login(username, password) {
   ok(pushed && /任务完成/.test(pushed) && /跑完了/.test(pushed),
      "群机器人真收到了「任务完成」和回复——推送这条路是通的，不是被吞成了空操作", pushed);
 
-  const notifyMod = require(path.join(ROOT, "notify"));
+  const notifyMod = require(mod("notify"));
   const realPushBots = notifyMod.pushBots;
   notifyMod.pushBots = async () => { throw new Error("推送桩炸了"); };
   try {
@@ -1149,7 +1150,7 @@ async function login(username, password) {
     }
   }
 
-  const IMSRC = fs.readFileSync(path.join(ROOT, "im.js"), "utf8");
+  const IMSRC = fs.readFileSync(mod("im"), "utf8");
   ok(!/(^|[^.\w])pushWecom\(/m.test(IMSRC), "im.js 里不再调那个不存在的 pushWecom（要推送走同文件的 pushBots）");
   ok(/const sessionKey = localKeyOf\(req\.user\);/.test(IMSRC), "im.js 的 /im/local 真按人算会话键");
   ok(!/const sessionKey = "local_assist"/.test(IMSRC), "那行写死的 local_assist 已经不在了");
@@ -1268,7 +1269,7 @@ async function login(username, password) {
     }, null, 2));
     const probe = `
       process.env.OPENWORKBUDDY_DATA_DIR = ${JSON.stringify(OLDD)};
-      const org = require(${JSON.stringify(path.join(ROOT, "org"))});
+      const org = require(${JSON.stringify(mod("org"))});
       const fs = require("fs");
       const a = org.listAudit("default", { limit: 50 });
       const b = org.listAudit("o_laoke", { limit: 50 });
@@ -1325,7 +1326,7 @@ async function login(username, password) {
     }, null, 2));
     const probe2 = `
       process.env.OPENWORKBUDDY_DATA_DIR = ${JSON.stringify(OLDD2)};
-      const org = require(${JSON.stringify(path.join(ROOT, "org"))});
+      const org = require(${JSON.stringify(mod("org"))});
       org.audit({ org: "default", actor: "刚升级的管理员", action: "改额度", target: "王五" });
       const a = org.listAudit("default", { limit: 50 });
       console.log(JSON.stringify({ total: a.total, newest: a.audit[0] && a.audit[0].target }));
@@ -1356,7 +1357,7 @@ async function login(username, password) {
       twoRows.slice().reverse().map((r) => JSON.stringify(r)).join("\n") + "\n");
     const probe3 = `
       process.env.OPENWORKBUDDY_DATA_DIR = ${JSON.stringify(OLDD3)};
-      const org = require(${JSON.stringify(path.join(ROOT, "org"))});
+      const org = require(${JSON.stringify(mod("org"))});
       const a = org.listAudit("default", { limit: 50 });
       console.log(JSON.stringify({ total: a.total }));
     `;
@@ -1588,8 +1589,8 @@ async function login(username, password) {
     //   · 算钱在切页之后——每个人都要算角色、额度、本月剩余、余额，还要为「最后活跃」
     //     翻用量账本；六百个人算完只显示五十个，前面那些全是白算的
     //   · HTTP 上要不来整份——?limit=99999 也只给一页，不然改了前端等于没改
-    const rbac22 = require(path.join(ROOT, "rbac"));
-    const usageStore22 = require(path.join(ROOT, "usage-store"));
+    const rbac22 = require(mod("rbac"));
+    const usageStore22 = require(mod("usage-store"));
     const DEF22 = "default";
     const MONTH22 = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, "0")}`;
 
@@ -2041,7 +2042,7 @@ async function login(username, password) {
 
   console.log("\n【33】没登录态的消耗（命令行 / IM / 定时）记在默认组织名下；管理员能在网页上解二次验证");
   {
-    const rbac = require(path.join(ROOT, "rbac"));
+    const rbac = require(mod("rbac"));
     const st = account._internals.loadUsers();
     const t = st.users.find((u) => u.username === "fenboss");
     const keep = t.created_at;

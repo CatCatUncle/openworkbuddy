@@ -13,6 +13,7 @@
  *
  * 窗口一律 show:false + offscreen，不 show / focus；userData 换到临时目录，不碰任何真 profile。
  */
+const { mod } = require("./lib/mod");
 if (!process.versions.electron) {
   const fs0 = require("fs");
   let bin = null;
@@ -84,7 +85,7 @@ const srv = http.createServer((req, res) => {
 app.on("window-all-closed", () => {}); // 别让测试窗口全关时把应用带走
 
 app.whenReady().then(async () => {
-  const tools = require(path.join(ROOT, "tools"));
+  const tools = require(mod("tools"));
   const { openHiddenWeb, hiddenWeb, WEB_PARTITION, checkPage } = tools._internals;
   await new Promise((r) => srv.listen(0, "127.0.0.1", r));
   const base = `http://127.0.0.1:${srv.address().port}/`;
@@ -93,8 +94,8 @@ app.whenReady().then(async () => {
   console.log("\n【1】源码守卫：隐藏的离屏窗口都带内存分区");
   {
     // 2026-09-29 服务端挪进独立进程：开窗那一半从 tools.js 搬进 web-window.js（主进程过桥开窗时不用加载整个 tools.js），两份一起守
-    const src = fs.readFileSync(path.join(ROOT, "tools.js"), "utf8");
-    const wsrc = fs.readFileSync(path.join(ROOT, "web-window.js"), "utf8");
+    const src = fs.readFileSync(mod("tools"), "utf8");
+    const wsrc = fs.readFileSync(mod("web-window"), "utf8");
     const blocks = windowBlocks(src + "\n" + wsrc);
     ok(blocks.length >= 1 && leaky(blocks).length === 0, `tools.js + web-window.js 里 ${blocks.length} 处离屏窗口都带 partition、都不带 persist:`, leaky(blocks).map((b) => b.slice(0, 120)));
     ok(/async function probePage[\s\S]{0,120}const win = openHiddenWeb\(electron\);[\s\S]{0,40}const errs/.test(wsrc) && /async function readRendered[\s\S]{0,200}const win = openHiddenWeb\(electron\)/.test(wsrc)

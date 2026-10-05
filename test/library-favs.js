@@ -18,6 +18,8 @@
  * 真起一份 server.js（临时 HOME、随机端口），不联网、不花钱、不起 Electron。
  *   node test/library-favs.js
  */
+const { mod } = require("./lib/mod");
+const { entry } = require("./lib/entry");
 const HOME = require("./lib/own-home")("library-favs");
 
 const fs = require("fs");
@@ -25,8 +27,8 @@ const path = require("path");
 const http = require("http");
 const crypto = require("crypto");
 const ROOT = path.join(__dirname, "..");
-const favs = require(path.join(ROOT, "lib-favs.js"));
-const store = require(path.join(ROOT, "store.js"));
+const favs = require(mod("lib-favs"));
+const store = require(mod("store"));
 
 let pass = 0, fail = 0, finished = false;
 const keepAlive = setInterval(() => {}, 1 << 30);
@@ -276,7 +278,7 @@ async function quietErrors(fn) {
   // ---------------------------------------------------------------------------------------------
   // 真起 server.js
   // ---------------------------------------------------------------------------------------------
-  const prefs = require(path.join(ROOT, "prefs.js"));
+  const prefs = require(mod("prefs"));
   const LIB = path.join(HOME, "data", "library");
   const LIB_BOB = path.join(HOME, "data", "library-users", prefs.keyOf("bob"));
   const WS = path.join(HOME, "workspace");
@@ -572,7 +574,7 @@ async function stopServer(child) {
  */
 function bootRealServer(env, { timeoutMs = 60000, port = "0" } = {}) {
   const { spawn } = require("child_process");
-  const child = spawn(process.execPath, [path.join(ROOT, "server.js")], {
+  const child = spawn(process.execPath, [entry("server")], {
     env: { ...process.env, ...env, HOST: "127.0.0.1", PORT: String(port) },
     stdio: ["ignore", "pipe", "pipe"],
   });

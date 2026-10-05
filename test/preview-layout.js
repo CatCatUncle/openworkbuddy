@@ -32,6 +32,8 @@
 // 版面只有在真 Chromium 里才量得准（真 CSS、真布局、真 PDF 阅读器），所以这个套件跑在
 // electron 里。被 node 直接拉起来时（npm test 就是这么拉的）自己换一身皮再跑一遍；
 // 没装 electron 就跳过不算失败——纯服务端部署本来就没有界面这一层。
+const { mod } = require("./lib/mod");
+const { entry } = require("./lib/entry");
 if (!process.versions.electron) {
   const fs0 = require("fs");
   let bin = null;
@@ -85,7 +87,7 @@ const ok = (cond, msg, detail) => {
 /** 一张真 PNG（签名 + IHDR + IDAT + IEND）。这里只要它的**内在尺寸**是真的，
  *  版面全靠宽高算，像素画什么无所谓，所以用渐变，压得小、造得快。 */
 function png(w, h) {
-  const { crc32 } = require("../thumb-png");    // CRC 不是被测的东西，借一下不影响判卷
+  const { crc32 } = require(mod("thumb-png"));    // CRC 不是被测的东西，借一下不影响判卷
   const raw = Buffer.alloc(h * (w * 3 + 1));
   for (let y = 0; y < h; y++) {
     const off = y * (w * 3 + 1);
@@ -207,7 +209,7 @@ const MIME = {
 /** 起一个真 server.js（家目录是 TMP，端口让系统挑）。认的是它自己打的那行「已启动: http://localhost:端口」 */
 function bootServer() {
   const { spawn } = require("child_process");
-  const child = spawn(process.env.OWB_TEST_NODE || "node", [path.join(ROOT, "server.js")], {
+  const child = spawn(process.env.OWB_TEST_NODE || "node", [entry("server")], {
     env: { ...process.env, OPENWORKBUDDY_HOME: TMP, HOST: "127.0.0.1", PORT: "0" },
     stdio: ["ignore", "pipe", "pipe"],
   });

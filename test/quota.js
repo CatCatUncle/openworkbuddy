@@ -29,12 +29,13 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { mod } = require("./lib/mod");
 
 // 账本必须另起一份：不隔离的话这套测试会往用户真正的 data/api-usage.json 里灌假流水
 const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "owb-quota-"));
 process.env.OPENWORKBUDDY_DATA_DIR = HOME;
 
-const quota = require("../quota");
+const quota = require(mod("quota"));
 
 let pass = 0, fail = 0;
 function ok(cond, name, extra) {
@@ -237,7 +238,7 @@ console.log("\n【9】老版本升上来：api-usage.json 里的账一笔不少�
     { ts: 1, day: "2026-01-02", month: "2026-01", cap: "search", n: 1, org: "o1", user: "小明" },
   ] });
   fs.writeFileSync(legacy, raw, "utf8");
-  const book = require("../usage-store").make(path.join(tmp, "api-usage"), legacy);
+  const book = require(mod("usage-store")).make(path.join(tmp, "api-usage"), legacy);
   const all = book.read({});
   ok(all.length === 3, "三笔老账全搬过来了", all.length);
   eq(all.map((r) => r.ts), [3, 2, 1], "顺序还是新的在前（used() 和 summary() 都靠这个顺序提前 break）");
@@ -253,7 +254,7 @@ console.log("\n【9】老版本升上来：api-usage.json 里的账一笔不少�
   const tmp2 = fs.mkdtempSync(path.join(os.tmpdir(), "owb-quota-mig2-"));
   const legacy2 = path.join(tmp2, "api-usage.json");
   fs.writeFileSync(legacy2, JSON.stringify({ usage: [] }), "utf8");
-  ok(require("../usage-store").make(path.join(tmp2, "api-usage"), legacy2).read({}).length === 0,
+  ok(require(mod("usage-store")).make(path.join(tmp2, "api-usage"), legacy2).read({}).length === 0,
     "反向对照：老文件真是空的，就真读出 0 笔");
   fs.rmSync(tmp, { recursive: true, force: true });
   fs.rmSync(tmp2, { recursive: true, force: true });

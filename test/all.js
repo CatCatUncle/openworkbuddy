@@ -22,6 +22,7 @@ const path = require("path");
 const os = require("os");
 const fs = require("fs");
 const { spawnSync } = require("child_process");
+const { mod } = require("./lib/mod");
 
 // 测试的 Trace 账本必须另起一份。不隔离的话，套件里那些 `t.trace({ name: "任务 0" })`
 // 会一路写进用户真正的 workspace/.openworkbuddy/traces.jsonl——跑一次测试灌几千条，
@@ -56,7 +57,7 @@ if (!process.env.OPENWORKBUDDY_HOME) {
   process.env.OPENWORKBUDDY_HOME = RUN_HOME;
   // 跟 server.js 开机时一样铺一遍出厂内容（技能、experts.json）：在进程里直接 require skills.js 的套件读的就是这个家。
   // macOS 上走 clonefile，189M 的 skills/ 实占几 MB
-  const seed = spawnSync(process.execPath, ["-e", "require(process.argv[1]).seedDataDir()", path.join(__dirname, "..", "paths.js")],
+  const seed = spawnSync(process.execPath, ["-e", "require(process.argv[1]).seedDataDir()", mod("paths")],
     { stdio: ["ignore", "inherit", "inherit"], env: process.env });
   if (seed.status !== 0) {
     console.error("临时数据目录铺不起来（paths.seedDataDir 退出码 " + seed.status + "）：" + RUN_HOME);

@@ -18,8 +18,9 @@ const net = require("net");
 const path = require("path");
 const Module = require("module");
 const { EventEmitter } = require("events");
+const { mod } = require("./lib/mod");
 
-const SUP = path.join(__dirname, "..", "server-supervisor.js");
+const SUP = mod("server-supervisor");
 
 let pass = 0, fail = 0;
 const ok = (cond, msg, detail) => {

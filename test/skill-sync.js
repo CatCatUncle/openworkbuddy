@@ -33,8 +33,9 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { spawnSync, execFileSync } = require("child_process");
+const { mod } = require("./lib/mod");
 const ROOT = path.join(__dirname, "..");
-const P = require(path.join(ROOT, "paths.js"));
+const P = require(mod("paths"));
 const S = require(path.join(ROOT, "scripts", "skill-hashes.js"));
 
 let pass = 0, fail = 0;
@@ -537,7 +538,7 @@ scenario("⑮ 真接线：子进程里 seedDataDir() 铺一遍，把 docx 退回
   const dropped = Object.keys(list.files).find((k) => k.startsWith("docx/scripts/") && !fs.existsSync(path.join(ROOT, "skills", k)));
   if (!oldMd || !dropped) { console.log("  ⚠️  指纹表里没有 docx 的老版本，这条跳过了"); return; }
   const home = path.join(fx.t, "home");
-  const seed = () => spawnSync(process.execPath, ["-e", "require(process.argv[1]).seedDataDir()", path.join(ROOT, "paths.js")],
+  const seed = () => spawnSync(process.execPath, ["-e", "require(process.argv[1]).seedDataDir()", mod("paths")],
     { encoding: "utf8", env: { ...process.env, OPENWORKBUDDY_HOME: home } });
   const r1 = seed();
   ok(r1.status === 0 && !/\[内置技能\]/.test(r1.stdout), "全新的数据目录铺一遍，一行日志都没有", r1.stdout + r1.stderr);

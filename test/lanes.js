@@ -17,10 +17,11 @@
  */
 
 const path = require("path");
+const { mod } = require("./lib/mod");
 const ROOT = path.join(__dirname, "..");
-const lanes = require(path.join(ROOT, "lanes"));
-const engines = require(path.join(ROOT, "engines"));
-const prefs = require(path.join(ROOT, "prefs"));
+const lanes = require(mod("lanes"));
+const engines = require(mod("engines"));
+const prefs = require(mod("prefs"));
 
 let pass = 0, fail = 0;
 const ok = (cond, msg, extra) => {

@@ -28,16 +28,17 @@
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
+const { mod } = require("./lib/mod");
 
 const ROOT = path.join(__dirname, "..");
 // 赶在 require 生产模块之前：不然单独跑时 trace 记进用户真在用的 workspace/（见 test/lib/own-home.js）
 require("./lib/own-home")("ask-gate");
-const ag = require(path.join(ROOT, "ask-gate"));
-const systemone = require(path.join(ROOT, "systemone"));
-const jev = require(path.join(ROOT, "jev"));
-const tools = require(path.join(ROOT, "tools"));
-const { createAgentRuntime } = require(path.join(ROOT, "agent"));
-const { McpManager } = require(path.join(ROOT, "mcp"));
+const ag = require(mod("ask-gate"));
+const systemone = require(mod("systemone"));
+const jev = require(mod("jev"));
+const tools = require(mod("tools"));
+const { createAgentRuntime } = require(mod("agent"));
+const { McpManager } = require(mod("mcp"));
 const { route, needQuestions, askState, readNeed, skipNote, dupNote, flat, NEED_KEY, KIND_KEY, NEED_MIN, KIND_CHOICES, SKIP_KINDS } = ag;
 
 let pass = 0, fail = 0, finished = false;

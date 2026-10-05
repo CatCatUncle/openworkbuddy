@@ -21,6 +21,8 @@
  * 不起 server.js：路由单独挂到一个 express 上，登录那层换成请求头里直接给的用户。
  *   node test/prompt-tpls.js
  */
+const { mod } = require("./lib/mod");
+const { entry } = require("./lib/entry");
 const HOME = require("./lib/own-home")("prompt-tpls");
 
 const fs = require("fs");
@@ -28,9 +30,9 @@ const path = require("path");
 const http = require("http");
 const express = require("express");
 const ROOT = path.join(__dirname, "..");
-const rbac = require(path.join(ROOT, "rbac.js"));
-const { dataPath } = require(path.join(ROOT, "paths.js"));
-const tpls = require(path.join(ROOT, "routes", "prompt-tpls.js"));
+const rbac = require(mod("rbac"));
+const { dataPath } = require(mod("paths"));
+const tpls = require(mod("routes/prompt-tpls"));
 
 let pass = 0, fail = 0, finished = false;
 process.on("exit", (code) => {
@@ -265,7 +267,7 @@ async function main() {
   });
 
   await section("【9】接线", async () => {
-    const server = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+    const server = fs.readFileSync(entry("server"), "utf8");
     const guard = server.indexOf("app.use(account.authGuard");
     const mount = server.indexOf("app.use(createPromptTplsRouter(");
     ok(guard > 0 && mount > guard, "server.js：挂在 authGuard 后面（req.user 一定有）", { guard, mount });

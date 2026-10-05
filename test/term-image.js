@@ -22,8 +22,10 @@
 
 const fs = require("fs");
 const path = require("path");
+const { mod } = require("./lib/mod");
+const { entry } = require("./lib/entry");
 const ROOT = path.join(__dirname, "..");
-const T = require(path.join(ROOT, "term-image"));
+const T = require(mod("term-image"));
 
 let pass = 0, fail = 0;
 function ok(cond, name, extra) {
@@ -35,8 +37,8 @@ function eq(got, want, name) {
   ok(same, name, same ? undefined : { got, want });
 }
 
-const CLI_SRC = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
-const SRC = fs.readFileSync(path.join(ROOT, "term-image.js"), "utf8");
+const CLI_SRC = fs.readFileSync(entry("cli"), "utf8");
+const SRC = fs.readFileSync(mod("term-image"), "utf8");
 
 // ── ① 认得出的终端才画 ───────────────────────────────────────────────
 console.log("① 哪些终端能直接出图");
@@ -174,7 +176,7 @@ console.log("\n⑧ SVG 栅格化这条真路");
 {
   const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="40">'
     + '<rect width="120" height="40" fill="#0d1117"/><circle cx="20" cy="20" r="12" fill="#3fb950"/></svg>';
-  const r = require(path.join(ROOT, "diagram")).svgToPngAnyhow(svg);
+  const r = require(mod("diagram")).svgToPngAnyhow(svg);
   const done = (out) => {
     if (out && out.png && out.png.length) {
       ok(out.png.slice(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex")),
@@ -217,6 +219,6 @@ console.log("\n⑨ cli.js 那头接上了没");
   const code = SRC.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
   ok(!/console\.log/.test(code), "★term-image 自己不打印★ 怎么说话是 cli.js 的事");
   ok(!/process\./.test(code), "★也不碰 process★ 所以上面每种终端才能在测试里逐个对");
-  const cmds = fs.readFileSync(path.join(ROOT, "repl-commands.js"), "utf8");
+  const cmds = fs.readFileSync(mod("repl-commands"), "utf8");
   ok(/name: "open"/.test(cmds), "命令表里登记了，/help 和 Tab 补全才有它");
 }

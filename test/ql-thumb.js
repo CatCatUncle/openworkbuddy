@@ -11,12 +11,13 @@
  * 最后一段只在 macOS 上用真 qlmanage：一个现写的小 RTF 要出得来图；一个认不出类型的 1 字节文件
  * （2026-09-29 本机实测真 qlmanage 碰上它挂两分钟不走）到点要回 null，而且不留下 qlmanage 进程。
  */
+const { mod } = require("./lib/mod");
 const HOME = require("./lib/own-home")("ql-thumb");
 
 const fs = require("fs");
 const path = require("path");
 const cp = require("child_process");
-const QL = require(path.join(__dirname, "..", "ql-thumb.js"));
+const QL = require(mod("ql-thumb"));
 
 let pass = 0, fail = 0;
 const ok = (cond, msg, detail) => {

@@ -15,6 +15,7 @@
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
+const { mod } = require("./lib/mod");
 
 // 技能目录跟着数据目录走（skills.js 在 require 时就算好了），所以得在 require 之前把家搬到临时目录
 const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "owb-sgate-home-"));
@@ -29,12 +30,12 @@ fs.writeFileSync(path.join(HOME, "skills", "html-page", "skill.md"), `---\nname:
 fs.writeFileSync(path.join(HOME, "skills", "web-styles", "skill.md"), `---\nname: web-styles\ndescription: 八种视觉方向任挑一个\n---\n八种风格：极简、杂志……\n`);
 
 const ROOT = path.join(__dirname, "..");
-const sg = require(path.join(ROOT, "skill-gate"));
-const jev = require(path.join(ROOT, "jev"));
-const systemone = require(path.join(ROOT, "systemone"));
-const tools = require(path.join(ROOT, "tools"));
-const { createAgentRuntime } = require(path.join(ROOT, "agent"));
-const { McpManager } = require(path.join(ROOT, "mcp"));
+const sg = require(mod("skill-gate"));
+const jev = require(mod("jev"));
+const systemone = require(mod("systemone"));
+const tools = require(mod("tools"));
+const { createAgentRuntime } = require(mod("agent"));
+const { McpManager } = require(mod("mcp"));
 const { named, route, pickQuestions, pickState, readPick, skillBlock, loadedNote, PICK_KEY, NONE } = sg;
 
 let pass = 0, fail = 0, finished = false;

@@ -22,6 +22,8 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { mod } = require("./lib/mod");
+const { entry } = require("./lib/entry");
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "owb-eval-"));
 // 记忆 / 偏好这些都按 OPENWORKBUDDY_DATA_DIR 算路径，且是模块加载时定死的——
@@ -31,9 +33,9 @@ fs.mkdirSync(process.env.OPENWORKBUDDY_DATA_DIR, { recursive: true });
 // 评委提示词存在 dataPath 下（OPENWORKBUDDY_HOME），同样得先指走，第【10】节要往里写
 process.env.OPENWORKBUDDY_HOME = path.join(TMP, "home");
 
-const { TASKS } = require("../eval/tasks");
-const memory = require("../memory");
-const run = require("../eval/run"); // require 进来不许开跑，见下面第【6】节
+const { TASKS } = require(entry("eval/tasks"));
+const memory = require(mod("memory"));
+const run = require(entry("eval/run")); // require 进来不许开跑，见下面第【6】节
 const { turnsOf, stepsFor, timeoutFor, seedMemories } = run._internals;
 
 let pass = 0, fail = 0;
@@ -233,8 +235,8 @@ console.log("\n【9】「改提示词必跑评测」这条规矩");
 // ---- ⑩ 评委和人工评测：全离线，不调模型 ----
 console.log("\n【10】评委 + 人工评测");
 {
-  const J = require("../eval/judge");
-  const { dataPath } = require("../paths");
+  const J = require(entry("eval/judge"));
+  const { dataPath } = require(mod("paths"));
   ok(dataPath("x").startsWith(TMP), "★评委设置写在临时目录里，不碰真数据★");
 
   // 判定纪律改得动、恢复默认就删文件

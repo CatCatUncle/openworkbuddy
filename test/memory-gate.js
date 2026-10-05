@@ -21,6 +21,7 @@
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
+const { mod } = require("./lib/mod");
 
 // 必须在 require 之前：memory.js 在加载那一刻就把数据目录定死了。
 // 落到用户自己那份 data/ 里等于测试污染真数据——这条比测试本身重要
@@ -29,11 +30,11 @@ process.env.OPENWORKBUDDY_DATA_DIR = DATA_TMP;
 
 const ROOT = path.join(__dirname, "..");
 const { src } = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
-const mg = require(path.join(ROOT, "memory-gate"));
-const systemone = require(path.join(ROOT, "systemone"));
-const jev = require(path.join(ROOT, "jev"));
-const memory = require(path.join(ROOT, "memory"));
-const tools = require(path.join(ROOT, "tools"));
+const mg = require(mod("memory-gate"));
+const systemone = require(mod("systemone"));
+const jev = require(mod("jev"));
+const memory = require(mod("memory"));
+const tools = require(mod("tools"));
 const { needsJudge, keepQuestions, keepState, readKeep, dropNote, KEEP_KEY, KIND_KEY, KEEP_MIN, TEXT_CHARS } = mg;
 
 let pass = 0, fail = 0, finished = false;
@@ -279,7 +280,7 @@ const out = (...answers) => ({ ok: true, answers });
     ok(typeof cfg.agent._memory_gate_说明 === "string" && cfg.agent._memory_gate_说明.length > 40,
       "  └ 模板里写清楚它是干什么的（手改配置的人只看得到这一行）");
 
-    const ag = fs.readFileSync(path.join(ROOT, "agent.js"), "utf8");
+    const ag = fs.readFileSync(mod("agent"), "utf8");
     ok(/gate: \(config\.agent \|\| \{\}\)\.memory_gate === true/.test(ag),
       "★不是 true 就不算开★ 配置里是别的值时，命令原文不该悄悄发出去");
   }

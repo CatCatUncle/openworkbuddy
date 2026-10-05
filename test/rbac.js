@@ -20,6 +20,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { mod } = require("./lib/mod");
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "owb-rbac-"));
 process.env.OPENWORKBUDDY_DATA_DIR = path.join(TMP, "data");
@@ -27,12 +28,12 @@ fs.mkdirSync(process.env.OPENWORKBUDDY_DATA_DIR, { recursive: true });
 
 const express = require("express");
 const ROOT = path.join(__dirname, "..");
-const rbac = require(path.join(ROOT, "rbac"));
-const account = require(path.join(ROOT, "account"));
-const org = require(path.join(ROOT, "org"));
-const admin = require(path.join(ROOT, "admin"));
-const lifecycle = require(path.join(ROOT, "lifecycle"));
-const tools = require(path.join(ROOT, "tools"));
+const rbac = require(mod("rbac"));
+const account = require(mod("account"));
+const org = require(mod("org"));
+const admin = require(mod("admin"));
+const lifecycle = require(mod("lifecycle"));
+const tools = require(mod("tools"));
 
 tools.setWorkspaceDir(path.join(TMP, "workspace"));
 

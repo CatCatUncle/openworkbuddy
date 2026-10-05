@@ -12,6 +12,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { mod } = require("./lib/mod");
 
 const ROOT = path.join(__dirname, "..");
 // 要赶在 require tools 之前：开发态数据目录就是仓库根，run_shell 的审计（security.js）
@@ -19,8 +20,8 @@ const ROOT = path.join(__dirname, "..");
 const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "owb-hooks-home-"));
 process.env.OPENWORKBUDDY_HOME = HOME;
 process.env.OPENWORKBUDDY_DATA_DIR = path.join(HOME, "data");
-const HK = require(path.join(ROOT, "hooks"));
-const tools = require(path.join(ROOT, "tools"));
+const HK = require(mod("hooks"));
+const tools = require(mod("tools"));
 const { executeTool } = tools;
 
 let pass = 0, fail = 0, finished = false;
@@ -130,8 +131,8 @@ const ok = (c, m, extra) => { if (c) { pass++; console.log("  ✓ " + m); } else
 
   console.log("\n【5】done：没过不许收尾");
   {
-    const { createAgentRuntime } = require(path.join(ROOT, "agent"));
-    const { McpManager } = require(path.join(ROOT, "mcp"));
+    const { createAgentRuntime } = require(mod("agent"));
+    const { McpManager } = require(mod("mcp"));
     const run = async (script, hooks, mode) => {
       let step = 0;
       const seen = [];

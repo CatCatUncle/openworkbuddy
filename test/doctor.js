@@ -19,10 +19,12 @@
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
+const { mod } = require("./lib/mod");
+const { entry } = require("./lib/entry");
 const ROOT = path.join(__dirname, "..");
 const srcLib = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
-const boot = require(path.join(ROOT, "boot-check"));
-const doctor = require(path.join(ROOT, "doctor"));
+const boot = require(mod("boot-check"));
+const doctor = require(mod("doctor"));
 
 let pass = 0, fail = 0;
 const ok = (cond, msg, extra) => {
@@ -95,7 +97,7 @@ const one = boot.bootProblem({ nodeVersion: "v20.0.0", missingDeps: ["express"],
 ok(!/等 \d+ 个/.test(one.title) && one.title.includes("express"),
   "反向对照：真只少一个的时候不许硬加「等 N 个」", one.title);
 // 装机版和源码版是两份 package.json：拿这边的清单去查那边，查的就是错的清单
-const bc = fs.readFileSync(path.join(ROOT, "boot-check.js"), "utf8");
+const bc = fs.readFileSync(mod("boot-check"), "utf8");
 ok(/missingDeps: findMissing\(rootDir, readDeps\(rootDir\)\)/.test(bc),
   "enforce 里的清单得跟着 rootDir 走，不能用模块加载时那一份");
 
@@ -290,7 +292,7 @@ console.log("\n⑩ 空机器上真跑一遍 openworkbuddy doctor");
 const { spawnSync } = require("child_process");
 const EMPTY = fs.mkdtempSync(path.join(os.tmpdir(), "owb-doctor-"));
 try {
-  const r = spawnSync(process.execPath, [path.join(ROOT, "cli.js"), "doctor"], {
+  const r = spawnSync(process.execPath, [entry("cli"), "doctor"], {
     encoding: "utf8",
     // 端口挑一个没人用的：体检会去 listen 一下，不该碰用户正开着的那个实例
     env: { ...process.env, OPENWORKBUDDY_HOME: EMPTY, PORT: "3899" },
@@ -309,7 +311,7 @@ try {
     providers: [{ id: "p1", name: "某渠道", kind: "openai", base_url: "https://example.invalid/v1", api_key: "x" }],
     models: [{ name: "主力", provider: "openai", channel: "p1", model: "some-model", base_url: "https://example.invalid/v1", api_key: "x" }],
   }));
-  const r2 = spawnSync(process.execPath, [path.join(ROOT, "cli.js"), "doctor"], {
+  const r2 = spawnSync(process.execPath, [entry("cli"), "doctor"], {
     encoding: "utf8", env: { ...process.env, OPENWORKBUDDY_HOME: EMPTY, PORT: "3899" }, timeout: 60000,
   });
   eq(r2.status, 0, "反向对照：配齐了退出码是 0", ((r2.stdout || "") + (r2.stderr || "")).slice(-400));
@@ -406,7 +408,7 @@ try {
     eq(run.calls.length, 0, "反向对照：不在 WindowsApps 里就不跑 -c 1");
     // ③b WindowsApps 排在真 Python 前面：engines/which 现在认得出别名（stat 报错、lstat 在），resolveBin 先撞上的是占位程序。
     //     跑不起来就跳过 WindowsApps 再找一遍，后面那个真的照认，不能报「缺」
-    const W = require(path.join(ROOT, "engines", "which"));
+    const W = require(mod("which"));
     const APPS = "C:\\Users\\小王\\AppData\\Local\\Microsoft\\WindowsApps";
     const PYDIR = "C:\\Users\\小王\\AppData\\Local\\Programs\\Python\\Python312";
     const kinds = { [APPS + "\\python.exe"]: "alias", [PYDIR + "\\python.exe"]: "file", ["C:\\Windows\\py.exe"]: "file" };

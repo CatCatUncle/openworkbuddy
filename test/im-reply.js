@@ -19,13 +19,14 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { mod } = require("./lib/mod");
 
 const ROOT = path.join(__dirname, "..");
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "owb-im-reply-"));
 process.env.OPENWORKBUDDY_HOME = path.join(TMP, "home");
 const TMPROOT = path.join(TMP, "tmproot"); // 发图用的临时目录建在这下面，好数有没有删干净
 fs.mkdirSync(TMPROOT, { recursive: true });
-const R = require(path.join(ROOT, "lib", "im-reply"));
+const R = require(mod("im-reply"));
 
 let n = 0;
 const bad = [];
@@ -176,9 +177,9 @@ const LONG = [
   {
     const express = require("express");
     const http = require("http");
-    const tools = require(path.join(ROOT, "tools"));
-    const { dataPath } = require(path.join(ROOT, "paths"));
-    const { createImRouter } = require(path.join(ROOT, "im"));
+    const tools = require(mod("tools"));
+    const { dataPath } = require(mod("paths"));
+    const { createImRouter } = require(mod("im"));
     const API = "https://open.feishu.cn/open-apis";
     const WS = path.join(TMP, "ws");
     fs.mkdirSync(WS, { recursive: true });
@@ -292,7 +293,7 @@ const LONG = [
   // ════ ⑦ 别的通道也接上了 ════
   console.log("⑦ 接线");
   {
-    const src = fs.readFileSync(path.join(ROOT, "im.js"), "utf8");
+    const src = fs.readFileSync(mod("im"), "utf8");
     ok("⑦ 飞书回复不再一刀砍在 3500", !/out\.slice\(0,\s*3500\)/.test(src));
     ok("⑦ 文档评论回复不再一刀砍在 3000", !/text \|\| ""\)\.slice\(0,\s*3000\)/.test(src));
     for (const ch of ["feishuMedia.sendImage", "wecom.sendFile(msg.fromUser, abs", "mp.sendFile(msg.fromUser, abs", "ilink.sendFile(userId, abs"]) {

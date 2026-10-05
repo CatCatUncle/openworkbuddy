@@ -22,6 +22,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { spawnSync } = require("child_process");
+const { mod } = require("./lib/mod");
 const ROOT = path.join(__dirname, "..");
 
 let pass = 0, fail = 0;
@@ -39,15 +40,15 @@ const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "owb-ttsseg-home-"));
 const WS = fs.mkdtempSync(path.join(os.tmpdir(), "owb-ttsseg-ws-"));
 process.env.OPENWORKBUDDY_HOME = HOME;
 
-const tools = require(path.join(ROOT, "tools")); // 先加载它：配音落盘要靠它绑定的工作空间
+const tools = require(mod("tools")); // 先加载它：配音落盘要靠它绑定的工作空间
 const TTSB = require(path.join(ROOT, "src/tools/tts-batch"));
 const MEDIA = require(path.join(ROOT, "src/tools/media"));
-const MP = require(path.join(ROOT, "lib/media-probe"));
-const mm = require(path.join(ROOT, "media-models"));
-const genCache = require(path.join(ROOT, "gen-cache"));
-const quota = require(path.join(ROOT, "quota"));
-const pricing = require(path.join(ROOT, "pricing"));
-const mediaHealth = require(path.join(ROOT, "media-health"));
+const MP = require(mod("media-probe"));
+const mm = require(mod("media-models"));
+const genCache = require(mod("gen-cache"));
+const quota = require(mod("quota"));
+const pricing = require(mod("pricing"));
+const mediaHealth = require(mod("media-health"));
 
 const GW = "https://gw.example.test/v1";
 const DASH = "https://dashscope.example.test/api/v1";

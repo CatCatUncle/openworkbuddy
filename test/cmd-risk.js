@@ -26,14 +26,15 @@
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
+const { mod } = require("./lib/mod");
 
 const ROOT = path.join(__dirname, "..");
 const { src } = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
-const cr = require(path.join(ROOT, "cmd-risk"));
-const systemone = require(path.join(ROOT, "systemone"));
-const security = require(path.join(ROOT, "security"));
-const jev = require(path.join(ROOT, "jev"));
-const tools = require(path.join(ROOT, "tools"));
+const cr = require(mod("cmd-risk"));
+const systemone = require(mod("systemone"));
+const security = require(mod("security"));
+const jev = require(mod("jev"));
+const tools = require(mod("tools"));
 const { RISK_KEY, KIND_KEY, RISK_MIN } = cr;
 
 let pass = 0, fail = 0, finished = false;
@@ -404,10 +405,10 @@ const SEC = { ...security.DEFAULTS, gateway: true, cmd_risk_gate: true, permissi
     const srv = src("server");
     ok(/"gateway", "delete_protect", "cmd_risk_gate"/.test(srv), "  └ 后端收这个开关（前端存了后端不收＝存不下去）");
 
-    const sec = fs.readFileSync(path.join(ROOT, "security.js"), "utf8");
+    const sec = fs.readFileSync(mod("security"), "utf8");
     ok(/cmd_risk_gate: false/.test(sec), "  └ 默认值写在安全策略那张表里");
 
-    const ag = fs.readFileSync(path.join(ROOT, "agent.js"), "utf8");
+    const ag = fs.readFileSync(mod("agent"), "utf8");
     ok(/decideConfig: \{ decide: config\.decide, providers: config\.providers \}/.test(ag),
       "★只把认路要用的两样递下去★ 不把整份 config（连着所有 Key）塞进工具层");
     ok(!/decideConfig: config\b/.test(ag), "  └ ★反向对照★ 没有图省事直接把整份递下去的写法");
@@ -437,7 +438,7 @@ const SEC = { ...security.DEFAULTS, gateway: true, cmd_risk_gate: true, permissi
     ok(chk("node open.js").action === "allow", "（对照）文件名里带 open 不算");
     ok(chk("ls -la").action === "allow", "（对照）平常命令照旧放行");
     ok(security.DESKTOP_OPEN_CMDS instanceof Set && security.DESKTOP_OPEN_CMDS.has("open"), "  └ 名单导出来，别处能查");
-    const ag = fs.readFileSync(path.join(ROOT, "agent.js"), "utf8");
+    const ag = fs.readFileSync(mod("agent"), "utf8");
     ok(/不要用 open \/ xdg-open \/ start 替用户打开文件或网页/.test(ag), "★提示词里也写明了★ 闸拦的是动作，提示词省的是那一问");
   }
 

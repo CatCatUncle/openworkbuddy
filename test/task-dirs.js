@@ -13,13 +13,14 @@
  * server.js 是 require 即 listen，这里把 runDirFor / settleRunDir 那一段真源码切出来配上桩跑：
  * 测的是发出去的那份代码，不是测试里抄的一份。
  */
+const { mod } = require("./lib/mod");
 const HOME = require("./lib/own-home")("task-dirs");
 
 const fs = require("fs");
 const path = require("path");
 const ROOT = path.join(__dirname, "..");
 const { src } = require("./lib/src");
-const taskDirs = require(path.join(ROOT, "lib", "task-dirs.js"));
+const taskDirs = require(mod("task-dirs"));
 
 let pass = 0, fail = 0;
 const ok = (cond, msg, detail) => {
@@ -84,14 +85,14 @@ const has = (p) => fs.existsSync(p);
     fs.mkdirSync(path.join(ws, "定时任务", "周报"), { recursive: true });
     ok(taskDirs.dropIfEmpty(ws, "定时任务/周报") && has(path.join(ws, "定时任务")), "父目录里还有别的任务：只撤自己，父目录留着");
     ok(taskDirs.dropIfEmpty(ws, "从来没建过的") === true, "压根没建出来（纯聊天没碰文件）：当它已经不在");
-    ok(/rmdirSync/.test(fs.readFileSync(path.join(ROOT, "lib", "task-dirs.js"), "utf8")) &&
-      !/rmSync|recursive:\s*true/.test(/function dropIfEmpty[\s\S]*?\n}/.exec(fs.readFileSync(path.join(ROOT, "lib", "task-dirs.js"), "utf8"))[0]),
+    ok(/rmdirSync/.test(fs.readFileSync(mod("task-dirs"), "utf8")) &&
+      !/rmSync|recursive:\s*true/.test(/function dropIfEmpty[\s\S]*?\n}/.exec(fs.readFileSync(mod("task-dirs"), "utf8"))[0]),
       "只用 rmdirSync：判断万一有误，最坏也只是删不动");
   }
 
   section("【4】模型照抄两层文件夹名，不许套成两层");
   {
-    const tools = require(path.join(ROOT, "tools.js"));
+    const tools = require(mod("tools"));
     const tws = path.join(HOME, "tools-ws");
     fs.mkdirSync(tws, { recursive: true });
     tools.setWorkspaceDir(tws);
@@ -126,8 +127,8 @@ const has = (p) => fs.existsSync(p);
     const names = tools.outputFiles().map((f) => f.name);
     ok(names.includes(base + "/网站/index.html"), "IM 那格里的子文件夹：面板上看得见", names);
     ok(!names.includes("任务_0930_深/a/b/c.html"), "★反向对照★ 别处还是最深 3 层，不是整个放开");
-    const agent = require(path.join(ROOT, "agent.js"));
-    const sc = agent._scan.scanTree(require(path.join(ROOT, "lib", "ws-browse.js")), require(path.join(ROOT, "sweep.js")), fs, path,
+    const agent = require(mod("agent"));
+    const sc = agent._scan.scanTree(require(mod("ws-browse")), require(mod("sweep")), fs, path,
       { op: "scan", root: tws, appDataDir: "", bases: [], filesCap: 500 });
     const top = (sc.top || []).map((f) => f.name);
     ok(top.includes(base + "/网站/index.html") && !top.includes("任务_0930_深/a/b/c.html"), "后台线程那份（scanTree）口径一样", top);
@@ -147,7 +148,7 @@ const has = (p) => fs.existsSync(p);
     const warns = [];
     const load = () => new Function("fs", "path", "require", "dataPath", "store", "log", "perChatHere", "getWorkspaceDir", "sessions", "taskDirs", "assignedDirs",
       m[0] + "; return { runDirs, runDirFor, settleRunDir, holdRunDir };")(
-      fs, path, (p) => require(p.startsWith("./") ? path.join(ROOT, p) : p), (...p) => path.join(dataDir, ...p), require(path.join(ROOT, "store.js")),
+      fs, path, (p) => require(p.startsWith("./") ? path.join(ROOT, p) : p), (...p) => path.join(dataDir, ...p), require(mod("store")),
       { warn: (...a) => warns.push(a) }, () => perChat, () => root, sessions, taskDirs, new Set());
     let S = load();
     const user = (t) => ({ role: "user", content: t });
@@ -288,7 +289,7 @@ const has = (p) => fs.existsSync(p);
 
   section("【8】并排跑的几趟，产出按整条文件夹路径认主");
   {
-    const { makeOwnership } = require(path.join(ROOT, "agent.js"));
+    const { makeOwnership } = require(mod("agent"));
     const own = makeOwnership();
     const A = "IM_对话/0930_做海报", B = "IM_对话/0930_查天气";
     own.claimBaseDir(A, 1);
@@ -339,7 +340,7 @@ const has = (p) => fs.existsSync(p);
   {
     // 2026-10-01 用户截图：画布上五张参考图全挂「找不到」，文件好好躺在 任务_1001_你/不烧心_素材包/ 里。
     // agent 写进节点的是「不烧心_素材包/03_关键帧/x.png」（从它自己那格算的），页面按工作区根去找
-    const tools = require(path.join(ROOT, "tools.js"));
+    const tools = require(mod("tools"));
     const cws = path.join(HOME, "canvas-ws");
     const base = "任务_1001_短剧";
     const put = (rel, body = "x") => { fs.mkdirSync(path.dirname(path.join(cws, rel)), { recursive: true }); fs.writeFileSync(path.join(cws, rel), body); };

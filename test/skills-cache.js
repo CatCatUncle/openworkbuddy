@@ -18,6 +18,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { mod } = require("./lib/mod");
 
 // 赶在 require 生产模块之前：skills.js 的 SKILLS_DIR 在 require 那一刻就按数据目录定死了
 const HOME = require("./lib/own-home")("skills-cache");
@@ -36,7 +37,7 @@ for (let i = 0; i < N_LOCAL; i++) {
   fs.writeFileSync(path.join(dir, i === 7 ? "SKILL.md" : "skill.md"), body(i));
   if (i % 5 === 0) fs.writeFileSync(path.join(dir, "helper.py"), "print('x')\n");
 }
-const PLUGIN_SCHEMA_URL = () => require(path.join(__dirname, "..", "plugins")).PLUGIN_SCHEMA;
+const PLUGIN_SCHEMA_URL = () => require(mod("plugins")).PLUGIN_SCHEMA;
 function makePlugin(name, skills) {
   const root = path.join(PLUGINS, name);
   fs.mkdirSync(root, { recursive: true });
@@ -49,11 +50,11 @@ function makePlugin(name, skills) {
 }
 
 const ROOT = path.join(__dirname, "..");
-const skills = require(path.join(ROOT, "skills"));
-const jev = require(path.join(ROOT, "jev"));
-const tools = require(path.join(ROOT, "tools"));
-const { createAgentRuntime } = require(path.join(ROOT, "agent"));
-const { McpManager } = require(path.join(ROOT, "mcp"));
+const skills = require(mod("skills"));
+const jev = require(mod("jev"));
+const tools = require(mod("tools"));
+const { createAgentRuntime } = require(mod("agent"));
+const { McpManager } = require(mod("mcp"));
 const cache = skills._internals.skillsCache;
 
 makePlugin("cache-plugin", { "p-one": "插件技能一号正文", "p-two": "插件技能二号正文" });
@@ -97,7 +98,7 @@ const find = (name) => skills.loadSkills().find((s) => s.name === name);
   };
   // 开工前那道闸问的判断模型也换成假的：挑 s-03，确定度 0.9（这样闸那条路上的两次 getSkills 都走到）
   const realAsk = jev.askMetered;
-  const { PICK_KEY } = require(path.join(ROOT, "skill-gate"));
+  const { PICK_KEY } = require(mod("skill-gate"));
   jev.askMetered = async () => ({ ok: true, answers: [{ key: PICK_KEY, value: "s-03", sure: 0.9 }] });
   ok(jev.status(cfg).ready === true, "（前置）这份假配置在 jev 眼里算配好了，闸那条路真会走到");
 

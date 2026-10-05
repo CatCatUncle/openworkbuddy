@@ -24,6 +24,7 @@ const os = require("os");
 const path = require("path");
 const zlib = require("zlib");
 const http = require("http");
+const { mod } = require("./lib/mod");
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "owb-remote-"));
 process.env.OPENWORKBUDDY_DATA_DIR = path.join(TMP, "data");
@@ -32,9 +33,9 @@ fs.mkdirSync(process.env.OPENWORKBUDDY_DATA_DIR, { recursive: true });
 const express = require("express");
 const ROOT = path.join(__dirname, "..");
 const srcLib = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
-const account = require(path.join(ROOT, "account"));
-const { createStaticCompress, _internals: sc } = require(path.join(ROOT, "static-compress"));
-const { createJsonCompress } = require(path.join(ROOT, "json-compress"));
+const account = require(mod("account"));
+const { createStaticCompress, _internals: sc } = require(mod("static-compress"));
+const { createJsonCompress } = require(mod("json-compress"));
 const A = account._internals;
 
 let pass = 0, fail = 0;
@@ -132,7 +133,7 @@ const ck = (t) => "openworkbuddy_token=" + t;
   // 「装上就能从外面连进来」这种默认不该由我们替用户做决定——他不一定知道自己
   // 刚把什么暴露到了局域网上。所以整条远程线默认关着，要用的人自己去后台打开。
   console.log("\n一·B、远程设备接入默认关着，开了才有这条线");
-  const orgMod = require(path.join(ROOT, "org"));
+  const orgMod = require(mod("org"));
   eq(orgMod.settingsOf(orgMod.getOrg(orgMod.DEFAULT_ORG)).remote_devices, false, "★默认关★");
 
   const boss = await req("POST", "/api/auth/login", { body: { username: "boss", password: "hunter2hunter2" } });
@@ -363,7 +364,7 @@ const ck = (t) => "openworkbuddy_token=" + t;
 
   // 压缩必须异步。同步版压那 936 KB 实测卡住事件循环 33 ms——
   // 而这 33 ms 里多半正有一条 SSE 在吐字，等于「谁切了下任务，所有人卡一下」
-  const jsrc = fs.readFileSync(path.join(ROOT, "json-compress.js"), "utf8");
+  const jsrc = fs.readFileSync(mod("json-compress"), "utf8");
   ok(!/zlib\s*\.\s*(brotliCompressSync|gzipSync|deflateSync)\s*\(/.test(jsrc),
      "★压缩走异步，不许 Sync★ 同步压 936 KB 要堵住事件循环 33ms，正在推的 SSE 会当场卡一下");
   ok(/zlib\s*\.\s*brotliCompress\s*\(/.test(jsrc) && /zlib\s*\.\s*gzip\s*\(/.test(jsrc),
@@ -384,7 +385,7 @@ const ck = (t) => "openworkbuddy_token=" + t;
   eq(pings, 1, "server.js 里 /api/ping 注册了不止一次：后注册的那份永远走不到，清理时留错一份就会挪到登录闸后面");
   const pingBeforeGuard = ssrc.indexOf('app.get("/api/ping"') < ssrc.indexOf("app.use(account.authGuard)");
   const pingInPublicSet = /PUBLIC_API\s*=\s*new Set\(\[[^\]]*"\/api\/ping"/.test(
-    fs.readFileSync(path.join(ROOT, "account.js"), "utf8"));
+    fs.readFileSync(mod("account"), "utf8"));
   ok(pingBeforeGuard || pingInPublicSet,
      "★/api/ping 得免登录★ 既没抢在 authGuard 前注册，account.js 的 PUBLIC_API 里也没列它：doctor 会把「已经开着」误报成「端口被占」，壳也找不回自己的窗口");
   ok(pingBeforeGuard && pingInPublicSet,

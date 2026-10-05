@@ -24,10 +24,11 @@
 
 const path = require("path");
 const fs = require("fs");
+const { mod } = require("./lib/mod");
 
 const ROOT = path.join(__dirname, "..");
 const srcLib = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
-const S = require(path.join(ROOT, "session-search"));
+const S = require(mod("session-search"));
 
 let pass = 0, fail = 0;
 function ok(cond, name, extra) {
@@ -225,7 +226,7 @@ console.log("\n⑬ 侧栏：打字立刻筛、慢一拍去问服务端、失败�
 
 console.log("\n⑭ 命令行的 /resume 也搜正文");
 {
-  const R = require(path.join(ROOT, "repl-commands"));
+  const R = require(mod("repl-commands"));
   const rows = R.sessionRows([
     { id: "cli_1", title: "表格清洗", turns: 2, from: "命令行", mtime: 2, body: "这个 csv 里有很多重复的行" },
     { id: "cli_2", title: "竞品调研", turns: 1, from: "命令行", mtime: 1, body: "调研一下同类产品的定价" },
@@ -249,7 +250,7 @@ console.log("\n⑭ 命令行的 /resume 也搜正文");
 
 console.log("\n⑮ 这一层是纯的：不碰 fs、不碰网络、不打印");
 {
-  const src = fs.readFileSync(path.join(ROOT, "session-search.js"), "utf8");
+  const src = fs.readFileSync(mod("session-search"), "utf8");
   for (const [re, why] of [
     [/\brequire\(/, "require"],
     [/\bconsole\./, "console"],

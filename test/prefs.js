@@ -28,6 +28,8 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { mod } = require("./lib/mod");
+const { entry } = require("./lib/entry");
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "owb-prefs-"));
 process.env.OPENWORKBUDDY_DATA_DIR = path.join(TMP, "data");
@@ -36,13 +38,13 @@ fs.mkdirSync(process.env.OPENWORKBUDDY_DATA_DIR, { recursive: true });
 const express = require("express");
 const ROOT = path.join(__dirname, "..");
 const srcLib = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
-const account = require(path.join(ROOT, "account"));
-const org = require(path.join(ROOT, "org"));
-const admin = require(path.join(ROOT, "admin"));
-const prefs = require(path.join(ROOT, "prefs"));
-const tools = require(path.join(ROOT, "tools"));
-const engines = require(path.join(ROOT, "engines"));
-const thinking = require(path.join(ROOT, "thinking"));
+const account = require(mod("account"));
+const org = require(mod("org"));
+const admin = require(mod("admin"));
+const prefs = require(mod("prefs"));
+const tools = require(mod("tools"));
+const engines = require(mod("engines"));
+const thinking = require(mod("thinking"));
 
 const BASE_WS = path.join(TMP, "workspace");
 tools.setWorkspaceDir(BASE_WS);
@@ -226,9 +228,9 @@ ok(fs.readdirSync(path.dirname(f)).some((n) => n.startsWith(path.basename(f) + "
    "  └ 坏的那份改名留在旁边（用户还有机会自己捞回来），不是直接删掉");
 // 写也得是原子的：偏好是被高频写的（切引擎、拖透明度滑块都写一次），
 // writeFileSync 那一刻断电或者被 kill，下次读到的就是半份 JSON
-ok(/jsonStore\.writeJsonAtomic\(file, next/.test(fs.readFileSync(path.join(ROOT, "prefs.js"), "utf8")),
+ok(/jsonStore\.writeJsonAtomic\(file, next/.test(fs.readFileSync(mod("prefs"), "utf8")),
    "prefs.write 走原子写 + 留 .bak（上面那条自愈路，靠的就是这份 .bak）");
-ok(!/fs\.writeFileSync\(file/.test(fs.readFileSync(path.join(ROOT, "prefs.js"), "utf8")),
+ok(!/fs\.writeFileSync\(file/.test(fs.readFileSync(mod("prefs"), "utf8")),
    "  └ 反向对照：prefs.js 里没有直接 writeFileSync 的后门");
 fs.rmSync(f, { force: true }); // 上一步隔离时已经把它改名搬走了，这里只是确保它确实不在
 ok(Object.keys(prefs.read(U)).length === 0, "文件被删了也读得动（缓存跟着清）");
@@ -532,7 +534,7 @@ function slice(file, name) {
 function runSeedCopy() {
   console.log("\n【铺出厂内容】拷得对，而且别把盘写满");
   const cp = require("child_process");
-  const paths = require("../paths");
+  const paths = require(mod("paths"));
   const copyTree = paths._copyTree;
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "owb-seedcopy-"));
   try {
@@ -608,16 +610,16 @@ function runSeedCopy() {
     // 不测这条的话，Windows 用户首次启动技能一个都铺不出来，而我们本机永远看不见。
     const realPlatform = process.platform;
     Object.defineProperty(process, "platform", { value: "linux", configurable: true });
-    delete require.cache[require.resolve("../paths")];
+    delete require.cache[require.resolve(mod("paths"))];
     try {
       const fallbackDst = path.join(root, "dst-linux");
-      require("../paths")._copyTree(src, fallbackDst);
+      require(mod("paths"))._copyTree(src, fallbackDst);
       ok(fs.readFileSync(path.join(fallbackDst, "nested", "deep", "a.txt"), "utf8") === "深处那个文件",
         "不是 macOS 时退回 fs.cpSync，照样拷得对（退回的是慢，不是错）");
     } finally {
       Object.defineProperty(process, "platform", { value: realPlatform, configurable: true });
-      delete require.cache[require.resolve("../paths")];
-      require("../paths");
+      delete require.cache[require.resolve(mod("paths"))];
+      require(mod("paths"));
     }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -626,8 +628,8 @@ function runSeedCopy() {
 
 async function runSourcePins() {
   const serverSrc = srcLib.src("server");
-  const agentSrc = fs.readFileSync(path.join(ROOT, "agent.js"), "utf8");
-  const mainSrc = fs.readFileSync(path.join(ROOT, "electron-main.js"), "utf8");
+  const agentSrc = fs.readFileSync(mod("agent"), "utf8");
+  const mainSrc = fs.readFileSync(entry("electron-main"), "utf8");
 
   console.log("\n【10】接线钉在源码上：闸放行了，处理器得真的接住");
   // 上面第 6 节验的是「闸放不放行」。放行之后由谁落盘、落到哪，是 server.js 里的事，
@@ -665,7 +667,7 @@ async function runSourcePins() {
   ok(!/lanes\.viewFor|lanes\.engineIdFor|CLI_FALLBACK/.test(agentSrc),
      "agent.js 里没有「按工作线换引擎」那层（切标签不许动引擎）");
   ok(/thinking: prefs\.agentCfg\(config\)\.thinking/.test(agentSrc), "思考档同理");
-  ok(!/["']\/api\/pet\/["']/.test(fs.readFileSync(path.join(ROOT, "admin.js"), "utf8").split("PERSONAL_WRITE")[0]),
+  ok(!/["']\/api\/pet\/["']/.test(fs.readFileSync(mod("admin"), "utf8").split("PERSONAL_WRITE")[0]),
      "/api/pet/ 已经从平台写表里拿掉了（一只宠物出不出现，跟谁掏 API 的钱没关系）");
 
   console.log("\n【11】启动失败得有出口：桌面上不能「有进程、没界面」");
@@ -744,7 +746,7 @@ async function runSourcePins() {
   const bootAdviceRaw = new Function("bootHint",
     slice("electron-main.js", "bootAdvice") + "\nreturn bootAdvice;")(bootHintRaw);
   const bootAdvice = (err, msg, port) => String(bootAdviceRaw(err, msg, port, zhText));
-  const bc = require(path.join(ROOT, "boot-check"));
+  const bc = require(mod("boot-check"));
   for (const [what, facts, want] of [
     ["Node 太老", { nodeVersion: "v16.20.2", missingDeps: [] }, /nodejs\.org|nvm/],
     ["源码版依赖没装", { nodeVersion: "v20.0.0", missingDeps: ["express"] }, /npm install/],
@@ -765,7 +767,7 @@ async function runSourcePins() {
   const bare = bc.bootProblem({ nodeVersion: "v16.20.2", missingDeps: [] });
   ok(/贴到 GitHub issue/.test(bootHint(bare.title + " " + bare.fix, 3800)),
      "先验料：光凭闸门那句中文，bootHint 认不出来（这正是这组断言要挡的东西）");
-  ok(/err\.bootProblem/.test(fs.readFileSync(path.join(ROOT, "boot-check.js"), "utf8")),
+  ok(/err\.bootProblem/.test(fs.readFileSync(mod("boot-check"), "utf8")),
      "闸门得把判据挂在错误上，壳那头才接得住");
 
   // pickBootLog：日志是出事时用户手里唯一的物证，它自己绝不许成为新的错因
@@ -962,7 +964,7 @@ async function runSourcePins() {
   // 以前这是两份实现（壳一份、服务端一份），靠这条测试盯着别漂。盯不住：两份里
   // 都藏着同一个 bug，而两份都错成一样，"两边一致"照样是绿的。现在合成 paths.js 一份，
   // 这里验的就从「两份算得一样吗」变成「两边用的是不是同一份」——那才是漂不了的写法。
-  const { resolvePort } = require(path.join(ROOT, "paths.js"));
+  const { resolvePort } = require(mod("paths"));
   eq(resolvePort({ PORT: "3810" }, { server: { port: 3900 } }), 3810,
      "PORT 环境变量说了算（壳以前只读 config，设了 PORT 必然连错端口）");
   eq(resolvePort({}, { server: { port: 3900 } }), 3900, "没设环境变量就听 config.json 的");
@@ -1163,7 +1165,7 @@ async function runSourcePins() {
  *   · 源码里再没有绕过 requestQuit 直接 app.quit() 的地方。
  */
 async function runShellLifecycle() {
-  const mainSrc = fs.readFileSync(path.join(ROOT, "electron-main.js"), "utf8");
+  const mainSrc = fs.readFileSync(entry("electron-main"), "utf8");
   const SHELL_TEXT = new Function(mainSrc.slice(
     mainSrc.indexOf("const SHELL_TEXT = {"), mainSrc.indexOf("\nfunction osLang(")
   ).replace("const SHELL_TEXT =", "return") + ";")();
@@ -1789,10 +1791,10 @@ async function runShellLifecycle() {
 // 【12】存盘不许盖掉外面手改的（config-merge）
 // ===================================================================
 function runConfigGates() {
-  const cfgMerge = require(path.join(ROOT, "config-merge"));
-  const cfgLint = require(path.join(ROOT, "config-lint"));
+  const cfgMerge = require(mod("config-merge"));
+  const cfgLint = require(mod("config-lint"));
   const serverSrc = srcLib.src("server");
-  const cliSrc = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
+  const cliSrc = fs.readFileSync(entry("cli"), "utf8");
 
   console.log("\n【12】存盘不许盖掉外面手改的——用户在编辑器里粘的 Key 一个字不能少");
 
@@ -1892,7 +1894,7 @@ function runConfigGates() {
   // 全是 1800000（30 分钟），server.js 回给前端的也是 1800000，设置页文案却写「默认 10」。
   // 四处没一个对得上，谁看都觉得自己那份是对的。这种漂移编译器一辈子抓不到，
   // 只能钉在这儿：改了一边没改另一边，这条就红。
-  const agentSrc = fs.readFileSync(path.join(__dirname, "..", "agent.js"), "utf8");
+  const agentSrc = fs.readFileSync(mod("agent"), "utf8");
   for (const key of ["max_runtime_ms", "max_steps"]) {
     const nums = [...agentSrc.matchAll(new RegExp("config\\.agent\\." + key + "\\s*\\|\\|\\s*(\\d+)", "g"))].map((m) => +m[1]);
     ok(nums.length > 0, `agent.js 里找不到 ${key} 的兜底值了（这条尺子失效了，别让它绿着）`);
@@ -1959,10 +1961,10 @@ function runConfigGates() {
 
   // 接线：查出来得有人说。只写个模块不接，等于没写
   ok(/cfgLint\.lines\(cfgLint\.lint\(config, CONFIG_DEFAULTS\)\)/.test(serverSrc), "启动时真的跑一遍体检并打出来");
-  const doctorSrc = fs.readFileSync(path.join(ROOT, "doctor.js"), "utf8");
+  const doctorSrc = fs.readFileSync(mod("doctor"), "utf8");
   ok(/verdictConfigLint\(/.test(doctorSrc) && /require\("\.\/config-lint"\)/.test(doctorSrc),
      "openworkbuddy doctor 里也有这一行（用户不看启动日志，但出事时会跑 doctor）");
-  const doctor = require(path.join(ROOT, "doctor"));
+  const doctor = require(mod("doctor"));
   eq(doctor.verdictConfigLint([]).level, "ok", "doctor：没查出问题时这行是绿的");
   eq(doctor.verdictConfigLint([{ level: "warn", text: "t", hint: "h" }]).level, "warn", "  └ 只有提醒时是黄的");
   eq(doctor.verdictConfigLint([{ level: "warn", text: "t", hint: "h" }, { level: "bad", text: "t2", hint: "h2" }]).level, "bad",
@@ -1971,7 +1973,7 @@ function runConfigGates() {
   // ===================================================================
   console.log("\n【14】项目规范（AGENTS.md / CLAUDE.md）：带不全得说，别让模型以为自己看的是全本");
 
-  const memoMod = require(path.join(ROOT, "project-memo"));
+  const memoMod = require(mod("project-memo"));
   const MEMO_MAX = memoMod.MEMO_MAX;
   ok(MEMO_MAX > 0, "project-memo.js 里能取到项目规范的长度上限", MEMO_MAX);
 
@@ -2044,7 +2046,7 @@ function runConfigGates() {
   eq(warns.length, 1, "规范读不出来时喊一句（以前这儿是个 catch {}，出事了一点声都没有）");
   ok(/没带上/.test(warns[0]), "  └ 说的是「这一趟没带上它」，不是一句看不懂的报错", warns[0]);
   ok(/提交前先跑测试/.test(ctx), "  └ 而且继续往下找 CLAUDE.md，不是整段规范都不要了");
-  ok(/txt = fs\.readFileSync\(fp, "utf8"\)\.trim\(\);\s*\n\s*\} catch \(e\) \{/.test(fs.readFileSync(path.join(ROOT, "project-memo.js"), "utf8")),
+  ok(/txt = fs\.readFileSync\(fp, "utf8"\)\.trim\(\);\s*\n\s*\} catch \(e\) \{/.test(fs.readFileSync(mod("project-memo"), "utf8")),
      "  └ 源码里这次读接的是带错误对象的 catch，不是那个吞掉一切的空 catch");
   fs.rmSync(PDIR, { recursive: true, force: true });
 

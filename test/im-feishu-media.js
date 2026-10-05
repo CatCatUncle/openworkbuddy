@@ -20,11 +20,12 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { mod } = require("./lib/mod");
 
 const ROOT = path.join(__dirname, "..");
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "owb-feishu-media-"));
 process.env.OPENWORKBUDDY_HOME = path.join(TMP, "home");
-const M = require(path.join(ROOT, "im-feishu-media"));
+const M = require(mod("im-feishu-media"));
 
 let n = 0;
 const bad = [];
@@ -784,7 +785,7 @@ async function rejects(p) {
 
   // ════ 14. im.js 接线：飞书附件全走这个模块 ════
   {
-    const src = fs.readFileSync(path.join(ROOT, "im.js"), "utf8");
+    const src = fs.readFileSync(mod("im"), "utf8");
     ok("⑭ im.js 引了 im-feishu-media 并建了发送器", /require\("\.\/im-feishu-media"\)/.test(src) && /createFeishuMediaSender\(\{/.test(src));
     ok("⑭ feishuSendFileMsg 只剩一行转发（「停」的 signal 一并带过去）", /async function feishuSendFileMsg\(chatId, relName, o\) \{ return feishuMedia\.sendFile\(chatId, relName, o\); \}/.test(src) && /sendFile: \(rel, o\) => feishuSendFileMsg\(chatId, rel, o\)/.test(src));
     ok("⑭ 老的「一律 msg_type=file」那套删掉了", !/FEISHU_FILE_TYPE/.test(src) && !/open-apis\/im\/v1\/files/.test(src));
@@ -797,9 +798,9 @@ async function rejects(p) {
   {
     const express = require("express");
     const http = require("http");
-    const tools = require(path.join(ROOT, "tools"));
-    const MP = require(path.join(ROOT, "lib", "media-probe"));
-    const { createImRouter } = require(path.join(ROOT, "im"));
+    const tools = require(mod("tools"));
+    const MP = require(mod("media-probe"));
+    const { createImRouter } = require(mod("im"));
     const WS2 = path.join(TMP, "wired-ws");
     const SRC2 = path.join(WS2, "out", "wired.mp4");
     fs.mkdirSync(path.dirname(SRC2), { recursive: true });
@@ -901,10 +902,10 @@ async function rejects(p) {
   {
     const express = require("express");
     const http = require("http");
-    const tools = require(path.join(ROOT, "tools"));
-    const MP = require(path.join(ROOT, "lib", "media-probe"));
-    const { dataPath } = require(path.join(ROOT, "paths"));
-    const { createImRouter } = require(path.join(ROOT, "im"));
+    const tools = require(mod("tools"));
+    const MP = require(mod("media-probe"));
+    const { dataPath } = require(mod("paths"));
+    const { createImRouter } = require(mod("im"));
     const sleep = (/** @type {number} */ ms) => new Promise((r) => setTimeout(r, ms));
     const WS3 = path.join(TMP, "wired-ws3");
     const OUTS = [["out/stop1.mp4", 40 * MB], ["out/stop2.mp4", 12 * MB], ["out/stop3.mp4", 40 * MB], ["out/long.mp4", 40 * MB]];
@@ -1109,10 +1110,10 @@ async function rejects(p) {
   {
     const express = require("express");
     const http = require("http");
-    const tools = require(path.join(ROOT, "tools"));
-    const quota = require(path.join(ROOT, "quota"));
-    const { dataPath } = require(path.join(ROOT, "paths"));
-    const { createImRouter } = require(path.join(ROOT, "im"));
+    const tools = require(mod("tools"));
+    const quota = require(mod("quota"));
+    const { dataPath } = require(mod("paths"));
+    const { createImRouter } = require(mod("im"));
     const sleep = (/** @type {number} */ ms) => new Promise((r) => setTimeout(r, ms));
     const WS4 = path.join(TMP, "spend-ws");
     fs.mkdirSync(WS4, { recursive: true });
@@ -1271,14 +1272,14 @@ async function rejects(p) {
   // ════ 14e. 进聊天的报错里没有本机绝对路径（飞书 / 企业微信 / 公众号 / 微信 iLink 同一个抹法） ════
   // 每条路都喂一个带绝对路径的假 fs 错：人看得懂的留下（相对名、错误码），家目录、工作目录的全路径不出
   {
-    const IM = require(path.join(ROOT, "im-media"));
-    const { createWecomApp, createWechatMp, encryptMsg, msgSignature } = require(path.join(ROOT, "im-wechat"));
-    const { createIlinkConnection } = require(path.join(ROOT, "im-ilink"));
+    const IM = require(mod("im-media"));
+    const { createWecomApp, createWechatMp, encryptMsg, msgSignature } = require(mod("im-wechat"));
+    const { createIlinkConnection } = require(mod("im-ilink"));
     const express = require("express");
     const http = require("http");
-    const tools = require(path.join(ROOT, "tools"));
-    const { dataPath } = require(path.join(ROOT, "paths"));
-    const { createImRouter } = require(path.join(ROOT, "im"));
+    const tools = require(mod("tools"));
+    const { dataPath } = require(mod("paths"));
+    const { createImRouter } = require(mod("im"));
     const sleep = (/** @type {number} */ ms) => new Promise((r) => setTimeout(r, ms));
     const waitFor = async (/** @type {() => boolean} */ cond, ms = 10000) => {
       const until = Date.now() + ms;
@@ -1550,7 +1551,7 @@ async function rejects(p) {
 
   // ════ 15. 本机真 ffmpeg（没有就跳过） ════
   {
-    const MP = require(path.join(ROOT, "lib", "media-probe"));
+    const MP = require(mod("media-probe"));
     const mb = await MP.resolveMediaBins();
     const hasFf = !!(mb.ffmpeg.bin && mb.ffprobe.bin);
     if (!hasFf) {

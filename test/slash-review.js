@@ -13,15 +13,17 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { execFileSync } = require("child_process");
+const { mod } = require("./lib/mod");
+const { entry } = require("./lib/entry");
 
 let pass = 0, fail = 0;
 const ok = (c, m, extra) => { if (c) { pass++; console.log("  ✓ " + m); } else { fail++; console.log("  ✗ " + m + (extra !== undefined ? "  ← " + JSON.stringify(extra).slice(0, 300) : "")); } };
 const eq = (a, b, m) => ok(a === b, m, a === b ? undefined : { got: a, want: b });
 
-const CC = require("../custom-commands");
-const repl = require("../repl-commands");
-const review = require("../review");
-const cliArgs = require("../cli-args");
+const CC = require(mod("custom-commands"));
+const repl = require(mod("repl-commands"));
+const review = require(mod("review"));
+const cliArgs = require(mod("cli-args"));
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "owb-slash-"));
 const proj = path.join(tmp, "proj"), home = path.join(tmp, "home");
@@ -124,7 +126,7 @@ eq(cliArgs.parse(["review", "main"]).words.join(" "), "review main", "review 是
 ok(/openworkbuddy review/.test(cliArgs.helpText()), "帮助里有 review");
 
 console.log("\n【6】cli.js 接线");
-const src = fs.readFileSync(path.join(__dirname, "..", "cli.js"), "utf8");
+const src = fs.readFileSync(entry("cli"), "utf8");
 const rvBranch = (src.split('if (v.name === "review") {')[1] || "").split("\n    }")[0];
 ok(/mode: "ask"/.test(rvBranch), "/review 交出来的活儿按 ask 跑（手里没 shell，改不了文件）");
 const loop = src.split("const line = await nextInput();")[1] || "";

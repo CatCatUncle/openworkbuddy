@@ -23,6 +23,7 @@ const fs = require("fs");
 const os = require("os");
 const vm = require("vm");
 const { execFileSync } = require("child_process");
+const { mod } = require("./lib/mod");
 
 // 技能目录跟着数据目录走（skills.js 在 require 时就算好了），所以得在 require 之前把家搬到临时目录
 const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "owb-recipes-home-"));
@@ -35,14 +36,14 @@ for (const n of RECIPE_SKILLS) {
   if (fs.existsSync(src)) fs.cpSync(src, path.join(HOME, "skills", n), { recursive: true });
 }
 
-const R = require(path.join(ROOT, "recipes"));
-const wf = require(path.join(ROOT, "workflow"));
-const mm = require(path.join(ROOT, "media-models"));
-const guard = require(path.join(ROOT, "skill-guard"));
-const { validateExperts, mergeBuiltinExperts } = require(path.join(ROOT, "experts-lib"));
-const tools = require(path.join(ROOT, "tools"));
-const { createAgentRuntime } = require(path.join(ROOT, "agent"));
-const { McpManager } = require(path.join(ROOT, "mcp"));
+const R = require(mod("recipes"));
+const wf = require(mod("workflow"));
+const mm = require(mod("media-models"));
+const guard = require(mod("skill-guard"));
+const { validateExperts, mergeBuiltinExperts } = require(mod("experts-lib"));
+const tools = require(mod("tools"));
+const { createAgentRuntime } = require(mod("agent"));
+const { McpManager } = require(mod("mcp"));
 
 const PREWIRE = process.env.OWB_RECIPES_PREWIRE === "1";
 const cleanup = [HOME];
@@ -315,7 +316,7 @@ function mediaCfg(caps, extra = {}) {
     ok(!("default" in noCover.inputs.find((i) => i.name === "cover")), "命令行里封面一条都用不了 → 流程文件不写 default（免得校验说默认值不在选项里）");
     eq(R.workflowOf("nope"), null, "workflowOf 不认识的配方 → null");
     // 命令行流程（openworkbuddy workflow xhs-carousel -i topic=…）：配了生图、截不了图，也不能默认就去花钱
-    const W = require("../workflow");
+    const W = require(mod("workflow"));
     const cliFlow = W.parse(JSON.stringify(R.workflowOf("xhs-carousel", { config: img, hasRenderer: false })));
     ok(!cliFlow.error && !("default" in cliFlow.inputs.find((i) => i.name === "render")), "命令行 xhs-carousel：出图方式不带默认（不默认 AI 生图）", cliFlow.error);
     eq(W.resolveInputs(cliFlow.inputs, { topic: "早八通勤穿搭" }).values.render, "", "  └ 只给 -i topic → 出图方式是空（这次不做），不是 ai");

@@ -24,6 +24,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { execFileSync, spawnSync } = require("child_process");
+const { mod } = require("./lib/mod");
 const { stripJsComments } = require("./lib/src");
 // 单独跑（node test/layout-invariants.js）也不碰真目录：下面要 require paths / doctor / boot-check
 require("./lib/own-home")("layout");
@@ -68,7 +69,7 @@ function measurePaths(extraEnv) {
   Object.assign(env, extraEnv || {});
   const r = spawnSync(process.execPath, ["-e",
     "const p = require(process.argv[1]); process.stdout.write(JSON.stringify({ APP_DIR: p.APP_DIR, DATA_DIR: p.DATA_DIR, packaged: p.isPackaged() }))",
-    path.join(REPO, "paths.js")], { cwd: os.tmpdir(), env, encoding: "utf8", timeout: 30000 });
+    mod("paths")], { cwd: os.tmpdir(), env, encoding: "utf8", timeout: 30000 });
   if (r.status !== 0) return { error: (r.stderr || String(r.error || "")).slice(0, 400) };
   try { return JSON.parse(r.stdout); } catch { return { error: "输出不是 JSON：" + String(r.stdout).slice(0, 200) }; }
 }
@@ -86,16 +87,16 @@ try {
   eq(moved.APP_DIR, REPO, "反向对照：APP_DIR 不跟数据根走，仍是仓库根");
 } finally { fs.rmSync(elsewhere, { recursive: true, force: true }); }
 // 本进程里：APP_DIR 一样是仓库根（DATA_DIR 此时是本轮的临时家，不比）
-eq(require(path.join(REPO, "paths.js")).APP_DIR, REPO, "本进程里 require 的 paths.js，APP_DIR 也是仓库根");
+eq(require(mod("paths")).APP_DIR, REPO, "本进程里 require 的 paths.js，APP_DIR 也是仓库根");
 // boot-check 在模块加载时就按根读依赖清单：根要是错了，清单会退回手写那三个
-const boot = require(path.join(REPO, "boot-check.js"));
+const boot = require(mod("boot-check"));
 eq(boot.REQUIRED_DEPS.slice().sort().join(","), Object.keys(pkgOnDisk.dependencies || {}).sort().join(","),
   "boot-check 加载时按 ROOT 读到的依赖清单 = package.json 的 dependencies（不是兜底那三个）");
 
 // ── ③ known-tools 抽离 ────────────────────────────────────────────────────
 console.log("\n③ 外部工具清单抽到 src/platform/known-tools.js");
 const kt = require(path.join(REPO, "src", "platform", "known-tools.js"));
-const doctor = require(path.join(REPO, "doctor.js"));
+const doctor = require(mod("doctor"));
 for (const k of ["EXTERNAL_TOOLS", "TOOL_ALIASES", "knownTool"]) {
   ok(doctor[k] !== undefined && doctor[k] === kt[k], `doctor.${k} 原名转导出，跟 known-tools 是同一个对象`);
 }
@@ -127,7 +128,7 @@ eq(parseErr, "", "用 ES5 语法解析得过（boot-check 的闸门在它后面�
 let probeErr = "";
 try { espree.parse("var a = b?.c;", { ecmaVersion: 5, sourceType: "script" }); } catch (e) { probeErr = String(e.message); }
 ok(probeErr !== "", "反向对照：同样的解析参数，?. 会被拒（这条检查有牙）");
-const bootSrc = fs.readFileSync(path.join(REPO, "boot-check.js"), "utf8");
+const bootSrc = fs.readFileSync(mod("boot-check"), "utf8");
 ok(/var ROOT = require\("\.\/src\/platform\/root"\)\.ROOT;/.test(bootSrc), "boot-check.js 的根也从 root.js 拿");
 ok(!/__dirname/.test(stripJsComments(bootSrc)), "boot-check.js 代码里不再自己用 __dirname 找根");
 

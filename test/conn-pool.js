@@ -24,6 +24,7 @@
  *   后台那条开跑不撤眼前这条的「重新生成」。
  */
 
+const { entry } = require("./lib/entry");
 if (!process.versions.electron) {
   const fs0 = require("fs");
   let bin = null;
@@ -136,7 +137,7 @@ llm.listen(0, "127.0.0.1", () => {
   cfg.mcp_servers = [];
   cfg.agent = { ...(cfg.agent || {}), max_steps: 4, llm_timeout_ms: 180000 };
   fs.writeFileSync(path.join(home, "config.json"), JSON.stringify(cfg));
-  child = spawn(process.env.OWB_NODE || "node", [path.join(ROOT, "server.js")], {
+  child = spawn(process.env.OWB_NODE || "node", [entry("server")], {
     cwd: ROOT,
     env: { ...process.env, ELECTRON_RUN_AS_NODE: "", OPENWORKBUDDY_HOME: home, OPENWORKBUDDY_DATA_DIR: dataDir, HOST: "127.0.0.1", PORT: "0" },
   });
@@ -147,7 +148,7 @@ llm.listen(0, "127.0.0.1", () => {
 // 2026-09-28 查四份正在跑的记录，接回来时分别重放了 14、14、5 条——前端没数 files 事件，还把它后面当成「文字没完」
 function recParity() {
   console.log("\n记账口径：服务端记的 vs 前端数的");
-  const serverSrc = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+  const serverSrc = fs.readFileSync(entry("server"), "utf8");
   const a = serverSrc.indexOf("function recordingEmit(");
   const recSrc = serverSrc.slice(a, serverSrc.indexOf("\nconst app = express();", a));
   const appSrc = fs.readFileSync(path.join(ROOT, "public", "js", "app-02.js"), "utf8");

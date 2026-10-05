@@ -20,6 +20,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { mod } = require("./lib/mod");
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "owb-explore-"));
 process.env.OPENWORKBUDDY_HOME = TMP;
@@ -27,10 +28,10 @@ process.env.OPENWORKBUDDY_DATA_DIR = path.join(TMP, "data");
 fs.mkdirSync(process.env.OPENWORKBUDDY_DATA_DIR, { recursive: true });
 
 const ROOT = path.join(__dirname, "..");
-const tools = require(path.join(ROOT, "tools"));
-const { McpManager } = require(path.join(ROOT, "mcp"));
-const { createAgentRuntime } = require(path.join(ROOT, "agent"));
-const cliToolview = require(path.join(ROOT, "cli-toolview"));
+const tools = require(mod("tools"));
+const { McpManager } = require(mod("mcp"));
+const { createAgentRuntime } = require(mod("agent"));
+const cliToolview = require(mod("cli-toolview"));
 
 let pass = 0, fail = 0;
 function ok(cond, name, extra) {

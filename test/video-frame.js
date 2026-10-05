@@ -10,12 +10,13 @@
  * 前几段用假 ffmpeg（一段 node 脚本，按文件名决定表现），哪都能跑。最后一段用本机真 ffmpeg 现生成
  * 一段 2 秒、一段 0.5 秒的测试片来取；没有 ffmpeg 就明说跳过（OWB_REQUIRE_FFMPEG=1 时没有算红）。
  */
+const { mod } = require("./lib/mod");
 const HOME = require("./lib/own-home")("video-frame");
 
 const fs = require("fs");
 const path = require("path");
 const cp = require("child_process");
-const VF = require(path.join(__dirname, "..", "video-frame.js"));
+const VF = require(mod("video-frame"));
 
 let pass = 0, fail = 0;
 const ok = (cond, msg, detail) => {
@@ -126,7 +127,7 @@ const base = { spawn: fakeSpawn, ffmpeg: "/fake/ffmpeg", tmpRoot: TMP, platform:
   }
 
   console.log("\n【5】真 ffmpeg");
-  const mb = await require(path.join(__dirname, "..", "lib", "media-probe.js")).resolveMediaBins().catch(() => null);
+  const mb = await require(mod("media-probe")).resolveMediaBins().catch(() => null);
   const ffmpeg = mb && mb.ffmpeg && mb.ffmpeg.bin;
   if (!ffmpeg) {
     if (process.env.OWB_REQUIRE_FFMPEG === "1") ok(false, "OWB_REQUIRE_FFMPEG=1 却找不到 ffmpeg", mb && mb.ffmpeg);

@@ -20,6 +20,7 @@
  * 去掉修复跑一遍，前两条当场红——那句红字就是用户截图里的原文。
  */
 
+const { entry } = require("./lib/entry");
 if (!process.versions.electron) {
   const fs0 = require("fs");
   let bin = null;
@@ -97,7 +98,7 @@ llm.listen(0, "127.0.0.1", () => {
   cfg.mcp_servers = [];
   cfg.agent = { ...(cfg.agent || {}), max_steps: 4, llm_timeout_ms: 20000 };
   fs.writeFileSync(path.join(home, "config.json"), JSON.stringify(cfg));
-  child = spawn(process.env.OWB_NODE || "node", [path.join(ROOT, "server.js")], {
+  child = spawn(process.env.OWB_NODE || "node", [entry("server")], {
     cwd: ROOT,
     env: { ...process.env, ELECTRON_RUN_AS_NODE: "", OPENWORKBUDDY_HOME: home, OPENWORKBUDDY_DATA_DIR: dataDir, HOST: "127.0.0.1", PORT: "0" },
   });

@@ -21,10 +21,11 @@ const os = require("os");
 const path = require("path");
 const assert = require("assert");
 const { spawnSync } = require("child_process");
+const { mod } = require("./lib/mod");
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "owb-media-probe-"));
 process.env.OPENWORKBUDDY_HOME = path.join(TMP, "home");
-const MP = require("../lib/media-probe");
+const MP = require(mod("media-probe"));
 
 let pass = 0, fail = 0;
 const ok = (v, m, extra) => { if (v) pass++; else { fail++; console.error("  ❌", m, extra === undefined ? "" : "\n     " + extra); } };

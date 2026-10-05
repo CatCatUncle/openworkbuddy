@@ -20,6 +20,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { spawnSync } = require("child_process");
+const { mod } = require("./lib/mod");
 // 赶在 require 引擎 / agent 之前：不然单独跑时 trace 记进用户真在用的 workspace/（见 test/lib/own-home.js）
 require("./lib/own-home")("engine-resilience");
 
@@ -48,7 +49,7 @@ const line = (o) => `process.stdout.write(${JSON.stringify(JSON.stringify(o) + "
 
 async function partResultErrors() {
   console.log("\n— ① result 里报的错 —");
-  const claude = require(path.join(ROOT, "engines", "claude-code"));
+  const claude = require(mod("claude-code"));
   const tryRun = async (bin) => { try { return { r: await claude.run({ prompt: "hi", cwd: home, bin }) }; } catch (e) { return { e }; } };
 
   {
@@ -81,8 +82,8 @@ async function partResultErrors() {
 
 async function partWriteHints() {
   console.log("\n— ⑤ 点名写的文件报上去（几条对话共用一趟扫描时靠它认主）—");
-  const claude = require(path.join(ROOT, "engines", "claude-code"));
-  const codex = require(path.join(ROOT, "engines", "codex"));
+  const claude = require(mod("claude-code"));
+  const codex = require(mod("codex"));
   const tool = (name, input) => line({ type: "assistant", message: { content: [{ type: "tool_use", id: "t-" + name, name, input }] } });
   const bin = fakeBin("cc-write",
     tool("Write", { file_path: "汇总.csv", content: "a" }) +
@@ -103,7 +104,7 @@ async function partWriteHints() {
 
 async function partKill() {
   console.log("\n— ② 按停止当场杀、硬退出一把收 —");
-  const { runJsonl, killAll } = require(path.join(ROOT, "engines", "jsonl"));
+  const { runJsonl, killAll } = require(mod("jsonl"));
   // 假引擎：派一个孙进程（像 claude 起的 bash），把两个 pid 写出来，然后一直挂着
   const hang = (tag) => fakeBin("hang-" + tag, `
 const { spawn } = require("child_process");
@@ -166,7 +167,7 @@ setInterval(() => {}, 1000);
 
 function partTempDirs() {
   console.log("\n— ③ 临时目录在进程退出时删掉 —");
-  const bridge = path.join(ROOT, "engines", "bridge.js");
+  const bridge = mod("bridge");
   const run = (tail) => spawnSync(process.execPath, ["-e", `
 const b = require(${JSON.stringify(bridge)}), path = require("path");
 const m = b.writeMcpConfig({ x: { command: "node", env: { KEY: "sk-secret" } } });
@@ -200,10 +201,10 @@ ${tail}
 
 async function partStaleResume() {
   console.log("\n— ④ 续跑 id 失效：没动过工具就重开一根 —");
-  const engines = require(path.join(ROOT, "engines"));
-  const { createAgentRuntime } = require(path.join(ROOT, "agent"));
-  const { McpManager } = require(path.join(ROOT, "mcp"));
-  const llm = require(path.join(ROOT, "llm")).createLLM({ models: [{ name: "桩", provider: "openai", base_url: "http://127.0.0.1:9/v1", api_key: "sk-test-offline", model: "mock", stream: false }] });
+  const engines = require(mod("engines"));
+  const { createAgentRuntime } = require(mod("agent"));
+  const { McpManager } = require(mod("mcp"));
+  const llm = require(mod("llm")).createLLM({ models: [{ name: "桩", provider: "openai", base_url: "http://127.0.0.1:9/v1", api_key: "sk-test-offline", model: "mock", stream: false }] });
 
   let script = () => ({ finalText: "" });
   const calls = [];

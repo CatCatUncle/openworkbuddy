@@ -19,9 +19,11 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { mod } = require("./lib/mod");
+const { entry } = require("./lib/entry");
 const { src } = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
 const { spawnSync } = require("child_process");
-const wt = require("../worktree");
+const wt = require(mod("worktree"));
 
 let pass = 0, fail = 0;
 function ok(cond, name, extra) {
@@ -236,7 +238,7 @@ console.log("\n⑩ 接线");
   ok(!legacyRe.test("const opened = worktree.open(worktreeStore(), { repo: p.repo, session: sessionId });"), "反向对照：改之前那句（没带 legacy）认得出来");
   ok(!/worktree\.open\(worktreeStore\(\)/.test('const opened = worktree.open(WORKTREE_DIR, { repo: p.repo, session: sessionId });'),
     "反向对照：改之前那句直接拿 WORKTREE_DIR 的写法认得出来");
-  const cli = fs.readFileSync(path.join(__dirname, "..", "cli.js"), "utf8");
+  const cli = fs.readFileSync(entry("cli"), "utf8");
   ok(/withWorkspace\(opened\.dir, \(\) => runOnceIn\(/.test(cli),
     "★命令行用 withWorkspace 包住这一趟★ 交互模式下 enterWith 会把工作目录留给 REPL，之后 /cwd 显示的就是分身目录");
   ok(/sub === "worktree"/.test(cli), "openworkbuddy worktree 这条子命令在");
@@ -244,7 +246,7 @@ console.log("\n⑩ 接线");
     && !/const STORE = dataPath\("data", "worktrees"\)/.test(cli),
     "★命令行开分身、列分身也走挪过的默认位置★ 终端里撞车跟网页上是同一个坑");
   ok(/wt\.open\(STORE, \{[^}]*legacy: \[dataPath\("data", "worktrees"\)\]/.test(cli), "★命令行开分身也把挪走之前的老地方交给 open()★");
-  const ag = fs.readFileSync(path.join(__dirname, "..", "agent.js"), "utf8");
+  const ag = fs.readFileSync(mod("agent"), "utf8");
   ok(/worktreeLine\(\)/.test(ag) && /不要自己 merge\/rebase 回主分支/.test(ag),
     "★提示词里明说不许自己 merge★ 不说这句它会很热心地帮你合掉，而冲突怎么取舍是它最没资格拍板的事");
   const doc = fs.readFileSync(path.join(__dirname, "..", "docs", "命令行用法.md"), "utf8");
@@ -256,7 +258,7 @@ console.log("\n⑩ 接线");
 // 它要是会串到别的请求上，那就是把 A 的活儿写进 B 的仓库——比不隔离严重得多
 console.log("\n⑪ 换工作目录只染自己这条链");
 (async () => {
-  const { withWorkspace, enterWorkspace, getWorkspaceDir } = require("../tools");
+  const { withWorkspace, enterWorkspace, getWorkspaceDir } = require(mod("tools"));
   const A = path.join(TMP, "链A"), B = path.join(TMP, "链B");
   fs.mkdirSync(A, { recursive: true }); fs.mkdirSync(B, { recursive: true });
   const seen = {};
@@ -450,7 +452,7 @@ console.log("\n⑪ 换工作目录只染自己这条链");
     fs.mkdirSync(path.dirname(planted), { recursive: true });
     git(app, "worktree", "add", "-q", "-b", "手放的", planted);
     const Module = require("module");
-    const WT = path.join(__dirname, "..", "worktree.js");
+    const WT = mod("worktree");
     const wsrc = fs.readFileSync(WT, "utf8");
     const guardLine = ".filter((l) => l && !inRepo(l))";
     ok(wsrc.includes(guardLine), "（反向对照要换的那句还在源码里）");

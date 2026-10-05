@@ -17,7 +17,8 @@
  * 每一节都配反向对照：既证明该过的过，也证明**换一个输入就不过**。
  */
 const path = require("path");
-const totp = require(path.join(__dirname, "..", "totp"));
+const { mod } = require("./lib/mod");
+const totp = require(mod("totp"));
 
 let pass = 0, fail = 0;
 const ok = (cond, msg, extra) => {

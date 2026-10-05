@@ -25,6 +25,8 @@
  * 路径安全、账号隔离、接口形状。不联网、不花钱、不起 Electron。
  *   node test/library-cover.js
  */
+const { mod } = require("./lib/mod");
+const { entry } = require("./lib/entry");
 const HOME = require("./lib/own-home")("library-cover");
 
 const fs = require("fs");
@@ -34,8 +36,8 @@ const crypto = require("crypto");
 const cp = require("child_process");
 const { EventEmitter } = require("events");
 const ROOT = path.join(__dirname, "..");
-const libCover = require(path.join(ROOT, "lib-cover.js"));
-const retention = require(path.join(ROOT, "retention.js"));
+const libCover = require(mod("lib-cover"));
+const retention = require(mod("retention"));
 
 let pass = 0, fail = 0, finished = false;
 // 队列自己的定时器全是 unref 的（常驻服务里不该因为它们拖着不退）。测试进程里没别的东西撑着事件循环，
@@ -522,8 +524,8 @@ function niced(call, prios) {
     }
     // 真的子进程封装（ql-thumb.js / video-frame.js）：从它们留的 spawn 口子注一个假的进去，
     // 看子进程是不是 nice -n 10、一直不退的是不是到点连进程组一起被杀
-    const ql = require(path.join(ROOT, "ql-thumb.js"));
-    const vf = require(path.join(ROOT, "video-frame.js"));
+    const ql = require(mod("ql-thumb"));
+    const vf = require(mod("video-frame"));
     const direct = [
       ["qlThumb", "a.pdf", (f, spawn) => ql.qlThumb(f, { size: 320, timeoutMs: 200, spawn, platform: "darwin" })],
       ["videoFrame", "a.mp4", (f, spawn) => vf.videoFrame(f, { width: 320, timeoutMs: 400, spawn, platform: "darwin", ffmpeg: "ffmpeg" })],
@@ -592,8 +594,8 @@ function niced(call, prios) {
     fs.writeFileSync(script, `
       const path = require("path"), fs = require("fs");
       const [ROOT, pidFile, file, mode] = process.argv.slice(2);
-      const libCover = require(path.join(ROOT, "lib-cover.js"));
-      const ql = require(path.join(ROOT, "ql-thumb.js"));
+      const libCover = require(${JSON.stringify(mod("lib-cover"))});
+      const ql = require(${JSON.stringify(mod("ql-thumb"))});
       const hang = "require('fs').writeFileSync(" + JSON.stringify(pidFile) + ", String(process.pid)); setInterval(() => {}, 1000)";
       const q = libCover.createCoverQueue({
         cacheDir: path.join(path.dirname(file), "thumbs"), platform: "darwin", timeouts: { office: 60000 }, log: () => {},
@@ -706,7 +708,7 @@ function niced(call, prios) {
   // ---------------------------------------------------------------------------------------------
   // 真起 server.js：⑩ 路径、⑪ 账号、⑫ 摘录、接口形状
   // ---------------------------------------------------------------------------------------------
-  const prefs = require(path.join(ROOT, "prefs.js"));
+  const prefs = require(mod("prefs"));
   const LIB = path.join(HOME, "data", "library");                          // 管理员（lib）的资料库
   const LIB_BOB = path.join(HOME, "data", "library-users", prefs.keyOf("bob")); // 普通成员 bob 的资料库
   const WS = path.join(HOME, "workspace");
@@ -929,7 +931,7 @@ function niced(call, prios) {
 
   await section("⑫b 摘录只读前 16KB：盯着 read 看", async () => {
     // 进程内直接调 excerptRead，把 fs.promises.open 换成数字节的：读到的字节数就是证据
-    const lib = require(path.join(ROOT, "routes", "library.js"));
+    const lib = require(mod("routes/library"));
     const fsp = fs.promises;
     const origOpen = fsp.open;
     let readBytes = 0, readPos = [];
@@ -1005,7 +1007,7 @@ async function stopServer(child) {
  */
 function bootRealServer(env, { timeoutMs = 60000, port = "0" } = {}) {
   const { spawn } = require("child_process");
-  const child = spawn(process.execPath, [path.join(ROOT, "server.js")], {
+  const child = spawn(process.execPath, [entry("server")], {
     env: { ...process.env, ...env, HOST: "127.0.0.1", PORT: String(port) },
     stdio: ["ignore", "pipe", "pipe"],
   });

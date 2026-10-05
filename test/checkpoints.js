@@ -12,9 +12,10 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const ck = require("../checkpoints");
-const repl = require("../repl-commands");
-const ap = require("../cli-approve");
+const { mod } = require("./lib/mod");
+const ck = require(mod("checkpoints"));
+const repl = require(mod("repl-commands"));
+const ap = require(mod("cli-approve"));
 
 let pass = 0, fail = 0;
 function ok(cond, name, extra) {

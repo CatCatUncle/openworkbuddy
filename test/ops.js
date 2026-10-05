@@ -24,6 +24,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { mod } = require("./lib/mod");
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "owb-ops-"));
 process.env.OPENWORKBUDDY_DATA_DIR = path.join(TMP, "data");
@@ -33,9 +34,9 @@ fs.mkdirSync(process.env.OPENWORKBUDDY_LOG_DIR, { recursive: true });
 
 const ROOT = path.join(__dirname, "..");
 // 这三个模块都在 require 的那一刻把目录算好，所以环境变量必须在上面就设好
-const log = require(path.join(ROOT, "log"));
-const metrics = require(path.join(ROOT, "metrics"));
-const usage = require(path.join(ROOT, "usage-store"));
+const log = require(mod("log"));
+const metrics = require(mod("metrics"));
+const usage = require(mod("usage-store"));
 
 const LOG_DIR = log._internals.DIR;
 const DATA_DIR = process.env.OPENWORKBUDDY_DATA_DIR;
@@ -419,8 +420,8 @@ console.log("\n【12】用量账本：老的一个大 JSON 拆成月分片");
   const prev = process.env.OPENWORKBUDDY_DATA_DIR;
   process.env.OPENWORKBUDDY_DATA_DIR = path.join(T2, "data");
   fs.mkdirSync(process.env.OPENWORKBUDDY_DATA_DIR, { recursive: true });
-  delete require.cache[require.resolve(path.join(ROOT, "usage-store"))];
-  const u2 = require(path.join(ROOT, "usage-store"));
+  delete require.cache[require.resolve(mod("usage-store"))];
+  const u2 = require(mod("usage-store"));
 
   // 老账本是「新的在前」的一个大数组
   fs.writeFileSync(u2._internals.LEGACY, JSON.stringify([
@@ -516,7 +517,7 @@ console.log("\n【13】指标：每分钟那个循环真的会滚 + 会推");
     await nap(100);
     const c = metrics.snapshot();
     ok(!("loop_max_ms" in c) && !("loop_util" in c), "stop 之后表关了，行里不再有这几格");
-    const src = fs.readFileSync(path.join(__dirname, "..", "metrics.js"), "utf8");
+    const src = fs.readFileSync(mod("metrics"), "utf8");
     ok(/function start\([\s\S]{0,300}loopArm\(\)/.test(src) && /function stop\(\)[\s\S]{0,120}loopDisarm\(\)/.test(src), "★start 开表、stop 关表★ 服务端只调 start/stop，漏一头就是永远没数或者关不掉");
     ok(!/function stop\(\)[\s\S]{0,120}loopDisarm\(\)/.test("function stop() {\n  if (timer) { clearInterval(timer); timer = null; }\n}"), "反向对照：没关表的 stop 会被认出来");
   }

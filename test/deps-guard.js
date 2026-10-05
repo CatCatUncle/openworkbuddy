@@ -13,6 +13,7 @@
  * 改应用的 package.json、往应用的 node_modules 里装，uninstall 还会删应用的依赖。
  * 第 1 组先把这个洞在没护栏的样子下复现出来（★反向对照★），后面每一组查护栏把它堵住了。
  */
+const { mod } = require("./lib/mod");
 const HOME = require("./lib/own-home")("deps-guard");
 
 const fs = require("fs");
@@ -37,10 +38,10 @@ Object.assign(process.env, {
   XDG_CONFIG_HOME: path.join(HOME, "xdg-config"),
 });
 
-const tools = require(path.join(ROOT, "tools.js"));
-const guard = require(path.join(ROOT, "lib", "deps-guard.js"));
-const wsBrowse = require(path.join(ROOT, "lib", "ws-browse.js"));
-const CT = require(path.join(ROOT, "code-tools.js"));
+const tools = require(mod("tools"));
+const guard = require(mod("deps-guard"));
+const wsBrowse = require(mod("ws-browse"));
+const CT = require(mod("code-tools"));
 
 let pass = 0, fail = 0;
 const ok = (cond, msg, detail) => {
@@ -297,7 +298,7 @@ console.log("status " + r.status + " " + r.stderr);`, 120000, N.task);
     ok(!sites[0][1].test(cut), "★反向对照★ 把 run_shell 那处删掉，上面那条就认不出来（正则真在看这一处）");
     ok(/dropLoneFence\(full\)[\s\S]{0,200}readdirSync\(full\)\.length/.test(src("server")),
       "server.js 收尾删空任务文件夹之前，先把孤零零的围栏拿掉");
-    const browseSrc = fs.readFileSync(path.join(ROOT, "lib", "ws-browse.js"), "utf8");
+    const browseSrc = fs.readFileSync(mod("ws-browse"), "utf8");
     ok(/const depsGuard = require\("\.\/deps-guard"\)/.test(browseSrc) && /depsGuard\.hiddenByFence\(name, fullPath\)/.test(browseSrc),
       "跳过规矩只有一份（ws-browse.js 的 skipEntry）：成果列表、快照、文件面板共用");
 
@@ -324,7 +325,7 @@ console.log("status " + r.status + " " + r.stderr);`, 120000, N.task);
     // 2026-09-29 复审：围栏先立好，npm init 往已有的 package.json 里并字段、记号原样留着。
     // 只认记号的话，这份真的工程清单（连同锁文件）在文件面板里藏掉；文件夹里只剩它时收尾还会把它删了
     const Module = require("module");
-    const GUARD_SRC = path.join(ROOT, "lib", "deps-guard.js");
+    const GUARD_SRC = mod("deps-guard");
     const cut = "yes = !!(pj && pj[MARK]) && Object.keys(pj).every((k) => FENCE_KEYS.has(k));";
     const srcNow = fs.readFileSync(GUARD_SRC, "utf8");
     ok(srcNow.includes(cut), "反向对照要换的那句还在源码里（不在的话下面的对照是空跑）");

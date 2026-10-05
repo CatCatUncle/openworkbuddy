@@ -17,6 +17,7 @@
 // 装了兜底立刻退出并打出真正的错。
 // Electron 的 uncaughtException 处理里有一句「用户自己装了处理器就不弹框」
 // （判据是 listenerCount > 1），所以这一段必须在任何 require 之前。
+const { mod } = require("./lib/mod");
 process.on("uncaughtException", (e) => {
   console.error("\u274c 前端测试 加载期就炸了（不是断言失败，是这个文件自己起不来）：");
   console.error((e && e.stack) || String(e));
@@ -2293,7 +2294,7 @@ const TRAIL_SRC = [
   // 内容配方的开头表单卡：makeAskCard 见到 fields 就转给它画。整个文件就这一张卡，整份注进来；
   // 字段规格也用 recipes.js 的真源（config 空 = 没配生视频/配音/生图，好验「用不了的照样摆着」）
   fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-08-recipe.js"), "utf8"),
-  "var RECIPE_FORM = " + JSON.stringify(require(path.join(__dirname, "..", "recipes")).formFor("promo-video", { config: {}, hasRenderer: true, brands: [] })) + ";",
+  "var RECIPE_FORM = " + JSON.stringify(require(mod("recipes")).formFor("promo-video", { config: {}, hasRenderer: true, brands: [] })) + ";",
 ].join("\n");
 const UI_CSS = fs.readFileSync(path.join(__dirname, "..", "public", "css", "ui.css"), "utf8");
 const TRAIL_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style>"
@@ -2319,7 +2320,7 @@ const TRAIL_STUBS = [
   // 按钮上的字用 modes.js 的真源——跟 /api/modes 发给前端的是同一份，不在测试里再抄一遍
   "var SENT = []; doSend = (...a) => { SENT.push(a); }; var MODES = []; setMode = (m) => { MODES.push(m); };"
   + " var BUSY = false; curBusy = () => BUSY; var TOASTS = []; toast = (m) => { TOASTS.push(m); };",
-  "var planHandoff = " + JSON.stringify(require(path.join(__dirname, "..", "modes")).PLAN_HANDOFF) + "; var planAskEdit = (p) => { inputEl.placeholder = p; };",
+  "var planHandoff = " + JSON.stringify(require(mod("modes")).PLAN_HANDOFF) + "; var planAskEdit = (p) => { inputEl.placeholder = p; };",
   "var isReplaying = false;",
   // files 事件那一支：本对话那格、它摊在根上的老产出（这屏没有分文件夹，空着就是不分）
   "var sessionDirs = new Map(), sessionRootFiles = new Map(), sessionAttachSpots = new Map();",
@@ -15241,7 +15242,7 @@ app.whenReady().then(async () => {
     const mmdTmp = fs.mkdtempSync(path.join(require("os").tmpdir(), "owb-mmd-"));
     try {
       const { bad: MMD_BAD, ok: MMD_OK } = require("./fixtures/mermaid");
-      const { repairMermaid } = require("../diagram");
+      const { repairMermaid } = require(mod("diagram"));
       // mermaid.min.js 有 2.8MB，data: URL 装不下，落临时文件走 loadFile（跟 browser-render.js 一个路子）
       const mermaidSrc = fs
         .readFileSync(path.join(__dirname, "..", "node_modules", "mermaid", "dist", "mermaid.min.js"), "utf8")
@@ -15408,7 +15409,7 @@ app.whenReady().then(async () => {
     {
       const os = require("os");
       const { nativeImage } = require("electron");
-      const T = require("../thumb");
+      const T = require(mod("thumb"));
       const namesTH = [];
       const okTH = (name, cond, extra) => {
         if (!cond) throw new Error("[缩略图] " + name + (extra === undefined ? "" : "（实际：" + extra + "）"));

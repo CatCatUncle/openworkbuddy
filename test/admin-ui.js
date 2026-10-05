@@ -22,6 +22,7 @@
 // 装了兜底立刻退出并打出真正的错。
 // Electron 的 uncaughtException 处理里有一句「用户自己装了处理器就不弹框」
 // （判据是 listenerCount > 1），所以这一段必须在任何 require 之前。
+const { mod } = require("./lib/mod");
 process.on("uncaughtException", (e) => {
   console.error("\u274c 企业后台测试 加载期就炸了（不是断言失败，是这个文件自己起不来）：");
   console.error((e && e.stack) || String(e));
@@ -63,12 +64,12 @@ const WATCHDOG = setTimeout(() => {
 
 const express = require("express");
 const ROOT = path.join(__dirname, "..");
-const account = require(path.join(ROOT, "account"));
-const org = require(path.join(ROOT, "org"));
-const admin = require(path.join(ROOT, "admin"));
-const tools = require(path.join(ROOT, "tools"));
-const chatModels = require(path.join(ROOT, "chat-models"));
-const mediaModels = require(path.join(ROOT, "media-models"));
+const account = require(mod("account"));
+const org = require(mod("org"));
+const admin = require(mod("admin"));
+const tools = require(mod("tools"));
+const chatModels = require(mod("chat-models"));
+const mediaModels = require(mod("media-models"));
 
 const BASE_WS = path.join(TMP, "workspace");
 fs.mkdirSync(BASE_WS, { recursive: true });
@@ -852,7 +853,7 @@ const RENDER_LIC = (d) => `PAGES.license.render(${JSON.stringify(d)})`;
   // 合规的人筛完一个月、页脚写着 3000 条，只能一页一页导 60 次。
   // 假话出现在审计页尤其贵：看这张表的人正是拿它当证据的人。
   console.log("\n【6】审计保留上限：存满了说出来，导出带得走全部");
-  const auditOrg = require("../org");
+  const auditOrg = require(mod("org"));
   // 前面的用例把筛选停在「上月 + 添加成员」上（面板状态是留着的），先清回全部
   const RESET_AUDIT = `(async () => {
     const nap = (ms) => new Promise(r=>setTimeout(r,ms));

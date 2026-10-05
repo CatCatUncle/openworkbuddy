@@ -24,12 +24,13 @@
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
+const { mod } = require("./lib/mod");
 
 const ROOT = path.join(__dirname, "..");
 const srcLib = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
-const tv = require(path.join(ROOT, "task-verdict"));
-const systemone = require(path.join(ROOT, "systemone"));
-const { createScheduler } = require(path.join(ROOT, "scheduler"));
+const tv = require(mod("task-verdict"));
+const systemone = require(mod("systemone"));
+const { createScheduler } = require(mod("scheduler"));
 const { needsSecondOpinion, deliveryQuestions, readDelivery, doubtMessage, DELIVERY_KEY, SECOND_OPINION_MIN, judgeRun } = tv;
 
 let pass = 0, fail = 0, finished = false;

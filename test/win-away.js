@@ -13,6 +13,7 @@
  * isVisible / isMinimized 在实例上换成假的——要验的是「接线对不对、页面上真停没停」，不是 macOS 的窗口管理。
  * 每条正向断言都配一条反向对照：没挂 throttleWhenAway 的窗口收起来什么都不变。
  */
+const { mod } = require("./lib/mod");
 if (!process.versions.electron) {
   const fs0 = require("fs");
   let bin = null;
@@ -33,7 +34,7 @@ const fs = require("fs");
 const path = require("path");
 const http = require("http");
 const { app, BrowserWindow } = require("electron");
-const { throttleWhenAway } = require("../win-away");
+const { throttleWhenAway } = require(mod("win-away"));
 
 // 离屏窗口看不见，但 macOS 照样往程序坞塞一个跳动的图标
 if (process.platform === "darwin" && app.dock && app.dock.hide) app.dock.hide();

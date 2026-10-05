@@ -16,6 +16,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { mod } = require("./lib/mod");
 
 // 必须在 require 任何业务模块之前定好数据根：paths.js 是在模块加载时一次性算出来的
 const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "owb-cli-live-"));
@@ -24,7 +25,7 @@ delete process.env.OPENWORKBUDDY_CLI_LIVE;
 
 const ROOT = path.join(__dirname, "..");
 const { src } = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
-const live = require(path.join(ROOT, "cli-live"));
+const live = require(mod("cli-live"));
 
 let pass = 0, fail = 0;
 const ok = (cond, msg, extra) => {
@@ -280,7 +281,7 @@ console.log("\n⑪ 服务端六个口子（/api/lanes · /api/cli/live · stream
   // account 也得注：canRemoteControl 里要问它开关开没开。给个只认这一个键的替身，
   // 比拉起真的组织表干净，也让下面能把开关拨来拨去
   new Function("app", "lanes", "cliLive", "isPlatformOwner", "account", srcAll.slice(a0, a1) + "\n" + srcAll.slice(a, b))(
-    fakeApp, require(path.join(ROOT, "lanes")), live, () => owner, { remoteAllowed: () => remoteOn });
+    fakeApp, require(mod("lanes")), live, () => owner, { remoteAllowed: () => remoteOn });
   const routeOf = (m, p2) => (routes.find((r) => r.m === m && r.p === p2) || {}).h;
   eq(routes.length, 6, "六个口子一个不少");
 

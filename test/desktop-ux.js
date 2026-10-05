@@ -29,6 +29,7 @@ const path = require("path");
 const fs = require("fs");
 const os = require("os");
 const vm = require("vm");
+const { mod } = require("./lib/mod");
 
 // repl-commands → security 会去读数据目录，require 之前先把家搬到临时目录，别碰真的那份
 const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "owb-desktopux-home-"));
@@ -66,8 +67,8 @@ function slice(text, from, to, what) {
 const CJK = /[㐀-鿿＀-￯　-〿]/;
 
 (async () => {
-  const modes = require(path.join(ROOT, "modes"));
-  const repl = require(path.join(ROOT, "repl-commands"));
+  const modes = require(mod("modes"));
+  const repl = require(mod("repl-commands"));
   const H = modes.PLAN_HANDOFF;
   const APP01 = read("public", "js", "app-01.js");
   const APP02 = read("public", "js", "app-02.js");
@@ -209,7 +210,7 @@ const CJK = /[㐀-鿿＀-￯　-〿]/;
   });
 
   await section("【7】审批带着截止时刻和会话号出来", async () => {
-    const security = require(path.join(ROOT, "security"));
+    const security = require(mod("security"));
     const seen = [];
     const off = security.watchApprovals((ev) => seen.push(ev));
     try {

@@ -25,6 +25,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { spawnSync } = require("child_process");
+const { mod } = require("./lib/mod");
 
 const HERE = __dirname;
 const ROOT = path.join(HERE, "..");
@@ -60,7 +61,7 @@ section("1 护住的就是 paths.js 算出来的那一处");
   // 子进程里没有 OPENWORKBUDDY_HOME，paths.js 自己算
   const r = spawnSync(process.execPath, ["-e",
     "const p=require(process.argv[1]);console.log(JSON.stringify({dev:p.DATA_DIR,packaged:require('path').join(require('os').homedir(),'OpenWorkBuddy'),isPackaged:p.isPackaged()}))",
-    path.join(ROOT, "paths.js")], { env: bareEnv({}), encoding: "utf8" });
+    mod("paths")], { env: bareEnv({}), encoding: "utf8" });
   let got = null; try { got = JSON.parse(r.stdout); } catch {}
   ok(got && got.isPackaged === false && got.dev === T.roots.dev, "开发态的 DATA_DIR（没设 OPENWORKBUDDY_HOME）就是护栏护的那个仓库根", { paths: got, guard: T.roots.dev, err: r.stderr.slice(0, 300) });
   ok(got && got.packaged === T.roots.installed, "装机态那份 ~/OpenWorkBuddy 也在里面", { paths: got && got.packaged, guard: T.roots.installed });
@@ -237,7 +238,7 @@ section("3 all.js 真判得红，也真放得过");
   fs.copyFileSync(path.join(HERE, "all.js"), path.join(FAKE, "test", "all.js"));
   fs.copyFileSync(GUARD, path.join(FAKE, "test", "lib", "real-data-guard.js"));
   fs.copyFileSync(path.join(HERE, "lib", "own-home.js"), path.join(FAKE, "test", "lib", "own-home.js"));
-  fs.copyFileSync(path.join(ROOT, "paths.js"), path.join(FAKE, "paths.js"));
+  fs.copyFileSync(mod("paths"), path.join(FAKE, "paths.js"));
   // paths.js 的仓库根锚点：它按自己的位置往上数两级，放到假仓库同一位置，算出来的根就是假仓库
   fs.mkdirSync(path.join(FAKE, "src", "platform"), { recursive: true });
   fs.copyFileSync(path.join(ROOT, "src", "platform", "root.js"), path.join(FAKE, "src", "platform", "root.js"));
@@ -383,7 +384,7 @@ section("4 单独跑也不碰真目录、不留垃圾");
   fs.mkdirSync(OH);
   const ownHome = JSON.stringify(path.join(HERE, "lib", "own-home.js"));
   const probe = (tail) => spawnSync(process.execPath, ["-e",
-    `const h = require(${ownHome})("probe"); const p = require(${JSON.stringify(path.join(ROOT, "paths.js"))});
+    `const h = require(${ownHome})("probe"); const p = require(${JSON.stringify(mod("paths"))});
 console.log(JSON.stringify({ home: h, env: process.env.OPENWORKBUDDY_HOME, data: p.DATA_DIR }));
 require("fs").writeFileSync(require("path").join(h, "x.txt"), "x");
 ${tail}`], { env: guardEnv(path.join(TMP, "own-home.jsonl"), { TMPDIR: OH }), encoding: "utf8" });

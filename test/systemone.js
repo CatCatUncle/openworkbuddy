@@ -22,11 +22,12 @@
 
 const path = require("path");
 const fs = require("fs");
+const { mod } = require("./lib/mod");
 
 const ROOT = path.join(__dirname, "..");
 const srcLib = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
-const S = require(path.join(ROOT, "systemone"));
-const jev = require(path.join(ROOT, "jev"));
+const S = require(mod("systemone"));
+const jev = require(mod("jev"));
 
 let pass = 0, fail = 0;
 function ok(cond, name, extra) {
@@ -293,7 +294,7 @@ async function rest() {
 // ─────────────────────────────────────────────────────────────
 console.log("\n⑫ 挂在了该挂的地方：渠道目录、两个下拉、额度、接口、命令行");
 {
-  const mm = require(path.join(ROOT, "media-models"));
+  const mm = require(mod("media-models"));
   const k = mm.PROVIDER_KINDS.find((x) => x.kind === "typesafe");
   ok(!!k, "渠道目录里有 TypeSafe 这一类，设置页里能加一条");
   eq(!!(k && k.decide_only), true, "标了 decide_only");
@@ -303,7 +304,7 @@ console.log("\n⑫ 挂在了该挂的地方：渠道目录、两个下拉、额�
   ok(/filter\(\(k\) => k\.chat_only \|\| k\.decide_only\)/.test(ui), "★媒体那个下拉把它挡在外面★ 它连文字都不产，更不可能画图配音");
   ok(/filter\(\(k\) => k\.media_only \|\| k\.decide_only\)/.test(ui), "★对话那个下拉也挡★ 判断模型没有 /chat/completions，挂上去每一趟都是 400");
 
-  const q = require(path.join(ROOT, "quota"));
+  const q = require(mod("quota"));
   ok(q.CAP_KEYS.includes("decide"), "额度表里有它——一段脚本跑一夜能问出几十万道");
   eq(q.billable("decide"), false, "（反向对照）不进钱闸：价目表里没有它，硬按次折钱只会算出个假数");
 
@@ -317,7 +318,7 @@ console.log("\n⑫ 挂在了该挂的地方：渠道目录、两个下拉、额�
   ok(/jev\.askMetered\(config,/.test(srv), "★接口也走同一条★ 路由里另手抄一遍计费，抄漏一处不报错，只是额度静悄悄地不准");
   ok(/decide_only/.test(srv), "渠道测活认得出它，不拿 /chat/completions 去 ping");
 
-  const subs = require(path.join(ROOT, "cli-args")).SUBS;
+  const subs = require(mod("cli-args")).SUBS;
   ok(subs.some((x) => x.name === "jev"), "命令行有 openworkbuddy jev");
   ok(/if \(sub === "jev"\)/.test(src("cli.js")), "而且真接上了实现——写进表里没实现是这类命令最常见的坏法");
 }
@@ -336,7 +337,7 @@ console.log("\n⑬ 上游哪天加了第四种问法：原样留着，别假装�
 // ─────────────────────────────────────────────────────────────
 console.log("\n⑭ 接到活儿上：目标验收改用判断模型，拿不准的不许打勾");
 {
-  const { createGoalEngine } = require(path.join(ROOT, "goal"));
+  const { createGoalEngine } = require(mod("goal"));
   const noul = (k, p) => ({ key: k, type: "noul", value: p, label: p > 0.5 ? "是" : "否", confidence: null, sure: S.sureOfNoul(p), probs: [], legend: [] });
   const 卡 = () => ({ dir: "", goal: { text: "出一份周报", status: "active", criteria: [{ text: "生成 docx", done: false }, { text: "发给主管", done: false }] } });
 

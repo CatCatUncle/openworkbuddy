@@ -25,7 +25,8 @@
  * 每条正向断言后面都跟反向对照：把那一条的依据抽掉，它必须变红。
  */
 
-const tools = require("../tools");
+const { mod } = require("./lib/mod");
+const tools = require(mod("tools"));
 const { SEARCH_PROVIDERS, searchProviderKey, searchProviderReady } = tools;
 const { searchBodyError, toItems, pickHits, SEARCH_HTTP_HINT } = tools._internals;
 const fs = require("fs");

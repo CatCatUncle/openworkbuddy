@@ -16,7 +16,8 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const sh = require("../shot-history");
+const { mod } = require("./lib/mod");
+const sh = require(mod("shot-history"));
 
 let pass = 0, fail = 0;
 function ok(cond, name, extra) {

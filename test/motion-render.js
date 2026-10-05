@@ -17,6 +17,7 @@
 
 // 离屏窗口只有 Electron 里才有：被 node 直接拉起来时（npm test 就是这么拉的）自己换一身皮再跑一遍；
 // 没装 electron 就跳过不算失败——纯服务端部署走的是无头 Chrome，那条路在 test/motion.js
+const { mod } = require("./lib/mod");
 if (!process.versions.electron) {
   const fs0 = require("fs");
   let bin = null;
@@ -100,9 +101,9 @@ const guard = setTimeout(() => {
 }, 240000);
 
 app.whenReady().then(async () => {
-  const HV = require("../htmlvideo");
-  const M = require("../motion-clock");
-  const MP = require("../lib/media-probe");
+  const HV = require(mod("htmlvideo"));
+  const M = require(mod("motion-clock"));
+  const MP = require(mod("media-probe"));
 
   console.log("【1】桌面版优先用离屏窗口");
   eq(HV.available(), { ok: true, backend: "electron", why: "" }, "Electron 里 available() 选 electron");

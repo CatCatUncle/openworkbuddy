@@ -30,6 +30,8 @@ const path = require("path");
 const http = require("http");
 const crypto = require("crypto");
 const { spawn } = require("child_process");
+const { mod } = require("./lib/mod");
+const { entry: entryPath } = require("./lib/entry");
 
 const ROOT = path.join(__dirname, "..");
 const J = JSON.stringify;
@@ -130,8 +132,8 @@ async function unitMain() {
   const read = (f) => { try { return fs.readFileSync(f, "utf8"); } catch { return null; } };
   let fc = null;
   try {
-    const tools = require(path.join(ROOT, "tools.js"));
-    const security = require(path.join(ROOT, "security.js"));
+    const tools = require(mod("tools"));
+    const security = require(mod("security"));
     const home = process.env.OPENWORKBUDDY_HOME;
     const ws = path.join(home, "workspace");
     fs.mkdirSync(ws, { recursive: true });
@@ -154,7 +156,7 @@ async function unitMain() {
     fs.writeFileSync(rootIdx, OLD);
 
     // ★反向对照★ 同一份 tools.js 只去掉「读过才写回根」这一条，另起一份模块：没读过也被兜到根下
-    const file = path.join(ROOT, "tools.js");
+    const file = mod("tools");
     const src = fs.readFileSync(file, "utf8");
     const mut = src.replace(' && (mode !== "write" || seenHere(r2.path))', "");
     let mutWrote = null, mutRoot = null;
@@ -212,7 +214,7 @@ async function unitMain() {
     fs.rmSync(oldRep, { force: true });
 
     // cdp：两条对话各自 navigate + screenshot，截到的是各自的页面；收一条只关它自己的标签页
-    const cdp = require(path.join(ROOT, "cdp.js"));
+    const cdp = require(mod("cdp"));
     fc = fakeChrome();
     const q = await listen(fc);
     const nav = (owner, url) => cdp.run({ action: "navigate", url, port: q, wait_ms: 0, owner });
@@ -501,7 +503,7 @@ function electronMain() {
     cfg.agent = { ...(cfg.agent || {}), max_steps: 20, llm_timeout_ms: 180000, llm_retries: 0 };
     cfg.security = { ...(cfg.security || {}), permission_mode: "full" };
     fs.writeFileSync(path.join(home, "config.json"), J(cfg));
-    server = spawn(process.env.OWB_NODE || "node", [path.join(ROOT, "server.js")], {
+    server = spawn(process.env.OWB_NODE || "node", [entryPath("server")], {
       cwd: ROOT,
       env: { ...process.env, ELECTRON_RUN_AS_NODE: "", OPENWORKBUDDY_HOME: home, OPENWORKBUDDY_DATA_DIR: dataDir, HOST: "127.0.0.1", PORT: "0", OWB_CDP_NO_LAUNCH: "1" },
     });
@@ -761,7 +763,7 @@ function electronMain() {
     fs.writeFileSync(path.join(cliHome, "config.json"), J(cfg));
     await entry("L", "命令行（openworkbuddy 一次性跑）", () => new Promise((resolve) => {
       let out = "";
-      cliKid = spawn(process.env.OWB_NODE || "node", [path.join(ROOT, "cli.js"), "-C", cliWs, "隔离 L 号：起服务、开页面", "--no-mcp"], {
+      cliKid = spawn(process.env.OWB_NODE || "node", [entryPath("cli"), "-C", cliWs, "隔离 L 号：起服务、开页面", "--no-mcp"], {
         cwd: cliWs, stdio: ["ignore", "pipe", "pipe"],
         env: { ...process.env, ELECTRON_RUN_AS_NODE: "", OPENWORKBUDDY_HOME: cliHome, OPENWORKBUDDY_DATA_DIR: path.join(cliHome, "data"), NO_COLOR: "1", OWB_CDP_NO_LAUNCH: "1" },
       });

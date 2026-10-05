@@ -27,6 +27,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const assert = require("assert");
+const { mod } = require("./lib/mod");
 const ROOT = path.join(__dirname, "..");
 
 let pass = 0, fail = 0;
@@ -183,7 +184,7 @@ function musicCombos() {
 
 /** 当前 drama-compose.js 在这些输入上的全部输出。函数（locate）不进 JSON */
 function goldenSnapshot() {
-  const C = require(path.join(ROOT, "drama-compose.js"));
+  const C = require(mod("drama-compose"));
   const I = C._internals;
   const plans = {};
   for (const c of goldenCases()) plans[c.name] = C.composePlan(c.state, c.opts);
@@ -237,7 +238,7 @@ section("【1】drama-compose 搬到 lib/timeline-compose.js 前后逐字节一�
     ]) ok(re.test(all), "golden 走到了：" + what);
   }
   // golden 里最大的画幅都是偶数边，补偶数这一步它量不到。这组数是在搬家前的 drama-compose.js（git HEAD）上跑出来的
-  const C = require(path.join(ROOT, "drama-compose.js"));
+  const C = require(mod("drama-compose"));
   const w = world({ "o1.mp4": V(2, 719, 1279), "o2.mp4": V(2, 701, 1001) });
   const odd = C.composePlan({ nodes: [shot("S1-01", { video: "o1.mp4" }), shot("S1-02", { video: "o2.mp4" })], edges: [] }, { files: w.files, onDisk: w.onDisk, probes: w.probes, ...BINS });
   ok(odd.target.w === 720 && odd.target.h === 1280 && odd.steps.some((s) => (s.argv || []).join(" ").includes("pad=720:1280:")), "最大画幅 719×1279：补成 720×1280 再拼（x264 只收偶数边）", odd.target);
@@ -251,10 +252,10 @@ if (WRITE_GOLDEN) {
   process.exit(fail ? 1 : 0);
 }
 
-const tc = require("../lib/timeline-compose");
-const subs = require("../lib/timeline-subs");
-const cards = require("../lib/timeline-cards");
-const fontFamily = require("../lib/font-family");
+const tc = require(mod("timeline-compose"));
+const subs = require(mod("timeline-subs"));
+const cards = require(mod("timeline-cards"));
+const fontFamily = require(mod("font-family"));
 
 /** 本机什么滤镜都有的那台机器 */
 const BINS_ALL = Object.freeze({ ffmpeg: "ffmpeg", ffprobe: "ffprobe", install: "brew install ffmpeg", burn: true, duck: true, limiter: true, xfade: true, zoompan: true, ass: true, overlay: true, boxblur: true });
@@ -713,8 +714,8 @@ const { execFileSync, spawnSync } = require("child_process");
 const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function runtimeSections() {
-  const jobs = require("../lib/compose-jobs");
-  const mediaProbe = require("../lib/media-probe");
+  const jobs = require(mod("compose-jobs"));
+  const mediaProbe = require(mod("media-probe"));
   const R = await mediaProbe.resolveMediaBins();
   const FF = R.ffmpeg.bin, FP = R.ffprobe.bin;
   // contracts G：CI 装了 ffmpeg 就设 OWB_REQUIRE_FFMPEG=1，那时候「没找到」是红，不是跳过——
@@ -959,7 +960,7 @@ async function realFfmpeg(jobs, FF, FP) {
 
 async function toolWiring(jobs, FF) {
   const compose = require("../src/tools/compose");
-  const M = require("../motion-clock");
+  const M = require(mod("motion-clock"));
   const WS = path.join(TMP, "ws6");
   const W = path.join(WS, "任务_1");
   fs.mkdirSync(W, { recursive: true });
@@ -1069,9 +1070,9 @@ async function toolWiring(jobs, FF) {
  * 真 resolveFile（成果子目录起算）、真 passGate（权限档位）、真 security，渲染器用不上（不开片头片尾卡、没有品牌包）
  */
 async function dispatchSmoke(FF) {
-  const tools = require("../tools");
-  const ag = require("../agent");
-  const M = require("../motion-clock");
+  const tools = require(mod("tools"));
+  const ag = require(mod("agent"));
+  const M = require(mod("motion-clock"));
 
   // 工具定义：参数只增不改；只查任务时没有时间轴，所以必填必须是空的
   const def = tools.TOOL_DEFS.find((t) => t.name === "compose_video");
@@ -1081,7 +1082,7 @@ async function dispatchSmoke(FF) {
   ok(!!def && !/[\u{1F300}-\u{1FAFF}]/u.test(def.description) && /不花钱/.test(def.description), "工具说明写了不花钱，没有 emoji", def && def.description);
 
   // 界面那一行：动词、对象、短标、图标、英文
-  const agentSrc = fs.readFileSync(path.join(ROOT, "agent.js"), "utf8");
+  const agentSrc = fs.readFileSync(mod("agent"), "utf8");
   ok(/^\s*compose_video: "合成视频",$/m.test(agentSrc), "TOOL_VERB 有 compose_video：合成视频");
   eq(ag.toolHeadline("compose_video", { timeline: JSON.stringify({ title: "测试片", segments: [{ visual: "a.png" }] }) }), "合成视频 测试片", "时间轴直接写 JSON：那一行报片名，不把一串括号引号截上去");
   eq(ag.toolHeadline("compose_video", { timeline: "timeline.json", dry_run: true }), "合成视频 timeline.json", "时间轴是文件：报文件名");

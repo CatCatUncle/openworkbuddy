@@ -32,10 +32,12 @@ const os = require("os");
 const path = require("path");
 const cp = require("child_process");
 const { EventEmitter } = require("events");
+const { mod } = require("./lib/mod");
+const { entry } = require("./lib/entry");
 
 const ROOT = path.join(__dirname, "..");
-const { createShellBridge, createOpTracker, createStallWatch } = require(path.join(ROOT, "bridge-main.js"));
-const PX = require(path.join(ROOT, "thumb-sips.js"));
+const { createShellBridge, createOpTracker, createStallWatch } = require(mod("bridge-main"));
+const PX = require(mod("thumb-sips"));
 
 const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "owb-main-stall-"));
 let pass = 0, fail = 0;
@@ -405,7 +407,7 @@ function decodePng(buf) {
 
   console.log("\n【6】网页截图的 PNG 编码不在界面线程上做（假 nativeImage，哪个系统都跑）");
   {
-    const { encodeRaw, MAX_PIXELS } = require(path.join(ROOT, "thumb-png.js"));
+    const { encodeRaw, MAX_PIXELS } = require(mod("thumb-png"));
     // 直的 RGBA → 某种排布（可选乘过透明度），模拟 toBitmap 吐出来的样子
     const layoutOf = (rgba, order, premul) => {
       const out = Buffer.alloc(rgba.length);
@@ -464,7 +466,7 @@ function decodePng(buf) {
     try { ePath = require.resolve("electron"); } catch {}
     const eWas = ePath ? require.cache[ePath] : undefined;
     if (ePath) require.cache[ePath] = /** @type {any} */ ({ id: ePath, filename: ePath, loaded: true, exports: FAKE });
-    const H = require(path.join(ROOT, "htmlshot.js"));
+    const H = require(mod("htmlshot"));
     const I = H._internals;
     const ctl = () => ({ dead: null, check() { if (this.dead) throw this.dead; } });
     const st = () => I.state().stats;
@@ -524,7 +526,7 @@ function decodePng(buf) {
       const dead = ctl();
       dead.dead = Object.assign(new Error("叫停"), { stopped: true });
       reset();
-      I.setEncoder({ file: path.join(ROOT, "thumb-worker.js") });
+      I.setEncoder({ file: mod("thumb-worker") });
       const threw = await I.pngOf(shotImg(img, 64, 40), 5000, dead).then(() => null, (e) => e);
       ok(threw === dead.dead && counts.toPNG === 0, "这一单已经被叫停：不再退回老路编一遍", { threw: threw && threw.message, counts });
 
@@ -542,7 +544,7 @@ function decodePng(buf) {
   console.log("\n【7】Windows：三件活交给隐藏网页窗口（假窗口里用 vm 跑真的页面代码，哪个系统都跑）");
   {
     const vm = require("vm");
-    const BR = require(path.join(ROOT, "browser-render.js"));
+    const BR = require(mod("browser-render"));
     const until = async (fn, ms = 3000) => {
       const t0 = Date.now();
       while (!fn()) { if (Date.now() - t0 > ms) return false; await new Promise((r) => setTimeout(r, 5)); }
@@ -751,7 +753,7 @@ function decodePng(buf) {
     }
 
     // electron-main.js 按平台选谁来做
-    const mainSrc = fs.readFileSync(path.join(ROOT, "electron-main.js"), "utf8");
+    const mainSrc = fs.readFileSync(entry("electron-main"), "utf8");
     const at = mainSrc.indexOf("function pixelsKind(");
     const pixelsKind = new Function(mainSrc.slice(at, mainSrc.indexOf("\n}\n", at) + 2) + "\nreturn pixelsKind;")();
     ok(pixelsKind("win32", {}) === "render" && pixelsKind("darwin", {}) === "sips", "Windows 交给隐藏窗口，mac 照旧交给 sips");
