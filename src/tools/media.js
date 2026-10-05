@@ -17,7 +17,7 @@ const fs = require("fs");
 const path = require("path");
 const security = require("../core/safety/security");
 const mediaModels = require("../core/model/media-models"); // 图/视频/语音/视觉的多模型选择（同一把 Key 配多个型号）
-const genCache = require("../../gen-cache"); // 生图/生视频/配音的内容寻址缓存：同一格重跑不再烧第二次钱
+const genCache = require("../domains/media/gen-cache"); // 生图/生视频/配音的内容寻址缓存：同一格重跑不再烧第二次钱
 const quota = require("../core/billing/quota"); // 按次计费的第三方 API：调之前问一句额度，调完记一笔
 const winname = require("../util/winname"); // Windows 不认的文件名（保留名、控制字符）
 

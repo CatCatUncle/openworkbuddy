@@ -349,7 +349,8 @@ const LIST = { appDataDir: APPDATA };
     ok(!panel.some((n) => segs(n) > 3) && mine.length === panel.length, "文件面板仍然只看三层（那几处要的是「最近动过什么」，这次不动它）");
     const src = fs.readFileSync(mod("tools"), "utf8");
     const body = src.slice(src.indexOf("function outputFiles()"), src.indexOf("function outputFiles()") + 3000);
-    ok(/skipEntry\(e\.name, full, APP_DATA_DIR\)/.test(body) && /require\("\.\/lib\/ws-browse"\)/.test(body), "outputFiles 用的就是 lib/ws-browse 的 skipEntry，不是自己抄的一份");
+    const wsSpec = JSON.stringify(mod.spec("tools", "ws-browse")).replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+    ok(/skipEntry\(e\.name, full, APP_DATA_DIR\)/.test(body) && new RegExp(`require\\(${wsSpec}\\)`).test(body), "outputFiles 用的就是 lib/ws-browse 的 skipEntry，不是自己抄的一份");
   });
 
   await section("⑦ 两万个文件：走得多快、撞没撞线", () => {

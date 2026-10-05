@@ -1,0 +1,360 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
+"use strict";
+/**
+ * 底层引擎：本机已装的 Codex CLI（`codex exec --json`）。
+ *
+ * 和 claude-code 那条同一个道理：用户已经在为 ChatGPT 订阅付钱，
+ * 这里就不该再让他为同一件事买第二份 API 额度。
+ *
+ * 事件流长得跟 Claude 完全不一样，得单独翻一遍：
+ *   thread.started              → 记 thread_id（续跑要用）
+ *   item.completed/agent_message→ text（Codex 是整段给，不是流式 token）
+ *   item.*  /command_execution  → tool_use + tool_result
+ *   item.*  /mcp_tool_call      → tool_use + tool_result
+ *   turn.completed              → usage
+ *   turn.failed                 → 抛异常（错误就是错误，不许当成"跑完了"）
+ *
+ * 两个默认值是拍过的，不是抄来的：
+ *   · sandbox = workspace-write —— 它得往工作目录写 PPT、报告、图片，read-only 等于废了。
+ *   · network_access = true    —— 关着网就查不了资料，本项目一半的活干不了。
+ *     这两条都会在设置页写明白，用户可以自己收紧。
+ */
+
+const { runJsonl, probeVersion } = require("./jsonl");
+const thinking = require("../core/model/thinking");
+const { resolveBin } = require("../platform/which");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const { execFile } = require("../platform/win"); // 不直接用 child_process 的：Windows 上 .cmd 垫片起不来、还闪黑窗
+const { dataPath } = require("../platform/paths");
+
+const ID = "codex";
+
+function shorten(s, n = 80) {
+  return String(s == null ? "" : s).replace(/\s+/g, " ").trim().slice(0, n);
+}
+
+const SKILL_CONTEXT_WARNING = /Skill descriptions were shortened to fit the skills context budget/i;
+// 续跑时模型和会话录下的不一样，Codex 发一条 error item 提醒，随后照常把这一轮跑完——不是失败
+const RESUME_MODEL_WARNING = /This session was recorded with model .* but is resuming with/i;
+
+/**
+ * 这条会话上一轮实际用的模型（从 CODEX_HOME/sessions 下的 rollout 文件里读最后一个 model 字段）。
+ *
+ * 为什么续跑要钉住它：用户任务做到一半在设置里换了模型，下一轮带着新 -m 去 resume，
+ * Codex 会报「recorded with model X but is resuming with Y」，而且提示缓存是跟模型走的——
+ * 实测换模型那一轮 4.3 万输入只命中 1.8 万缓存，又慢又贵。不传 -m 也不行：它会落到
+ * 自己的默认型号，而不是会话原来那个。所以新模型只对新任务生效，进行中的任务沿用原来的。
+ */
+function recordedModel(home, threadId) {
+  if (!home || !threadId || !/^[\w-]+$/.test(threadId)) return "";
+  const root = path.join(home, "sessions");
+  const find = (dir, depth) => {
+    let names = [];
+    try { names = fs.readdirSync(dir, { withFileTypes: true }); } catch { return ""; }
+    // 目录是 年/月/日，新的排在后面；倒着找，续跑的多半是最近的会话
+    for (const d of names.sort((a, b) => (a.name < b.name ? 1 : -1))) {
+      const full = path.join(dir, d.name);
+      if (depth < 3 && d.isDirectory()) { const hit = find(full, depth + 1); if (hit) return hit; }
+      else if (d.isFile() && d.name.endsWith(threadId + ".jsonl")) return full;
+    }
+    return "";
+  };
+  const file = find(root, 0);
+  if (!file) return "";
+  try {
+    // 只读尾部：长会话的 rollout 能有几十 MB，最后一个 model 字段一定在最近那几轮里
+    const fd = fs.openSync(file, "r");
+    const size = fs.fstatSync(fd).size;
+    const len = Math.min(size, 512 * 1024);
+    const buf = Buffer.alloc(len);
+    fs.readSync(fd, buf, 0, len, size - len);
+    fs.closeSync(fd);
+    const all = [...buf.toString("utf8").matchAll(/"model":"([^"]+)"/g)];
+    return all.length ? all[all.length - 1][1] : "";
+  } catch { return ""; }
+}
+
+/**
+ * Codex 把登录态、插件开关、用户技能和会话全放在 CODEX_HOME。直接让桌面助理继承整份
+ * ~/.codex 很容易发生一件很反直觉的事：技能太多时 CLI 会往 JSONL 里塞一条 error item，
+ * 即使随后已经给出了回答，调用方也会把整轮当失败。
+ *
+ * OpenWorkBuddy 因此有自己的轻量运行窝：只链接用户已有的 auth.json，绝不复制 token，
+ * 不加载全局插件/技能；线程仍保留在应用数据目录，resume 不会失效。用户原来的 Codex
+ * 终端和插件配置一字不动。
+ */
+function sourceCodexHome(env = process.env) {
+  return path.resolve(env.CODEX_HOME || path.join(os.homedir(), ".codex"));
+}
+
+function configuredModels(env = process.env) {
+  const cfg = path.join(sourceCodexHome(env), "config.toml");
+  let text = "";
+  try { text = fs.readFileSync(cfg, "utf8"); } catch { return []; }
+  // 只读 model 字段，不碰 auth，也不把整份个人 config 返回给前端。
+  const values = [...text.matchAll(/^\s*model\s*=\s*["']([^"']+)["']\s*$/gm)].map((m) => m[1].trim()).filter(Boolean);
+  return [...new Set(values)];
+}
+
+/**
+ * 这个账号此刻真能用的模型：`codex debug models` 吐的是服务端下发的目录（隐藏的内部槽位不算）。
+ *
+ * 为什么要有它：~/.codex/config.toml 里的 model 是用户在别处（Codex 应用、手改）写下的，
+ * 写的可能是 API 账号才有、订阅账号没有的名字。原样 -m 传过去，每个任务都 400，
+ * 而且错在用户的全局配置里，本项目的界面上根本看不出来。
+ * 拿不到目录（旧版 CLI 没这个子命令、没登录）就返回 null——此时不做任何判断，照旧行事。
+ */
+const ACCOUNT_MODELS_TTL = 10 * 60 * 1000;
+const accountModelsCache = new Map();
+function accountModels(bin, env) {
+  const key = bin + "\0" + (env.CODEX_HOME || "");
+  const hit = accountModelsCache.get(key);
+  if (hit && Date.now() - hit.at < ACCOUNT_MODELS_TTL) return Promise.resolve(hit.list);
+  return new Promise((resolve) => {
+    execFile(bin, ["debug", "models"], { env, timeout: 10000, maxBuffer: 16 * 1024 * 1024 }, (err, stdout) => {
+      let list = null;
+      if (!err) {
+        try {
+          const ms = JSON.parse(stdout).models;
+          if (Array.isArray(ms)) list = ms.filter((m) => m && m.slug && m.visibility !== "hide").map((m) => String(m.slug));
+        } catch {}
+      }
+      if (list && !list.length) list = null;
+      // 失败不缓存：刚登录完 / 刚升级完 CLI，下一次就该拿得到
+      if (list) accountModelsCache.set(key, { at: Date.now(), list });
+      resolve(list);
+    });
+  });
+}
+
+const MODEL_UNSUPPORTED = /model is not supported|model_not_found|does not exist or you do not have access|unsupported model/i;
+
+/** 模型名不被账号认可时的那句人话：点名是哪个、账号能用哪些、去哪改 */
+function explainModel(model, available) {
+  const which = model ? `「${model}」` : "当前设置的模型";
+  const can = available && available.length ? `这个账号能用的是：${available.join(" / ")}。` : "";
+  return `本机 Codex 不认${which}这个模型（ChatGPT 订阅账号只能用订阅里有的型号）。${can}` +
+    `在这里的「模型」栏改成其中一个或留空，或者把 ~/.codex/config.toml 里的 model 改掉。`;
+}
+
+function openWorkBuddyCodexHome(env = process.env) {
+  const sourceHome = sourceCodexHome(env);
+  const auth = path.join(sourceHome, "auth.json");
+  const home = dataPath("data", "runtime", "codex");
+  fs.mkdirSync(home, { recursive: true });
+  const linkedAuth = path.join(home, "auth.json");
+  try {
+    const current = fs.readlinkSync(linkedAuth);
+    if (path.resolve(path.dirname(linkedAuth), current) !== auth) fs.unlinkSync(linkedAuth);
+  } catch {
+    try { fs.unlinkSync(linkedAuth); } catch {}
+  }
+  // 没有 auth 时也让 Codex 在隔离目录里启动：它会给出正常的「请登录」错误，不会偷偷
+  // 回落去加载一大堆全局插件。符号链接让 token 刷新仍写回用户自己的登录态。
+  if (!fs.existsSync(linkedAuth) && fs.existsSync(auth)) fs.symlinkSync(auth, linkedAuth);
+  const defaults = configuredModels(env);
+  return { env: { ...env, CODEX_HOME: home }, defaultModel: defaults[0] || "" };
+}
+
+/** file_change 这条改了哪些文件（绝对路径）；别的 item 一个都不算 */
+function changedPaths(item, cwd) {
+  if (!item || item.type !== "file_change") return [];
+  return (item.changes || []).filter((c) => c && typeof c.path === "string" && c.path).map((c) => path.resolve(cwd, c.path));
+}
+
+/** 把 Codex 的 item 归成 (工具名, 目的说明)；认不出的原样带过去，不假装认识 */
+function toolOf(item) {
+  switch (item.type) {
+    case "command_execution": return { name: "run_shell", purpose: shorten(item.command) };
+    case "mcp_tool_call": return { name: `${item.server || "mcp"}.${item.tool || ""}`, purpose: shorten(item.arguments || "") };
+    case "web_search": return { name: "web_search", purpose: shorten(item.query) };
+    case "file_change": return { name: "edit_file", purpose: shorten((item.changes || []).map((c) => c.path).join(", ")) };
+    default: return null;
+  }
+}
+
+function explain(stderr, code, model, available) {
+  const s = String(stderr || "");
+  if (MODEL_UNSUPPORTED.test(s)) return explainModel(model, available);
+  if (/not logged in|codex login|401|Unauthorized/i.test(s))
+    return "本机 Codex 还没登录。先在终端里跑一次 `codex login`，再回来重试。";
+  if (/rate.?limit|429|quota/i.test(s))
+    return "本机 Codex 撞到限流或额度上限了，等窗口重置后再跑。";
+  if (/ENOENT|command not found/i.test(s))
+    return "找不到 codex 命令。装一个（npm i -g @openai/codex）或在设置里填绝对路径。";
+  return s ? s.slice(-600) : `codex 异常退出（退出码 ${code}）且没有任何输出`;
+}
+
+/** 收整份设置，理由同 claude-code.js 里那条注释 */
+async function detect(opts) {
+  const explicit = typeof opts === "string" ? opts : (opts && opts.bin) || "";
+  const found = await resolveBin("codex", explicit);
+  if (!found.bin) return { id: ID, installed: false, path: explicit || "codex", version: "", how: "", error: found.why };
+  const r = await probeVersion(found.bin, ["--version"]);
+  const fromAccount = r.installed ? await accountModels(found.bin, openWorkBuddyCodexHome(process.env).env) : null;
+  const models = fromAccount || configuredModels(process.env);
+  return {
+    id: ID, installed: r.installed, path: found.bin, version: r.version, how: found.how,
+    error: r.installed ? "" : "找到了 " + found.bin + "，但 --version 跑不通（装坏了？）",
+    // 不塞会过期的硬编码 GPT 名称表：优先用 `codex debug models` 拿账号真实目录，
+    // 拿不到（旧版 CLI / 没登录）才退回用户 Codex 配置里出现过的 model 字段。
+    models,
+    modelSource: fromAccount ? "codex_account" : models.length ? "codex_config" : "manual",
+  };
+}
+
+async function run({
+  prompt, cwd, emit = () => {}, deadline, stopSignal,
+  model, resumeId, bin, sandbox, network = true, guard = {}, mcpArgs = [], writableRoots = [], env, extraArgs = [],
+  thinking: thinkingLevel,
+  onWrite = null,
+}) {
+  const found = await resolveBin("codex", bin);
+  if (!found.bin) throw new Error(found.why + "。装一个（npm i -g @openai/codex），或在设置里填 codex 的绝对路径。");
+  const exe = found.bin;
+  const isolated = openWorkBuddyCodexHome({ ...process.env, ...(env || {}) });
+  let effectiveModel = model || isolated.defaultModel;
+  // 这个模型不是用户在本项目里挑的，而是从全局 Codex 配置里捡来的：账号不认它就别硬塞，
+  // 让 Codex 用自己的默认型号。用户在这里手填的照传——填错了就该听到一句明白的报错。
+  const available = await accountModels(exe, isolated.env);
+  if (!model && effectiveModel && available && !available.includes(effectiveModel)) effectiveModel = "";
+  if (resumeId) {
+    const rec = recordedModel(isolated.env.CODEX_HOME, resumeId);
+    if (rec && (!available || available.includes(rec))) effectiveModel = rec;
+  }
+  // 同 claude 那边：本机 CLI 冷启动那几秒界面本来全空，看着像发送没点上。
+  // bin 一确认存在就先挂一枚「正在启动」的牌子占位，thread.started 一到原地换成带模型名的
+  // 正式版（前端认的是同一个 .run-eng 节点）。
+  emit({ type: "status", starting: true, text: `本机 Codex 正在启动（连接工具中，一般 3~8 秒），不消耗 API 额度`, depth: 0 });
+  const args = ["exec"];
+  if (resumeId) args.push("resume", resumeId);
+  args.push("--json", "--skip-git-repo-check");
+  // 沙箱与网络一律走 -c 配置覆盖，不用 -s / -C：
+  // `codex exec resume` 这个子命令根本不收 -s 和 -C（会直接报 unexpected argument 退出），
+  // 而 -c 两条路都收。工作目录由子进程自己的 cwd 决定，本来也不需要 -C。
+  // 沙箱档位跟着设置页那颗开关走：「只看不动 / 每步都问」→ read-only。
+  // codex 自带的工具不经过本项目的安全中心，硬写死 workspace-write 的话，
+  // 用户选的档位到这条路上就丢了。engine_options 里手填的 sandbox 仍然最大
+  args.push("-c", `sandbox_mode="${sandbox || guard.codexSandbox || "workspace-write"}"`);
+  if (network) args.push("-c", "sandbox_workspace_write.network_access=true");
+  // workspace-write 默认只让写 cwd。本项目借出去的工具里，remember / save_skill 要写到
+  // 数据目录（在 cwd 外面），不开这个口子就是「工具调得动、东西存不下」，报错还特别难懂。
+  if (writableRoots.length) args.push("-c", `sandbox_workspace_write.writable_roots=${JSON.stringify(writableRoots)}`);
+  if (effectiveModel) args.push("-m", effectiveModel);
+  // 本项目自己的工具（生图/视频/技能/记忆）当成 MCP 服务器挂上去，
+  // 否则切到本机 Codex 就等于把这些全丢了
+  for (const a of mcpArgs) args.push(a);
+  // 思考模式：跟 app 设置页那个下拉框同一个档位（codex 这边是 model_reasoning_effort，
+  // 关掉就是 none）。auto 不发，配置文件里怎么写就怎么来
+  for (const a of thinking.planForEngine(ID, thinkingLevel).args) args.push(a);
+  for (const a of extraArgs) args.push(a);
+  args.push("-"); // 提示词从 stdin 读，和 claude 那条保持一致
+
+  let finalText = "";
+  let sessionId = resumeId || null;
+  let step = 0;
+  let failure = null;
+  let turnDone = false;
+  const usage = { prompt: 0, completion: 0, cached: 0, calls: 0, elapsed_ms: 0 };
+  const startedAt = Date.now();
+  const announced = new Set(); // item.started 报过的工具，completed 时别重复报一遍卡片
+
+  const onLine = (m) => {
+    if (!m || typeof m !== "object") return;
+    if (m.type === "thread.started") {
+      sessionId = m.thread_id || sessionId;
+      // 把实际用的模型带上：设置页那个「测试连接」要显示它，用户下一个任务看到的得是同一个名字
+      emit({ type: "status", text: `本机 Codex 已启动（模型 ${effectiveModel || "默认"}），不消耗 API 额度`, model: effectiveModel || "", depth: 0 });
+      return;
+    }
+    if (m.type === "turn.started") {
+      step += 1;
+      usage.calls += 1;
+      emit({ type: "step_start", step, depth: 0 });
+      return;
+    }
+    if (m.type === "turn.completed") {
+      turnDone = true;
+      const u = m.usage || {};
+      usage.prompt += Number(u.input_tokens || 0);
+      usage.completion += Number(u.output_tokens || 0) + Number(u.reasoning_output_tokens || 0);
+      usage.cached += Number(u.cached_input_tokens || 0);
+      return;
+    }
+    if (m.type === "turn.failed") {
+      failure = (m.error && m.error.message) || "Codex 这一轮失败了，但没给出原因";
+      return;
+    }
+    const item = m.item;
+    if (!item || typeof item !== "object") return;
+
+    if (item.type === "agent_message") {
+      if (m.type === "item.completed" && item.text) {
+        finalText = String(item.text).trim(); // 最后一条 agent_message 就是交付正文
+        emit({ type: "text", delta: item.text, depth: 0 });
+      }
+      return;
+    }
+    if (item.type === "error") {
+      if (m.type === "item.completed") {
+        const message = item.message || "Codex 报了一个没有说明的错误";
+        // 新版 Codex 会在技能描述被压缩时发一个 error item，但仍继续完成 turn 并给出答案。
+        // 这不是任务失败；真正的修复是上面的隔离运行窝，这里只是保证旧会话/特殊环境不会
+        // 因为一条可恢复告警把已经成功的任务误判为失败。
+        if (!SKILL_CONTEXT_WARNING.test(message) && !RESUME_MODEL_WARNING.test(message)) failure = message;
+      }
+      return;
+    }
+    const t = toolOf(item);
+    if (!t) return;
+    if (m.type === "item.started" && !announced.has(item.id)) {
+      announced.add(item.id);
+      emit({ type: "tool_use", id: item.id, name: t.name, purpose: t.purpose, depth: 0 });
+      return;
+    }
+    if (m.type === "item.completed") {
+      if (!announced.has(item.id)) {
+        announced.add(item.id);
+        emit({ type: "tool_use", id: item.id, name: t.name, purpose: t.purpose, depth: 0 });
+      }
+      const bad = item.status === "failed" || (item.exit_code != null && item.exit_code !== 0);
+      // 改过的文件报上去：几条对话共用一趟扫描时，产出卡靠这个认主，不靠谁先比对
+      if (onWrite && !bad) for (const p of changedPaths(item, cwd)) { try { onWrite(p); } catch {} }
+      const out = item.aggregated_output || item.output || item.result || "";
+      // 命令输出留着换行（shorten 会把它压成一行，终端就只剩头一句），截没截、一共几行一并报上去
+      let text = "";
+      try { text = typeof out === "string" ? out : JSON.stringify(out) || ""; } catch { text = String(out); } // MCP 的 result 是个对象，String() 只剩 [object Object]
+      emit({ type: "tool_result", id: item.id, name: t.name, isError: !!bad, preview: text.slice(0, 800), cut: text.length > 800, lines: text.replace(/\n+$/, "").split("\n").length, depth: 0 });
+    }
+  };
+
+  const r = await runJsonl({ bin: exe, args, cwd, env: isolated.env, stdin: prompt, onLine, deadline, stopSignal });
+  usage.elapsed_ms = Date.now() - startedAt;
+
+  if (r.killed === "stopped") return { finalText, usage, stopped: "已手动停止", sessionId };
+  if (r.killed === "deadline") return { finalText, usage, stopped: "已达最大运行时间", sessionId };
+  if (failure) throw new Error(MODEL_UNSUPPORTED.test(failure) ? explainModel(effectiveModel, available) : failure);
+  if (!turnDone || r.code !== 0) {
+    if (finalText && r.code === 0) return { finalText, usage, stopped: null, sessionId };
+    throw new Error(explain(r.stderr, r.code, effectiveModel, available));
+  }
+  return { finalText, usage, stopped: null, sessionId };
+}
+
+module.exports = {
+  changedPaths,
+  id: ID,
+  label: "本机 Codex",
+  bin: "codex",
+  launchHeader: "codex exec --json",
+  note: "用你电脑上已登录的 Codex（ChatGPT 订阅）跑，不消耗本项目配置的 API 额度",
+  install: "npm i -g @openai/codex，然后终端里跑一次 codex login",
+  login: "在终端里跑一次 codex login 完成登录，再回来点一次",
+  supportsResume: true,
+  models: [], // 真正的候选由 detect() 从当前 Codex 配置读取，不能拿过期硬编码冒充真实数据
+  thinkingLabel: "推理强度 effort（关闭=none，低/中/高=low/medium/high）",
+  detect, run, explain,
+};

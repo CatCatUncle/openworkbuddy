@@ -202,8 +202,8 @@ console.log("\n③ 后端源码（会往终端 / IM 吐字的那几个）");
 // 后端这边也一条按行号写死的例外都不留，理由跟前端一样：行号会跟着上面任意一次编辑整体漂掉，
 // 漂完要么放行了不该放的那行，要么对不上号让整份测试无故变红——这三条原来就是这么红的。
 // 要放行就在源码里圈「emoji-数据区」，理由写在记号里，读代码的人当场看得见。
-const BACK = ["agent.js", "cli.js", "electron-main.js", "evolve.js", "im.js", "server.js",
-  mod.rel("skills"), mod.rel("task-verdict"), "tools.js", "eval/run.js", "eval/judge.js", "eval/rejudge.js", mod.rel("callout"), mod.rel("icons"), "account.js"];
+const BACK = [mod.rel("agent"), "cli.js", "electron-main.js", mod.rel("evolve"), "im.js", "server.js",
+  mod.rel("skills"), mod.rel("task-verdict"), mod.rel("tools"), "eval/run.js", "eval/judge.js", "eval/rejudge.js", mod.rel("callout"), mod.rel("icons"), mod.rel("account")];
 for (const rel of BACK) {
   const found = scan(rel); // 只扫一遍：scan 会往 regionsSeen 记账，扫两遍就变成每条记两次
   ok(found.length === 0, rel + " 只剩排版符号", found.slice(0, 5));
@@ -214,7 +214,7 @@ for (const rel of BACK) {
 const REGIONS_DECLARED = [
   "public/js/app-00-ui.js：头像候选表，用户挑给自己的数据，不是界面图形",
   "public/js/app-02.js：这五个表情在这儿是要认的数据、不是界面文案，删了兼容层就认不出老写法",
-  "agent.js：CLAIM_RE 要匹配模型自己写出来的那个勾，它是待匹配的数据不是界面图形，删了就漏判「口头交付」",
+  `${mod.rel("agent")}：CLAIM_RE 要匹配模型自己写出来的那个勾，它是待匹配的数据不是界面图形，删了就漏判「口头交付」`,
   `${mod.rel("skills")}：pretext 这份技能文档的正文本身就在演示 emoji + 阿拉伯语混排的分词量宽，例子里的表情是被测量的数据`,
   `${mod.rel("task-verdict")}：判「它说自己做完了」的正则，这个勾是模型写出来的数据，不是我们要显示的图形`,
 ];

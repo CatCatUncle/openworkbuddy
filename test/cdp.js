@@ -524,7 +524,7 @@ setInterval(()=>{},1e9);}
 
     const fs = require("fs"), path = require("path");
     const src = (f) => fs.readFileSync(path.join(__dirname, "..", f), "utf8");
-    ok(/cdp\.run\(\{ \.\.\.input, owner: opts\.sessionId/.test(src("tools.js")), "chrome_cdp 工具要把会话 id 当 owner 传下去");
+    ok(/cdp\.run\(\{ \.\.\.input, owner: opts\.sessionId/.test(src(mod.rel("tools"))), "chrome_cdp 工具要把会话 id 当 owner 传下去");
     ok(/releaseOwner\(sessionId\)/.test(src("server.js")), "一趟对话跑完要收掉它开的标签页");
   }
 

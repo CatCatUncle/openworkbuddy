@@ -63,8 +63,8 @@ function compute() {
     // 只数 tools.js 那一份，徽章上写的是 27，可用户在设置页数得出 36——差的正好是「最像 agent 的那几个」。
     // 按名字去重，免得哪天同一个工具两边都定义了被数两遍。
     tools: (() => {
-      const base = require(path.join(ROOT, "tools.js")).TOOL_DEFS.map((t) => t.name);
-      const extra = [...read("agent.js").matchAll(/^  name: "([a-z_]+)",$/gm)].map((m) => m[1]);
+      const base = require(path.join(ROOT, "src", "agent", "tools.js")).TOOL_DEFS.map((t) => t.name);
+      const extra = [...read("src/agent/agent.js").matchAll(/^  name: "([a-z_]+)",$/gm)].map((m) => m[1]);
       return new Set([...base, ...extra]).size;
     })(),
     connectors: require(path.join(ROOT, "src", "core", "ext", "mcp-catalog.js")).ITEMS.length,

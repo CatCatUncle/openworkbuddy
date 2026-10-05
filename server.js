@@ -21,41 +21,41 @@ const migrate = require("./migrate");
 // 容器起来是能起来，但技能列表空空如也。开发态两个目录本来就是一个，这行是空操作。
 // 放在这儿是因为下面 require 的 tools/skills 一加载就按数据目录算路径了。
 seedDataDir();
-const { mergeBuiltinExperts } = require("./experts-lib");
+const { mergeBuiltinExperts } = require("./src/agent/experts-lib");
 const mcpCatalog = require("./src/core/ext/mcp-catalog");
 const { createLLM, createEmbedder, pingRequest, probeEmbedding } = require("./src/core/model/llm");
 const sessSearch = require("./src/core/memory/session-search");
-const { outputFiles, noteUserInput, moveUserInput, filesScope, safePath, safePathIn, workspaceKeyOf, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, setLibraryDir, withLibraryBase, libBase, notesFileOf, withWorkspace, enterWorkspace, withPolicy, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSafeName, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath } = require("./tools");
-const checkpoints = require("./checkpoints"); // 这条对话改过的文件：列出来、整步退回去
-const worktree = require("./worktree"); // 两条任务同时改一个仓库时，后来的那条进自己的 git worktree
+const { outputFiles, noteUserInput, moveUserInput, filesScope, safePath, safePathIn, workspaceKeyOf, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, setLibraryDir, withLibraryBase, libBase, notesFileOf, withWorkspace, enterWorkspace, withPolicy, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSafeName, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath } = require("./src/agent/tools");
+const checkpoints = require("./src/agent/checkpoints"); // 这条对话改过的文件：列出来、整步退回去
+const worktree = require("./src/agent/worktree"); // 两条任务同时改一个仓库时，后来的那条进自己的 git worktree
 const canvasRoutes = require("./routes/canvas"); // 画布读写 + 短剧素材台账 + 制片进度
 const dramaRoutes = require("./routes/drama"); // 短剧分镜表 + 一镜一镜的版本留底
 const { createComposeRouter } = require("./routes/compose"); // 一键合成的两条接口
 const libraryRoutes = require("./routes/library"); // 资料库的封面、正文摘录、收藏
 const { createPromptTplsRouter } = require("./routes/prompt-tpls"); // 参考模板库里「我的」「公司」两层的增删改
-const { createComposeJobs } = require("./lib/compose-jobs"); // 一键合成的任务队列：把镜头真的拼成成片
+const { createComposeJobs } = require("./src/domains/media/compose-jobs"); // 一键合成的任务队列：把镜头真的拼成成片
 const taskDirs = require("./src/util/task-dirs"); // 成果按对话分文件夹：哪些根下分、文件夹叫什么
 const prefs = require("./src/core/config/prefs"); // 按账号存的个人偏好：底层引擎 / 思考档 / 上次选的模型 / 宠物 / 快捷键
-const { previewData } = require("./preview");
-const evolve = require("./evolve");
-const { McpManager, cfgFingerprint, scrubText: mcpScrub } = require("./mcp");
-const { createAgentRuntime, scanOutputs, sweepPlanOffThread } = require("./agent");
+const { previewData } = require("./src/domains/library/preview");
+const evolve = require("./src/agent/evolve");
+const { McpManager, cfgFingerprint, scrubText: mcpScrub } = require("./src/agent/mcp");
+const { createAgentRuntime, scanOutputs, sweepPlanOffThread } = require("./src/agent/agent");
 const { createImRouter } = require("./im");
 const { createScheduler, setActiveScheduler, SCHEDULE_LABEL } = require("./src/core/automation/scheduler");
-const account = require("./account");
+const account = require("./src/domains/account/account");
 const { createStaticCompress: staticCompress } = require("./static-compress");
 const { createJsonCompress: jsonCompress } = require("./json-compress");
 const { thumbFileAsync } = require("./src/platform/render/thumb");
-const org = require("./org"); // 组织（租户）层：席位、部门、邀请码、审计
+const org = require("./src/domains/account/org"); // 组织（租户）层：席位、部门、邀请码、审计
 const budget = require("./src/core/billing/budget"); // 钱闸：中转站发出去的 Key 和公司内部自己用，花的是同一笔预算
-const admin = require("./admin"); // 企业管理后台的接口层 /api/admin/*
-const engines = require("./engines"); // 底层引擎：内置循环 / 本机 Claude Code / 本机 Codex
+const admin = require("./src/domains/account/admin"); // 企业管理后台的接口层 /api/admin/*
+const engines = require("./src/engines"); // 底层引擎：内置循环 / 本机 Claude Code / 本机 Codex
 const lanes = require("./src/core/config/lanes"); // 两条工作线：办公（桌面办公 agent）/ 工程（本机 openworkbuddy 命令行）
 const cliLive = require("./src/core/obs/cli-live"); // 终端里起的任务挂在盘上的那个目录，网页/手机靠它看见并插话
 const thinking = require("./src/core/model/thinking"); // 思考模式档位表（各家参数名都不一样，集中在那儿）
 const security = require("./src/core/safety/security");
 const toolward = require("./src/core/safety/toolward");
-const sweep = require("./sweep");
+const sweep = require("./src/agent/sweep");
 const modes = require("./src/core/config/modes"); // 执行模式的唯一真源（craft/goal/plan/ask）
 const cfgMerge = require("./src/core/config/config-merge"); // 存配置时把外面手改的那些合进来，不整份覆盖
 const cfgLint = require("./src/core/config/config-lint"); // 手改配置写错了当场说，别让人以为「改了没反应」
@@ -70,7 +70,7 @@ const jev = require("./src/core/judge/jev"); // 判断模型的调用路：挑�
 const quota = require("./src/core/billing/quota"); // 按次计费的外部 API：调之前问一句额度，调完记一笔
 const pricing = require("./src/core/billing/pricing"); // 按量价目：批量生成前的预估跟记账查的是同一张表
 const tracing = require("./src/core/obs/trace"); // 执行追踪（Langfuse），默认关；跟 agent.js 共用同一个追踪器
-const genCache = require("./gen-cache"); // 生成结果缓存：同一格重跑别再烧第二次钱
+const genCache = require("./src/domains/media/gen-cache"); // 生成结果缓存：同一格重跑别再烧第二次钱
 const memory = require("./src/core/memory/memory");
 const notify = require("./src/core/obs/notify");
 const log = require("./src/platform/log");
@@ -336,7 +336,7 @@ const SESS_DIR = dataPath("data", "sessions");
 const sessions = new Map();
 const activeRuns = new Map(); // sessionId -> { ctrl: AbortController, interject: [] }（「停止」与「插队」用）
 // 浏览器标签页的闲置关页、到顶腾位，不许收还在跑的任务的页（等用户回话超过 10 分钟的，回来表单还得在）
-try { require("./src/platform/render/cdp").setActivePredicate((sid) => activeRuns.has(sid) || require("./tools").runHeld(sid)); } catch {}
+try { require("./src/platform/render/cdp").setActivePredicate((sid) => activeRuns.has(sid) || require("./src/agent/tools").runHeld(sid)); } catch {}
 // 正在跑的任务落一份名单到磁盘：应用中途被关/被重启时，内存里的 activeRuns 直接蒸发，
 // 下次启动就靠这份名单知道哪些会话是被打断的，在回放里明说，而不是让那一轮无声地断在半空
 const RUNNING_FILE = dataPath("data", "running.json");
@@ -1411,7 +1411,7 @@ app.get("/api/files", (_req, res, next) => { scanOutputs(getWorkspaceDir()).then
 // 最深 3 层」，拿它当全集的话，第 4 层往下和第 501 个往后的文件哪儿都找不到（细账在 lib/ws-browse.js 开头）。
 // 根跟 /api/files 是同一个：getWorkspaceDir() 已经被 tenantScope 绑到这个人所属组织、当前项目的工作区上。
 // dir 里的 ..、绝对路径、链接一律 400；文件夹已经没了回 404，前端据此退回根。
-const wsBrowse = require("./lib/ws-browse");
+const wsBrowse = require("./src/domains/library/ws-browse");
 app.get("/api/files/tree", (req, res) => {
   try {
     const root = getWorkspaceDir();
@@ -1443,7 +1443,7 @@ app.use(dramaRoutes.createDramaRouter({
 app.use(libraryRoutes.createLibraryRouter({ libraryRootOf, rootedPath, rootOfResolved, getWorkspaceDir, safePathIn, thumbsDir: path.join(dataPath("data"), "thumbs"), busy: () => activeRuns.size > 0 }));
 app.use(createPromptTplsRouter({
   isSolo: admin.isSoloDesktop,
-  canEditOrg: (u) => require("./rbac").can(u, "admin.write"),
+  canEditOrg: (u) => require("./src/domains/account/rbac").can(u, "admin.write"),
   orgIdOf: org.orgIdOf,
   orgName: (u) => (org.getOrg(org.orgIdOf(u)) || {}).name || "",
   audit: org.audit,
@@ -3417,7 +3417,7 @@ function connectorPrepare(input) {
   // 没给请求头 / 环境变量时，原来的 Key 只在还发往同一处时沿用（见 mcp.js sameTarget）：
   // 模型换个地址不带头，不该把用户原来的令牌一起递过去。页面保存那条路照旧全沿用
   const want = String((input && input.name) || "").trim();
-  const keep = require("./mcp").sameTarget(prevByName.get(want), input || {}) ? new Map([[want, prevByName.get(want)]]) : new Map();
+  const keep = require("./src/agent/mcp").sameTarget(prevByName.get(want), input || {}) ? new Map([[want, prevByName.get(want)]]) : new Map();
   const entry = normalizeMcpServer(input || {}, 0, keep);
   let fromPlugins = [];
   try { fromPlugins = pluginsMgr.pluginMcpServers(); } catch { /* 插件坏了照样能加自己的 */ }
@@ -6787,7 +6787,7 @@ app.post("/api/tool/run", async (req, res) => {
  */
 const ESTIMATE_TOOLS = { generate_image: "image", generate_video: "video", text_to_speech: "tts" };
 const ESTIMATE_MAX = 500; // 一张画布十几镜 × 首帧/视频/配音，几十条顶天；再多就是有人拿它当压测口
-const { unitsFor } = require("./tools")._internals;
+const { unitsFor } = require("./src/agent/tools")._internals;
 function toolEstimateOne(tool, input, media, priceOpts) {
   const cap = ESTIMATE_TOOLS[tool];
   let cfg = null, error = "";
@@ -7026,7 +7026,7 @@ app.post("/api/chat", async (req, res) => {
     taskBaseDir = sess.dir;
   }
   // 分文件夹以前摊在根上的老产出：整篇重写时写回那份，不在新格里另起第二份（见 lib/task-dirs.js flatOutputs）
-  try { require("./tools").ownRootFiles(sessionId, taskBaseDir ? rootFilesOf(sess).map((n) => path.join(getWorkspaceDir(), n)) : []); } catch {}
+  try { require("./src/agent/tools").ownRootFiles(sessionId, taskBaseDir ? rootFilesOf(sess).map((n) => path.join(getWorkspaceDir(), n)) : []); } catch {}
   // 成果面板标「本对话」用；不进回放记录。换到自选文件夹时发空串：面板手里还是上一个根里的文件夹名，
   // 拿它去筛这边摊在根上的文件，永远是「本对话 0」
   send({ type: "dir", dir: taskBaseDir || "" });
@@ -7155,7 +7155,7 @@ app.post("/api/chat", async (req, res) => {
     try { require("./src/platform/render/cdp").releaseOwner(sessionId).catch(() => {}); } catch {}
     // 这一轮起的后台命令（没说 keep 的）、`&`/nohup 甩出去的进程组一起收：以前一个都不收，
     // 看网页起的 http.server 活过两次应用重启，并发的对话还撞端口（tools.js noteStray）
-    try { require("./tools").releaseRun(sessionId, { browser: false }).catch(() => {}); } catch {}
+    try { require("./src/agent/tools").releaseRun(sessionId, { browser: false }).catch(() => {}); } catch {}
     if (global.__openworkbuddyPet) try { global.__openworkbuddyPet.setState(runFailed ? "error" : "done", runFailed ? String(runFailed).slice(0, 80) : "任务完成"); } catch {}
   }
   if (total.calls > 0) modelFailStreak.delete(ranLLM.provider); // 有成功调用就算这个模型活着，清连挂计数
@@ -8101,7 +8101,7 @@ function accountedRuntime(baseRuntime, source) {
       // 跟网页对话同一个收尾（tools.releaseRun）；没带会话的不收——空串不能当「所有人」。
       // 走 holdRun：webhook 同一个会话键可能两轮并发，最后一轮跑完才收
       let letGo = () => {};
-      try { letGo = require("./tools").holdRun(rest.sessionId); } catch {}
+      try { letGo = require("./src/agent/tools").holdRun(rest.sessionId); } catch {}
       const release = () => { try { letGo().catch(() => {}); } catch {} };
       let r;
       // 文件夹在 go 里面算：定时任务报了负责人的，要进了负责人那个租户，getWorkspaceDir() 才是对的根
@@ -8164,7 +8164,7 @@ async function main() {
   const pollMs = Number(process.env.OWB_CONFIG_POLL_MS ?? 2000);
   if (pollMs > 0) setInterval(pollConfig, Math.max(100, pollMs)).unref();
   // agent 的 add_connector 走的就是上面这一套：同一个校验、同一条队、同一次落盘
-  require("./tools").setConnectorHost({ prepare: connectorPrepare, commit: connectorCommit, status: connectorStatus });
+  require("./src/agent/tools").setConnectorHost({ prepare: connectorPrepare, commit: connectorCommit, status: connectorStatus });
   const badPlugins = pluginsMgr.loadPlugins().filter((p) => !p.ok);
   for (const p of badPlugins) console.warn(`[插件] ${p.name} 装不上: ${p.error}`);
   runtime = createAgentRuntime({ config, llm, mcpManager, experts, expertTeams });

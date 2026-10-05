@@ -131,7 +131,7 @@ function issue({ _: pos, flags: o }) {
 
 function verifyCmd(code) {
   // 带 .js：macOS 上 "../license" 会先撞上 LICENSE（许可证全文），见 admin.js 顶上
-  const license = require("../license.js");
+  const license = require("../src/domains/account/license.js");
   const v = license.verify(code);
   if (!v.ok) die("验不过：" + v.error);
   console.log(JSON.stringify(v.license, null, 2));

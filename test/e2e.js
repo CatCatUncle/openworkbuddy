@@ -9009,8 +9009,8 @@ async function testLocalEngineConnect() {
   // ⑥ 源码层的闸门 + 负对照
   const read = (p) => { try { return fs.readFileSync(path.join(__dirname, "..", p), "utf8"); } catch { return ""; } };
   const now = {
-    server: srcLib.src("server"), index: read("engines/index.js"), claude: read("engines/claude-code.js"),
-    codex: read("engines/codex.js"), jsonl: read("engines/jsonl.js"),
+    server: srcLib.src("server"), index: read(modPath.rel("engines")), claude: read(modPath.rel("claude-code")),
+    codex: read(modPath.rel("codex")), jsonl: read(modPath.rel("jsonl")),
     app05: read("public/js/app-05.js"), app01: read("public/js/app-01.js"), app02: read("public/js/app-02.js"),
   };
   const nowBad = enginePathProblems(now);
@@ -11048,7 +11048,7 @@ async function testThinkingSwitch() {
     assert(/thinking:\s*prefs\.agentCfg\(config\)\.thinking/.test(block), "本机引擎接管时没把 app 的思考模式设置传下去（用户要的就是这两边一致）");
     assert(block.indexOf("thinking:") < block.indexOf("...opts"), "thinking 排在 ...opts 后面了，单个引擎就没法覆盖全局档位");
   }
-  for (const [f, label] of [["engines/claude-code.js", "claude"], ["engines/codex.js", "codex"]]) {
+  for (const [f, label] of [[modPath.rel("claude-code"), "claude"], [modPath.rel("codex"), "codex"]]) {
     const t = fs.readFileSync(path.join(__dirname, "..", f), "utf8");
     assert(/planForEngine\(/.test(t), label + " 引擎没接思考模式，设置页选了也传不到命令行");
   }
@@ -13178,7 +13178,8 @@ function testStyleDirection() {
   const root = path.join(__dirname, "..");
   const files = ["agent.js", "skills/html-page/skill.md", "skills/web-styles/skill.md", "experts.json", "public/js/app-05.js"];
   const src = {};
-  for (const f of files) src[f] = fs.readFileSync(path.join(root, f), "utf8");
+  // "agent.js" 是 styleDirectionDrift 认的键名，文件本身在 mod 表登记的位置
+  for (const f of files) src[f] = fs.readFileSync(f === "agent.js" ? modPath("agent") : path.join(root, f), "utf8");
   const r = styleDirectionDrift(src);
   assert(r.miss.length === 0, "网页视觉方向这条链断了：\n  " + r.miss.join("\n  "));
   assert(r.checked === files.length, "该查的文件没读全（" + r.checked + "/" + files.length + "）");
@@ -13720,7 +13721,7 @@ function testPackageAssetDrift() {
     // "!electron-builder.config.js" 把它从 *.js 里排除掉了：谁在生产代码里按路径打开它，就是装完必炸
     ["引用了被 ! 排除掉的文件", () => packageAssetDrift({ ...sources, "server.js": sources["server.js"] + '\nrequire("fs").readFileSync(path.join(__dirname, "electron-builder.config.js"));' }, gate.ASSETS, cfg.files)],
     // rootPath 相对仓库根：故意放在子目录的文件里，按本文件目录去拼就落到 engines/docs/（不存在）被跳过，这条就抓不到
-    ["rootPath 写法引用了没登记的资源", () => packageAssetDrift({ ...sources, "engines/bridge.js": sources["engines/bridge.js"] + '\nrequire("fs").readFileSync(rootPath("docs", "安装与启动.md"));' }, gate.ASSETS, cfg.files)],
+    ["rootPath 写法引用了没登记的资源", () => packageAssetDrift({ ...sources, [modPath.rel("bridge")]: sources[modPath.rel("bridge")] + '\nrequire("fs").readFileSync(rootPath("docs", "安装与启动.md"));' }, gate.ASSETS, cfg.files)],
     ["files 去掉 public 通配符", () => packageAssetDrift(sources, gate.ASSETS.filter((a) => !a.startsWith("public/")), cfg.files.filter((g) => g !== "public/**/*"))],
     // 分镜表 schema 是 drama-pipeline 经 rootPath 引的、只靠 "skills/short-drama/**/*" 这条套了两层的通配收进包
     ["files 去掉 short-drama 技能通配符", () => packageAssetDrift(sources, gate.ASSETS, cfg.files.filter((g) => g !== "skills/short-drama/**/*"))],
@@ -13769,7 +13770,7 @@ function nestedRoutes(text) {
 }
 function testNoNestedRoutes() {
   const root = path.join(__dirname, "..");
-  const files = ["server.js", "account.js", "admin.js", "im.js"];
+  const files = ["server.js", modPath.rel("account"), modPath.rel("admin"), "im.js"];
   let total = 0;
   for (const f of files) {
     const r = nestedRoutes(fs.readFileSync(path.join(root, f), "utf8"));
@@ -14380,8 +14381,8 @@ function testI18n() {
   assert([...verbs, "瞎编个动词"].filter((v) => !I.lookup(v + " 演示.md", "en")).length === 1, "动词闸门对漏翻不敏感");
   // 本机引擎那条状态：真源在 engines/*.js，照着它拼一条出来查
   for (const [f, sample] of [
-    ["engines/claude-code.js", "本机 Claude Code 已启动（模型 claude-opus-5，102 个工具），不消耗 API 额度"],
-    ["engines/codex.js", "本机 Codex 已启动（模型 gpt-5-codex），不消耗 API 额度"],
+    [modPath.rel("claude-code"), "本机 Claude Code 已启动（模型 claude-opus-5，102 个工具），不消耗 API 额度"],
+    [modPath.rel("codex"), "本机 Codex 已启动（模型 gpt-5-codex），不消耗 API 额度"],
   ]) {
     const src = fs.readFileSync(path.join(__dirname, "..", f), "utf8");
     assert(/已启动（模型 /.test(src), f + " 里那条「已启动」的措辞改了，i18n 的模式句要跟着改");

@@ -202,7 +202,7 @@ console.log("\n【7】跑批器接线");
   ok(/user: memUser/.test(runSrc), "记忆题的作用域真的传给了 runTask，不然种了也召不回");
   ok(/uncovered/.test(runSrc) && /missing/.test(runSrc), "基线对比会点名「没参照的新题」和「基线里有但没跑的题」");
 
-  const agentSrc = src("agent.js");
+  const agentSrc = src(mod.rel("agent"));
   ok(/maxSteps: maxStepsOverride/.test(agentSrc) && /maxStepsOverride \|\| config\.agent\.max_steps/.test(agentSrc),
     "agent.runTask 认按次的步数上限，且不写就退回全局配置");
 }

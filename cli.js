@@ -56,9 +56,9 @@ const { dataPath, preferData } = require("./src/platform/paths");
 const readline = require("readline");
 const { spawnSync } = require("child_process");
 const { createLLM } = require("./src/core/model/llm");
-const { setWorkspaceDir, getWorkspaceDir } = require("./tools");
-const { McpManager } = require("./mcp");
-const { createAgentRuntime } = require("./agent");
+const { setWorkspaceDir, getWorkspaceDir } = require("./src/agent/tools");
+const { McpManager } = require("./src/agent/mcp");
+const { createAgentRuntime } = require("./src/agent/agent");
 const lanes = require("./src/core/config/lanes"); // 终端里起的任务归「工程」线；续跑 id 按引擎分开记
 const callout = require("./src/util/callout"); // 正文里的提示条：终端没有图标，换成文字标签
 const sessSearch = require("./src/core/memory/session-search"); // /resume 的搜索和 --list 的摘要都要它——必须在 listCliSessions 之前
@@ -73,7 +73,7 @@ const cliLive = require("./src/core/obs/cli-live"); // 把这趟活儿播给网�
 const termImage = require("./term-image"); // 终端里直接把产出的图画出来 + /open 交给系统程序
 const replKit = require("./repl-commands"); // 输入行那几样纯逻辑：多行、搜历史、跑着时那一行的尾巴
 const { cols } = require("./src/util/text-width"); // 中文占两列：原地重画那一行要算得出它多宽
-const account = require("./account");
+const account = require("./src/domains/account/account");
 const store = require("./src/platform/store");
 
 // ---------- 输出通道 ----------
@@ -284,7 +284,7 @@ if (sub === "completion") {
     process.exit(2);
   }
   let engineIds = [];
-  try { engineIds = require("./engines").list().map((b) => b.id); } catch {}
+  try { engineIds = require("./src/engines").list().map((b) => b.id); } catch {}
   process.stdout.write(cliArgs.completionScript(shell, { sessionsDir: dataPath("data", "sessions"), engines: engineIds }));
   // 装法写在 stderr：这样 `openworkbuddy completion zsh > _wb` 拿到的是干净的脚本，说明照样看得见
   const how = {
@@ -434,8 +434,8 @@ if (sub === "pair") {
 if (sub === "owner") {
   const who = String((words.filter((w) => !w.startsWith("-"))[0] || "")).trim();
   try {
-    const rbac = require("./rbac");
-    const org = require("./org");
+    const rbac = require("./src/domains/account/rbac");
+    const org = require("./src/domains/account/org");
     if (!who) {
       // 不给用户名就只是「看看现在是谁」：把一台机器的主子换掉不该是手滑的后果
       account.migrateOwners();
@@ -472,7 +472,7 @@ if (sub === "owner") {
 // 分身是撞车时自动开的，用户没亲手建过，所以他也没有"去哪儿找"的直觉。
 // 这条就是那个找法：列出来，说清每根分支合回去的命令，顺手把白跑的那些收掉。
 if (sub === "worktree") {
-  const wt = require("./worktree");
+  const wt = require("./src/agent/worktree");
   // 默认位置在应用仓库里时挪到家目录下（worktree.defaultStore，2026-09-29）；挪之前开在老位置的一起列
   const LEGACY = dataPath("data", "worktrees");
   const STORES = [...new Set([wt.defaultStore(LEGACY), LEGACY])];
@@ -616,7 +616,7 @@ if (sub === "doctor") {
     const items = await doctor.gather({
       paths: require("./src/platform/paths"),
       config,
-      engines: require("./engines"),
+      engines: require("./src/engines"),
       workspaceDir: opts.workspace || config.workspace_dir || getWorkspaceDir(),
       bootCheck: require("./src/platform/boot-check"),
     });
@@ -669,7 +669,7 @@ const goalKit = require("./src/core/automation/goal").createGoalEngine({
  */
 async function goalThink({ system, prompt, timeoutMs }) {
   const id = cfgEngine();
-  const engMod = require("./engines");
+  const engMod = require("./src/engines");
   if (id !== "builtin" && engMod.get(id)) {
     return await engMod.ask({ id, opts: ((config.agent || {}).engine_options || {})[id] || {}, system, prompt, timeoutMs });
   }
@@ -1035,7 +1035,7 @@ function printSummary(state) {
  * 不然这儿显示 40%、那边已经压过一次，这个读数就是在骗人。
  */
 function contextLine() {
-  const { historyChars, contextBudgetChars } = require("./agent");
+  const { historyChars, contextBudgetChars } = require("./src/agent/agent");
   const ag = config.agent || {};
   const budget = contextBudgetChars(llmImpl && llmImpl.contextWindow, ag.max_context_chars);
   const threshold = ag.compact_threshold_chars || Math.floor(budget * 0.6);
@@ -1100,7 +1100,7 @@ async function drawOutputs(files) {
     try {
       const p = path.join(getWorkspaceDir(), name);
       if (/\.svg$/i.test(name)) {
-        const r = await require("./diagram").svgToPngAnyhow(fs.readFileSync(p, "utf8"));
+        const r = await require("./src/domains/media/diagram").svgToPngAnyhow(fs.readFileSync(p, "utf8"));
         png = r && r.png;
       } else if (/\.png$/i.test(name) || cap.proto === "iterm") {
         // iTerm2 那套自己认格式，jpg/gif/webp 原样丢过去就行；
@@ -1538,7 +1538,7 @@ function makeAskUser(readLine, pick) {
  * 用户从此在一个他没听说过的地方干活。withWorkspace 是有边界的，出了这个函数自动还原。
  */
 async function runOnce(runtime, text, mode, interactive, shown) {
-  const wt = require("./worktree");
+  const wt = require("./src/agent/worktree");
   let opened = null;
   let STORE = "";
   try {
@@ -1556,7 +1556,7 @@ async function runOnce(runtime, text, mode, interactive, shown) {
   if (!opened) return runOnceIn(runtime, text, mode, interactive, shown);
   process.stderr.write(yellow(wt.hint(opened)) + "\n");
   try {
-    return await require("./tools").withWorkspace(opened.dir, () => runOnceIn(runtime, text, mode, interactive, shown));
+    return await require("./src/agent/tools").withWorkspace(opened.dir, () => runOnceIn(runtime, text, mode, interactive, shown));
   } finally {
     try {
       const rel = wt.release(STORE, opened.dir, { title: (shown || text).slice(0, 40) });
@@ -1576,13 +1576,13 @@ const strayUploads = new Set();
 /** 这一趟的成果文件夹（相对工作目录）；用户自选的根返回 null，就地读写 */
 function chatDirHere(asked) {
   const root = getWorkspaceDir();
-  const anchors = { workspace: dataPath("workspace"), projects: dataPath("projects"), tenants: require("./org").tenantsDir() };
+  const anchors = { workspace: dataPath("workspace"), projects: dataPath("projects"), tenants: require("./src/domains/account/org").tenantsDir() };
   if (!taskDirs.perChatRoot(root, anchors)) return null;
   if (!taskDirs.useSessDirAt(sess, root, dataPath("workspace"))) taskDirs.newSessDir(sess, root, dataPath("workspace"), asked);
   else try { fs.mkdirSync(path.join(root, sess.dir), { recursive: true }); } catch {}
   // 分文件夹以前摊在根上的老产出：整篇重写时写回那份，不在新格里另起第二份（跟网页那头同一套，见 lib/task-dirs.js flatOutputs）
   try {
-    const tools = require("./tools");
+    const tools = require("./src/agent/tools");
     tools.ownRootFiles(sessionId, taskDirs.flatOutputs(sess, root, dataPath("workspace"), tools.workspaceKeyOf(root)).map((n) => path.join(root, n)));
   } catch {}
   return sess.dir;
@@ -1670,7 +1670,7 @@ async function runOnceIn(runtime, text, mode, interactive, shown) {
     if (exiting) return;
     exiting = true;
     try { ctrl.abort(); } catch {}        // run_shell / run_node 的进程组当场收（bindStop），引擎也是（jsonl 挂了监听）
-    try { require("./engines/jsonl").killAll("SIGTERM"); } catch {}
+    try { require("./src/engines/jsonl").killAll("SIGTERM"); } catch {}
     try {
       const said = state.finalParts.join("");
       sess.transcript.push({ type: "user", text, ...(shown ? { shown } : {}), mode, at: new Date().toISOString() });
@@ -1815,7 +1815,7 @@ async function runOnceIn(runtime, text, mode, interactive, shown) {
     if (!wfp.st) inkRaw(red(`\n出错了：${e.message}\n`));
   }
   // 跟网页对话同一个收尾：这一轮开的标签页、没说 keep 的后台命令、`&` 甩出去的进程组一起收（tools.releaseRun）
-  try { await require("./tools").releaseRun(sessionId); } catch {}
+  try { await require("./src/agent/tools").releaseRun(sessionId); } catch {}
   process.removeListener("SIGINT", onSigint);
   process.removeListener("SIGHUP", onHup);
   process.removeListener("SIGTERM", onTerm);
@@ -1921,7 +1921,7 @@ function splitFiles(text) {
 (async () => {
   // ---------- openworkbuddy engines：看本机能拿什么当底层，以及一键切过去 ----------
   if (sub === "engines") {
-    const engines = require("./engines");
+    const engines = require("./src/engines");
     const want = words[0] === "use" ? String(words[1] || "").trim() : "";
     if (words[0] === "use") {
       if (engines.get(want) === undefined) {
@@ -2016,7 +2016,7 @@ function splitFiles(text) {
     // 人明写的路径优先，配方名只是简写。配方模块懒加载，普通流程文件用不着它
     let recipes = null, recipe = null;
     if (!fs.existsSync(full)) {
-      try { recipes = require("./recipes"); } catch { recipes = null; }
+      try { recipes = require("./src/domains/content/recipes"); } catch { recipes = null; }
       recipe = recipes ? recipes.get(file) : null;
       if (recipe) text = JSON.stringify(recipes.workflowOf(recipe.id, { config, hasRenderer: false }));
     }
@@ -2123,7 +2123,7 @@ function splitFiles(text) {
   }
   const runtime = createAgentRuntime({ config, llm, mcpManager, experts, expertTeams });
   const engineId = (config.agent || {}).engine || "builtin";
-  const engineBackend = require("./engines").get(engineId);
+  const engineBackend = require("./src/engines").get(engineId);
   const who = engineBackend ? `底层 ${engineBackend.label}` + green("（不花 API 额度）") : `模型 ${llm.provider}（${llm.model}）`;
   // 权限档只在「不是默认那档」时印。默认 auto 天天见，印了就是噪音；
   // 而 full（命令也不问了）和 plan（一个字都不写）恰恰是那种「以为自己在另一档」会出事的状态，
@@ -2822,7 +2822,7 @@ function splitFiles(text) {
   // 跟 run_shell 用同一个 shell（macOS 上 zsh 关掉 nomatch），PATH 也补齐 homebrew 那几个目录。
   // stdin 不接：这里不是真终端，vim、交互式 python 这种会一直等输入的东西 Ctrl+C 能停
   const runShell = (cmd) => new Promise((resolve) => {
-    const tools = require("./tools");
+    const tools = require("./src/agent/tools");
     const { bin, args, opts: shOpts } = tools._internals.pickShell(cmd);
     const bufs = [];
     let bytes = 0, tailNl = true;
@@ -2952,7 +2952,7 @@ function splitFiles(text) {
     if (v.name === "compact") {
       if (!runtime.compactHistory) { prog(yellow("这个引擎不支持手动压缩\n")); return; }
       if (reloadSessIfChanged()) prog(dim("（这条会话在别处有新内容，先接上再压）\n"));
-      const before = require("./agent").historyChars(sess.history || []);
+      const before = require("./src/agent/agent").historyChars(sess.history || []);
       const n = (sess.history || []).length;
       if (n < 4) { prog(dim("才聊了几句，没什么可压的\n")); return; }
       prog(dim("压缩中……（要过一趟模型，十几秒）\n"));
@@ -2960,7 +2960,7 @@ function splitFiles(text) {
       try {
         await runtime.compactHistory(sess.history, { force: true, emit: (e) => { if (e && e.type === "compact") removed = e.removed; } });
       } catch (e) { prog(red(`压缩没成（${e.message}），上下文一点没动\n`)); return; }
-      prog(dim(repl.compactedText(before, require("./agent").historyChars(sess.history || []), removed)));
+      prog(dim(repl.compactedText(before, require("./src/agent/agent").historyChars(sess.history || []), removed)));
       prog(dim(contextLine() + "\n"));
       saveSess();
       return;
@@ -2996,7 +2996,7 @@ function splitFiles(text) {
     }
     if (v.name === "rewind") {
       // 只退这个会话自己留的检查点：别的会话、用户手改的文件一概不碰
-      const ck = require("./checkpoints");
+      const ck = require("./src/agent/checkpoints");
       const ws = getWorkspaceDir();
       const rows = ck.list(ws, sessionId);
       if (!v.arg && rows.length && pickerUsable()) {
@@ -3078,7 +3078,7 @@ function splitFiles(text) {
     }
     if (v.name === "session") { prog(dim(`${sessionId}\n${sessFile}\n`)); return; }
     if (v.name === "model") {
-      const engMod = require("./engines");
+      const engMod = require("./src/engines");
       const opt = (config.agent || {}).engine_options || {};
       let det = [];
       try { det = await engMod.detectAll(opt); } catch (e) { prog(yellow(`本机引擎探测不了（${e.message}），先只列模型\n`)); }
@@ -3140,7 +3140,7 @@ function splitFiles(text) {
     }
 
     if (v.name === "status") {
-      const eng = require("./engines").get(cfgEngine());
+      const eng = require("./src/engines").get(cfgEngine());
       const who = eng ? `底层 ${eng.label}` + green("（不花 API 额度）") : `模型 ${llm.provider}（${llm.model}）`;
       const turns = (sess.transcript || []).filter((t) => t.type === "user").length;
       prog(dim(`模式 ${opts.mode} · ${who}\n工作目录 ${getWorkspaceDir()}\n会话 ${sessionId} · 跑过 ${turns} 轮\n`));

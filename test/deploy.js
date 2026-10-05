@@ -66,7 +66,7 @@ function ignored(p) {
 }
 
 // 自检：先证明 ignored() 本身不是个恒真函数，不然下面全是废话
-ok(!ignored("server.js") && !ignored("public/index.html") && !ignored("engines/tool-bridge.js"),
+ok(!ignored("server.js") && !ignored("public/index.html") && !ignored(mod.rel("tool-bridge")),
    "自检：源码文件不会被误判成排除（否则下面的断言全是空的）");
 
 for (const p of [
@@ -464,7 +464,7 @@ console.log("\n【6】装机包瘦身：既不能虚胖，也不能删过头");
   // 运行时真读的那两处还是那两个文件——哪天改成 require("mermaid") 或读别的文件，单文件就不够了
   ok(read(mod.rel("browser-render")).includes('require.resolve("mermaid/dist/mermaid.min.js")') &&
      slim.BUNDLES.mermaid.keep.includes("dist/mermaid.min.js"), "  └ browser-render.js 读的正是留下的 mermaid.min.js");
-  ok(/require\("echarts"\)/.test(read("diagram.js")) && JSON.parse(read("node_modules/echarts/package.json")).exports["."].require === "./" + slim.BUNDLES.echarts.keep[0],
+  ok(/require\("echarts"\)/.test(read(mod.rel("diagram"))) && JSON.parse(read("node_modules/echarts/package.json")).exports["."].require === "./" + slim.BUNDLES.echarts.keep[0],
      "  └ diagram.js 的 require(\"echarts\") 按 exports 落到留下的 dist/echarts.js");
 
   const pats = cfgFiles.filter((f) => f.startsWith("!node_modules/"));
@@ -726,7 +726,7 @@ if (BUILD) {
     ok(lsIn("/app/dist") === "NO", "镜像里没有 dist/（1.2G 的安装包没进去）");
     ok(lsIn("/app/server.js") === "YES", "反向对照：server.js 在（不是把什么都排除了）");
     ok(lsIn("/app/skills") === "YES", "反向对照：内置技能在");
-    ok(lsIn("/app/engines") === "YES", "反向对照：engines/ 在（v0.1.1 就是漏了它才装完打不开）");
+    ok(lsIn("/app/" + path.posix.dirname(mod.rel("engines"))) === "YES", "反向对照：engines/ 在（v0.1.1 就是漏了它才装完打不开）");
 
     const size = +sh("docker", ["image", "inspect", TAG, "--format", "{{.Size}}"]).trim();
     console.log(`  · 镜像 ${(size / 1e9).toFixed(2)} GB`);

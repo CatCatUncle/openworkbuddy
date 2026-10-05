@@ -1317,7 +1317,8 @@ section(17, "工具定义 + 录制器源码闸门（浏览器只能是隔离的�
   // 接线（tools.js 的 case、TOOL_DEFS）归集成那一步；接上之后这里自动开始查
   const tsrc = fs.readFileSync(mod("tools"), "utf8");
   if (!tsrc.includes("web-demo-recorder")) { console.log("  跳过接线检查：tools.js 还没接 record_web_demo"); return; }
-  ok(/require\("\.\/lib\/web-demo-recorder"\)\.TOOL_DEF/.test(tsrc), "TOOL_DEFS 里登记了");
+  const recSpec = JSON.stringify(mod.spec("tools", "web-demo-recorder")).replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+  ok(new RegExp(`require\\(${recSpec}\\)\\.TOOL_DEF`).test(tsrc), "TOOL_DEFS 里登记了");
   const i = tsrc.indexOf("case \"record_web_demo\"");
   ok(i > 0, "executeTool 里有这个 case");
   const body = tsrc.slice(i, i + 1500);

@@ -9,8 +9,8 @@
 const fs = require("fs");
 const path = require("path");
 const express = require("express");
-const dramaPipeline = require("../drama-pipeline");
-const shotHistory = require("../shot-history"); // 一镜一镜的版本留底：改台词重跑之后，上一版首帧还拿得回来
+const dramaPipeline = require("../src/domains/media/drama-pipeline");
+const shotHistory = require("../src/domains/media/shot-history"); // 一镜一镜的版本留底：改台词重跑之后，上一版首帧还拿得回来
 const store = require("../src/platform/store");
 
 // 下面这几个由 createDramaRouter(deps) 填上

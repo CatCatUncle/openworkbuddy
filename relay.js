@@ -37,7 +37,7 @@
 const crypto = require("crypto");
 const pricing = require("./src/core/billing/pricing");
 const budget = require("./src/core/billing/budget");
-const vkeys = require("./vkeys");
+const vkeys = require("./src/domains/account/vkeys");
 const log = require("./src/platform/log");
 const { cleanKey } = require("./src/core/model/llm");
 const { protoOfChannel } = require("./src/core/model/media-models");
@@ -241,7 +241,7 @@ function createRouter(deps = {}) {
   // 这几个放在函数里而不是文件头：tools.js 是整个仓库最重的一个模块，
   // 而 relay.js 的上半截（forward / pickChannels）被测试和别的地方单独引用。
   // 放文件头的话，只想算一下该走哪条渠道也要把它整个拉起来。
-  const tools = require("./tools");
+  const tools = require("./src/agent/tools");
   const mediaModels = require("./src/core/model/media-models");
   const relayFiles = require("./relay-files");
   const router = express.Router();

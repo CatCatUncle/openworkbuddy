@@ -41,9 +41,9 @@ if (require.main === module) {
 
 const { spawnSync } = require("child_process");
 const { createLLM } = require("../src/core/model/llm");
-const { createAgentRuntime, mapPool } = require("../agent");
-const { McpManager } = require("../mcp");
-const { setWorkspaceDir } = require("../tools");
+const { createAgentRuntime, mapPool } = require("../src/agent/agent");
+const { McpManager } = require("../src/agent/mcp");
+const { setWorkspaceDir } = require("../src/agent/tools");
 const memory = require("../src/core/memory/memory");
 const store = require("../src/platform/store");
 const { TASKS } = require("./tasks");

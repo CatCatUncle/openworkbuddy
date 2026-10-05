@@ -465,7 +465,7 @@ console.log("\n【6】require 得到的文件，得真的在仓库里");
   const lsZ = (args) => execFileSync("git", ["ls-files", "-z", ...args], { cwd: ROOT, encoding: "utf8" }).split("\0").filter(Boolean);
   const deleted = new Set(lsZ(["--deleted"]));
   const tracked = new Set(lsZ([]).filter((f) => !deleted.has(f)));
-  if (!tracked.has("account.js")) throw new Error("git ls-files 没拿到东西（连 account.js 都不在里头），下面算出来的不作数");
+  if (!tracked.has(require("./lib/mod").mod.rel("account"))) throw new Error("git ls-files 没拿到东西（连 account.js 都不在里头），下面算出来的不作数");
 
   // 能解成哪些真文件。没后缀、.js、目录里的 index.js、.json 都算。
   const resolves = (rel) => [rel, rel + ".js", rel + "/index.js", rel + ".json"].find((c) => tracked.has(c));
@@ -496,7 +496,7 @@ console.log("\n【6】require 得到的文件，得真的在仓库里");
   // 反向对照：真摆一个没进 git 的依赖进来，得抳得住。
   // 兑的是 resolves() 就不该这么宽——比如不小心写成永远返真，上面那条就永远绿。
   ok(!resolves("这个文件不存在-" + Date.now()), "反向对照：不存在的文件真的解不出来");
-  ok(!!resolves("account"), "反向对照：真存在的 account.js 解得出来（不是看什么都没有）");
+  ok(!!resolves(require("./lib/mod").mod.rel("account").replace(/\.js$/, "")), "反向对照：真存在的 account.js 解得出来（不是看什么都没有）");
 }
 
 console.log("\n【7】临时目录得有人收：新前缀必须落在 e2e 那把扫帚的射程里");

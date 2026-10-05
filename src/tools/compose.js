@@ -18,8 +18,8 @@
 
 const fs = require("fs");
 const path = require("path");
-const TC = require("../../lib/timeline-compose");
-const jobs = require("../../lib/compose-jobs");
+const TC = require("../domains/media/timeline-compose");
+const jobs = require("../domains/media/compose-jobs");
 const M = require("../util/motion-clock");
 
 /** @typedef {import("../../types/timeline").ComposeVideoInput} ComposeVideoInput */
@@ -390,7 +390,7 @@ async function composeVideo(input, ctx) {
   // 品牌：名字 → 品牌包；对象 → 直接写的 logo / 字体
   let logoFile = "", fontFile = "";
   if (typeof mapped.brand === "string" && mapped.brand.trim()) {
-    const kit = brandFromKit(mapped.brand.trim(), ctx.root || cwd, deps.brandKit || require("../../brand-kit"));
+    const kit = brandFromKit(mapped.brand.trim(), ctx.root || cwd, deps.brandKit || require("../domains/content/brand-kit"));
     facts.brandKit = kit.brandKit;
     if (kit.brand !== undefined) facts.brand = kit.brand;
     if (kit.missing.length) warnings.push(`品牌包里这几个文件不在了，没用上：${kit.missing.join("、")}`);

@@ -266,9 +266,10 @@ function fakeChild() {
       "三条守卫各自认得出漏接（反向对照）");
     // 标签页的闲置关页 / 到顶腾位要认得「还在跑」：网页对话看 activeRuns，IM / 定时任务看 holdRun
     const cdpSpec = JSON.stringify(mod.spec("server", "cdp")).replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
-    const activeWired = (s) => new RegExp(`require\\(${cdpSpec}\\)\\.setActivePredicate\\(\\(sid\\) => activeRuns\\.has\\(sid\\) \\|\\| require\\("\\.\\/tools"\\)\\.runHeld\\(sid\\)\\)`).test(s);
+    const toolsSpec = JSON.stringify(mod.spec("server", "tools")).replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+    const activeWired = (s) => new RegExp(`require\\(${cdpSpec}\\)\\.setActivePredicate\\(\\(sid\\) => activeRuns\\.has\\(sid\\) \\|\\| require\\(${toolsSpec}\\)\\.runHeld\\(sid\\)\\)`).test(s);
     ok(activeWired(SRV), "server.js 把「任务还在跑」接给了 cdp.js");
-    ok(!activeWired(SRV.replace("|| require(\"./tools\").runHeld(sid)", "")), "  └ 漏了 IM / 定时任务那半：认得出（反向对照）");
+    ok(!activeWired(SRV.replace(`|| require(${JSON.stringify(mod.spec("server", "tools"))}).runHeld(sid)`, "")), "  └ 漏了 IM / 定时任务那半：认得出（反向对照）");
     const rs = tools.TOOL_DEFS.find((t) => t.name === "run_shell");
     ok(rs.input_schema.properties.keep && rs.input_schema.properties.keep.type === "boolean" && /结束/.test(rs.input_schema.properties.background.description), "run_shell 有 keep 参数，background 的说明里写了会被收");
   }
