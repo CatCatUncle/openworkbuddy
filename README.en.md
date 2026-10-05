@@ -78,7 +78,7 @@
 | **Personal commercial use**: freelancing, client work, paid products or services | **Required** |
 | SaaS offered to others, bundling into products you sell, client delivery / outsourcing / custom work | **Required** |
 
-A license unlocks no features: there is only this one codebase, with no feature locks, no countdowns and no online checks.
+A license unlocks no features: there is only this one codebase, with no feature locks, no countdowns and no online license checks. The software sends no usage data to the author or any third party; when it checks for updates, it asks GitHub Releases whether a new version is out (GitHub can see your IP).
 Commercial use without a license can be pursued by the rights holder under civil law, and removing or altering copyright notices without permission may itself infringe — legal basis and court cases in [未授权商用的法律后果](COMMERCIAL-LICENSE.md#未授权商用的法律后果) (Chinese).
 
 Beyond licensing, we take on enterprise AI work:
@@ -349,6 +349,10 @@ Most docs are in Chinese; the code and comments are the source of truth.
 **Free for personal non-commercial use, schools and non-profits; company use (even internal only) and personal commercial use need a commercial license.** Companies may evaluate free for 30 days. To buy one, email [contact@aijentra.com](mailto:contact@aijentra.com).
 
 [PolyForm Noncommercial 1.0.0](LICENSE); terms and what unlicensed commercial use leads to are in [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md). Deploy configs, scripts and skill templates are also MIT ([the list](COMMERCIAL-LICENSE.md#按-mit-授权的部分)); the name and logo aren't licensed.
+
+Anyone who copies or redistributes any part of this software must keep the license terms (or their URL) and every line beginning with `Required Notice:` at the top of [LICENSE](LICENSE).
+
+Official releases are published only at CatCatUncle/openworkbuddy on GitHub and its Releases. Installers from other sources get no updates or support from the author; users' rights are those under the PolyForm Noncommercial License 1.0.0 and any commercial license.
 
 KylinWork and others built on this project's code without the author's permission and changed its license; the author has demanded they be taken down everywhere.
 

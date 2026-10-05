@@ -78,7 +78,7 @@
 | **个人商用**：个人接单、给客户干活、做付费产品或服务 | **必须买** |
 | 做 SaaS 对外服务、打包售卖、给客户交付 / 外包 / 定制 | **必须买** |
 
-买授权不解锁任何功能：只有这一份代码，没有功能锁、不倒计时、不联网验证。
+买授权不解锁任何功能：只有这一份代码，没有功能锁、不倒计时，授权不联网验证。软件不向作者或任何第三方回传使用数据；检查更新时会去 GitHub Releases 查有没有新版（GitHub 能看到本机 IP）。
 没授权就商用，权利人可以依法追究民事责任；未经许可删改版权声明，还可能单独构成侵权——依据和判例见 [未授权商用的法律后果](COMMERCIAL-LICENSE.md#未授权商用的法律后果)。
 
 除了授权，我们还承接企业 AI 业务：
@@ -360,6 +360,10 @@ OpenWorkBuddy 是独立开源项目，跟上面这些公司都没有关联。
 **个人非商用、学校公益免费；公司使用（哪怕只在内部）和个人商用要买商业授权**，公司可先免费试用 30 天。购买发邮件到 [contact@aijentra.com](mailto:contact@aijentra.com)。
 
 协议 [PolyForm Noncommercial 1.0.0](LICENSE)，细则和没授权商用的后果见 [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)。部署配置、脚本、技能模板另按 MIT（[清单](COMMERCIAL-LICENSE.md#按-mit-授权的部分)）；名称和图标不在授权范围内。
+
+复制或分发本软件的任何部分，都要带上协议全文（或网址）和 [LICENSE](LICENSE) 开头所有以 `Required Notice:` 开头的行。
+
+官方发布只有 GitHub 上的 CatCatUncle/openworkbuddy 及其 Releases。非官方渠道的安装包不由作者提供更新和支持，使用者的授权以 PolyForm Noncommercial 1.0.0 的条件和商业授权为准。
 
 KylinWork 等项目未经作者许可拿本项目代码二次开发，还擅自改了开源协议，作者已要求其全网下架。
 

@@ -5,6 +5,14 @@ OpenWorkBuddy 自身 Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle)，�
 但打包出去的桌面版里还住着一批别人的代码和资源，它们各自的许可照旧有效。这份文件就是把它们一条条写清楚——
 谁、哪个版本、什么许可、去哪拿源码。**发版前如果动了依赖，记得回来改这里。**
 
+按协议「Notices」一节，复制或分发本软件的任何部分，都要原样带上 [LICENSE](LICENSE) 开头所有以 `Required Notice:` 开头的行：
+
+```
+Required Notice: Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle)
+Required Notice: https://github.com/CatCatUncle/openworkbuddy
+Required Notice: Use not permitted by the PolyForm Noncommercial License 1.0.0 or by the additional permissions in COMMERCIAL-LICENSE.md (including a company's use in real business) requires a separate commercial license — see COMMERCIAL-LICENSE.md
+```
+
 ## 一、前端（直接放进 `public/`，跟着页面一起发出去）
 
 | 组件 | 版本 | 许可 | 出处 | 我们怎么用的 |
