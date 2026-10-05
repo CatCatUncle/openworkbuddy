@@ -138,6 +138,12 @@ function localRequires(code) {
     const parts = [...m[1].matchAll(/["']([^"']+)["']/g)].map((p) => p[1]);
     if (parts.length) out.push("./" + parts.join("/"));
   }
+  // require(rootPath("skills", "x.json"))：src/platform/root.js 那个锚点，相对的是仓库根而不是本文件，
+  // 所以直接给绝对路径（walkGraph 里 path.resolve 碰到绝对路径原样用）。不认的话这条边从图上消失，闸门照样绿
+  for (const m of code.matchAll(/require\(\s*rootPath\(([^)]*)\)\s*\)/g)) {
+    const parts = [...m[1].matchAll(/["']([^"']+)["']/g)].map((p) => p[1]);
+    if (parts.length) out.push(path.join(ROOT, ...parts));
+  }
   return out;
 }
 

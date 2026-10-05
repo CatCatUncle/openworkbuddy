@@ -23,7 +23,7 @@ const os = require("os");
 const path = require("path");
 
 /** 只读：代码、public/、config.example.json、随包出厂的 skills/ */
-const APP_DIR = __dirname;
+const APP_DIR = require("./src/platform/root").ROOT; // 仓库根只认 root.js 这一处锚点：本文件搬进子目录也不漂
 
 /** @returns {boolean} 是不是装机态（.dmg / .exe 装出来的那份） */
 function isPackaged() {

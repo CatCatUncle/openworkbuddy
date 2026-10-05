@@ -24,6 +24,8 @@
 
 var fs = require("fs");
 var path = require("path");
+// 仓库根只认 root.js 这一处锚点（它也是零依赖、老写法，挂在闸门前面不添风险）
+var ROOT = require("./src/platform/root").ROOT;
 
 /** 跟 install.sh 和 package.json 的 engines 是同一个数：全局 fetch 从 18 才有 */
 var MIN_NODE = 18;
@@ -107,7 +109,7 @@ function readDeps(rootDir) {
   }
 }
 
-var REQUIRED_DEPS = readDeps(__dirname);
+var REQUIRED_DEPS = readDeps(ROOT);
 
 function findMissing(rootDir, names) {
   var missing = [];
@@ -126,7 +128,7 @@ function findMissing(rootDir, names) {
  */
 function enforce(opt) {
   opt = opt || {};
-  var rootDir = opt.rootDir || __dirname;
+  var rootDir = opt.rootDir || ROOT;
   var packaged = !!opt.packaged;
   var problem = bootProblem({
     nodeVersion: process.versions.node,

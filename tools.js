@@ -1219,7 +1219,7 @@ function shellPath(platform = process.platform) {
  * run_shell / 后台命令 / run_node 起子进程之前都过一遍：立围栏、PATH 前面垫拦截脚本。
  * 护栏自己出错不许拦住命令：退回老样子跑。depsAppDir 测试里换成临时的假应用目录
  */
-let depsAppDir = __dirname;
+let depsAppDir = require("./src/platform/root").ROOT;
 function depsGuardEnv(cwd, text, basePath, platform = process.platform) {
   const shimDir = dataPath("data", "pm-guard");
   let env = {};
@@ -1401,7 +1401,7 @@ const WIN_PYTHON_HINT = "本机没有能用的 Python。先把 python3 换成 py
  * @returns {string} 要追加的提示（可能是多行）；没有可说的就是空串
  */
 function missingBinHint(text, platform = process.platform, ctx = {}) {
-  const { knownTool } = require("./doctor");
+  const { knownTool } = require("./src/platform/known-tools");
   const seen = new Set();
   const lines = [];
   // Windows 上 python 单独说：doctor 那张表里没有它（Mac/Linux 系统自带），可 Windows 上它是最常撞的一个。

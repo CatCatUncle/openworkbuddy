@@ -8,7 +8,7 @@
  * 再在代码里抄一份清单迟早会跟 sprite 对不上，所以直接从 sprite 解析。
  */
 const fs = require("fs");
-const path = require("path");
+const { rootPath } = require("./src/platform/root");
 
 let CACHE = null;
 
@@ -17,7 +17,7 @@ function iconNames() {
   if (CACHE) return CACHE;
   const set = new Set();
   try {
-    const html = fs.readFileSync(path.join(__dirname, "public", "index.html"), "utf8");
+    const html = fs.readFileSync(rootPath("public", "index.html"), "utf8");
     const re = /<symbol\s+id="i-([a-z0-9-]+)"/g;
     let m;
     while ((m = re.exec(html))) set.add(m[1]);

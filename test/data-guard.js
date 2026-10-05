@@ -238,6 +238,9 @@ section("3 all.js 真判得红，也真放得过");
   fs.copyFileSync(GUARD, path.join(FAKE, "test", "lib", "real-data-guard.js"));
   fs.copyFileSync(path.join(HERE, "lib", "own-home.js"), path.join(FAKE, "test", "lib", "own-home.js"));
   fs.copyFileSync(path.join(ROOT, "paths.js"), path.join(FAKE, "paths.js"));
+  // paths.js 的仓库根锚点：它按自己的位置往上数两级，放到假仓库同一位置，算出来的根就是假仓库
+  fs.mkdirSync(path.join(FAKE, "src", "platform"), { recursive: true });
+  fs.copyFileSync(path.join(ROOT, "src", "platform", "root.js"), path.join(FAKE, "src", "platform", "root.js"));
   fs.mkdirSync(path.join(FAKE, "skills", "demo-skill"), { recursive: true });
   fs.writeFileSync(path.join(FAKE, "skills", "demo-skill", "SKILL.md"), "---\nname: demo-skill\n---\n");
   fs.writeFileSync(path.join(FAKE, "experts.json"), "[]");

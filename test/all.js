@@ -87,6 +87,7 @@ const SUITES = [
   ["lint", "ESLint 十二条零误报规则：只对新增违规报红（已知的记在 test/lint-baseline.json）"],
   ["typecheck", "tsc 类型闸门：全仓只拦找不到名字 / 键写两遍，认领了 @ts-check 的文件全拦"],
   ["data-guard", "测试护栏：哪个套件往用户真实的数据目录写，当场拦下并判红"],
+  ["layout-invariants", "目录布局不变量：仓库根只认 src/platform/root.js、开发态数据根逐字不变、外部工具清单不反向依赖体检"],
   ["icons", "图标系统：sprite 完整性、词典同步、圆角阶梯、滚动条留位"],
   ["lanes", "任务泳道调度"],
   ["md-tty", "终端里的 Markdown 渲染"],

@@ -16,7 +16,7 @@ const RELEASES_PAGE = `https://github.com/${REPO}/releases/latest`;
 const CACHE_MS = 6 * 3600 * 1000; // GitHub 匿名接口每小时 60 次，6 小时一次足够且不会被限流
 
 function currentVersion() {
-  try { return require("./package.json").version || "0.0.0"; } catch { return "0.0.0"; }
+  try { return require("./src/platform/root").pkg().version || "0.0.0"; } catch { return "0.0.0"; }
 }
 
 // 判「你是怎么装的」。不用 electron.app.isPackaged，是因为这个模块在纯 node 模式

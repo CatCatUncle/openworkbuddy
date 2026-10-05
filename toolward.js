@@ -35,6 +35,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { rootPath } = require("./src/platform/root");
 const { spawnSync } = require("child_process");
 const log = require("./log");
 const security = require("./security");
@@ -98,7 +99,7 @@ function candidateDirs() {
     path.join(home, "node_modules", ".bin"),
     // 有人真把它装成本项目的 devDependency 了也认（我们自己不写进 package.json，
     // 但不拦着别人装——个人用户装 devDependency 完全在 PolyForm 的免费范围里）
-    path.join(__dirname, "node_modules", ".bin"),
+    rootPath("node_modules", ".bin"),
   ];
   return [...new Set([...fromPath, ...extra])];
 }

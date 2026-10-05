@@ -18,6 +18,7 @@
  */
 
 const path = require("path");
+const { rootPath } = require("./src/platform/root");
 const { dataPath } = require("./paths");
 const sprites = require("./pet-sprites");
 const fs = require("fs");
@@ -219,7 +220,7 @@ function create() {
   // 跟着所有桌面走，但**不**在全屏应用上露面：开会投屏、放全屏演示时它跳出来就是事故。
   // 那种场景下提醒仍然走系统通知（通知会被系统「专注模式」正常压制），不会真漏掉。
   try { petWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: false }); } catch {}
-  petWin.loadFile(path.join(__dirname, "public", "pet.html"));
+  petWin.loadFile(rootPath("public", "pet.html"));
   petWin.once("ready-to-show", () => {
     if (!petWin || petWin.isDestroyed()) return;
     petWin.showInactive(); // 不抢焦点地亮相

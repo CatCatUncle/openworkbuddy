@@ -500,7 +500,10 @@ function normalizeStoryboardDraft(obj, opts = {}) {
 let storyboardSchemaCache = null;
 /** 分镜表 schema。跟技能读的是同一份文件——两边各写一份，迟早一边改了一边没改 */
 function storyboardSchema() {
-  if (!storyboardSchemaCache) storyboardSchemaCache = require("./skills/short-drama/references/分镜表.schema.json");
+  if (!storyboardSchemaCache) {
+    const { rootPath } = require("./src/platform/root");
+    storyboardSchemaCache = require(rootPath("skills", "short-drama", "references", "分镜表.schema.json"));
+  }
   return storyboardSchemaCache;
 }
 
