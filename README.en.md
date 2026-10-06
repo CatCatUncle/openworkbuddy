@@ -182,6 +182,18 @@ The hard part isn't drawing a person — it's keeping the same person across all
 
 **<https://hunan-travel.pages.dev/>** — it's live, go click around. One HTML file plus a folder of images, no external CDN. Drop it on any static host and it's a site. Not a mockup — the thing it actually handed over.
 
+**"I'm spending three days in Beijing — plan the trip for me, and use the map card."**
+
+<p align="center">
+ <img src="docs/images/case-trip-map.jpg" width="860" alt="Map view of a three-day Beijing trip card: day 1's Temple of Heaven, Tiananmen, the Forbidden City, Jingshan and Qianmen pinned in order, with photo place cards and a navigation link for each stop on the right">
+</p>
+
+<p align="center">
+ <img src="docs/images/case-trip-timeline.jpg" width="860" alt="The same trip card switched to the timeline: day 1 from the Temple of Heaven in the morning to Qianmen Street in the evening">
+</p>
+
+The itinerary in the answer becomes a trip card: switch between days, every stop is pinned on the map in order, the place cards on the right come with photos and a "Navigate" link; flip to "Timeline" at the top right and the day runs from morning to evening. Works without a Key; add an AMap Key in Settings → Map and places in China get more accurate.
+
 **"Every morning at seven, send me today's weather and what I should watch out for, on Feishu."**
 
 <p align="center">
@@ -272,6 +284,7 @@ The diagram doubles as a reading order: start at `server.js`, then see how `src/
 - **Oct 6** Keys stay out of the AI's reach: child processes get no Key variables by default; network tools can't reach localhost, the LAN or cloud metadata
 - **Oct 6** External engines must name a model and are off by default for multi-user setups; Codex runs offline and writes only to the workspace by default
 - **Oct 6** Trip cards: itineraries in answers become a map you can drag and click, with per-day tabs, place cards and photos; works without a Key
+- **Oct 6** The README now has two trip-card screenshots from a three-day Beijing plan: the map with each day's stops, and the timeline from morning to evening
 - **Oct 6** Images made by local Codex land in the conversation folder and preview in the output panel
 - **Oct 6** The commercial license now spells out the three cases where a license code is revoked and how to appeal; the app has no analytics or telemetry
 - **Oct 6** Source code moved into layered folders under src/, each layer depending only downward; read [代码架构](docs/代码架构.md) before extending it
