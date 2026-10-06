@@ -189,41 +189,54 @@
     return min < 60 ? `约 ${min} 分钟` : `约 ${Math.floor(min / 60)} 小时${min % 60 ? ` ${min % 60} 分` : ""}`;
   }
   const MODE = { walking: "步行", driving: "驾车", line: "直线" };
+  const svg = (body, cls) => `<svg class="${cls || "tc-legi"}" viewBox="0 0 24 24" aria-hidden="true">${body}</svg>`;
+  const ICON = {
+    walking: svg('<circle cx="13" cy="4.5" r="1.8"/><path d="m9.5 21 2.5-6 3 3v3M8 11.5l3-3.5 3.5 1 2 3.5M12 8.5 11 15"/>'),
+    driving: svg('<path d="M4 16v-4l2.2-5h11.6L20 12v4zM4 12h16"/><circle cx="7.5" cy="16.5" r="1.6"/><circle cx="16.5" cy="16.5" r="1.6"/>'),
+    line: svg('<path d="M5 19 19 5" stroke-dasharray="2.5 3"/>'),
+    nav: svg('<path d="M3.5 10.5 20.5 3.5l-7 17-2.2-7.8z"/>', "tc-navi"),
+  };
   const fx = (n) => (+n).toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
   const imgUrl = (u) => "/api/geo/img?u=" + encodeURIComponent(u);
 
   // ---------------- 导航链接 ----------------
-  /** 两站之间：国内去高德（GCJ-02），国外去 Google 地图（WGS-84） */
+  const WALK_M = 2000;   // 跟服务端查路线同一条线：两公里内按步行
+  /** 给 Google 地图的点：国内给 GCJ-02（Google 的国内路网就是这套，给 WGS-84 会偏几百米），国外给 WGS-84 */
+  function gPt(p) {
+    const w = convert(p.lng, p.lat, p.datum, "wgs84");
+    const q = inChina(w[0], w[1]) ? convert(p.lng, p.lat, p.datum, "gcj02") : w;
+    return `${fx(q[1])},${fx(q[0])}`;
+  }
+  /** 两站之间：都在国内去高德（GCJ-02），否则去 Google 地图 */
   function legNavUrl(a, b, mode) {
     const pa = convert(a.lng, a.lat, a.datum, "wgs84"), pb = convert(b.lng, b.lat, b.datum, "wgs84");
     // 没查到路线（国外、没填 Key）只有直线：跟查路线时一样，两公里内按步行，别让几百米也去开车
-    if (mode !== "walking" && mode !== "driving") mode = distance(pa[0], pa[1], pb[0], pb[1]) < 2000 ? "walking" : "driving";
+    if (mode !== "walking" && mode !== "driving") mode = distance(pa[0], pa[1], pb[0], pb[1]) < WALK_M ? "walking" : "driving";
     if (inChina(pa[0], pa[1]) && inChina(pb[0], pb[1])) {
       const ga = convert(a.lng, a.lat, a.datum, "gcj02"), gb = convert(b.lng, b.lat, b.datum, "gcj02");
       return `https://uri.amap.com/navigation?from=${fx(ga[0])},${fx(ga[1])},${encodeURIComponent(a.name)}&to=${fx(gb[0])},${fx(gb[1])},${encodeURIComponent(b.name)}`
         + `&mode=${mode === "walking" ? "walk" : "car"}&coordinate=gaode&callnative=1`;
     }
-    return `https://www.google.com/maps/dir/?api=1&origin=${fx(pa[1])},${fx(pa[0])}&destination=${fx(pb[1])},${fx(pb[0])}&travelmode=${mode === "walking" ? "walking" : "driving"}`;
+    return `https://www.google.com/maps/dir/?api=1&origin=${gPt(a)}&destination=${gPt(b)}&travelmode=${mode === "walking" ? "walking" : "driving"}`;
   }
   /**
-   * 一整天的路线：国外交给 Google 地图（途经点最多 8 个）；国内高德的网页导航只认一个途经点，
-   * 所以三站以内给链接，再多就不给了（每两站之间那条「导航」还在）。国内外混着的也不给。
+   * 一整天的路线。每两站都在两公里内就按步行，否则开车。
+   * 国内三站以内交给高德（它的网页导航只认一个途经点）；再多、或者在国外，交给 Google 地图（途经点最多 8 个，所以十站封顶）。
    */
   function dayNavUrl(pts) {
-    if (pts.length < 2) return "";
+    if (pts.length < 2 || pts.length > 10) return "";
     const wgs = pts.map((p) => convert(p.lng, p.lat, p.datum, "wgs84"));
-    const cn = wgs.map(([x, y]) => inChina(x, y));
-    if (cn.every(Boolean)) {
-      if (pts.length > 3) return "";
+    const walk = wgs.every((w, i) => i === 0 || distance(wgs[i - 1][0], wgs[i - 1][1], w[0], w[1]) < WALK_M);
+    if (pts.length <= 3 && wgs.every(([x, y]) => inChina(x, y))) {
       const g = pts.map((p) => convert(p.lng, p.lat, p.datum, "gcj02"));
       const last = g.length - 1;
       const via = g.length === 3 ? `&via=${fx(g[1][0])},${fx(g[1][1])},${encodeURIComponent(pts[1].name)}` : "";
-      return `https://uri.amap.com/navigation?from=${fx(g[0][0])},${fx(g[0][1])},${encodeURIComponent(pts[0].name)}&to=${fx(g[last][0])},${fx(g[last][1])},${encodeURIComponent(pts[last].name)}${via}&mode=car&coordinate=gaode&callnative=1`;
+      return `https://uri.amap.com/navigation?from=${fx(g[0][0])},${fx(g[0][1])},${encodeURIComponent(pts[0].name)}&to=${fx(g[last][0])},${fx(g[last][1])},${encodeURIComponent(pts[last].name)}${via}`
+        + `&mode=${walk ? "walk" : "car"}&coordinate=gaode&callnative=1`;
     }
-    if (cn.some(Boolean) || pts.length > 10) return "";
-    const ll = wgs.map(([x, y]) => `${fx(y)},${fx(x)}`);
+    const ll = pts.map(gPt);
     const mid = ll.slice(1, -1);
-    return `https://www.google.com/maps/dir/?api=1&origin=${ll[0]}&destination=${ll[ll.length - 1]}${mid.length ? "&waypoints=" + encodeURIComponent(mid.join("|")) : ""}&travelmode=driving`;
+    return `https://www.google.com/maps/dir/?api=1&origin=${ll[0]}&destination=${ll[ll.length - 1]}${mid.length ? "&waypoints=" + encodeURIComponent(mid.join("|")) : ""}&travelmode=${walk ? "walking" : "driving"}`;
   }
 
   // ---------------- 静态占位（renderMd 里用） ----------------
@@ -320,21 +333,22 @@
     const el = document.createElement("div");
     el.className = "tc-w";
     const multi = it.days.length > 1;
+    // 宽的时候地图铺满整张卡片，天数浮在左上角、当天的地点浮在右边一栏；窄了（≤620px）上下摆
     el.innerHTML = `<div class="tc-head"><div class="tc-ttl">${esc(it.title || (it.city ? it.city + "行程" : "行程"))}</div>`
       + `<button type="button" class="tc-found" aria-expanded="false">正在找地点…</button>`
       + `<div class="tc-views" role="tablist"><button type="button" role="tab" data-v="map">地图</button><button type="button" role="tab" data-v="timeline">时间线</button></div></div>`
-      + `<div class="tc-tabs" role="tablist"${multi ? "" : " hidden"}>${it.days.map((d, i) => `<button type="button" role="tab" data-d="${i}">${esc(dayLabel(d, i))}</button>`).join("")}</div>`
       + `<div class="tc-list" hidden></div>`
+      + `<div class="tc-stage"><div class="tc-tabs" role="tablist"${multi ? "" : " hidden"}>${it.days.map((d, i) => `<button type="button" role="tab" data-d="${i}">${esc(dayLabel(d, i))}</button>`).join("")}</div>`
       + `<div class="tc-body"><div class="tc-map" tabindex="0" aria-label="行程地图，拖动平移，双击放大，按 0 回到全览">`
       + `<div class="tc-tiles"></div><svg class="tc-route" aria-hidden="true"></svg><div class="tc-pins"></div>`
       + `<div class="tc-zoom"><button type="button" data-z="1" aria-label="放大" title="放大">+</button><button type="button" data-z="-1" aria-label="缩小" title="缩小">−</button>`
       + `<button type="button" class="tc-reset" aria-label="回到全览" title="回到全览"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button></div>`
       + `<div class="tc-attr"></div><div class="tc-msg" hidden></div></div>`
-      + `<div class="tc-split" role="separator" aria-orientation="vertical" tabindex="0" aria-label="拖动调整地图和列表的宽窄">`
+      + `<div class="tc-split" role="separator" aria-orientation="vertical" tabindex="0" aria-label="拖动调整列表宽窄">`
       + `<button type="button" class="tc-fold"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></button></div>`
       + `<div class="tc-panel"></div>`
       + `<div class="tc-grip" role="separator" aria-orientation="horizontal" tabindex="0" aria-label="拖动调整地图高度"></div></div>`
-      + `<div class="tc-tl" hidden></div>`;
+      + `<div class="tc-tl" hidden></div></div>`;
     const $ = (s) => el.querySelector(s);
     const map = $(".tc-map"), tilesEl = $(".tc-tiles"), routeEl = $(".tc-route"), pinsEl = $(".tc-pins"),
       panel = $(".tc-panel"), tl = $(".tc-tl"), body = $(".tc-body"), msg = $(".tc-msg"), attr = $(".tc-attr"),
@@ -347,12 +361,15 @@
       loading: it.days.map(() => null),
       notes: new Set(), provider: "",
       cfg: null, src: "", z: 12, cx: 0, cy: 0, fitted: -1, started: false, active: -1,
+      moved: false,   // 拖过、缩放过、点过地点：别再自作主张地重新取景
     };
     const tiles = new Map();
 
     // ---- 摆法：右边列表多宽、地图多高、列表收没收 ----
     const lay = loadLayout();
     const narrow = () => el.clientWidth <= 620;   // 跟 tripcard.css 里的 @container 同一条线：窄了上下摆
+    const INSET = 10;   // 右边那栏离地图边多远，跟 tripcard.css 里的 --tc-in 同一个数
+    const PIN = 42;     // 钉子多大，跟 tripcard.css 里的 .tc-pin 同一个数
     function applyLayout() {
       if (okPw(lay.pw)) el.style.setProperty("--tc-pw", lay.pw + "%"); else el.style.removeProperty("--tc-pw");
       if (okH(lay.h)) el.style.setProperty("--tc-h", lay.h + "px"); else el.style.removeProperty("--tc-h");
@@ -367,12 +384,18 @@
       lay.fold = v;
       applyLayout();
       saveLayout(lay);
+      refit();
+    }
+    // 右边那栏浮在地图上，收起、拉宽之后能看见的那块地图变了：还没动过地图就照新的那块重新取景
+    function refit() {
+      if (!st.moved && st.fitted === st.day) fit(true);
       redraw();
     }
 
     // ---- 视图切换 ----
     function setView(v, byUser) {
       st.view = v;
+      el.dataset.view = v;
       if (byUser) st.userView = true;
       body.hidden = v !== "map";
       tl.hidden = v !== "timeline";
@@ -397,10 +420,13 @@
     function renderPanel() {
       const d = st.day, day = it.days[d];
       const located = day.stops.map((s, i) => { const p = stopPlace(d, i); return p ? { ...p, name: s.name } : null; }).filter(Boolean);
+      // 缺一站的整天路线是错的，宁可不给（每两站之间那条「导航」还在）
       const nav = located.length === day.stops.length ? dayNavUrl(located) : "";
+      const app = nav.startsWith("https://uri.amap.com/") ? "高德地图" : "Google 地图";
       let h = `<div class="tc-dh"><div class="tc-dl">${esc(dayLabel(day, d))}</div>${day.title ? `<div class="tc-dt">${esc(day.title)}</div>` : ""}`
         + (day.summary ? `<div class="tc-ds">${esc(day.summary)}</div>` : "")
-        + (nav ? `<a class="tc-open" href="${esc(nav)}" target="_blank" rel="noopener">打开路线 ↗</a>` : "") + `</div>`;
+        + (nav ? `<div class="tc-acts"><a class="tc-open" href="${esc(nav)}" target="_blank" rel="noopener" title="在${app}里打开这一天的路线">${ICON.nav}打开路线</a>`
+          + `<span class="tc-app">${app}</span></div>` : "") + `</div>`;
       let seg = null;
       day.stops.forEach((s, i) => {
         if (i > 0) h += legHtml(d, i - 1);
@@ -409,13 +435,15 @@
         seg = sg || seg;
         const p = stopPlace(d, i);
         const kind = s.kind || (p && p.kind) || "";
-        const meta = [s.time ? esc(s.time) : "", p && p.rating ? `<span class="tc-star">★ ${p.rating}</span>` : "", kind ? esc(kind) : ""].filter(Boolean).join(" · ");
+        // 时段已经写在小标题上了：「上午」不再重复一遍，「9:30」「早上」这种更细的才单写一行
+        const time = s.time && s.time !== sg ? s.time : "";
+        const meta = [p && p.rating ? `<span class="tc-star">${esc(p.rating)} ★</span>` : "", kind ? esc(kind) : ""].filter(Boolean).join(" · ");
         const ph = p && p.photo ? `<img alt="" loading="lazy" src="${esc(imgUrl(p.photo))}">` : "";
         // 没照片、照片取不到：方块里写地名头一个字，不留一块空白像没加载完
         const ini = [...String(s.name || "").trim()][0] || "";
         h += `<div class="tc-card${i === st.active ? " on" : ""}" data-i="${i}" tabindex="0">`
           + `<div class="tc-ph"><span class="tc-ini" aria-hidden="true">${esc(ini.toUpperCase())}</span>${ph}<span class="tc-no">${i + 1}</span></div>`
-          + `<div class="tc-info"><div class="tc-nm">${esc(s.name)}</div>${meta ? `<div class="tc-meta">${meta}</div>` : ""}`
+          + `<div class="tc-info">${time ? `<div class="tc-time">${esc(time)}</div>` : ""}<div class="tc-nm">${esc(s.name)}</div>${meta ? `<div class="tc-meta">${meta}</div>` : ""}`
           + (s.note ? `<div class="tc-note">${esc(s.note)}</div>` : "")
           + (p === null ? `<div class="tc-miss">地图上没找到这个地方${keyHint() ? ` · ${keyBtn("填高德 Key 再找找")}` : ""}</div>` : "") + `</div></div>`;
       });
@@ -433,11 +461,12 @@
     function legHtml(d, i) {
       const leg = st.legs[d][i];
       const a = stopPlace(d, i), b = stopPlace(d, i + 1);
-      if (!leg || !a || !b) return `<div class="tc-leg"><span class="tc-legline"></span></div>`;
+      // 两站之间这一行兼当分隔线：怎么走、多远、多久，跟一个「导航 ›」
+      if (!leg || !a || !b) return `<div class="tc-leg"><span class="tc-legr"></span></div>`;
       const s = it.days[d].stops;
       const bits = [MODE[leg.mode] || "", fmtDist(leg.distance), fmtDur(leg.duration)].filter(Boolean).join(" · ");
       const url = legNavUrl({ ...a, name: s[i].name }, { ...b, name: s[i + 1].name }, leg.mode);
-      return `<div class="tc-leg"><span class="tc-legline"></span><span class="tc-legt">${esc(bits)}</span>`
+      return `<div class="tc-leg">${ICON[leg.mode] || ICON.line}<span class="tc-legt">${esc(bits)}</span><span class="tc-legr"></span>`
         + `<a href="${esc(url)}" target="_blank" rel="noopener">导航 ›</a></div>`;
     }
 
@@ -550,25 +579,40 @@
     }
     const srcInfo = () => ((st.cfg && st.cfg.sources) || {})[st.src] || { datum: "wgs84", maxZoom: 18, attr: "" };
     const ptOf = (p) => convert(p.lng, p.lat, p.datum, srcInfo().datum);
+    /**
+     * 地图上真正看得见、能放钉子的那一块：宽的时候右边浮着一栏地点，左上角浮着天数，左下角是缩放；
+     * 钉子底下还挂着名字。取景、点地点时居中都按这一块算，不按整张地图。
+     */
+    function viewBox() {
+      const W = map.clientWidth, H = map.clientHeight;
+      const occ = !narrow() && !lay.fold ? panel.offsetWidth + INSET : 0;
+      const v = { L: 50, T: multi ? 62 : 32, R: W - occ - 30, B: H - 44 };
+      if (v.R - v.L < 80) { v.L = 24; v.R = Math.max(v.L + 40, W - occ - 24); }
+      if (v.B - v.T < 80) { v.T = 24; v.B = Math.max(v.T + 40, H - 24); }
+      return v;
+    }
     function fit(force) {
       const W = map.clientWidth, H = map.clientHeight;
       if (!W || !H || !st.cfg) return;
       if (!force && st.fitted === st.day) return;
       const ps = (st.places[st.day] || []).filter(Boolean);
       if (!ps.length) return;
+      stopFly();
       st.src = srcOf(st.day);
       const pts = ps.map(ptOf);
+      const v = viewBox(), vw = v.R - v.L, vh = v.B - v.T;
       const max = Math.min(16, srcInfo().maxZoom);
       let z = max;
       for (; z > 3; z--) {
         const xs = pts.map((p) => lngX(p[0], z)), ys = pts.map((p) => latY(p[1], z));
-        if (Math.max(...xs) - Math.min(...xs) <= W - 90 && Math.max(...ys) - Math.min(...ys) <= H - 90) break;
+        if (Math.max(...xs) - Math.min(...xs) <= vw && Math.max(...ys) - Math.min(...ys) <= vh) break;
       }
       const xs = pts.map((p) => lngX(p[0], z)), ys = pts.map((p) => latY(p[1], z));
       st.z = z;
-      st.cx = (Math.max(...xs) + Math.min(...xs)) / 2;
-      st.cy = (Math.max(...ys) + Math.min(...ys)) / 2;
+      st.cx = (Math.max(...xs) + Math.min(...xs)) / 2 - ((v.L + v.R) / 2 - W / 2);
+      st.cy = (Math.max(...ys) + Math.min(...ys)) / 2 - ((v.T + v.B) / 2 - H / 2);
       st.fitted = st.day;
+      st.moved = false;
     }
     let raf = 0;
     const redraw = () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; draw(); }); };
@@ -600,20 +644,22 @@
       }
       for (const [k, img] of tiles) if (!want.has(k)) { img.remove(); tiles.delete(k); }
       attr.textContent = srcInfo().attr || "";
-      // 路线
-      const lines = [];
+      // 路线：查到的路先垫一道白边再画，压在花花绿绿的底图上也看得清；只有直线的画虚线
+      const lines = [], casing = [];
       (st.legs[st.day] || []).forEach((leg, i) => {
         if (!leg || !ps || !ps[i] || !ps[i + 1]) return;
         const raw = leg.line && leg.line.length >= 2 && leg.mode !== "line"
           ? leg.line.map(([x, y]) => convert(x, y, leg.datum, srcInfo().datum))
           : [ptOf(ps[i]), ptOf(ps[i + 1])];
         const pts = raw.map(([x, y]) => `${(lngX(x, z) - ox).toFixed(1)},${(latY(y, z) - oy).toFixed(1)}`).join(" ");
+        if (leg.mode !== "line") casing.push(`<polyline class="tc-rc" points="${pts}"/>`);
         lines.push(`<polyline class="tc-rl${leg.mode === "line" ? " dash" : ""}" points="${pts}"/>`);
       });
       routeEl.setAttribute("width", W); routeEl.setAttribute("height", H);
-      routeEl.innerHTML = lines.join("");
+      routeEl.innerHTML = casing.join("") + lines.join("");
       // 钉子：元素建一次，拖动时只挪位置（每帧重建会让照片一闪一闪）
       syncPins();
+      const at = [];
       pinsEl.querySelectorAll(".tc-pin").forEach((b) => {
         const p = ps && ps[+b.dataset.i];
         if (!p) return;
@@ -622,7 +668,28 @@
         b.hidden = px < -40 || py < -40 || px > W + 40 || py > H + 40;
         b.style.transform = `translate(${Math.round(px)}px, ${Math.round(py)}px)`;
         b.classList.toggle("on", +b.dataset.i === st.active);
+        if (!b.hidden) at.push({ b, px, py, box: [px - PIN / 2, py - PIN / 2, px + PIN / 2, py + PIN / 2] });
       });
+      placeLabels(at);
+    }
+    /**
+     * 钉子底下的名字：压着别的钉子、别的名字就先不写（选中的那颗先占位，其余按站序），
+     * 放大了离得开了自然一个个露出来。宽度量一次记在钉子上，拖动时不再量。
+     */
+    function placeLabels(at) {
+      const hit = (r, q) => r[0] < q[2] && q[0] < r[2] && r[1] < q[3] && q[1] < r[3];
+      const order = at.slice().sort((a, b) => (+b.b.dataset.i === st.active) - (+a.b.dataset.i === st.active) || a.b.dataset.i - b.b.dataset.i);
+      const shown = [];
+      for (const q of order) {
+        const lb = q.b.querySelector(".tc-plb");
+        if (!lb) continue;
+        const w = q.b._lw || (q.b._lw = lb.offsetWidth);
+        const top = q.py + PIN / 2 + (+q.b.dataset.i === st.active ? 8 : 4);
+        const box = [q.px - w / 2, top, q.px + w / 2, top + 16];
+        const clash = shown.some((r) => hit(r, box)) || at.some((o) => o !== q && hit(o.box, box));
+        q.b.classList.toggle("nolb", clash);
+        if (!clash) shown.push(box);
+      }
     }
     let pinsKey = "";
     function syncPins() {
@@ -633,7 +700,8 @@
       const stops = it.days[st.day].stops;
       pinsEl.innerHTML = ps.map((p, i) => (p
         ? `<button type="button" class="tc-pin" data-i="${i}" title="${esc(stops[i].name)}" aria-label="${i + 1}. ${esc(stops[i].name)}">`
-          + (p.photo ? `<img alt="" draggable="false" src="${esc(imgUrl(p.photo))}">` : "") + `<span>${i + 1}</span></button>`
+          + `<span class="tc-pph">${p.photo ? `<img alt="" draggable="false" src="${esc(imgUrl(p.photo))}">` : ""}<span class="tc-pno">${i + 1}</span></span>`
+          + `<span class="tc-plb" aria-hidden="true">${esc(stops[i].name)}</span></button>`
         : "")).join("");
       pinsEl.querySelectorAll("img").forEach((img) => img.addEventListener("error", () => img.remove(), { once: true }));
     }
@@ -641,12 +709,14 @@
       const W = map.clientWidth, H = map.clientHeight;
       const nz = Math.max(3, Math.min(srcInfo().maxZoom, st.z + dz));
       if (nz === st.z || !st.src) return;
-      if (px == null) { px = W / 2; py = H / 2; }
+      stopFly();
+      if (px == null) { const v = viewBox(); px = (v.L + v.R) / 2; py = (v.T + v.B) / 2; }
       const wx = st.cx - W / 2 + px, wy = st.cy - H / 2 + py;
       const lng = xLng(wx, st.z), lat = yLat(wy, st.z);
       st.z = nz;
       st.cx = lngX(lng, nz) - px + W / 2;
       st.cy = latY(lat, nz) - py + H / 2;
+      st.moved = true;
       draw();
     }
     // 点过地点、拖过、缩放过之后一键回到刚打开时那样：当天的地点全在框里，高亮清掉
@@ -655,11 +725,30 @@
       st.active = i;
       panel.querySelectorAll(".tc-card").forEach((c) => c.classList.toggle("on", +c.dataset.i === i));
       const p = stopPlace(st.day, i);
-      if (pan && p && st.src) {
-        const [x, y] = ptOf(p);
-        st.cx = lngX(x, st.z); st.cy = latY(y, st.z);
-      }
       draw();
+      if (pan && p && st.src) {
+        // 挪到看得见的那块正中间（不是整张地图正中间——那儿可能被右边那栏挡着）；滑过去，不是一下跳过去
+        const [x, y] = ptOf(p);
+        const W = map.clientWidth, H = map.clientHeight, v = viewBox();
+        st.moved = true;
+        flyTo(lngX(x, st.z) - ((v.L + v.R) / 2 - W / 2), latY(y, st.z) - ((v.T + v.B) / 2 - H / 2));
+      }
+    }
+    let fly = 0;
+    function stopFly() { if (fly) { cancelAnimationFrame(fly); fly = 0; } }
+    function flyTo(cx, cy) {
+      stopFly();
+      const x0 = st.cx, y0 = st.cy, far = Math.hypot(cx - x0, cy - y0);
+      const still = typeof root.matchMedia === "function" && root.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      if (still || far < 2 || far > 4000) { st.cx = cx; st.cy = cy; draw(); return; }
+      const t0 = performance.now(), dur = 260;
+      const step = (t) => {
+        const k = Math.min(1, (t - t0) / dur), e = 1 - (1 - k) ** 3;
+        st.cx = x0 + (cx - x0) * e; st.cy = y0 + (cy - y0) * e;
+        draw();
+        fly = k < 1 ? requestAnimationFrame(step) : 0;
+      };
+      fly = requestAnimationFrame(step);
     }
 
     // ---- 交互 ----
@@ -680,7 +769,7 @@
         const i = +t.dataset.i;
         focusStop(i, false);
         const card = panel.querySelector(`.tc-card[data-i="${i}"]`);
-        if (card) panel.scrollTo({ top: card.offsetTop - panel.offsetTop - 8, behavior: "smooth" });
+        if (card) panel.scrollTo({ top: panel.scrollTop + card.getBoundingClientRect().top - panel.getBoundingClientRect().top - 12, behavior: "smooth" });
       } else if (t.classList.contains("tc-card") && !e.target.closest("a")) focusStop(+t.dataset.i, true);
     });
     el.addEventListener("keydown", (e) => {
@@ -695,11 +784,11 @@
           if (pw < PW.min) return setFold(true);
           lay.fold = false;
           lay.pw = Math.min(PW.max, pw);
-          applyLayout(); saveLayout(lay); redraw();
+          applyLayout(); saveLayout(lay); refit();
         } else if (!wide && (k === "ArrowUp" || k === "ArrowDown")) {
           e.preventDefault();
           lay.h = Math.min(MH.max, Math.max(MH.min, map.clientHeight + (k === "ArrowDown" ? 40 : -40)));
-          applyLayout(); saveLayout(lay); redraw();
+          applyLayout(); saveLayout(lay); refit();
         } else if (k === "Enter" && e.target === split) { e.preventDefault(); setFold(!lay.fold); }
       }
       if (e.target === map && (e.key === "+" || e.key === "=")) zoomAt(1);
@@ -714,7 +803,7 @@
       if (e.button !== 0 || e.target.closest(".tc-fold")) return;
       e.preventDefault();
       const b = body.getBoundingClientRect();
-      rs = { bar, kind: bar === split && !narrow() ? "w" : "h", right: b.right, width: b.width, y0: e.clientY, h0: map.clientHeight };
+      rs = { bar, kind: bar === split && !narrow() ? "w" : "h", right: b.right - INSET, width: b.width, y0: e.clientY, h0: map.clientHeight };
       bar.classList.add("drag");
       el.classList.add("tc-resizing");
     }
@@ -732,17 +821,20 @@
       el.classList.remove("tc-resizing");
       rs = null;
       saveLayout(lay);
+      refit();
     }
     split.addEventListener("pointerdown", (e) => rsStart(e, split));
     grip.addEventListener("pointerdown", (e) => rsStart(e, grip));
     map.addEventListener("pointerdown", (e) => {
       if (e.button !== 0 || e.target.closest("button, a")) return;
+      stopFly();
       drag = { x: e.clientX, y: e.clientY, cx: st.cx, cy: st.cy };
       map.classList.add("grab");
     });
     const onMove = (e) => {
       if (rs) return rsMove(e);
       if (!drag) return;
+      st.moved = true;
       st.cx = drag.cx - (e.clientX - drag.x);
       st.cy = drag.cy - (e.clientY - drag.y);
       redraw();
@@ -776,7 +868,8 @@
     });
     panel.addEventListener("mouseleave", () => pinsEl.querySelectorAll(".tc-pin.hot").forEach((p) => p.classList.remove("hot")));
 
-    const ro = typeof ResizeObserver === "function" ? new ResizeObserver(() => { if (st.fitted !== st.day) fit(false); redraw(); }) : null;
+    // 地图框变了（拖高矮、窗口宽窄）：还没动过地图就照新的框重新取景
+    const ro = typeof ResizeObserver === "function" ? new ResizeObserver(() => { if (st.fitted !== st.day || !st.moved) fit(true); redraw(); }) : null;
     if (ro) ro.observe(map);
     function start() {
       if (st.started) return;
@@ -805,6 +898,7 @@
         if (st.started) prefetch();
       },
       dispose() {
+        stopFly();
         if (io) io.disconnect();
         if (ro) ro.disconnect();
         window.removeEventListener("pointermove", onMove);

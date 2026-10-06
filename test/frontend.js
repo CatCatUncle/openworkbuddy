@@ -6475,10 +6475,12 @@ const TRIP_CHECKS = `
   const c0 = cards[0];
   const imgOk = (i) => !!i && i.complete && i.naturalWidth > 0;
   await until(() => imgOk(c0.querySelector(".tc-ph img")) && !cards[1].querySelector(".tc-ph img"));
-  ok("每站一张卡片：照片、序号、名字、时间 · 评分 · 类别、备注", cards.length === 4 && imgOk(c0.querySelector(".tc-ph img"))
+  ok("每站一张卡片：照片、序号、名字、评分 · 类别、备注", cards.length === 4 && imgOk(c0.querySelector(".tc-ph img"))
     && c0.querySelector(".tc-ph img").getAttribute("src") === "/api/geo/img?u=" + encodeURIComponent("https://aos-comment.amap.com/a.jpg")
-    && txt(c0, ".tc-no") === "1" && txt(c0, ".tc-nm") === "翠湖公园" && txt(c0, ".tc-meta") === "上午 · ★ 4.7 · 公园" && txt(c0, ".tc-note") === "湖边散步",
+    && txt(c0, ".tc-no") === "1" && txt(c0, ".tc-nm") === "翠湖公园" && txt(c0, ".tc-meta") === "4.7 ★ · 公园" && txt(c0, ".tc-note") === "湖边散步",
     c0 && c0.innerHTML);
+  ok("时间跟小标题一样（「上午」）就不重复写；写了具体钟点（12:00）的单列一行", !c0.querySelector(".tc-time") && txt(cards[1], ".tc-time") === "12:00",
+    txt(c0, ".tc-time") + " / " + txt(cards[1], ".tc-time"));
   ok("照片走本机代理（/api/geo/img），页面不直连外部图床", ![...w.querySelectorAll("img")].some((i) => /^https?:/.test(i.getAttribute("src") || "")));
   ok("照片取不到（图床回 404）：卡片上去掉那张图，序号还在，不留裂图", !cards[1].querySelector(".tc-ph img") && txt(cards[1], ".tc-no") === "2");
   ok("地图上没找到的那站照样列着，说一句「地图上没找到这个地方」", txt(cards[3], ".tc-miss") === "地图上没找到这个地方" && !cards[3].querySelector(".tc-ph img"));
@@ -6493,25 +6495,34 @@ const TRIP_CHECKS = `
     legs.map((l) => l.textContent).join(" | "));
   ok("有一站没找到：不给整天路线（缺一站的路线是错的）", !panel.querySelector(".tc-open"));
 
-  // 左边：地图
+  // 地图：铺满整张卡片，右边那一栏浮在上面
   const map = w.querySelector(".tc-map");
   const pins = [...w.querySelectorAll(".tc-pin")];
   await until(() => imgOk(pins[0] && pins[0].querySelector("img")) && pins[1] && !pins[1].querySelector("img"));
   ok("地图上 3 颗钉子（没找到的那站没有），第一颗带照片", pins.length === 3 && imgOk(pins[0].querySelector("img")) && pins.every((p) => !p.hidden), pins.length);
-  const badge = (p) => Math.round(p.querySelector("span").getBoundingClientRect().width);
-  ok("钉子的照片取不到：退回只写编号的圆点（编号铺满整颗，不是挂在角上的小角标）", !pins[1].querySelector("img") && pins[1].textContent === "2"
-    && badge(pins[1]) === pins[1].clientWidth && badge(pins[0]) < pins[0].clientWidth, badge(pins[1]) + " / " + pins[1].clientWidth + " / 带图那颗角标 " + badge(pins[0]));
-  const mr = map.getBoundingClientRect();
-  const inside = pins.every((p) => { const r = p.getBoundingClientRect(); return r.left >= mr.left - 1 && r.right <= mr.right + 1 && r.top >= mr.top - 1 && r.bottom <= mr.bottom + 1; });
-  ok("缩放到刚好装下这一天的所有点（钉子全在地图框里）", inside, pins.map((p) => p.style.transform).join(" "));
+  const badge = (p) => Math.round(p.querySelector(".tc-pno").getBoundingClientRect().width);
+  const square = (p) => p.querySelector(".tc-pph").clientWidth;
+  ok("钉子的照片取不到：退回只写编号的方块（编号铺满整块，不是挂在角上的小角标）", !pins[1].querySelector("img") && txt(pins[1], ".tc-pno") === "2"
+    && badge(pins[1]) === square(pins[1]) && badge(pins[0]) < square(pins[0]), badge(pins[1]) + " / " + square(pins[1]) + " / 带图那颗角标 " + badge(pins[0]));
+  ok("钉子底下挂着地名", txt(pins[0], ".tc-plb") === "翠湖公园" && pins[0].getAttribute("aria-label").indexOf("翠湖公园") >= 0, pins[0].outerHTML.slice(0, 200));
+  const lbs = pins.filter((p) => !p.classList.contains("nolb")).map((p) => p.querySelector(".tc-plb").getBoundingClientRect());
+  const clash = lbs.some((a, i) => lbs.some((b, j) => j > i && a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom));
+  ok("地名之间不叠字（挤不下的那个先不写，钉子还在）", lbs.length >= 1 && !clash, lbs.length + " 个地名");
+  const mr = map.getBoundingClientRect(), pr = panel.getBoundingClientRect();
+  const inside = pins.every((p) => { const r = p.getBoundingClientRect(); return r.left >= mr.left - 1 && r.right <= pr.left + 1 && r.top >= mr.top - 1 && r.bottom <= mr.bottom + 1; });
+  ok("缩放到刚好装下这一天的所有点，而且躲开右边那一栏（钉子全在露出来的那块地图里）", inside, pins.map((p) => p.style.transform).join(" ") + " / 栏左边 " + Math.round(pr.left));
   const tiles = [...w.querySelectorAll(".tc-tiles img")];
   ok("国内的点用高德底图，瓦片走本机代理", tiles.length > 0 && tiles.every((i) => /^\\/api\\/geo\\/tile\\/amap\\/\\d+\\/\\d+\\/\\d+\\.png$/.test(i.getAttribute("src"))), tiles.length && tiles[0].getAttribute("src"));
   await until(() => tiles.every(imgOk));
   ok("瓦片真取到了（铺满地图框的 " + tiles.length + " 张都画出来了）", tiles.every(imgOk));
   ok("底图署名照写（© 高德地图）", txt(w, ".tc-attr") === "© 高德地图");
-  ok("路线画了 2 段", w.querySelectorAll(".tc-route polyline").length === 2);
-  const pr = panel.getBoundingClientRect();
-  ok("宽的时候地图在左、地点在右", pr.left >= mr.right - 1 && Math.abs(pr.top - mr.top) < 2, JSON.stringify([mr.left, mr.right, pr.left]));
+  ok("路线画了 2 段（每段底下垫一条白边，压在底图上看得清）", w.querySelectorAll(".tc-route .tc-rl").length === 2 && w.querySelectorAll(".tc-route .tc-rc").length === 2);
+  const tr = w.querySelector(".tc-tabs").getBoundingClientRect();
+  ok("宽的时候地图铺满整张卡片，地点那一栏浮在地图右边，上下右各留一条缝", Math.abs(mr.width - w.querySelector(".tc-body").clientWidth) <= 1
+    && pr.left > mr.left + mr.width / 2 && pr.right <= mr.right - 6 && pr.top >= mr.top + 6 && pr.bottom <= mr.bottom - 6, JSON.stringify([mr.left, mr.right, pr.left, pr.right]));
+  ok("天数胶囊浮在地图左上角，不压到右边那一栏", tr.top >= mr.top && tr.top < mr.top + 20 && tr.left < mr.left + 20 && tr.right <= pr.left, JSON.stringify([tr.left, tr.right, tr.top, pr.left]));
+  const zr = w.querySelector(".tc-zoom").getBoundingClientRect();
+  ok("缩放按钮在左下角", zr.left < mr.left + 20 && zr.bottom > mr.bottom - 30, JSON.stringify([zr.left, zr.bottom, mr.bottom]));
 
   // 缩放、点卡片
   const st = TripCard._live.get(host.dataset.tcKey)[0]._state;
@@ -6522,7 +6533,7 @@ const TRIP_CHECKS = `
   ok("点第 2 张卡片：卡片高亮、地图上第 2 颗钉子也高亮", cards[1].classList.contains("on") && pins[1].classList.contains("on") && !pins[0].classList.contains("on"));
   const moved = st.z !== view0[0] || st.cx !== view0[1] || st.cy !== view0[2];
   const reset = w.querySelector(".tc-zoom .tc-reset");
-  ok("放大、点过地点之后，右上角有颗「回到全览」", moved && !!reset && reset.getAttribute("aria-label") === "回到全览" && reset.getBoundingClientRect().height > 20);
+  ok("放大、点过地点之后，缩放那一列底下有颗「回到全览」", moved && !!reset && reset.getAttribute("aria-label") === "回到全览" && reset.getBoundingClientRect().height > 20);
   reset.click();
   ok("点「回到全览」：缩放和位置回到刚打开时那样，高亮清掉", st.z === view0[0] && Math.abs(st.cx - view0[1]) < 0.5 && Math.abs(st.cy - view0[2]) < 0.5
     && !w.querySelector(".tc-card.on") && !w.querySelector(".tc-pin.on"), JSON.stringify([st.z, st.cx, st.cy]) + " vs " + JSON.stringify(view0));
@@ -6531,6 +6542,25 @@ const TRIP_CHECKS = `
   w.querySelector('.tc-zoom [data-z="1"]').click();
   w.querySelector(".tc-map").dispatchEvent(new KeyboardEvent("keydown", { key: "0", bubbles: true }));
   ok("焦点在地图上按 0 也回到全览", st.z === view0[0]);
+
+  // 点地图上的钉子：那张卡片高亮、右边那栏滚过去；钉子是自己看着点的，地图不动
+  const pin2 = w.querySelectorAll(".tc-pin")[2];
+  const p2a = pin2.getBoundingClientRect();
+  pin2.click();
+  const pr2 = panel.getBoundingClientRect();
+  const cardIn = await until(() => { const c = cards[2].getBoundingClientRect(); return c.top >= pr2.top - 1 && c.bottom <= pr2.bottom + 1; }, 1500);
+  ok("点地图上第 3 颗钉子：第 3 张卡片高亮、滚进右边那栏，地图不跟着跑", cardIn && cards[2].classList.contains("on") && pin2.classList.contains("on")
+    && Math.abs(pin2.getBoundingClientRect().left - p2a.left) < 1, JSON.stringify([cards[2].getBoundingClientRect().top, pr2.top, pr2.bottom]));
+  // 放大之后点卡片：地图滑到那一站，停在没被右边那栏挡住那块的中间
+  w.querySelector(".tc-zoom .tc-reset").click();
+  w.querySelector('.tc-zoom [data-z="1"]').click();
+  w.querySelector('.tc-zoom [data-z="1"]').click();
+  cards[0].click();
+  const vis = () => { const m = map.getBoundingClientRect(); return { x: (m.left + panel.getBoundingClientRect().left) / 2, m }; };
+  const slid = await until(() => { const r = pins[0].getBoundingClientRect(); return !pins[0].hidden && Math.abs(r.left + r.width / 2 - vis().x) < 8; }, 1500);
+  const p0 = pins[0].getBoundingClientRect();
+  ok("放大后点第 1 张卡片：地图滑到这一站，停在没被挡住那块的中间", slid && p0.right <= panel.getBoundingClientRect().left, Math.round(p0.left + p0.width / 2) + " vs " + Math.round(vis().x));
+  w.querySelector(".tc-zoom .tc-reset").click();
 
   // 「找到 5 个地点 ›」点开是清单
   w.querySelector(".tc-found").click();
@@ -6547,7 +6577,8 @@ const TRIP_CHECKS = `
     && w.querySelector('.tc-tabs [data-d="1"]').getAttribute("aria-selected") === "true");
   ok("第二天已经顺手查好了，切过去不再问服务端", calls("/api/geo/places") === placesBefore);
   const open = panel.querySelector(".tc-open");
-  ok("这天每站都找到了：给「打开路线 ↗」（高德，国内两站）", !!open && /^https:\\/\\/uri\\.amap\\.com\\/navigation\\?/.test(open.href) && open.target === "_blank", open && open.href);
+  ok("这天每站都找到了：给「打开路线」，旁边写明去哪个地图（国内两站：高德）", !!open && /^https:\\/\\/uri\\.amap\\.com\\/navigation\\?/.test(open.href) && open.target === "_blank"
+    && open.textContent === "打开路线" && txt(panel, ".tc-app") === "高德地图", open && open.href);
 
   // 时间线
   w.querySelector('[data-v="timeline"]').click();
@@ -6644,17 +6675,20 @@ const TRIP_CHECKS = `
   ok("默认：右边列表占四成上下，分隔条上有颗「收起」按钮", Math.abs(pw0 - 0.41) < 0.02 && !!fold && fold.getAttribute("aria-expanded") === "true"
     && /收起/.test(fold.getAttribute("aria-label")), pw0);
   const mw0 = lmap.offsetWidth;
+  const pinMid = () => { const xs = [...lw.querySelectorAll(".tc-pin")].map((p) => { const r = R(p); return r.left + r.width / 2; }); return (Math.min(...xs) + Math.max(...xs)) / 2 - R(lmap).left; };
+  const mid0 = pinMid();
+  ok("没收起时，钉子摆在左边露出来那块的中间", mid0 < mw0 / 2 - 60, Math.round(mid0) + " / 地图宽 " + mw0);
   fold.click();
   await tick();
   const fr = R(fold), cr = R(lw);
-  ok("点「收起」：列表藏起来，地图占满整张卡片宽", lw.classList.contains("tc-folded") && !shown(lpanel) && lmap.offsetWidth >= lbody.clientWidth - 1 && lmap.offsetWidth > mw0,
+  ok("点「收起」：右边那一栏藏起来，地图整个露出来", lw.classList.contains("tc-folded") && !shown(lpanel) && lmap.offsetWidth >= lbody.clientWidth - 1 && lmap.offsetWidth === mw0,
     lmap.offsetWidth + " / " + lbody.clientWidth);
   ok("收起后按钮整个留在卡片里（不被边框切掉一半），换成「展开」", fr.right <= cr.right + 0.5 && fr.left >= cr.left && fr.width > 10
     && fold.getAttribute("aria-expanded") === "false" && /展开/.test(fold.getAttribute("aria-label")), JSON.stringify([fr.left, fr.right, cr.right]));
   ok("收起这件事记在本机", stored() && stored().fold === true, JSON.stringify(stored()));
-  // 重画排在下一帧：等一会儿，等不到就是真没补瓦片
-  const tilesFull = await until(() => [...lw.querySelectorAll(".tc-tiles img")].some((i) => R(i).right >= R(lmap).right - 2), 2000);
-  ok("地图变宽后底图跟着铺满（不是只拉宽了框）", tilesFull, Math.max(0, ...[...lw.querySelectorAll(".tc-tiles img")].map((i) => R(i).right)) + " / " + R(lmap).right);
+  // 重新取景排在下一帧：等一会儿
+  const recentred = await until(() => Math.abs(pinMid() - mw0 / 2) < 40, 2000);
+  ok("收起后重新取景：钉子挪回整张地图的中间（没被挡的地方变大了）", recentred, Math.round(pinMid()) + " / 地图宽 " + mw0);
   fold.click();
   await tick();
   ok("再点一下展开，列表回来", !lw.classList.contains("tc-folded") && shown(lpanel) && Math.abs(lmap.offsetWidth - mw0) <= 1);
@@ -6666,7 +6700,7 @@ const TRIP_CHECKS = `
   ptr("pointermove", window, sx - 100, sy);
   ptr("pointerup", window, sx - 100, sy);
   await tick();
-  ok("按住分隔条往左拖 100px：列表宽 100px，地图窄 100px", Math.abs(lpanel.offsetWidth - pwBefore - 100) <= 2 && Math.abs(lmap.offsetWidth - (mw0 - 100)) <= 2,
+  ok("按住那一栏的左边沿往左拖 100px：栏宽 100px，地图还是铺满", Math.abs(lpanel.offsetWidth - pwBefore - 100) <= 2 && lmap.offsetWidth === mw0,
     pwBefore + " → " + lpanel.offsetWidth);
   ok("拖完的宽窄记在本机", stored() && Math.abs(stored().pw - (pwBefore + 100) / lbody.clientWidth * 100) < 0.6, JSON.stringify(stored()));
   ok("拖分隔条不会顺手拖动地图", !lmap.classList.contains("grab"));
@@ -6687,7 +6721,7 @@ const TRIP_CHECKS = `
   ptr("pointermove", window, gx, gy + 150);
   ptr("pointerup", window, gx, gy + 150);
   await tick();
-  ok("按住底边往下拖 150px：地图高 150px，右边列表跟着一样高", Math.abs(lmap.offsetHeight - mh0 - 150) <= 1 && Math.abs(lpanel.offsetHeight - lmap.offsetHeight) <= 1,
+  ok("按住底边往下拖 150px：地图高 150px，右边那一栏跟着变高（上下各留 10px）", Math.abs(lmap.offsetHeight - mh0 - 150) <= 1 && Math.abs(lpanel.offsetHeight - (lmap.offsetHeight - 20)) <= 1,
     mh0 + " → " + lmap.offsetHeight + " / " + lpanel.offsetHeight);
   ptr("pointerdown", grip, gx, R(grip).top + 5);
   ptr("pointermove", window, gx, R(grip).top - 2000);
@@ -6714,7 +6748,7 @@ const TRIP_CHECKS = `
   document.body.appendChild(t2);
   await tick();
   const w3 = t2.querySelector(".tc-w");
-  ok("本机记的那份坏了：照默认摆，不报错", !!w3 && w3.querySelector(".tc-map").offsetHeight === 400 && !w3.classList.contains("tc-folded"));
+  ok("本机记的那份坏了：照默认摆，不报错", !!w3 && w3.querySelector(".tc-map").offsetHeight === 460 && !w3.classList.contains("tc-folded"));
   t2.remove();
   localStorage.removeItem("owb.tripcard.layout");
 
