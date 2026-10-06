@@ -20,6 +20,9 @@ declare var I18N: any;
 /** public/svgfig.js 末尾 `root.SvgFig = {...}`：回复里的 SVG 图修补、消毒、转 PNG */
 declare var SvgFig: any;
 
+/** public/tripcard.js 末尾 `root.TripCard = {...}`：itinerary 围栏点活成地图行程卡、复制时换回按天的文字 */
+declare var TripCard: any;
+
 /**
  * 画布用的 JointJS。app-03.js 的 loadScriptOnce("/vendor/joint/joint.min.js") 按需加载，
  * server.js 把 /vendor/joint/ 指到 node_modules/@joint/core/dist——同一个包的 UMD 版，

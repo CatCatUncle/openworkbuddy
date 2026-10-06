@@ -762,7 +762,10 @@ function renderMd(src, base, live, root, opts) {
   const { text: pre, figs } = SvgFig.extractSvgFigures(src, live);
   let s = esc(pre);
   const codeBlocks = [];
-  const pushCode = (lang, code) => {
+  const pushCode = (lang, code, open) => {
+    // ```itinerary 是行程卡（public/tripcard.js）：解得开就画卡片，解不开照普通代码块显示
+    const card = /^itinerary$/i.test(lang) && window.TripCard ? TripCard.cardHtml(code, { open, live }) : "";
+    if (card) { codeBlocks.push(card); return `\x00CODE${codeBlocks.length - 1}\x00`; }
     codeBlocks.push(`<div class="code-wrap"><div class="code-head"><span>${esc(lang || "")}</span><a class="code-copy" title="复制代码">复制</a></div><pre><code>${code.replace(/\n$/, "")}</code></pre></div>`);
     return `\x00CODE${codeBlocks.length - 1}\x00`;
   };
@@ -771,7 +774,7 @@ function renderMd(src, base, live, root, opts) {
   s = repairBareCode(s);
   s = extract(s);
   // 未闭合围栏（流式输出中 / 模型忘了闭合）：从 ``` 到文末也按代码块渲染
-  s = s.replace(/(^|\n)```(\w*)[^\S\n]*\n?([\s\S]*)$/, (_, pre, lang, code) => pre + pushCode(lang, code));
+  s = s.replace(/(^|\n)```(\w*)[^\S\n]*\n?([\s\S]*)$/, (_, pre, lang, code) => pre + pushCode(lang, code, true));
   s = s.replace(/`([^`\n]+)`/g, "<code>$1</code>");
   s = s.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
   s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");
@@ -3132,6 +3135,8 @@ function copyTextLegacy(text, html) {
 function renderedCopy(nodes) {
   const parts = nodes.map((t) => {
     const c = t.cloneNode(true);
+    // 行程卡贴出去是按天排好的文字，不是地图上那堆按钮
+    if (window.TripCard) c.querySelectorAll(".tc[data-tc]").forEach((h) => { h.innerHTML = TripCard.staticOf(h); });
     c.querySelectorAll(".code-head").forEach((h) => {
       const lang = h.querySelector("span")?.textContent || "";
       h.replaceWith(Object.assign(document.createElement("div"), { textContent: lang, style: "font-size:12px;color:#888" }));

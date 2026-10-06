@@ -1,0 +1,116 @@
+/* ================= 行程卡（public/tripcard.js） =================
+ * 卡片挂在 .a-text 里，那儿给 ul/ol/li/a/p 写过的边距、下划线会漏进来，所以开头先归零。
+ * 颜色一律走 --owb-* 令牌，深色模式跟着变；底图瓦片本身是浅色的，深色下整层反相。 */
+
+/* ---------- 静态那一份：没点活之前、复制出去时都是它 ---------- */
+.a-text .tc { margin: 10px 0; }
+.tc-static { padding: 12px 14px; border: 1px solid var(--owb-border); border-radius: var(--radius-xl); background: var(--owb-card); }
+.tc-stitle { font-weight: 600; margin-bottom: 6px; }
+.tc-sday + .tc-sday { margin-top: 8px; }
+.tc-ssum { color: var(--owb-text-2); font-size: 13px; }
+.a-text .tc-static ol { margin: 4px 0 0; padding-left: 20px; }
+.tc-pending { display: flex; align-items: center; gap: 8px; padding: 14px 16px; border: 1px dashed var(--owb-border); border-radius: var(--radius-xl); color: var(--owb-text-2); font-size: 13px; }
+.tc-pn { color: var(--owb-text-3); }
+.tc-spin { width: 14px; height: 14px; border: 2px solid var(--owb-border); border-top-color: var(--owb-brand); border-radius: 50%; animation: tc-spin .8s linear infinite; }
+@keyframes tc-spin { to { transform: rotate(360deg); } }
+
+/* ---------- 活卡片 ---------- */
+.tc-w { container-type: inline-size; border: 1px solid var(--owb-border); border-radius: var(--radius-xl); background: var(--owb-card); overflow: hidden; font-size: 14px; line-height: 1.5; }
+.tc-w button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+.tc-w a { text-decoration: none; }
+.tc-w [hidden] { display: none !important; }
+
+.tc-head { display: flex; align-items: center; gap: 10px; padding: 10px 12px 8px 14px; }
+.tc-ttl { flex: 1; min-width: 0; font-weight: 600; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tc-w .tc-found { color: var(--owb-text-2); font-size: 12px; white-space: nowrap; }
+.tc-w .tc-found:hover { color: var(--owb-brand-text); }
+.tc-views { display: inline-flex; padding: 2px; border-radius: var(--radius-md); background: var(--owb-bg-side); }
+.tc-w .tc-views button { padding: 3px 10px; border-radius: var(--radius-sm); font-size: 12px; color: var(--owb-text-2); }
+.tc-w .tc-views button[aria-selected="true"] { background: var(--owb-card); color: var(--owb-text); box-shadow: var(--owb-shadow-sm); }
+
+.tc-tabs { display: flex; gap: 6px; padding: 0 12px 10px 14px; overflow-x: auto; scrollbar-width: none; }
+.tc-tabs::-webkit-scrollbar { display: none; }
+.tc-w .tc-tabs button { flex: none; padding: 4px 12px; border: 1px solid var(--owb-border); border-radius: var(--radius-full); font-size: 13px; color: var(--owb-text-2); }
+.tc-w .tc-tabs button:hover { border-color: var(--owb-text-3); color: var(--owb-text); }
+.tc-w .tc-tabs button[aria-selected="true"] { border-color: var(--owb-text); background: var(--owb-text); color: var(--owb-bg); }
+
+.tc-list { margin: 0 12px 10px 14px; padding: 10px 12px; border-radius: var(--radius-md); background: var(--owb-bg-side); font-size: 13px; max-height: 260px; overflow: auto; }
+.tc-lday + .tc-lday { margin-top: 8px; }
+.tc-lrow { display: flex; gap: 10px; justify-content: space-between; padding: 2px 0; }
+.tc-lrow em { font-style: normal; color: var(--owb-text-3); text-align: right; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tc-lrow.miss span { color: var(--owb-text-3); }
+.tc-lsrc { margin-top: 8px; color: var(--owb-text-3); font-size: 12px; }
+.tc-note-err { color: var(--owb-warn); margin-top: 2px; }
+
+/* 地图 + 右侧卡片：宽的时候左右，窄的时候上下 */
+.tc-body { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); border-top: 1px solid var(--owb-border); }
+@container (max-width: 620px) {
+  .tc-body { grid-template-columns: minmax(0, 1fr); }
+  .tc-map { height: 300px; }
+  .tc-panel { max-height: 360px; border-left: 0; border-top: 1px solid var(--owb-border); }
+}
+
+.tc-map { position: relative; height: 400px; overflow: hidden; background: #e8e6e1; cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; outline: none; }
+.tc-map.grab { cursor: grabbing; }
+.tc-map:focus-visible { box-shadow: inset 0 0 0 2px var(--owb-brand); }
+.tc-tiles { position: absolute; inset: 0; }
+.tc-tiles img { position: absolute; left: 0; top: 0; width: 256px; height: 256px; max-width: none; pointer-events: none; }
+html[data-theme="dark"] .tc-map { background: #1d1f22; }
+html[data-theme="dark"] .tc-tiles { filter: invert(1) hue-rotate(180deg) brightness(.92) contrast(.9); }
+.tc-route { position: absolute; left: 0; top: 0; pointer-events: none; overflow: visible; }
+.tc-rl { fill: none; stroke: var(--owb-brand); stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; opacity: .85; }
+.tc-rl.dash { stroke-width: 2.5; stroke-dasharray: 6 6; opacity: .7; }
+.tc-pins { position: absolute; inset: 0; pointer-events: none; }
+.tc-w .tc-pin { position: absolute; left: -18px; top: -18px; width: 36px; height: 36px; border-radius: 50%; border: 2px solid #fff; background: var(--owb-brand); box-shadow: 0 2px 8px rgba(0, 0, 0, .28); pointer-events: auto; transition: box-shadow var(--owb-t-fast); }
+.tc-pin img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; display: block; }
+.tc-pin span { position: absolute; right: -6px; bottom: -6px; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 9px; border: 2px solid #fff; background: var(--owb-brand); color: #fff; font-size: 11px; font-weight: 600; line-height: 14px; text-align: center; box-sizing: border-box; }
+.tc-pin:not(:has(img)) span { inset: 0; right: auto; bottom: auto; width: 100%; height: 100%; border: 0; border-radius: 50%; line-height: 32px; font-size: 13px; }
+.tc-w .tc-pin.on, .tc-w .tc-pin.hot { z-index: 2; box-shadow: 0 0 0 3px var(--owb-brand), 0 4px 12px rgba(0, 0, 0, .3); }
+
+.tc-zoom { position: absolute; right: 10px; top: 10px; display: flex; flex-direction: column; border-radius: var(--radius-md); background: var(--owb-card); box-shadow: var(--owb-shadow-md, 0 2px 8px rgba(0, 0, 0, .15)); overflow: hidden; }
+.tc-w .tc-zoom button { width: 30px; height: 30px; font-size: 17px; line-height: 30px; color: var(--owb-text); }
+.tc-w .tc-zoom button + button { border-top: 1px solid var(--owb-border); }
+.tc-w .tc-zoom button:hover { background: var(--owb-bg-hover); }
+.tc-attr { position: absolute; right: 0; bottom: 0; padding: 1px 6px; border-top-left-radius: var(--radius-sm); background: color-mix(in srgb, var(--owb-card) 80%, transparent); color: var(--owb-text-3); font-size: 10px; pointer-events: none; }
+.tc-msg { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); max-width: 80%; padding: 8px 14px; border-radius: var(--radius-md); background: var(--owb-card); box-shadow: var(--owb-shadow-sm); color: var(--owb-text-2); font-size: 13px; text-align: center; }
+
+.tc-panel { height: 400px; overflow-y: auto; border-left: 1px solid var(--owb-border); padding: 14px 14px 16px; box-sizing: border-box; overscroll-behavior: contain; }
+.tc-dl { color: var(--owb-brand-text); font-size: 12px; font-weight: 600; }
+.tc-dt { margin-top: 2px; font-size: 16px; font-weight: 600; line-height: 1.35; }
+.tc-ds { margin-top: 4px; color: var(--owb-text-2); font-size: 13px; }
+.tc-w .tc-open { display: inline-flex; margin-top: 10px; padding: 4px 12px; border: 1px solid var(--owb-border); border-radius: var(--radius-full); color: var(--owb-text); font-size: 12px; }
+.tc-w .tc-open:hover { border-color: var(--owb-brand-text); color: var(--owb-brand-text); }
+.tc-seg { margin: 16px 0 6px; color: var(--owb-text-3); font-size: 12px; font-weight: 600; }
+.tc-dh + .tc-card { margin-top: 14px; }
+
+.tc-card { display: flex; gap: 10px; padding: 6px; margin: 0 -6px; border-radius: var(--radius-md); cursor: pointer; outline: none; }
+.tc-card:hover, .tc-card.on { background: var(--owb-bg-hover); }
+.tc-card:focus-visible { box-shadow: 0 0 0 2px var(--owb-brand); }
+.tc-ph { position: relative; flex: none; width: 64px; height: 64px; border-radius: var(--radius-md); background: var(--owb-bg-side); }
+.tc-ph img { width: 100%; height: 100%; object-fit: cover; border-radius: var(--radius-md); display: block; }
+.tc-no { position: absolute; left: -4px; top: -4px; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 9px; background: var(--owb-brand); color: #fff; font-size: 11px; font-weight: 600; line-height: 18px; text-align: center; box-sizing: border-box; }
+.tc-info { flex: 1; min-width: 0; }
+.tc-nm { font-weight: 600; line-height: 1.35; }
+.tc-meta { margin-top: 1px; color: var(--owb-text-2); font-size: 12px; }
+.tc-star { color: #d97706; }
+.tc-note { margin-top: 3px; color: var(--owb-text-2); font-size: 13px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.tc-miss { margin-top: 3px; color: var(--owb-text-3); font-size: 12px; }
+
+.tc-leg { display: flex; align-items: center; gap: 8px; min-height: 18px; margin: 2px 0 2px 26px; color: var(--owb-text-3); font-size: 12px; }
+.tc-legline { width: 0; height: 18px; border-left: 2px dotted var(--owb-border); }
+.tc-legt { flex: 1; min-width: 0; }
+.tc-w .tc-leg a { color: var(--owb-brand-text); white-space: nowrap; }
+
+/* ---------- 时间线 ---------- */
+.tc-tl { padding: 12px 16px 14px; border-top: 1px solid var(--owb-border); }
+.tc-tlh { margin-bottom: 8px; color: var(--owb-text-2); font-size: 13px; }
+.tc-tlr { display: grid; grid-template-columns: 64px 18px minmax(0, 1fr); column-gap: 8px; }
+.tc-tls { padding-top: 1px; color: var(--owb-text-2); font-size: 13px; text-align: right; }
+.tc-tld { position: relative; }
+.tc-tld::before { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--owb-border); }
+.tc-tlr:first-of-type .tc-tld::before, .tc-tlh + .tc-tlr .tc-tld::before { top: 9px; }
+.tc-tlr:last-child .tc-tld::before { bottom: auto; height: 9px; }
+.tc-tld::after { content: ""; position: absolute; left: 50%; top: 5px; width: 10px; height: 10px; margin-left: -5px; border-radius: 50%; background: var(--owb-brand); box-shadow: 0 0 0 3px var(--owb-card); }
+.tc-tlt { padding-bottom: 14px; }
+.tc-tlt b { display: block; font-weight: 600; }
+.tc-tlt span { display: block; margin-top: 2px; color: var(--owb-text-2); font-size: 13px; }

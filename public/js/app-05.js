@@ -2225,6 +2225,62 @@ function renderSearchPane(pane, s) {
     } else msg.textContent = lastSaveError || "保存失败";
     e.target.disabled = false;
   };
+  renderMapCard(pane, s);
+}
+
+// 行程卡（public/tripcard.js）查地点用哪家。挂在联网搜索这页底下：都是「AI 替你去外面查东西」，
+// Key 也都是服务器级的，普通成员看不到这一页，正好一起挡住。
+function renderMapCard(pane, s) {
+  const m = s.map || {};
+  pane.insertAdjacentHTML("beforeend", `
+    <div class="card-item" style="margin-top:20px">
+      <div class="t">地图（行程卡）</div>
+      <div class="d" style="margin-bottom:8px">让它排行程时，回答里会带一张能拖、能点的地图。不填 Key 也能用；填了高德 Key，国内地点更准，还有评分。</div>
+      <div class="f">查地点用哪家</div>
+      <select id="map-provider">
+        <option value="auto">自动 · 有高德 Key 用高德，没有就用 OpenStreetMap</option>
+        <option value="amap">高德（要 Key）</option>
+        <option value="osm">OpenStreetMap（不要 Key，国内慢一些）</option>
+      </select>
+      <div class="f">高德 Web 服务 Key ${keyLink("amap")}</div>
+      <input id="map-key" type="password" placeholder="建 Key 时服务平台选「Web服务」" value="${esc(m.amap_key || "")}">
+      <div class="d" id="map-from" style="margin-top:4px"></div>
+      <div class="f">每天最多查高德几次</div>
+      <input id="map-cap" type="number" min="0" step="100" value="${esc(String(m.amap_daily_cap ?? 2000))}">
+      <div class="d" style="margin-top:4px">个人开发者每天免费 5000 次，超了按量收费。到数就改用 OpenStreetMap；填 0 就不用高德。</div>
+    </div>
+    <button class="btn-brand" id="map-save">保存</button>
+    <button class="btn-plain" id="map-test">测一下</button>
+    <span class="ok-msg" id="map-msg"></span>`);
+  pane.querySelector("#map-provider").value = m.provider || "auto";
+  const msg = pane.querySelector("#map-msg");
+  // 这儿没填、但高德连接器里有 Key 的，查地点会借那把——说一声，免得他以为一直走的是免费通道
+  fetch("/api/geo/config").then((r) => r.json()).then((c) => {
+    if (c && c.keyFrom === "connector" && !pane.querySelector("#map-key").value) {
+      pane.querySelector("#map-from").textContent = "这里没填，正在用高德连接器里的那把 Key。";
+    }
+  }).catch(() => {});
+  const collect = () => ({
+    provider: pane.querySelector("#map-provider").value,
+    amap_key: pane.querySelector("#map-key").value.trim(),
+    amap_daily_cap: Math.max(0, Math.floor(+pane.querySelector("#map-cap").value || 0)),
+  });
+  const save = async (el) => {
+    const ok = await saveSettings({ map: collect() }, el);
+    if (ok && window.TripCard) TripCard.resetConfig();
+    return ok;
+  };
+  pane.querySelector("#map-save").onclick = () => save(msg);
+  pane.querySelector("#map-test").onclick = async (e) => {
+    e.target.disabled = true;
+    msg.textContent = "先存下来，再真查一次「天安门」…";
+    try {
+      if (!(await save())) { msg.textContent = "✗ " + (lastSaveError || "保存失败"); return; }
+      const r = await fetch("/api/geo/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })
+        .then((x) => x.json()).catch((err) => ({ error: "请求没发出去：" + String((err && err.message) || err) }));
+      msg.textContent = r.ok ? "✓ " + r.msg : "✗ " + (r.error || r.msg || "测试失败");
+    } finally { e.target.disabled = false; }
+  };
 }
 /**
  * 执行追踪（Langfuse）。

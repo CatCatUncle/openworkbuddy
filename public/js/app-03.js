@@ -584,6 +584,8 @@ const KEY_SOURCES = {
   "serper": { url: "https://serper.dev/api-key", name: "Serper" },
   "jina": { url: "https://jina.ai/api-dashboard/", name: "Jina" },
   "brave": { url: "https://api-dashboard.search.brave.com/app/keys", name: "Brave" },
+  // 地图（行程卡查地点）：高德要的是「Web服务」那种 Key，控制台建应用时选错平台会一直报 Key 不对
+  "amap": { url: "https://console.amap.com/dev/key/app", name: "高德开放平台" },
   // IM：按通道 key
   "feishu": { url: "https://open.feishu.cn/app", name: "飞书开放平台", label: "去开放平台建应用" },
   "qq": { url: "https://q.qq.com/#/app/bot", name: "QQ 开放平台", label: "去开放平台建机器人" },
