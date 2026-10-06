@@ -198,6 +198,13 @@ const run = (name, input, s, extra = {}) => tools.withWorkspace(WS, () => tools.
     ok(v.reason.includes(G.WHERE) && v.reason.includes("127.0.0.1:5173") && /本机/.test(v.reason),
       "被拦的话说清是本机、去哪儿放行、加哪一行", v.reason);
     ok([...v.reason].length <= 90, "  └ 不啰嗦", v.reason.length);
+    // 多人共用时那张卡只有平台属主看得见：成员照着报错去找是找不到的，得说该找谁
+    ok(!/平台属主/.test(v.reason), "  └ 一个人用时不提「平台属主」（就是他自己）", v.reason);
+    security.setMultiUser(() => true);
+    try {
+      v = await G.checkUrl(S, "http://127.0.0.1:5173/");
+      ok(/请平台属主/.test(v.reason) && v.reason.includes(G.WHERE), "★多人共用★ 被拦的话指人去找平台属主，不叫成员去找他看不见的卡", v.reason);
+    } finally { security.setMultiUser(null); }
     v = await G.checkUrl({ ...S, url_allow_local: ["localhost:5173"] }, "http://127.0.0.1:5173/");
     ok(v.allowed, "属主加白 localhost:5173 → 放行", v);
     v = await G.checkUrl({ ...S, url_allow_local: ["localhost:5173"] }, "http://127.0.0.1:5174/");

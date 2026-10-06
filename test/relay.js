@@ -1338,6 +1338,15 @@ console.log("\n【6】离职：停用账号关的是他本人的路，中转站�
   ok(notes11.some((n) => n.id === "relay-registered-only-v1" && /API 中转站/.test(n.note)), "升级上来、有受影响的：提示一次，告诉去哪儿看", notes11);
   const quiet11 = migrate11.runMigrations(path.join(HOME, "ws11b"), path.join(HOME, "mig11b.json"), { version: "9.9.9", priorUse: true, relayHit: false });
   ok(!quiet11.some((n) => n.id === "relay-registered-only-v1"), "反向对照：没受影响的不打扰", quiet11);
+  // 升级提示在界面上是「升级整理：」+ 这句拼起来再翻的：每条升级提示切英文都得整句翻过去，不能半截留中文
+  {
+    const i18n = require(path.join(ROOT, "public/js/i18n.js"));
+    const all = { embedOff: true, relayHit: true, engineNoModel: "本机 Codex", codexNet: true };
+    const lines = migrate11.MIGRATIONS.filter((m) => m.upgradeOnly && m.id !== "tidy-root-v1")
+      .map((m) => m.run({ workspace: path.join(HOME, "ws11c"), options: all })).filter(Boolean);
+    const stuck = lines.map((n) => "升级整理：" + n).filter((t) => !/^Upgrade: [^\u4e00-\u9fff]+$/.test(i18n.tr(t, "en")));
+    ok(lines.length >= 4 && stuck.length === 0, "★升级提示切英文整句都翻了★（带「升级整理：」前缀那样翻）", stuck);
+  }
 
   s11.close(); up11.close();
 

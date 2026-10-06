@@ -177,7 +177,7 @@ async function run({
   // 闸在上游已经核过；这里再挡一次，护的是绕过 agent 直接调 run() 的那些入口（测试连接、目标拆解）。
   // 不传 --model 时 claude 会落到它自己设置里的默认型号，那不是属主选的，所以没钉就不跑
   const bad = gate.modelArg(extraArgs, ID);
-  if (bad) throw new Error(`本机 Claude Code 的附加参数里有换型号的「${bad}」，型号只能在 ${gate.WHERE} 里选。`);
+  if (bad) throw new Error(`本机 Claude Code 的附加参数里有换型号的「${bad}」，到 ${gate.argsWhere(ID)} 里删掉它。`);
   const pinned = String(model || "").trim();
   if (!pinned) throw new Error(`先在 ${gate.WHERE} 里给本机 Claude Code 指定型号，再开跑。`);
   // 起进程也走同一套解析：detect 认出来的是绝对路径，run 却还 spawn 裸名字的话，

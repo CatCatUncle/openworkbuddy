@@ -258,8 +258,21 @@ try {
       return g.stopped.length > 0 || g.keys.length > 0;
     } catch { return false; }
   })();
+  // 外部引擎：以前型号能留空、Codex 里的命令默认联网，这一版两样都变了。看属主和各账号选着哪个引擎
+  const enginesInUse = (() => {
+    const ids = new Set([String((config.agent && config.agent.engine) || "")]);
+    try {
+      for (const f of fs.readdirSync(dataPath("prefs"))) {
+        if (!f.endsWith(".json")) continue;
+        try { ids.add(String((JSON.parse(fs.readFileSync(dataPath("prefs", f), "utf8")).agent || {}).engine || "")); } catch {}
+      }
+    } catch {}
+    return [...ids].filter((id) => id && id !== "builtin" && engines.get(id));
+  })();
+  const engineNoModel = enginesInUse.filter((id) => !engines.gateView(id, config).allowed.length).map((id) => engines.get(id).label || id).join("、");
+  const codexNet = enginesInUse.includes("codex") && ((((config.agent || {}).engine_options || {}).codex || {}).network === undefined);
   const notes = migrate.runMigrations(getWorkspaceDir(), dataPath("data", "migrations.json"), {
-    version: String(require("./package.json").version || ""), priorUse, embedOff, relayHit,
+    version: String(require("./package.json").version || ""), priorUse, embedOff, relayHit, engineNoModel, codexNet,
   });
   for (const n of notes) console.log(`[升级整理] ${n.note}`);
   global.__wbMigrationNotes = notes;   // 界面上给用户看一眼：动过他的文件，得说
@@ -2001,7 +2014,7 @@ function savePersonalPrefs(user, personal) {
       if (engines.get(id) === undefined) throw new Error("没有这个底层引擎：" + id);
       // 多人共用时外部引擎要属主逐个打开；没打开的现在就说，别等开跑才报
       if (id !== "builtin" && security.isMultiUser() && !engines.gateView(id, config).enabled) {
-        throw new Error(`多人共用时${engines.get(id).label || id}默认关着，平台属主在 设置 → 底层引擎 里打开后才能用。`);
+        throw new Error(`多人共用时${engines.get(id).label || id}默认关着，等平台属主打开，或在 ${engineGate.WHERE} 切回内置引擎。`);
       }
       a.engine = id;
     }
@@ -2020,7 +2033,7 @@ function savePersonalPrefs(user, personal) {
           const m = String(v.model || "").trim();
           const allowed = engines.gateView(id, config).allowed;
           const name = engines.get(id).label || id;
-          if (m && !allowed.length) throw new Error(`属主还没给${name}放行型号，请平台属主在 设置 → 底层引擎 里填。`);
+          if (m && !allowed.length) throw new Error(`属主还没给${name}放行型号，请平台属主在 ${engineGate.WHERE} 里填。`);
           if (m && !allowed.includes(m)) throw new Error(`型号「${m}」不在属主给${name}放行的列表里，从列表里选一个。`);
           cur.model = m;
         }

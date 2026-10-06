@@ -21,7 +21,7 @@
  *     「引擎里跑的命令改不动应用自己的设置」。
  *   · 命令联网默认关 —— 查资料走 codex 自带的联网搜索，不靠沙箱里的命令出网；
  *     借过去的 OpenWorkBuddy 工具走 MCP，在沙箱外执行，不受这条影响。
- *     属主在 设置 → 底层引擎 里可以打开（engine_options.codex.network）。
+ *     属主在 设置 → 智能体 → 底层引擎 里可以打开（engine_options.codex.network）。
  *
  * 型号必须由调用方给（开跑前那道闸已经按属主的设置核过，见 gate.js）：
  * 不再拿 ~/.codex/config.toml 里的默认型号顶上，没给就报错。
@@ -323,7 +323,7 @@ async function run({
 }) {
   // 闸在上游已经核过；这里再挡一次，护的是绕过 agent 直接调 run() 的那些入口（测试连接、目标拆解）
   const bad = gate.modelArg(extraArgs, ID);
-  if (bad) throw new Error(`本机 Codex 的附加参数里有换型号的「${bad}」，型号只能在 ${gate.WHERE} 里选。`);
+  if (bad) throw new Error(`本机 Codex 的附加参数里有换型号的「${bad}」，到 ${gate.argsWhere(ID)} 里删掉它。`);
   const pinned = String(model || "").trim();
   if (!pinned) throw new Error(`先在 ${gate.WHERE} 里给本机 Codex 指定型号，再开跑。`);
   const found = await resolveBin("codex", bin);

@@ -415,6 +415,20 @@ async function partGate() {
       "反向对照：在属主给的候选列表里 → 放行");
     ok(codeOf(() => engines.admit("codex", cfg({ model: "gpt-5", extraArgs: ["-c", "model=o3"] }), { multi: false })) === "extra_model",
       "★附加参数里换型号★ 开跑前就拦下");
+    // 报错得指到真找得到的地方：设置页左栏没有「底层引擎」，那张卡在「智能体」分区里；附加参数没有界面，只在 config.json
+    {
+      const msgOf = (f) => { try { f(); } catch (e) { return e.message; } return ""; };
+      const app05 = fs.readFileSync(path.join(ROOT, "public/js/app-05.js"), "utf8");
+      const [, cat, card] = gate.WHERE.split(" → ");
+      const cats = (app05.match(/const SETTING_CATS = \[[\s\S]*?\n\];/) || [""])[0];
+      const pane = app05.slice(app05.indexOf("async function renderAgentPane"), app05.indexOf("async function renderAgentPane") + 800);
+      ok(new RegExp(`\\["agent", "${cat}"`).test(cats) && pane.includes(`<div class="t">${card}</div>`),
+        "★报错里的设置路径是真的★ 左栏有这个分区，分区里有这张卡", gate.WHERE);
+      const ea = msgOf(() => engines.admit("codex", cfg({ model: "gpt-5", extraArgs: ["--model", "o3"] }), { multi: false }));
+      ok(ea.includes("config.json 的 agent.engine_options.codex.extraArgs"), "  └ 附加参数没有界面：报错点名在 config.json 哪一项", ea);
+      const off = msgOf(() => engines.admit("codex", cfg({ model: "gpt-5" }), { multi: true }));
+      ok(/切回内置引擎/.test(off) && off.includes(gate.WHERE), "  └ 多人共用没打开：告诉成员自己能切回内置引擎，不用干等", off);
+    }
     ok(codeOf(() => engines.admit("claude-code", { agent: { engine_options: { "claude-code": { model: "sonnet" } } } }, { shellOff: true, multi: false })) === "shell_off",
       "Claude Code 也一样受命令行开关管");
   }
@@ -432,6 +446,23 @@ async function partGate() {
       ok(codeOf(() => engines.admit("codex", cfg({ model: "gpt-5" }), { multi: true })) === "engine_off", "  └ 自己写 enabled:true 也打不开属主没开的引擎");
     });
   }
+  // —— 老配置升级：型号留空的、在用 Codex 的，升上来先说一声（不改配置、不替人选型号） ——
+  {
+    const migrate = require(mod("migrate"));
+    const base = path.join(process.env.OPENWORKBUDDY_HOME, "mig-eng");
+    const run = (k, o) => migrate.runMigrations(path.join(base, k), path.join(base, k + ".json"), { version: "9.9.9", priorUse: true, ...o });
+    const a = run("a", { engineNoModel: "本机 Claude Code", codexNet: true });
+    ok(a.some((n) => n.id === "engine-pin-model-v1" && /本机 Claude Code/.test(n.note) && n.note.includes(gate.WHERE)),
+      "★选着外部引擎、属主没放行型号★ 升上来提示一次去哪儿填", a);
+    ok(a.some((n) => n.id === "codex-offline-v1" && /默认不再联网/.test(n.note)), "★在用 Codex★ 升上来提示命令默认不联网、开关在哪", a);
+    const q = run("b", { engineNoModel: "", codexNet: false });
+    ok(!q.some((n) => n.id === "engine-pin-model-v1" || n.id === "codex-offline-v1"), "反向对照：没受影响的不打扰", q);
+    const fresh = migrate.runMigrations(path.join(base, "c"), path.join(base, "c.json"), { version: "9.9.9", priorUse: false, engineNoModel: "本机 Codex", codexNet: true });
+    ok(!fresh.some((n) => n.id === "engine-pin-model-v1" || n.id === "codex-offline-v1"), "反向对照：全新装不提示", fresh);
+    const srv = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+    ok(/engineNoModel, codexNet,?\s*\}\);/.test(srv) && /engines\.gateView\(id, config\)\.allowed\.length/.test(srv),
+      "启动时把「哪个外部引擎没放行型号」「在用 Codex」递给升级提示");
+  }
   // —— 附加参数：每一种换型号、换供应商的写法 ——
   {
     const cx = [
@@ -440,12 +471,14 @@ async function partGate() {
       ["-cprofile=z"], ["-c", "model_providers.evil.base_url=http://127.0.0.1:9"], ["-c", "profiles.p.model=x"],
       ["--profile", "p"], ["--profile=p"], ["-p", "p"], ["--oss"], ["--local-provider", "ollama"],
       ["--full-auto", "-c", "model=x"],
+      // -c=KEY=VAL：codex 吃掉开头那个 =，跟 -cKEY=VAL 一个意思
+      ["-c=model=x"], ["-c=model_provider=y"], ["-c=profile=p"], ["-c=model_providers.evil.base_url=http://127.0.0.1:9"],
     ];
     const bad = cx.filter((a) => !gate.modelArg(a, "codex"));
     ok(bad.length === 0, `★codex 附加参数换型号的 ${cx.length} 种写法全拦★（含 = 连写、-c 覆盖配置、换配置档 / 供应商）`, bad);
     const cc = [["--model", "opus"], ["--model=opus"], ["-m", "opus"], ["--fallback-model", "haiku"], ["--settings", "{}"], ["--agents", "{}"]];
     ok(cc.every((a) => gate.modelArg(a, "claude-code")), "claude 附加参数：--model / --fallback-model / --settings / --agents 全拦", cc.filter((a) => !gate.modelArg(a, "claude-code")));
-    const fine = [["-c", 'developer_instructions="x"'], ["--full-auto"], ["-c", "model_reasoning_effort=high"], ["-c", "sandbox_mode=read-only"], []];
+    const fine = [["-c", 'developer_instructions="x"'], ["--full-auto"], ["-c", "model_reasoning_effort=high"], ["-c=model_reasoning_effort=high"], ["-c", "sandbox_mode=read-only"], []];
     ok(fine.every((a) => gate.modelArg(a, "codex") === ""), "反向对照：不换型号的参数照常放行（model_reasoning_effort 不是 model）", fine.filter((a) => gate.modelArg(a, "codex")));
     ok(gate.modelArg(["--verbose", "--max-turns", "3"], "claude-code") === "", "反向对照：claude 的普通参数照常放行");
     // 设置页保存：属主填附加参数时就拦，而且拦在改动任何配置之前（不留内存里改了一半的状态）
@@ -561,7 +594,7 @@ process.stdout.write(JSON.stringify({ type: "result", subtype: "success", is_err
     {
       const A = await go(rtOf({}));
       ok(A.err && A.err.code === "no_model" && calls.length === 0 && llmCalls === 0, "没钉型号：任务报错，不退回内置", A.err ? A.err.message : A.r);
-      ok(/设置 → 底层引擎/.test(A.err.message), "  └ 报错说清去哪配", A.err.message);
+      ok(A.err.message.includes(gate.WHERE), "  └ 报错说清去哪配", A.err.message);
     }
     security.setMultiUser(() => true);
     {

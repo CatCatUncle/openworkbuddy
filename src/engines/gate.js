@@ -18,7 +18,10 @@
 
 const path = require("path");
 
-const WHERE = "设置 → 底层引擎";
+// 设置页里那张卡在「智能体」分区下面，左栏没有单独的「底层引擎」
+const WHERE = "设置 → 智能体 → 底层引擎";
+/** 附加参数没有界面，只在属主的 config.json 里 */
+const argsWhere = (/** @type {string} */ id) => `config.json 的 agent.engine_options.${id}.extraArgs`;
 
 /** @param {unknown} s */
 function clean(s) {
@@ -65,7 +68,8 @@ function modelArg(args, engineId = "") {
       let kv = null;
       if (a === "-c" || a === "--config") kv = list[i + 1] == null ? "" : list[i + 1];
       else if (a.startsWith("--config=")) kv = a.slice("--config=".length);
-      else if (/^-c./.test(a)) kv = a.slice(2);
+      // -c=KEY=VAL：codex 的参数解析会吃掉开头那个 =，跟 -cKEY=VAL 是一回事
+      else if (/^-c./.test(a)) kv = a.slice(2).replace(/^=/, "");
       if (kv != null) {
         const key = String(kv).split("=")[0].trim().replace(/["']/g, "").replace(/\s*\.\s*/g, ".");
         if (CONFIG_MODEL_KEY.test(key)) return a.length > 2 && a !== "--config" ? a : `${a} ${kv}`;
@@ -119,9 +123,10 @@ function admit({ id, label, owner, mine, shellOff = false, multi = false }) {
   const name = label || id;
   const own = owner || {};
   if (shellOff) throw refuse("shell_off", "本组织关了命令行，外部引擎自带命令行，所以也不能用。");
-  if (multi && own.enabled !== true) throw refuse("engine_off", `多人共用时${name}默认关着，平台属主在 ${WHERE} 里打开后才能用。`);
+  // 成员自己选过外部引擎的，告诉他能自己切回内置，不用干等属主
+  if (multi && own.enabled !== true) throw refuse("engine_off", `多人共用时${name}默认关着，等平台属主打开，或在 ${WHERE} 切回内置引擎。`);
   const bad = modelArg(own.extraArgs, id);
-  if (bad) throw refuse("extra_model", `${name}的附加参数里有换型号的「${bad}」，型号只能在 ${WHERE} 里选。`);
+  if (bad) throw refuse("extra_model", `${name}的附加参数里有换型号的「${bad}」，到 ${argsWhere(id)} 里删掉它。`);
   const allowed = allowedModels(own);
   const want = clean((mine || {}).model) || clean(own.model);
   if (!want) throw refuse("no_model", `先在 ${WHERE} 里给${name}指定型号，再开跑。`);
@@ -129,4 +134,4 @@ function admit({ id, label, owner, mine, shellOff = false, multi = false }) {
   return { model: want, allowed };
 }
 
-module.exports = { admit, allowedModels, modelArg, safeRoots, WHERE };
+module.exports = { admit, allowedModels, modelArg, safeRoots, WHERE, argsWhere };

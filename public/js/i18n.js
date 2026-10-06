@@ -2214,6 +2214,7 @@
       "没有这条渠道": "No such channel",
       "中转站只转登记过的型号": "The relay only forwards registered models",
       "中转站不再转没登记的型号，有渠道或 Key 受影响；去后台 → API 中转站看怎么恢复": "The relay no longer forwards unregistered models, and some channels or keys are affected. See Admin → API relay to restore them.",
+      "本机 Codex 里的命令默认不再联网，装依赖、下载会失败；要用去设置 → 智能体 → 底层引擎 打开": "Commands inside Local Codex no longer have network access by default, so installs and downloads will fail. Turn it on in Settings → Agent → Engine if you need it.",
       "每把可限额度、型号、来源 IP、有效期；吊销不影响上游 Key。": "Each key can limit quota, models, source IP and expiry; revoking doesn't touch upstream keys.",
       "各能力本月花费。生视频通常最贵。": "Spend by capability this month. Video is usually the priciest.",
       "按 Key → 个人 → 组织三档判，超限返回 402。员工在界面上的调用同样受限。次数上限在「API 与额度」。": "Checked per key → person → organization; over-limit returns 402. In-app usage counts too. Call-count limits are under “APIs & quotas”.",
@@ -2763,13 +2764,19 @@
   const engName = (s) => { const k = String(s).trim(); return Object.prototype.hasOwnProperty.call(DICT.en, k) ? DICT.en[k] : k; };
   PATTERNS.en.push(
     [/^放行的型号：(.+)$/, "Allowed models: $1"],
-    [/^多人共用时(.+?)默认关着，平台属主在 设置 → 底层引擎 里打开后才能用。$/, (m) => `${engName(m[1])} is off by default on shared servers. The platform owner can turn it on in Settings → Engine.`],
-    [/^(.+?)的附加参数里有换型号的「(.+)」，型号只能在 设置 → 底层引擎 里选。$/, (m) => `${engName(m[1])}'s extra arguments switch the model (“${m[2]}”). Pick the model in Settings → Engine.`],
-    [/^先在 设置 → 底层引擎 里给(.+?)指定型号，再开跑。$/, (m) => `Pin a model for ${engName(m[1])} in Settings → Engine first.`],
-    [/^型号「(.+?)」不在属主给(.+?)放行的列表里，去 设置 → 底层引擎 换一个。$/, (m) => `Model “${m[1]}” isn't on the owner's list for ${engName(m[2])}. Pick another in Settings → Engine.`],
+    [/^多人共用时(.+?)默认关着，等平台属主打开，或在 设置 → 智能体 → 底层引擎 切回内置引擎。$/, (m) => `${engName(m[1])} is off by default on shared servers. Ask the platform owner to turn it on, or switch back to the built-in engine in Settings → Agent → Engine.`],
+    [/^(.+?) ?的附加参数里有换型号的「(.+)」，到 config\.json 的 (\S+) 里删掉它。$/, (m) => `${engName(m[1])}'s extra arguments switch the model (“${m[2]}”). Remove it from ${m[3]} in config.json.`],
+    [/^先在 设置 → 智能体 → 底层引擎 里给(.+?)指定型号，再开跑。$/, (m) => `Pin a model for ${engName(m[1].trim())} in Settings → Agent → Engine first.`],
+    [/^型号「(.+?)」不在属主给(.+?)放行的列表里，去 设置 → 智能体 → 底层引擎 换一个。$/, (m) => `Model “${m[1]}” isn't on the owner's list for ${engName(m[2])}. Pick another in Settings → Agent → Engine.`],
     [/^型号「(.+?)」不在属主给(.+?)放行的列表里，从列表里选一个。$/, (m) => `Model “${m[1]}” isn't on the owner's list for ${engName(m[2])}. Pick one from the list.`],
-    [/^属主还没给(.+?)放行型号，请平台属主在 设置 → 底层引擎 里填。$/, (m) => `The owner hasn't allowed any models for ${engName(m[1])} yet. Ask the platform owner to set them in Settings → Engine.`],
+    [/^属主还没给(.+?)放行型号，请平台属主在 设置 → 智能体 → 底层引擎 里填。$/, (m) => `The owner hasn't allowed any models for ${engName(m[1])} yet. Ask the platform owner to set them in Settings → Agent → Engine.`],
     [/^附加参数里有换型号的「(.+)」，型号请在「模型」栏里填。$/, "The extra arguments switch the model (“$1”). Put the model in the Model field."],
+    [/^([^：]+?)现在要先指定型号才能跑；去设置 → 智能体 → 底层引擎 填一个$/, (m) => {
+      const many = m[1].includes("、");
+      return `${m[1].split("、").map(engName).join(", ")} now need${many ? "" : "s"} a model before ${many ? "they" : "it"} can run. Set one in Settings → Agent → Engine.`;
+    }],
+    // 升级提示是「升级整理：」+ 迁移那句话拼的：前缀翻了，后半句照词典再查一次，查不到就整句留中文
+    [/^升级整理：([\s\S]+)$/, (m) => { const v = lookup(m[1], "en"); return v == null ? null : "Upgrade: " + v; }],
   );
   // 长工具跑着时的进度（app-01.js 的 PROG_STAGE）：「渲染 432/900」「编码 40%」。
   // 折叠条那行是光秃秃的一句，卡上那格前头带「· 」；渲染 / 配音 / 截图 光秃秃那句上面的动词表已经翻了，

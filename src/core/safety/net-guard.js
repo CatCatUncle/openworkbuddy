@@ -121,7 +121,9 @@ async function checkUrl(sec, url, { bgPorts } = {}) {
   }
   if (!bad) return { allowed: true, host, port, addrs };
   if (bad.own) return { allowed: false, own: true, reason: `${hp} 是 OpenWorkBuddy 自己的服务端口，AI 工具一律不能访问`, host, port };
-  return { allowed: false, reason: `${hp} 是${bad.label}地址，AI 默认不能访问。要放行，在 ${WHERE} 的「本机/内网放行」加一行 ${hp}`, host, port };
+  // 多人共用时这张卡只有平台属主看得见：成员照着去找是找不到的，得让他知道该找谁
+  const who = security.isMultiUser() ? "请平台属主" : "";
+  return { allowed: false, reason: `${hp} 是${bad.label}地址，AI 默认不能访问。要放行，${who}在 ${WHERE} 的「本机/内网放行」加一行 ${hp}`, host, port };
 }
 
 /**

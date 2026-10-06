@@ -209,6 +209,26 @@ const MIGRATIONS = [
     run: (ctx) => (ctx.options && ctx.options.relayHit
       ? "中转站不再转没登记的型号，有渠道或 Key 受影响；去后台 → API 中转站看怎么恢复" : ""),
   },
+  {
+    id: "engine-pin-model-v1",
+    title: "外部引擎必须指定型号",
+    // 以前本机 Claude Code / Codex 的型号能留空，跑的是 CLI 自己配置里的默认型号；这一版起不钉型号就不开跑
+    // （不拿 CLI 的默认顶上——属主管不到那份配置）。选着外部引擎、属主又没给它放行任何型号的
+    // （调用方算好给 engineNoModel：引擎名），升上来第一句话就会被拒，得先说一声去哪儿填。什么配置都不改
+    upgradeOnly: true,
+    run: (ctx) => (ctx.options && ctx.options.engineNoModel
+      ? `${ctx.options.engineNoModel}现在要先指定型号才能跑；去设置 → 智能体 → 底层引擎 填一个` : ""),
+  },
+  {
+    id: "codex-offline-v1",
+    title: "Codex 里的命令默认不联网",
+    // 以前 Codex 沙箱里的命令默认能联网；这一版起默认关（查资料走它自带的联网搜索）。
+    // 装依赖、下载这类命令会在 Codex 里报网络错，看不出是这个开关。在用 Codex、属主又没表过态的
+    // （调用方给 codexNet），升上来说一声开关在哪。不替人打开
+    upgradeOnly: true,
+    run: (ctx) => (ctx.options && ctx.options.codexNet
+      ? "本机 Codex 里的命令默认不再联网，装依赖、下载会失败；要用去设置 → 智能体 → 底层引擎 打开" : ""),
+  },
 ];
 
 /**
