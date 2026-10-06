@@ -860,6 +860,9 @@ function renderOnbBrain(body) {
         ${installed.length
           ? installed.map((e, i) => `<label class="onb-radio"><input type="radio" name="onb-eng" value="${esc(e.id)}" ${i === 0 ? "checked" : ""}><b>${esc(e.label)}</b><span>${esc(e.version || "已安装")}</span></label>`).join("")
           : `<div class="onb-tip">${engs.length ? engs.map(e => `${esc(e.label)}：未安装${e.install ? `，${esc(e.install)}` : ""}`).join("<br>") : "没检测到本机 CLI"}</div>`}
+        ${installed.length ? `<label class="onb-lb">用哪个模型</label>
+        <input id="onb-emdl" list="onb-emdls" placeholder="必填，选一个或手填" autocomplete="off" spellcheck="false">
+        <datalist id="onb-emdls"></datalist>` : ""}
         <div class="onb-tip">本机 CLI 用它自己的登录，无需 API Key；会发一句测试确认可用。</div>
       </div>
       <div class="err" id="onb-err"></div>
@@ -1003,6 +1006,18 @@ function renderOnbBrain(body) {
   };
   sel.onchange = syncTip;
   syncTip();
+  // 本机 CLI 也得钉一个型号：不填就不让过，不拿 CLI 自己配置里的默认型号顶上（engines/gate.js）
+  const emdl = body.querySelector("#onb-emdl");
+  const emdls = body.querySelector("#onb-emdls");
+  const syncEng = () => {
+    const picked = body.querySelector("input[name=onb-eng]:checked");
+    const e = picked ? installed.find(x => x.id === picked.value) : null;
+    if (!emdl || !e) return;
+    emdls.innerHTML = (e.models || []).map(m => `<option value="${esc(m)}">`).join("");
+    emdl.value = e.model || "";
+  };
+  body.querySelectorAll("input[name=onb-eng]").forEach(r => (r.onchange = syncEng));
+  syncEng();
   const chg = body.querySelector("#onb-brain-change");
   if (chg) chg.onclick = () => { form.hidden = false; go.textContent = "验活并继续"; chg.closest(".onb-ok").hidden = true; setTimeout(() => keyEl.focus(), 30); };
 
@@ -1033,15 +1048,17 @@ function renderOnbBrain(body) {
       } else {
         const picked = body.querySelector("input[name=onb-eng]:checked");
         if (!picked) { err.textContent = "本机没装 Claude Code / Codex，先装好并登录，或者改用云端 API"; return; }
+        const em = emdl ? emdl.value.trim() : "";
+        if (!em) { err.textContent = "先填用哪个模型，本机 CLI 也要钉死型号"; if (emdl) emdl.focus(); return; }
         go.textContent = "正在连本机 CLI…（真跑一句话，可能要几十秒）";
         const t = await fetch("/api/engines/test", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id: picked.value }),
+          body: JSON.stringify({ id: picked.value, options: { model: em } }),
         }).then(r => r.json()).catch(() => ({ ok: false, why: "请求失败" }));
         if (!t.ok) { err.textContent = (t.why || t.error || "连不上") + (t.hint ? `。${t.hint}` : ""); return; }
         const s = await fetch("/api/settings", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ agent: { engine: picked.value } }),
+          body: JSON.stringify({ agent: { engine: picked.value, engine_options: { [picked.value]: { model: em } } } }),
         }).then(r => r.json()).catch(() => ({ error: "保存失败" }));
         if (s && s.error) { err.textContent = s.error; return; }
         toast(`已切到本机 ${picked.value}`, "circle-check");

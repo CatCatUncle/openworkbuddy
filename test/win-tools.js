@@ -293,9 +293,9 @@ const put = (p, body = "", mode) => { fs.mkdirSync(path.dirname(p), { recursive:
     ok((src.match(/\bwinPython3Shim\(/g) || []).length === 2, "winPython3Shim 只有定义和 depsGuardEnv 里那一处调用", (src.match(/\bwinPython3Shim\(/g) || []).length);
     ok(/if \(py\.dir\) env = \{ \.\.\.env, \.\.\.py\.env, PATH: py\.dir \+ ";" \+ base \}/.test(src), "depsGuardEnv 垫 PATH 的那一句同时并进了垫片给的变量");
     for (const [what, re] of [
-      ["run_shell", /function runShell\([\s\S]*?env: \{[^}]*\.\.\.depsGuardEnv\(cwd, command,/],
-      ["后台命令", /function startBackground\([\s\S]*?env: \{[^}]*\.\.\.depsGuardEnv\(cwd, cmd,/],
-      ["run_node", /function runNode\([\s\S]*?env: \{[^}]*\.\.\.depsGuardEnv\(cwd, code,/],
+      ["run_shell", /function runShell\([\s\S]*?env: buildChildEnv\(\{[^}]*\.\.\.depsGuardEnv\(cwd, command,/],
+      ["后台命令", /function startBackground\([\s\S]*?env: buildChildEnv\(\{[^}]*\.\.\.depsGuardEnv\(cwd, cmd,/],
+      ["run_node", /function runNode\([\s\S]*?env: buildChildEnv\(\{[^}]*\.\.\.depsGuardEnv\(cwd, code,/],
     ]) ok(re.test(src), `${what} 的子进程环境并进了 depsGuardEnv（OWB_PYTHON3 跟着 PATH 一起到）`);
   }
 
@@ -387,7 +387,7 @@ const put = (p, body = "", mode) => { fs.mkdirSync(path.dirname(p), { recursive:
   {
     const src = fs.readFileSync(mod("tools"), "utf8");
     const body = src.slice(src.indexOf("function runNode("), src.indexOf("function runNode(") + 3000);
-    ok(/env: \{[^}]*PATH: shellPath\(\)[^}]*\.\.\.depsGuardEnv\(cwd, code, shellPath\(\)\)/.test(body), "run_node：PATH 和 depsGuardEnv 的底子都是 shellPath()，不是 process.env.PATH");
+    ok(/env: buildChildEnv\(\{[^}]*PATH: shellPath\(\)[^}]*\.\.\.depsGuardEnv\(cwd, code, shellPath\(\)\)/.test(body), "run_node：PATH 和 depsGuardEnv 的底子都是 shellPath()，不是 process.env.PATH");
     // 实跑一次：服务进程的 PATH 只剩系统那两个，脚本里看到的得是 run_shell 那份（补上了 /opt/homebrew/bin 这些）
     const saved = process.env.PATH;
     process.env.PATH = "/usr/bin:/bin";

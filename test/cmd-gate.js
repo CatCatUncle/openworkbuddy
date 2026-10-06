@@ -14,6 +14,8 @@
  *      都按删除问；-EncodedCommand 一律问；dir / Get-ChildItem 这类只读的照跑。每条配 darwin 反向对照
  *   ⑧ Windows 上绕删除保护的写法：del=x、^" 转义、PowerShell 单引号、start / Start-Process 套一层、
  *      $fso.DeleteFolder、`. Remove-Item`；再加一刀不管引号的兜底（认下的误报也写在里面）
+ *   ⑨ 代码闸：拼出来的路径指到黑名单、加载应用自己能改账号额度的模块，全自动也要点头，多人共用直接拦
+ *   ⑩ 硬链接：跟黑名单文件同一份数据、换了名字放进工作区的，文件工具也拦
  *
  * 纯函数，不起进程、不出网。
  *   node test/cmd-gate.js
@@ -143,8 +145,9 @@ const winDeletes = [
   "pwsh -c \"gci x | % { ri $_ }\"", "\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -c \"Remove-Item x\"",
   "powershell /c \"Remove-Item x\"", "powershell -ExecutionPolicy Bypass -WindowStyle Hidden -Command \"Remove-Item x\"",
   "powershell -c \"if (Test-Path x) { Remove-Item x }\"",
-  // 转义符、前缀、条件、循环
-  "powershell -c \"R`emove-Item x\"", "r^d /s /q build", "@del x", "if exist build rd /s /q build",
+  // 转义符、前缀、条件、循环（\u0060 就是 PowerShell 的反引号转义符。源码里落一个孤零零的反引号，
+  // repo-hygiene 剥模板串时会错配对，后面整段测试数据都被当成代码去查 require）
+  "powershell -c \"R\u0060emove-Item x\"", "r^d /s /q build", "@del x", "if exist build rd /s /q build",
   "if /i \"%a%\"==\"y\" del x", "if %n% GEQ 3 del x", "if not errorlevel 1 del x", "call del x",
   "for %i in (*.tmp) do @del %i", "forfiles /m *.tmp /c \"cmd /c del @path\"",
   "$null = Remove-Item x", "Microsoft.PowerShell.Management\\Remove-Item x",
@@ -279,6 +282,97 @@ const pad = Array(300).fill("true").join(";");
 const deep = vw(pad + "; bash -c 'rm -rf x'", {}, "darwin");
 ok(deep.action === "ask", "段数到顶没拆完：按看不全问，不悄悄放过", deep);
 eq(vw(pad, {}, "darwin").action, "allow", "反向对照：只是长、没套东西的照跑");
+
+section("⑨ 代码闸：不写完整路径也认得出在碰黑名单、在加载应用自己的模块");
+{
+  const code = (c, over, platform) => security.checkCode(sec(over), c, platform);
+  const isBl = (v) => v.action === "ask" && v.blacklist === true && v.ruleKey === "";
+  // 拼出来的路径指到数据根里的黑名单文件（config.json 是默认黑名单里的）
+  const toBlacklist = [
+    `const p=process.env.OPENWORKBUDDY_HOME+"/config"+".json";require("fs").writeFileSync(p,"{}")`,
+    `const fs=require("fs");console.log(fs.readFileSync(process.env.OPENWORKBUDDY_HOME+"/config.json","utf8"))`,
+    `console.log(require("fs").readFileSync("../../config.json","utf8"))`,
+    `const fs=require("fs"),os=require("os"),path=require("path");fs.readFileSync(path.join(os.homedir(),".ssh","id_rsa"))`,
+    `const fs=require("fs");fs.readFileSync(require("path").join(process.env.OPENWORKBUDDY_HOME,"data","users.json"))`,
+    `require("fs").readFileSync(${JSON.stringify(path.join(HOME, "workspace") + "/../config.json")})`,
+  ];
+  for (const c of toBlacklist) ok(isBl(code(c)), `认出在拼黑名单路径：${c.slice(0, 70)}`, code(c));
+  // 加载应用自己的模块（命令里一个黑名单文件名都没有）
+  const appMods = [
+    `const app=require("path").dirname(process.env.NODE_PATH);require(app+"/org.js").updateOrg("default",{},"x")`,
+    `const app=require("path").dirname(process.env.NODE_PATH);console.log(require(app+"/account.js")._internals.issueToken("boss"))`,
+    `const p=require(require("path").dirname(process.env.NODE_PATH)+"/paths");console.log(p.DATA_DIR)`,
+    `require("../../src/domains/account/org.js")`,
+    `const app=require("path").dirname(process.env.NODE_PATH);const m="o"+"rg";require(app+"/src/domains/account/"+m)`,
+    `const {createRequire}=require("module");createRequire(process.env.NODE_PATH+"/x")("../src/core/billing/budget")`,
+    `const app=require("path").dirname(process.env.NODE_PATH);require("child_process").execSync("node "+app+"/cli.js owner bob")`,
+    `require(${JSON.stringify(path.join(ROOT, "src", "domains", "account", "org.js"))})`,
+  ];
+  for (const c of appMods) {
+    const v = code(c);
+    ok(isBl(v) && /应用自己的模块/.test(v.rule), `认出在加载应用模块：${c.slice(0, 70)}`, v);
+  }
+  // 全自动也拦（跟字面量黑名单一个待遇）；总开关关着不管
+  ok(isBl(code(appMods[0], { permission_mode: "full" })), "全自动档：加载应用模块照样要点头", code(appMods[0], { permission_mode: "full" }));
+  ok(isBl(code(toBlacklist[0], { permission_mode: "full" })), "全自动档：拼黑名单路径照样要点头", code(toBlacklist[0], { permission_mode: "full" }));
+  eq(code(appMods[0], { gateway: false }).action, "allow", "总开关关着：不看这些（跟字面量黑名单一致）");
+  // 多人共用：直接拦、不出卡
+  security.setMultiUser(() => true);
+  ok(code(appMods[0]).action === "deny" && code(toBlacklist[1]).action === "deny", "多人共用：这两类直接拦下", [code(appMods[0]), code(toBlacklist[1])]);
+  security.setMultiUser(null);
+  // Windows 写法：反斜杠、大小写
+  ok(isBl(code(`require("fs").readFileSync(process.env.OPENWORKBUDDY_HOME + "\\\\Config.json")`, {}, "win32")),
+    "Windows：反斜杠、大小写不同也认得出", code(`require("fs").readFileSync(process.env.OPENWORKBUDDY_HOME + "\\\\Config.json")`, {}, "win32"));
+
+  // 日常代码不能因为这几条开始弹卡
+  for (const c of [
+    `const c=JSON.parse(require("fs").readFileSync("config.json","utf8"));console.log(c)`,
+    `const path=require("path");require("fs").writeFileSync(path.join(process.cwd(),"out","config.json"),"{}")`,
+    `const P=require("pptxgenjs");const p=new P();p.writeFile({fileName:"a.pptx"})`,
+    `const docx=require("docx");require("fs").writeFileSync("a.docx","")`,
+    `console.log("usage: foo"); const a = "../x";`,
+    `const os=require("os");console.log(require("path").join(os.homedir(),"Downloads"))`,
+    `const mods=["docx","exceljs"];for(const m of mods)require(m)`,
+    `const m=/a(b)/.exec("ab");console.log(m)`,
+    `require("fs").mkdirSync(${JSON.stringify(path.join(HOME, "workspace", "s1", "admin"))},{recursive:true})`,
+    `require("fs").writeFileSync(${JSON.stringify(path.join(HOME, "workspace", "proj", "config.json"))},"{}")`,
+  ]) eq(code(c).action, "allow", `日常代码照跑：${c.slice(0, 70)}`);
+  // 原来那条子进程规则还在，而且仍然可以「本会话不再问」
+  const cp = code(`require("child_process").execSync("ls")`);
+  ok(cp.action === "ask" && cp.ruleKey === "code:child_process" && !cp.blacklist, "反向对照：普通开子进程还是原来那张卡", cp);
+}
+
+section("⑩ 硬链接：跟黑名单文件同一份数据的，换个名字放进工作区也拦");
+{
+  const WS = path.join(HOME, "workspace");
+  fs.mkdirSync(WS, { recursive: true });
+  const s = sec();
+  // 默认黑名单里的 <app>/config.json
+  const cfg = path.join(HOME, "config.json");
+  fs.writeFileSync(cfg, "{\"k\":\"sk-test-hl\"}");
+  const hl = path.join(WS, "notes.txt");
+  let linked = true;
+  try { fs.linkSync(cfg, hl); } catch { linked = false; }
+  if (!linked) console.log("  （这台机器的临时目录建不了硬链接，跳过本节）");
+  else {
+    const r = security.resolvePathWithPolicy(s, "notes.txt", WS);
+    ok(!r.allowed && /黑名单/.test(r.reason), "硬链接到 config.json：按黑名单拦", r);
+    // 黑名单是个目录：目录里任何一个文件的硬链接都算
+    const keys = path.join(HOME, "keys");
+    fs.mkdirSync(path.join(keys, "sub"), { recursive: true });
+    fs.writeFileSync(path.join(keys, "sub", "id"), "secret");
+    fs.linkSync(path.join(keys, "sub", "id"), path.join(WS, "id.txt"));
+    const r2 = security.resolvePathWithPolicy(sec({ file_blacklist: [keys] }), "id.txt", WS);
+    ok(!r2.allowed && /黑名单/.test(r2.reason), "硬链接到黑名单目录里的文件：也拦", r2);
+    // 反向对照：工作区里两个互为硬链接的普通文件、链接数是 1 的普通文件，照常
+    fs.writeFileSync(path.join(WS, "a.txt"), "a");
+    fs.linkSync(path.join(WS, "a.txt"), path.join(WS, "b.txt"));
+    eq(security.resolvePathWithPolicy(s, "b.txt", WS).allowed, true, "反向对照：工作区里自己的硬链接照常读写");
+    fs.writeFileSync(path.join(WS, "plain.txt"), "p");
+    eq(security.resolvePathWithPolicy(s, "plain.txt", WS).allowed, true, "反向对照：普通文件照常");
+    eq(security.resolvePathWithPolicy(sec({ gateway: false }), "notes.txt", WS).allowed, true, "反向对照：总开关关着不管黑名单（原样）");
+  }
+}
 
 console.log(`\n${fail ? "✗" : "✓"} 命令闸认命令：${pass} 过 / ${fail} 挂`);
 process.exit(fail ? 1 : 0);

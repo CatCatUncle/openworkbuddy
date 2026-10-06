@@ -762,6 +762,14 @@ function decodePng(buf) {
     const brSpec = JSON.stringify(mod.spec("electron-main", "browser-render")).replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
     ok(new RegExp(`pk === "render"\\) return require\\(${brSpec}\\)\\.createRenderPixels\\(`).test(mainSrc) && /pixelsKind\(process\.platform, process\.env\)/.test(mainSrc),
       "主进程真按 pixelsKind 注入了隐藏窗口那一份");
+
+    // 卡顿记录只在有窗口拿着焦点时开（100ms 一拍，人不在这个应用上时它只是在挡 CPU 进深睡）
+    ok(/app\.on\("browser-window-focus", \(\) => MAIN_STALL\.start\(\)\)/.test(mainSrc)
+      && /app\.on\("browser-window-blur", \(\) => \{ if \(!MAIN_STALL_ALWAYS && !BrowserWindow\.getFocusedWindow\(\)\) MAIN_STALL\.stop\(\); \}\)/.test(mainSrc),
+      "★拿到焦点开、全失焦关★");
+    ok(/const MAIN_STALL_ALWAYS = Number\(process\.env\.OWB_MAIN_STALL_MS\) > 0;\s*if \(MAIN_STALL_ALWAYS\) MAIN_STALL\.start\(\);/.test(mainSrc)
+      && !/^MAIN_STALL\.start\(\);/m.test(mainSrc),
+      "测试给了门槛就常开（浸泡测试的窗口藏着、拿不到焦点）；没有一开机就无条件常开的那句");
   }
 
   console.log(`\n${pass} 通过，${fail} 失败`);

@@ -277,6 +277,51 @@ const LIST = { data: [{ id: "doubao-seedream-4" }, { id: "doubao-seedance-1" }, 
       "媒体行按 id、对话行按名字 —— 这两个字段跨一次重画还是同一个值", src);
   }
 
+  console.log("\n【十一】渠道「测一下」：只测登记过的型号，存着的 Key 只发往原来那家");
+  {
+    // 以前渠道底下没挂对话模型时，退到精选目录第一条去 ping——那是用户从没配过的型号，
+    // 花的是他的 Key；请求里点名一个型号也照单全收。用存着的 Key 测时地址还能随手改，
+    // 那把 Key 就跟着一个没人核对过的地址出门了。
+    const { testPlan } = require(require("./lib/mod").mod("chat-models"));
+    const cfg = {
+      providers: [
+        { id: "ds", kind: "deepseek", base_url: "http://127.0.0.1:9/v1", api_key: "sk-test-1111" },
+        { id: "empty", kind: "openai", base_url: "http://127.0.0.1:9/v1", api_key: "sk-test-2222" },
+      ],
+      models: [
+        { name: "深度求索", channel: "ds", model: "deepseek-chat" },
+        { name: "深度推理", channel: "ds", model: "deepseek-reasoner" },
+      ],
+    };
+    let p = testPlan(cfg, { id: "ds", kind: "deepseek", base_url: "http://127.0.0.1:9/v1", api_key: "" });
+    ok(!p.error && p.model === "deepseek-chat" && p.key === "sk-test-1111", "没点名：拿这条渠道登记的第一个，用存着的 Key", p);
+    p = testPlan(cfg, { id: "ds", model: "deepseek-reasoner" });
+    ok(!p.error && p.model === "deepseek-reasoner", "点名点的是登记过的：照测", p);
+    p = testPlan(cfg, { id: "ds", model: "gpt-6-astra" });
+    ok(!!p.error && !p.model && /设置 → 模型/.test(p.error), "★点名一个没登记的型号：不测，并说去哪儿加★", p);
+    p = testPlan(cfg, { id: "empty", kind: "openai", base_url: "http://127.0.0.1:9/v1" });
+    ok(!p.error && p.model === "", "★底下一个对话模型都没有：型号是空的，不再去精选目录里挑一个★", p);
+    ok(!/catalogFor\("chat"/.test(server.slice(server.indexOf('app.post("/api/provider-test"'), server.indexOf("\n/**", server.indexOf('app.post("/api/provider-test"') + 10))),
+      "（反向对照）渠道测活那条路里不再翻精选目录");
+    ok(/chatModels\.testPlan\(config, b\)/.test(server), "渠道测活真照这份规矩发，没在路由里另写一套");
+
+    for (const [what, body] of [
+      ["改了地址", { id: "ds", kind: "deepseek", base_url: "http://127.0.0.1:10/v1", api_key: "" }],
+      ["改了类型", { id: "ds", kind: "openai", base_url: "http://127.0.0.1:9/v1", api_key: "" }],
+      ["改了协议", { id: "ds", kind: "deepseek", base_url: "http://127.0.0.1:9/v1", api: "anthropic" }],
+      ["Key 框传回掩码", { id: "ds", kind: "deepseek", base_url: "http://127.0.0.1:10/v1", api_key: "********" }],
+    ]) {
+      p = testPlan(cfg, body);
+      ok(!!p.error && !p.key && /重新填 Key/.test(p.error), `★用存着的 Key、${what}：不测，要求重填 Key★`, p);
+    }
+    p = testPlan(cfg, { id: "ds", kind: "deepseek", base_url: "http://127.0.0.1:10/v1", api_key: "sk-test-9999" });
+    ok(!p.error && p.key === "sk-test-9999" && p.base === "http://127.0.0.1:10/v1", "（反向对照）新填了 Key：换地址照测，用的是新填的那把", p);
+    p = testPlan(cfg, { id: "ds", kind: "deepseek", base_url: "http://127.0.0.1:9/v1/", api_key: "" });
+    ok(!p.error && p.key === "sk-test-1111", "（反向对照）地址末尾多一个斜杠不算改了地址", p);
+    p = testPlan(cfg, { id: "nope", kind: "openai", base_url: "http://127.0.0.1:9/v1", api_key: "" });
+    ok(!p.error && !p.key && p.model === "", "没存过的渠道：拿不到任何存着的 Key，也没有型号可挑", p);
+  }
+
   console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
   process.exit(fail ? 1 : 0);
 })();

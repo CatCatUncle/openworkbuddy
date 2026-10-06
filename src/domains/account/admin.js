@@ -198,6 +198,19 @@ function setDeployment({ host, shell } = {}) {
 function isSoloDesktop() {
   return desktopShell && soloAccounts();
 }
+/**
+ * 是不是不止一个账号了。子进程环境（platform/child-env.js）拿它决定属主清单里像 Key 的变量名给不给。
+ * 跟 soloAccounts 共一份「只会从一个走到多个」的缓存；不同的是读账号库出错时按「多个」算——
+ * 这里判错了，就是把属主的 Key 交给成员的任务
+ */
+function multiUser() {
+  if (!soloCount.solo) return true;
+  try {
+    if (account.userCount() <= 1) return false;
+  } catch { return true; }
+  soloCount = { at: Date.now(), solo: false };
+  return true;
+}
 
 /** 平台管理员 = 默认组织的管理员。全局工作目录、密钥、引擎这些只有他能动 */
 function ownsGlobalWorkspace(user) {
@@ -253,6 +266,51 @@ function redactGuard(req, res, next) {
 }
 
 /**
+ * 付费 API 的额度上下文（quota.withActor 要的那份）。只在**真配了限制**时才建，否则回 null：
+ * 没配的时候连流水都不必带着 org/user 走一遍 ALS，跟以前一模一样。
+ * 两道闸分开判，不能合成一个条件：
+ *   次数闸（quota）管「一天最多生多少张图」，钱闸（budget）管「这个月最多花多少元」。
+ *   很多公司一路次数都没限，却给每个人设了月预算——只看 quota 的话，
+ *   那笔预算一分钱也拦不住，而后台上那个输入框看着很像在干活。
+ * 网页请求（tenantScope）和命令行（ownerActor）共用这一份，两边算出来的主体不会漂开。
+ */
+function quotaActor(o, s, user, source, readConfig) {
+  const qt = quota.quotaTable(s);
+  const anyCap = Object.values(qt).some((c) => c.enabled);
+  const bctx = { orgId: o.id, org: s, user: user || null };
+  const anyBudget = Object.values(budget.limitsOf(bctx)).some((x) => x > 0);
+  if (!anyCap && !anyBudget) return null;
+  return {
+    org: o.id, user: (user && user.username) || "",
+    dept: (user && user.dept) || "", source,
+    quota: anyCap ? qt : null,
+    budget: anyBudget ? bctx : null,
+    // 价目要跟着走：管理员改过的价、这个组织谈下来的折扣，都影响这一趟扣多少。
+    // 不带的话闸门按原价算、账本按原价记，谈下来的折扣等于没谈。
+    price: { config: safeCall(readConfig, null) || {}, discount: s.price_discount },
+  };
+}
+
+/**
+ * 本机属主的额度主体：命令行没有登录态（openworkbuddy jev、命令行里的目标验收），用它过闸、记账。
+ *
+ * 能在这台机器上起命令行的人，碰到的就是平台那份配置和账本，所以按默认组织的属主算：
+ * 默认组织配了限额，命令行照样受管；没配就照旧不限，但账上记清是谁、从命令行来的。
+ * 以前这几条路压根不进 withActor，组织配的限额对它们形同虚设。
+ */
+function ownerActor({ source = "cli", readConfig } = {}) {
+  const o = org.getOrg(org.DEFAULT_ORG);
+  const s = org.settingsOf(o);
+  let user = null;
+  try {
+    const u = account.defaultUser();
+    if (u && org.orgIdOf(u) === org.DEFAULT_ORG) user = u;
+  } catch {}
+  return quotaActor(o, s, user, source, readConfig)
+    || { org: o.id, user: (user && user.username) || "", dept: (user && user.dept) || "", source, quota: null, budget: null };
+}
+
+/**
  * 租户工作目录：把这条请求整条异步链绑到调用者所属组织的成果根目录上。
  *
  * 绑在这一层而不是每个接口里各自判：文件相关的入口有十几个（列表/下载/预览/删除/整理/保存/
@@ -287,26 +345,7 @@ function tenantScope({ withWorkspace, withPolicy, getWorkspaceDir, readConfig, w
       // 连上的进程和密钥都在这台服务器上，所有人的任务都会多出那批工具
       if (s.allow_shell === false || (s.net_allow || []).length || (s.net_deny || []).length || skillsOff)
         policy = { allow_shell: s.allow_shell !== false, net_allow: s.net_allow || [], net_deny: s.net_deny || [], ...(skillsOff ? { skills_write: false, connectors_write: false } : {}) };
-      // 付费 API 的额度上下文。同样只在**真配了限制**时才建：
-      // 没配的时候连流水都不必带着 org/user 走一遍 ALS，跟以前一模一样。
-      // 两道闸分开判，不能合成一个条件：
-      //   次数闸（quota）管「一天最多生多少张图」，钱闸（budget）管「这个月最多花多少元」。
-      //   很多公司一路次数都没限，却给每个人设了月预算——只看 quota 的话，
-      //   那笔预算一分钱也拦不住，而后台上那个输入框看着很像在干活。
-      const qt = quota.quotaTable(s);
-      const anyCap = Object.values(qt).some((c) => c.enabled);
-      const bctx = { orgId: o.id, org: s, user: req.user || null };
-      const anyBudget = Object.values(budget.limitsOf(bctx)).some((x) => x > 0);
-      if (anyCap || anyBudget)
-        actor = {
-          org: o.id, user: (req.user && req.user.username) || "",
-          dept: (req.user && req.user.dept) || "", source: req.quotaSource || "web",
-          quota: anyCap ? qt : null,
-          budget: anyBudget ? bctx : null,
-          // 价目要跟着走：管理员改过的价、这个组织谈下来的折扣，都影响这一趟扣多少。
-          // 不带的话闸门按原价算、账本按原价记，谈下来的折扣等于没谈。
-          price: { config: safeCall(readConfig, null) || {}, discount: s.price_discount },
-        };
+      actor = quotaActor(o, s, req.user || null, req.quotaSource || "web", readConfig);
     } catch (e) {
       console.warn("[租户] 取组织工作目录失败：" + e.message);
     }
@@ -597,6 +636,11 @@ function createAdminRouter(deps = {}) {
       video: !!at(cfg, "media.video.model") || !!at(cfg, "media.video.provider"),
       tts: !!at(cfg, "media.tts.model") || !!at(cfg, "media.tts.provider"),
       asr: !!at(cfg, "media.asr.model") || !!at(cfg, "media.asr.provider"),
+      // 看图可以单配一条，也可以主模型自己看（设置页里勾了「能看图」的那几条）
+      vision: !!at(cfg, "media.vision.model") || !!at(cfg, "media.vision.provider")
+        || (Array.isArray(cfg.models) && cfg.models.some((m) => m && Array.isArray(m.caps) && m.caps.includes("vision"))),
+      // 记忆向量只认设置里选定的嵌入模型，没选就压根不调
+      embedding: !!(cfg.embedding && String(cfg.embedding.model || "").trim()),
       fetch: true, // 抓网页不需要钥匙，永远是「已就绪」
     };
     return {
@@ -722,10 +766,18 @@ function createAdminRouter(deps = {}) {
     // 有哪些渠道转得出去。relay.js 认的是 config.models[i].channel，
     // 所以「登记了型号但没挂渠道」的那些在中转站上根本转不出去——这一页要直说，
     // 不然业务方拿着 Key 调一个界面上明明看得见的型号，收到的是一句「没有可用渠道」。
+    // gateway：中转站只转登记过的型号之后，停掉的渠道和受影响的 Key（vkeys.relayAudit）。
+    // 升级上来的人第一眼要在这一页看见「哪条停了、为什么、怎么恢复」，不能等业务方来报 404
+    const gateway = vkeys.relayAudit(cfg, keys);
+    const stoppedIds = new Set(gateway.stopped.map((c) => c.id));
     const channels = (cfg.providers || []).map((pv) => ({
       id: pv.id, name: pv.name || pv.id, kind: pv.kind || "",
       models: (cfg.models || []).filter((m) => m && m.channel === pv.id).map((m) => String(m.model || m.name)).filter(Boolean),
       has_key: !!String(pv.api_key || "").trim(),
+      relayable: vkeys.relayable(pv),
+      whitelist: Array.isArray(pv.models) ? pv.models.map(String) : [],
+      any_model: pv.relay_any_model === true,
+      stopped: stoppedIds.has(pv.id),
     }));
     const orphans = (cfg.models || []).filter((m) => m && !m.channel).map((m) => String(m.model || m.name)).filter(Boolean);
 
@@ -734,7 +786,7 @@ function createAdminRouter(deps = {}) {
       keys: keyRows,
       // 这里**不捎带花名册**：「每个人单独的上限」那张表走 /api/admin/relay/members，一页 50 个。
       // 捎带的时候 3000 人的组织一次 631 KB，而那张表一屏看得见十几行
-      channels, orphans,
+      channels, orphans, gateway,
       month: mk,
       budget: { org_yuan: (st.budget || {}).org_yuan || 0, default_user_yuan: (st.budget || {}).default_user_yuan || 0, price_discount: pricing._internals.discountOf(st.price_discount) },
       levels: budget.status({ org: st, orgId }),
@@ -752,7 +804,7 @@ function createAdminRouter(deps = {}) {
         groups: { keys: byKey.size, users: byUser.size, models: byModel.size },
         // 单位跟着数一起发。前端自己推的话，以后改了哪一路的计量口径
         // （比如语音合成从千字符改成万字符），页面会静静地多显示十倍。
-        by_cap: done(byCap).map((c) => ({ ...c, unit: (pricing.UNITS[c.key] || {}).unit || "" })),
+        by_cap: done(byCap).map((c) => ({ ...c, unit: (pricing.UNITS[c.key] || quota.CAPS[c.key] || {}).unit || "" })),
       },
       caps: vkeys.CAPS.map((c) => ({ key: c, label: vkeys.CAP_CN[c] || c })),
       prefix: vkeys.PREFIX,
@@ -767,7 +819,10 @@ function createAdminRouter(deps = {}) {
       // 这条规矩唯一的出口：不催的话，那几笔就永远记成 0，而钱是真花了的。
       const cat = pricing.catalog({
         config: cfg,
-        seen: rows.filter((r) => !r.cap || r.cap === "chat" || r.cap === "embedding").map((r) => r.model),
+        // 看图、记忆向量按 token 记，查的是对话那张价目表；只催真没查到价的那几条（本机渠道 0 元不算缺）。
+        // 中转站转发的向量请求（kind:"relay"）照旧全算进来
+        seen: rows.filter((r) => !r.cap || r.cap === "chat" || (r.cap === "embedding" && (r.kind !== "api" || r.cost_unknown))
+          || (r.cap === "vision" && r.cost_unknown)).map((r) => r.model),
         seen_units: rows.filter((r) => r.cap && pricing.UNITS[r.cap]).map((r) => ({ cap: r.cap, model: r.price_key || r.model })),
       });
       out.prices = cat.rows;
@@ -873,6 +928,25 @@ function createAdminRouter(deps = {}) {
     org.audit({ org: org.orgIdOf(req.user), actor: req.user.username, action: b.remove ? "删价目" : "改价目", target: model });
     const merged = pricing.tableFor({ config: cfg });
     return { ok: true, prices: Object.entries(merged.table).map(([m, r]) => ({ model: m, ...r, src: merged.from[m] })).sort((x, y) => x.model.localeCompare(y.model)) };
+  }));
+
+  /**
+   * 一条渠道要不要「放行任意型号」。打开后，这条渠道拿管理员的上游 Key 替写了型号的 Key
+   * 转任何名字，包括没登记的——「只能用我配的模型」在这条渠道上就不成立了。
+   * 所以只有平台超级管理员能开，默认关，开关和后果都写在中转站页上；每次开关都进审计。
+   * 设置页保存渠道时不认这一格（server.js 那边只从旧值抄过来），只有这条路改得动它。
+   */
+  router.post("/api/admin/relay/channels/:id", platformOwnerOnly, guarded((req) => {
+    const b = req.body || {};
+    if (typeof b.any_model !== "boolean") throw new Error("any_model 只能是 true 或 false");
+    const cfg = safeCall(deps.readConfig, null) || {};
+    const pv = (cfg.providers || []).find((x) => x && x.id === req.params.id);
+    if (!pv) throw new Error("没有这条渠道");
+    if (b.any_model) pv.relay_any_model = true;
+    else delete pv.relay_any_model;
+    safeCall(deps.saveConfig, undefined);
+    org.audit({ org: org.orgIdOf(req.user), actor: req.user.username, action: b.any_model ? "中转站放行任意型号" : "中转站只转已登记型号", target: pv.name || pv.id });
+    return { ok: true, id: pv.id, any_model: pv.relay_any_model === true };
   }));
 
   /**
@@ -983,4 +1057,4 @@ function safeCall(fn, arg) {
   try { return fn(arg); } catch { return null; }
 }
 
-module.exports = { createAdminRouter, platformAdmin, ownsGlobalWorkspace, platformGuard, redactGuard, tenantScope, redactSecrets, setDeployment, isSoloDesktop, PLATFORM_WRITE, PLATFORM_READ, PERSONAL_WRITE, PERSONAL_WRITE_PREFIX, PERSONAL_READ };
+module.exports = { createAdminRouter, platformAdmin, ownsGlobalWorkspace, platformGuard, redactGuard, tenantScope, ownerActor, redactSecrets, setDeployment, isSoloDesktop, multiUser, PLATFORM_WRITE, PLATFORM_READ, PERSONAL_WRITE, PERSONAL_WRITE_PREFIX, PERSONAL_READ };

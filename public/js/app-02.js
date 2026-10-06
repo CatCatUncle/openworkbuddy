@@ -802,7 +802,7 @@ async function pollCliLive() {
   if (cliPollStop) return;
   let next = activeLane === "cli" ? 3000 : 20000;
   try {
-    const d = await fetch("/api/cli/live").then((r) => r.json());
+    const d = await fetch("/api/cli/live", { headers: { "X-OWB-Poll": "1" } }).then((r) => r.json());
     if (d && d.allowed === false) { cliPollStop = true; return; }
     if (d && Array.isArray(d.rows)) {
       const before = cliLiveKey(cliLiveRows);
@@ -2489,7 +2489,7 @@ function csNav(dir) {
 let apSeen = new Set(); // 已经通知过的审批 id：轮询是重复的，系统通知只发一次
 let apCanAlways = true; // 「一直允许」写的是整台服务器的放行名单，只有平台管理员点得动
 async function pollApprovals() {
-  const d = await fetch("/api/security/approvals").then(r => (r.ok ? r.json() : null)).catch(() => null);
+  const d = await fetch("/api/security/approvals", { headers: { "X-OWB-Poll": "1" } }).then(r => (r.ok ? r.json() : null)).catch(() => null);
   const list = d && Array.isArray(d.items) ? d.items : [];
   if (d && d.mode) syncPermLabel(d.mode);
   if (d && "can_always" in d) apCanAlways = !!d.can_always;

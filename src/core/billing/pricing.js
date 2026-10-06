@@ -32,8 +32,17 @@
  *    一个没登记价目的模型，如果按 0 元入账，账面永远是对的、跟真实账单永远对不上，
  *    而且**一个字都不报**。one-api 的「默认倍率兜底」是另一种形状的同一个毛病：
  *    它给个统一价，于是你以为你在计费，其实你在编数。
- *    这里认不出就把这一笔标成 unknown，后台单列一张「这些型号还没有价目」催人去填；
- *    额度闸门按「记账但不扣」处理——不能因为我们不认识这个型号就把人拦在门外。
+ *    这里认不出就把这一笔标成 unknown，后台单列一张「这些型号还没有价目」催人去填。
+ *    额度闸门那边分两种人：头上**没有**任何限额的（单机、没设预算的公司）照转、记 unknown；
+ *    头上**有**限额的，没价目的型号在发出去之前就拦下（见 budget.unpriced）——
+ *    算不出钱的那一趟扣不了预算，放过去等于给限额开了一扇不计数的门。
+ *
+ * 4) **「本地 0 元」看的是这一趟发到哪个地址，不看型号叫什么。**
+ *    型号名谁都能起：云端渠道上照样有叫 llama-xxx、qwen2.5-coder 的付费型号，
+ *    按名字猜会把真花钱的调用记成 0 元，预算就这么漏了。所以只认渠道地址落在本机 / 内网
+ *    （见 isPrivateBase），而且只对价目表里**没有**的型号这么算——内置表认得的付费型号
+ *    经内网网关转发照样按价收。管理员手填的价永远排第一，两个方向都能靠它纠正。
+ *    只管按 token 计价这张表；按量那几路（生图 / 视频 / 语音）没有本机引擎这一说，不做这个判断。
  *
  * ── 价钱从哪儿来，四层，后面的盖前面的 ──────────────────────────────
  *
@@ -68,13 +77,16 @@
  * @property {any} [config]
  * @property {any} [provider]
  * @property {number|string} [discount] 组织折扣，(0,1] 之外按不打折算
- * @property {boolean} [local] 明说走的是本地引擎，直接 0 元
+ * @property {boolean} [local] 调用方已经按渠道地址认定这一趟只走本机 / 内网，没手填价就 0 元
+ * @property {string} [base_url] 这一趟发往的地址，本机 / 内网的没手填价就 0 元
+ * @property {string} [name] 对话模型条目名（config.models[i].name），用来找它挂的地址
  * @property {Merged<any>} [_merged]
  */
 /**
  * 查到的那一行价。src 是哪一层给的，key 是最后命中的那个型号名（可能是退化后的）。
  * @template R
- * @typedef {{ row: R, key: string, src: string }} PriceHit
+ * rest 只有最长前缀族那一步才有：型号名在族名后面多出来的那截（gpt-5.2-pro 对上 gpt-5.2 时是 "-pro"）。
+ * @typedef {{ row: R, key: string, src: string, rest?: string }} PriceHit
  */
 
 /** 内置价目是哪天抄的。后台会把这个日期印出来——「三个月前抄的」本身就是一条信息 */
@@ -110,6 +122,9 @@ const BUILTIN = {
   "gpt-4.1":                 { in: $(2),    out: $(8),   cached_in: $(0.5)  },  // $2 / $8 / $0.50
   "gpt-4o":                  { in: $(2.5),  out: $(10),  cached_in: $(1.25) },  // $2.50 / $10 / $1.25
   "o4-mini":                 { in: $(1.1),  out: $(4.4), cached_in: $(0.275) }, // $1.10 / $4.40 / $0.275
+  // ── Google Gemini（官网美元价）──
+  // 按提示长度分两档，这里记 ≤200k 那档；超过 200k 是 $2.50 / $15 / $0.25，长上下文会少算一截
+  "gemini-2.5-pro":          { in: $(1.25), out: $(10),  cached_in: $(0.125) }, // $1.25 / $10 / $0.125
   // ── 国内厂商，官网就是人民币价，不过汇率这一道 ──
   "deepseek-chat":           { in: 2,    out: 8,    cached_in: 0.5 },
   "deepseek-reasoner":       { in: 4,    out: 16,   cached_in: 1 },
@@ -121,6 +136,16 @@ const BUILTIN = {
   "kimi-k2":                 { in: 4,    out: 16 },
   "glm-4.6":                 { in: 2,    out: 8 },
   "qwen3-max":               { in: 6,    out: 24 },
+  // 下面几条是「设置 → 模型」向导里各家的默认型号（chat-models.js DEFAULT_CHAT_MODEL）。
+  // 向导一键建出来的就是它们，没价目的话设了预算的公司一建好就用不了。
+  // 测试会盯着：向导默认型号里有哪个云端的查不到价，直接红。
+  "qwen-max":                { in: 2.4,  out: 9.6 },                 // 百炼（北京）¥2.4 / ¥9.6，不分档
+  "glm-4-plus":              { in: 5,    out: 5,    cached_in: 2.5 }, // 智谱 ¥5 / ¥5，缓存命中 ¥2.5
+  "deepseek-ai/deepseek-v3": { in: 2,    out: 8 },                   // 硅基流动 ¥2 / ¥8（只认带前缀的这个 id，别家的 v3 价不一样）
+  // Kimi 官网说 moonshot-v1 全系已于 2026-08-31 下线（推荐换 kimi-k3），价目留着给还在跑的老配置算账
+  "moonshot-v1-8k":          { in: 2,    out: 10 },                  // ¥2 / ¥10
+  "moonshot-v1-32k":         { in: 5,    out: 20 },                  // ¥5 / ¥20
+  "moonshot-v1-128k":        { in: 10,   out: 30 },                  // ¥10 / ¥30
   // ── 向量化：只有输入，没有输出。out 写 0 是「确实不收」，不是「不知道」──
   // （只放官网价目页上直接查得到的那几条；国内几家的嵌入价这两年改过好几次，
   //   记不准就不写，让它走 unknown 去被后台催一句，比填一个错数强）
@@ -272,17 +297,7 @@ function normalizeUnitRow(v) {
  */
 function unitPriceOf(cap, model, opts = {}) {
   if (!UNITS[cap]) return null;
-  const { table, from } = opts._merged || unitTableFor(cap, opts);
-  for (const c of candidates(model)) {
-    if (table[c]) return { row: table[c], key: c, src: from[c] };
-  }
-  const m = String(model || "").trim().toLowerCase();
-  const tail = m.includes("/") ? m.slice(m.lastIndexOf("/") + 1) : m;
-  let best = null;
-  for (const k of Object.keys(table)) {
-    if (k.length >= 4 && tail.startsWith(k) && (!best || k.length > best.length)) best = k;
-  }
-  return best ? { row: table[best], key: best, src: from[best] } : null;
+  return lookup(opts._merged || unitTableFor(cap, opts), model, true);
 }
 
 /**
@@ -314,8 +329,82 @@ function costOfUnits(call = {}, opts = {}) {
   };
 }
 
-/** 本地引擎那几条：命中就是 0 元，而且是「确实 0」，不是「不知道」 */
-const LOCAL_RE = /^(ollama|lmstudio|local|llama|qwen2?\.?5?-?coder|__local__)/i;
+/**
+ * 这个地址是不是落在本机 / 内网。是的话这一趟没有 API 账单——「确实 0」，不是「不知道」。
+ *
+ * 只看主机部分，认这几类：回环（127/8、::1）、私网段（10/8、172.16/12、192.168/16、
+ * fc00::/7）、链路本地（169.254/16、fe80::/10）、运营商级 NAT 段 100.64/10（组网工具常用）、
+ * localhost 和 .local / .internal / .lan / .home.arpa 这类不出公网的后缀，
+ * 以及 docker 编排里那种不带点的单段主机名（ollama、llm）。
+ *
+ * 为什么不看型号名：型号名是谁都能起的，云端渠道上照样挂着叫 llama-xxx 的付费型号，
+ * 按名字猜会把真花钱的调用记成 0 元。地址是管理员在渠道上配的，这一趟真发去哪儿就是它。
+ * 认错的方向只有一个：内网网关后面转发到付费厂商、而型号名又不在内置表里——
+ * 那种由管理员补一行价压过去（priceOf 里先看手填价）。
+ * @param {unknown} url
+ * @returns {boolean}
+ */
+function isPrivateBase(url) {
+  let s = String(url || "").trim();
+  if (!s) return false;
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) s = "http://" + s;
+  let host = "";
+  try { host = new URL(s).hostname.toLowerCase(); } catch { return false; }
+  host = host.replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  if (!host) return false;
+  if (host === "localhost" || /\.(?:localhost|local|internal|lan|home\.arpa)$/.test(host)) return true;
+  if (host.includes(":")) return privateV6(host);
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) return privateV4(host.split(".").map(Number));
+  return !host.includes(".");                                            // 单段主机名：只在本机 / 内网解析得到
+}
+
+/** @param {number[]} o 四段 */
+function privateV4([a, b]) {
+  return a === 127 || a === 10 || a === 0
+    || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && b === 168)
+    || (a === 169 && b === 254)
+    || (a === 100 && b >= 64 && b <= 127);
+}
+
+/** @param {string} h 已去掉方括号的 IPv6 */
+function privateV6(h) {
+  if (h === "::1" || h === "::") return true;
+  // ::ffff:127.0.0.1 这种映射地址，URL 解析后会变成 ::ffff:7f00:1，两种写法都认
+  const dotted = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(h);
+  if (dotted) return privateV4(dotted[1].split(".").map(Number));
+  const hex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(h);
+  if (hex) { const hi = parseInt(hex[1], 16), lo = parseInt(hex[2], 16); return privateV4([hi >> 8, hi & 255, lo >> 8, lo & 255]); }
+  return /^f[cd][0-9a-f]{0,2}:/.test(h) || /^fe[89ab][0-9a-f]?:/.test(h);
+}
+
+/**
+ * 这一趟是不是只走本机 / 内网。按可信程度依次看：
+ *   ① 调用方明说的（local，比如中转站已经按候选渠道的地址判过了）
+ *   ② 这一趟的地址（base_url），或者渠道对象上的地址（provider.base_url）
+ *   ③ 对话模型条目名（name）→ config.models 里那一条挂的地址
+ *   ④ 只有型号 id 的：config.models 里所有叫这个 id 的条目**都**在本机才算——
+ *      同一个 id 一边挂本机、一边挂云端时，认不准走哪条，就当云端算，宁可多记不少记
+ * @param {unknown} model
+ * @param {PriceOpts} opts
+ */
+function localOf(model, opts) {
+  if (opts.local) return true;
+  if (opts.base_url) return isPrivateBase(opts.base_url);
+  if (opts.provider && opts.provider.base_url) return isPrivateBase(opts.provider.base_url);
+  const cfg = opts.config || {};
+  const rows = Array.isArray(cfg.models) ? cfg.models.filter((m) => m && typeof m === "object") : [];
+  const chans = Array.isArray(cfg.providers) ? cfg.providers : [];
+  /** @param {any} m */
+  const baseOf = (m) => m.base_url || ((chans.find((p) => p && p.id === m.channel) || {}).base_url) || "";
+  const name = String(opts.name || "").trim();
+  const named = name ? rows.find((m) => String(m.name || "").trim() === name) : null;
+  if (named) return isPrivateBase(baseOf(named));
+  const id = String(model || "").trim().toLowerCase();
+  if (!id) return false;
+  const same = rows.filter((m) => String(m.model || "").trim().toLowerCase() === id);
+  return same.length > 0 && same.every((m) => isPrivateBase(baseOf(m)));
+}
 
 /**
  * 把型号名收敛成能查表的样子，从最精确往最模糊退，一步一步：
@@ -399,18 +488,41 @@ function normalizeRow(v) {
 
 /**
  * 查一个型号的价。返回 { row, key, src } 或者 null（= 不知道，不是 0）。
+ *
+ * 顺序：管理员手填 / 渠道自带的价 → 内置表 → 本机 / 内网渠道（0 元）→ 不知道。
+ *   · 手填的排第一：它是唯一知道「这条渠道后面到底接着谁」的那个人写的，想把本机型号记 0、
+ *     或者给内网网关后面的付费厂商补价，都靠它。只认精确或退化命中（去前缀、去日期那几步），
+ *     不认最长前缀族——管理员填一行 qwen 的价，不该顺手把本机 Ollama 上的 qwen3:8b 也算成钱。
+ *   · 内置表排在本机前面：叫得出名字的付费型号，经本机 / 内网网关转发出去照样花钱，
+ *     记 0 是往少了错；真在本机跑一个同名开源权重的，管理员手填一行 0 就压过去了。
+ *   · 剩下表里都没有的，才看这一趟发往哪儿：本机 / 内网的是 0 元，其余的是「不知道」。
  * @param {unknown} model
  * @param {PriceOpts} [opts]
  * @returns {PriceHit<PriceRow>|null}
  */
 function priceOf(model, opts = {}) {
-  const { table, from } = opts._merged || tableFor(opts);
-  if (LOCAL_RE.test(String(model || "")) || opts.local) {
-    return { row: { in: 0, out: 0 }, key: "__local__", src: "local" };
-  }
+  const merged = opts._merged || tableFor(opts);
+  const exact = lookup(merged, model, false);
+  if (exact) return exact;
+  const family = lookup(merged, model, true);
+  if (family && family.src === "builtin") return family;
+  if (localOf(model, opts)) return { row: { in: 0, out: 0 }, key: "__local__", src: "local" };
+  return family;
+}
+
+/**
+ * 在合并好的表里找一行。family=false 只走 candidates 那几步，true 才退到最长前缀族。
+ * @template R
+ * @param {Merged<R>} merged
+ * @param {unknown} model
+ * @param {boolean} family
+ * @returns {PriceHit<R>|null}
+ */
+function lookup({ table, from }, model, family) {
   for (const c of candidates(model)) {
     if (table[c]) return { row: table[c], key: c, src: from[c] };
   }
+  if (!family) return null;
   // 最后一步：最长前缀族。gpt-4o-audio-preview → gpt-4o
   const m = String(model || "").trim().toLowerCase();
   const tail = m.includes("/") ? m.slice(m.lastIndexOf("/") + 1) : m;
@@ -418,17 +530,36 @@ function priceOf(model, opts = {}) {
   for (const k of Object.keys(table)) {
     if (k.length >= 4 && tail.startsWith(k) && (!best || k.length > best.length)) best = k;
   }
-  return best ? { row: table[best], key: best, src: from[best] } : null;
+  return best ? { row: table[best], key: best, src: from[best], rest: tail.slice(best.length) } : null;
+}
+
+// 族名后面跟这些，价不会比族里那一行贵：日期快照、预览 / 最新这类别名、更便宜的小号档。
+const SAME_OR_CHEAPER = new Set(["latest", "preview", "exp", "beta", "mini", "nano", "lite", "flash"]);
+/**
+ * 前缀族命中算不算「其实不知道价」。-pro、-audio、-realtime、-thinking、版本号这类尾巴，
+ * 在各家都可能是另一档价（gpt-5.2-pro 比 gpt-5.2 贵十倍以上）；拿族里那一行去估，
+ * 设了预算上限的人就能用便宜档的价调贵档，上限形同虚设。账本照旧记这个近似价，
+ * 只有额度闸门（budget.unpricedOf）把它当没价目——跟查不到的一个待遇：补一行就放行。
+ * @param {string|undefined} rest
+ * @returns {boolean}
+ */
+function looseRest(rest) {
+  if (!rest) return false;
+  if (rest[0] !== "-") return true; // gpt-5.25 / glm-4.6v：前缀只对上半截名字，不是同一个型号
+  const r = rest.replace(/-\d{4}-\d{2}-\d{2}(?=-|$)/g, "").replace(/-\d{2}-\d{2}(?=-|$)/g, "");
+  return r.split("-").filter(Boolean).some((t) => !SAME_OR_CHEAPER.has(t) && !/^(?:\d{4}|\d{6}|\d{8})$/.test(t));
 }
 
 /**
  * 算钱。
  *
- * @param {{ model?: string, prompt?: number, cached?: number, completion?: number }} [usage]
+ * @param {{ model?: string, prompt?: number, cached?: number, completion?: number, provider?: string }} [usage]
  *   跟 account.js 的 chargeRun 同一个形状
  * @param {PriceOpts} [opts] 看 config / provider / discount / local
- * @returns {{ yuan: number, unknown: boolean, model: string, key: string, src: string,
+ * @returns {{ yuan: number, unknown: boolean, loose: boolean, model: string, key: string, src: string,
  *   detail: { in_yuan: number, cached_yuan: number, out_yuan: number }, discount: number }}
+ *
+ * loose = 只靠前缀族对上、族名后面的尾巴可能是另一档价（见 looseRest）。yuan 照算，额度闸门看它。
  *
  * yuan 保留 6 位小数：单次调用常常是几厘钱，四舍五入到分的话，一万次调用里
  * 每次丢掉的不到半分钱加起来就是一大笔——而且是系统性地少算，不是随机误差。
@@ -438,9 +569,10 @@ function costOf(usage = {}, opts = {}) {
   const cached = Math.min(Math.max(0, +usage.cached || 0), prompt);
   const fresh = prompt - cached;
   const completion = Math.max(0, +usage.completion || 0);
-  const hit = priceOf(usage.model, opts);
+  // 记账那几处（account.chargeRun、飞书卡片）手里的 usage 带着模型条目名，借它找这一趟的地址
+  const hit = priceOf(usage.model, opts.name || !usage.provider ? opts : { ...opts, name: String(usage.provider) });
   if (!hit) {
-    return { yuan: 0, unknown: true, model: usage.model || "", key: "", src: "",
+    return { yuan: 0, unknown: true, loose: false, model: usage.model || "", key: "", src: "",
              detail: { in_yuan: 0, cached_yuan: 0, out_yuan: 0 }, discount: 1 };
   }
   const p = hit.row;
@@ -457,7 +589,7 @@ function costOf(usage = {}, opts = {}) {
   };
   return {
     yuan: r6(detail.in_yuan + detail.cached_yuan + detail.out_yuan),
-    unknown: false, model: usage.model || "", key: hit.key, src: hit.src, detail, discount: d,
+    unknown: false, loose: looseRest(hit.rest), model: usage.model || "", key: hit.key, src: hit.src, detail, discount: d,
   };
 }
 
@@ -544,5 +676,6 @@ module.exports = {
   costOf, priceOf, catalog, tableFor, yuanText,
   costOfUnits, unitPriceOf, unitTableFor,
   PRICES_AS_OF, USD_CNY, BUILTIN, BUILTIN_UNIT, UNITS, UNIT_CAPS,
-  _internals: { candidates, normalizeRow, normalizeUnitRow, discountOf, r6, LOCAL_RE },
+  isPrivateBase,
+  _internals: { candidates, looseRest, normalizeRow, normalizeUnitRow, discountOf, r6, localOf },
 };

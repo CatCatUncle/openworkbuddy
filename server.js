@@ -23,9 +23,9 @@ const migrate = require("./src/server/migrate");
 seedDataDir();
 const { mergeBuiltinExperts } = require("./src/agent/experts-lib");
 const mcpCatalog = require("./src/core/ext/mcp-catalog");
-const { createLLM, createEmbedder, pingRequest, probeEmbedding } = require("./src/core/model/llm");
+const { createLLM, createEmbedder, pingRequest, probeEmbedding, embedCandidates, embedChannels, embedHostable } = require("./src/core/model/llm");
 const sessSearch = require("./src/core/memory/session-search");
-const { outputFiles, noteUserInput, moveUserInput, isUserInput, filesScope, safePath, safePathIn, workspaceKeyOf, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, setLibraryDir, withLibraryBase, libBase, notesFileOf, withWorkspace, enterWorkspace, withPolicy, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSafeName, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath } = require("./src/agent/tools");
+const { outputFiles, noteUserInput, moveUserInput, isUserInput, filesScope, safePath, safePathIn, workspaceKeyOf, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, setLibraryDir, withLibraryBase, libBase, notesFileOf, withWorkspace, enterWorkspace, withPolicy, orgPolicy, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSafeName, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath } = require("./src/agent/tools");
 const checkpoints = require("./src/agent/checkpoints"); // 这条对话改过的文件：列出来、整步退回去
 const worktree = require("./src/agent/worktree"); // 两条任务同时改一个仓库时，后来的那条进自己的 git worktree
 const canvasRoutes = require("./src/server/routes/canvas"); // 画布读写 + 短剧素材台账 + 制片进度
@@ -51,10 +51,14 @@ const org = require("./src/domains/account/org"); // 组织（租户）层：席
 const budget = require("./src/core/billing/budget"); // 钱闸：中转站发出去的 Key 和公司内部自己用，花的是同一笔预算
 const admin = require("./src/domains/account/admin"); // 企业管理后台的接口层 /api/admin/*
 const engines = require("./src/engines"); // 底层引擎：内置循环 / 本机 Claude Code / 本机 Codex
+const engineGate = require("./src/engines/gate"); // 外部引擎开跑前那道闸（型号、附加参数、命令行开关）
 const lanes = require("./src/core/config/lanes"); // 两条工作线：办公（桌面办公 agent）/ 工程（本机 openworkbuddy 命令行）
 const cliLive = require("./src/core/obs/cli-live"); // 终端里起的任务挂在盘上的那个目录，网页/手机靠它看见并插话
 const thinking = require("./src/core/model/thinking"); // 思考模式档位表（各家参数名都不一样，集中在那儿）
 const security = require("./src/core/safety/security");
+const netGuard = require("./src/core/safety/net-guard"); // AI 联网工具的地址闸：绑上端口后把自己登记进去，AI 一律打不到
+const netAddr = require("./src/util/net-addr");
+const childEnv = require("./src/platform/child-env"); // AI 起的子进程只拿最小环境变量；属主清单和「几个账号」从这里注册进去
 const toolward = require("./src/core/safety/toolward");
 const sweep = require("./src/agent/sweep");
 const modes = require("./src/core/config/modes"); // 执行模式的唯一真源（craft/goal/plan/ask）
@@ -128,6 +132,14 @@ const rawConfig = store.readJson(CONFIG_PATH, JSON.parse(JSON.stringify(CONFIG_D
 // 0.2 之前的老配置压根没有 models 表（只有 provider / openai / anthropic 三块）——要在模板补缺之前认出来
 const legacyNoModels = !Array.isArray(rawConfig.models);
 const config = fillDefaults(rawConfig, CONFIG_DEFAULTS);
+// 子进程环境的策略：每次起子进程现问，设置页改了清单不用重启。
+// 像 Key 的名字只在一个账号时给——账号多了，成员的任务也跑在这台机器上（见 platform/child-env.js 顶上）
+childEnv.setPolicy(() => ({ allow: security.getSecurity(config).env_passthrough, keys: !admin.multiUser() }));
+// 多人共用时命令、代码碰了文件黑名单直接拦、不出审批卡：卡是发起任务的人自己批的
+security.setMultiUser(() => admin.multiUser());
+// 系统沙箱：成员的任务要把属主的项目目录藏起来；启动时先预检一遍，设置页一打开就有现状
+require("./src/agent/tools").setOwnerDirs(() => (config.projects || []).map((p) => p && p.dir).filter(Boolean));
+require("./src/agent/tools").warmSandbox(security.getSecurity(config));
 // 助理的名字和头像：想叫它「小秘」就叫「小秘」。界面（气泡头像/侧栏/品牌位）和系统提示词都跟着这里走
 // "@cat" 是内置猫标的哨兵值，跟应用图标同一只猫；前端 avatarBits 认它，account.normalizeAvatar 放行
 const ASSISTANT_DEFAULT = { name: "OpenWorkBuddy", avatar: "@cat" };
@@ -235,8 +247,37 @@ try {
     try { return fs.readdirSync(dataPath("data", "sessions")).some((f) => f.endsWith(".json")); } catch {}
     return false;
   })();
+  // 记忆向量以前没选嵌入模型时会借聊天 / 媒体渠道的 Key 去算，这一版起只认设置里选定的那个。
+  // 盘上有算好的向量、设置里却没选 = 以前靠的就是借来的那条，升上来后改按关键词召回，得说一声
+  const embedOff = (() => {
+    if (config.embedding && String(config.embedding.model || "").trim()) return false;
+    try { return memory.vectorStatus().have > 0; } catch { return false; }
+  })();
+  // 中转站以前把没登记型号的渠道当通用网关，这一版起只转登记过的。发过 Key、又有渠道停转或 Key 受影响才提示
+  const relayHit = (() => {
+    try {
+      const vk = require("./src/domains/account/vkeys");
+      const keys = vk.list();
+      if (!keys.length) return false;
+      const g = vk.relayAudit(config, keys);
+      return g.stopped.length > 0 || g.keys.length > 0;
+    } catch { return false; }
+  })();
+  // 外部引擎：以前型号能留空、Codex 里的命令默认联网，这一版两样都变了。看属主和各账号选着哪个引擎
+  const enginesInUse = (() => {
+    const ids = new Set([String((config.agent && config.agent.engine) || "")]);
+    try {
+      for (const f of fs.readdirSync(dataPath("prefs"))) {
+        if (!f.endsWith(".json")) continue;
+        try { ids.add(String((JSON.parse(fs.readFileSync(dataPath("prefs", f), "utf8")).agent || {}).engine || "")); } catch {}
+      }
+    } catch {}
+    return [...ids].filter((id) => id && id !== "builtin" && engines.get(id));
+  })();
+  const engineNoModel = enginesInUse.filter((id) => !engines.gateView(id, config).allowed.length).map((id) => engines.get(id).label || id).join("、");
+  const codexNet = enginesInUse.includes("codex") && ((((config.agent || {}).engine_options || {}).codex || {}).network === undefined);
   const notes = migrate.runMigrations(getWorkspaceDir(), dataPath("data", "migrations.json"), {
-    version: String(require("./package.json").version || ""), priorUse,
+    version: String(require("./package.json").version || ""), priorUse, embedOff, relayHit, engineNoModel, codexNet,
   });
   for (const n of notes) console.log(`[升级整理] ${n.note}`);
   global.__wbMigrationNotes = notes;   // 界面上给用户看一眼：动过他的文件，得说
@@ -244,7 +285,7 @@ try {
   console.warn("[升级整理] 这次没做成，不影响使用：" + e.message);
 }
 let llmInner = createLLM(config);
-// 记忆向量召回：有能算 embeddings 的渠道就接上，没有就退回关键词匹配（memory 自己兜底）
+// 记忆向量召回：只用设置里选定的嵌入模型，没选就是 null，记忆按关键词匹配（memory 自己兜底）
 memory.setEmbedder(createEmbedder(config));
 // 任务历史检索的向量渠道。这两个变量本该跟下面那一块检索代码放在一起，但接线在这儿就发生了——
 // let 声明在后面的话是暂时性死区，进程会直接起不来（不是搜索不好使，是整个服务起不来）
@@ -271,6 +312,33 @@ function llmForSession(sess) {
     model: name,
     chat: () => Promise.reject(new Error(`该对话指定的模型「${name}」已不在模型列表里。点输入框右下角的模型按钮重新选一个，或选「跟随全局默认」。`)),
   };
+}
+/**
+ * 价目闸：头上设了预算的人，这一趟的对话模型查不到价就不开跑（见 budget.unpriced）。
+ * 拦下返回那句话，放行返回 ""。护的是预算本身：查不到价的那一趟记账是 0，
+ * 设了上限的人点名一个没登记价目的型号，花多少都扣不到预算上。
+ * 只管内置引擎——外部 CLI 引擎走它自己的登录和订阅，不经这本价目。
+ * 会话点名的模型已经不在列表里的（llmForSession 给的是报错桩），开跑时自有那句「已不在模型列表里」，这儿不抢着报。
+ * @param {any} user
+ * @param {{ provider?: string, model?: string }} runLLM
+ */
+function unpricedChat(user, runLLM) {
+  if (!user || !runLLM || !runLLM.model) return "";
+  if ((prefs.agentCfg(config).engine || "builtin") !== "builtin") return "";
+  if (!(Array.isArray(config.models) && config.models.some((m) => m && m.name === runLLM.provider))) return "";
+  try {
+    const o = org.getOrg(org.orgIdOf(user));
+    const s = org.settingsOf(o);
+    const hit = budget.unpriced({
+      org: s, orgId: o.id, user, usage: { model: runLLM.model },
+      price: { config, discount: s.price_discount, name: runLLM.provider },
+    });
+    return hit ? hit.message : "";
+  } catch (e) {
+    // 预算模块自己坏了不该拦住正事，跟钱闸同一个选择：放行，但喊一声
+    console.warn("[预算] 价目闸没能判（本次放行）：" + (e && e.message));
+    return "";
+  }
 }
 // 同一模型连续「整跑失败」计数（成功一次即清零）：连挂说明是模型/渠道本身的问题，光报错用户不知道该干嘛
 const modelFailStreak = new Map();
@@ -911,11 +979,19 @@ function addUsage(total, u) {
  * 这两步却偷偷走 API：没配 Key 的人于是永远拆不出标准也验不了收，目标卡卡在 0/N 不动，
  * 从用户那边看就是「Goal 模式没做」。同一份订阅已经付过钱了，问它就是了。
  */
+/** 这个请求所在的组织关了命令行（外部引擎自带命令行，跟着一起不能用） */
+function orgShellOff() {
+  const p = orgPolicy();
+  return !!p && p.allow_shell === false;
+}
+
 async function goalThink(sessLLM, { system, prompt, timeoutMs, total }) {
   const my = prefs.agentCfg(config); // 引擎是按账号存的，得看这一趟任务是谁发起的
   const id = my.engine || "builtin";
   if (id !== "builtin" && engines.get(id)) {
-    return await engines.ask({ id, opts: (my.engine_options || {})[id] || {}, system, prompt, timeoutMs });
+    // 跟开跑那条过同一道闸：组织关了命令行、属主没打开、型号没钉都直接报错，不悄悄改问 API 模型
+    const pass = engines.admit(id, config, { shellOff: orgShellOff() });
+    return await engines.ask({ id, opts: pass.opts, system, prompt, timeoutMs });
   }
   const r = await sessLLM.chat({
     system,
@@ -1022,6 +1098,13 @@ app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "SAMEORIGIN");
   res.setHeader("Content-Security-Policy", "base-uri 'self'; form-action 'self'; frame-ancestors 'self'; object-src 'none'");
+  next();
+});
+// 来了请求就把卡顿表打开（闲着时它是关的，见 metrics.js 的 wake）。
+// 页面开着时自己隔十几秒问一次的那几条（连接器状态、待审批、终端在跑的活）带 X-OWB-Poll，不算有事——
+// 算的话窗口一开着，表就永远关不掉（2026-10-07 实测：三条轮询把它一直顶着，空转照样每秒醒 40 次）
+app.use((req, res, next) => {
+  if (!req.headers["x-owb-poll"]) metrics.wake();
   next();
 });
 /**
@@ -1440,7 +1523,7 @@ app.use(createComposeRouter({
   }),
 }));
 app.use(dramaRoutes.createDramaRouter({
-  getWorkspaceDir, outputFiles, safePath, account, org, budget, llm, llmForSession, addUsage, toolRunSubdir, toolRunSubdirReady,
+  getWorkspaceDir, outputFiles, safePath, account, org, budget, llm, llmForSession, unpricedChat, addUsage, toolRunSubdir, toolRunSubdirReady,
   canvasAssetNear: canvasRoutes.canvasAssetNear,
 }));
 app.use(libraryRoutes.createLibraryRouter({ libraryRootOf, rootedPath, rootOfResolved, getWorkspaceDir, safePathIn, thumbsDir: path.join(dataPath("data"), "thumbs"), busy: () => activeRuns.size > 0 }));
@@ -1524,39 +1607,35 @@ app.post("/api/provider-models", async (req, res) => {
  * 余额扣光了、Key 是别家的、模型名在这家不存在，界面全都看不出来，非要等某个任务跑到一半才炸。
  * probeModel 早就把 401/402/404/429 翻成了人话，只是一直只有开箱向导在用；这里把它摆到渠道卡上。
  *
- * 拿哪个模型去 ping：优先用调用方点名的 → 这条渠道下面的第一个对话模型 → 精选目录里这个 kind 的第一条。
- * 一个都没有就直说「先加个模型」，而不是拿 gpt-3.5 之类瞎猜一个去打——猜错了报的 404 会让人以为 Key 坏了。
+ * 拿哪个模型去 ping：只认这条渠道底下已登记的（点名的必须在列表里，没点名拿第一个）。
+ * 不再退到精选目录：那是用户没配过的型号，拿他的 Key 去打，猜错了报的 404 还会让人以为 Key 坏了。
+ * 用存着的 Key 测时地址和类型不许改，要换地址就连 Key 一起重填。规矩在 chatModels.testPlan 一处。
  */
 app.post("/api/provider-test", async (req, res) => {
   // 出网请求 + 带着 Key，跟 /api/provider-models 同一条规矩：只有平台管理员能发起
   if (!isPlatformOwner(req)) return res.status(403).json({ ok: false, error: "渠道归平台管理员配", platform_only: true });
   const b = req.body || {};
-  const known = (config.providers || []).find((p) => p.id === b.id) || {};
-  const kind = String(b.kind || known.kind || "").trim();
-  const base = String(b.base_url == null ? known.base_url || "" : b.base_url).trim();
-  // 掩码原样传回来时用库里那把真的：界面上 Key 框平时是空的（只显示末四位），
-  // 没重填就点「测一下」是最常见的一次点击，这时候不该测成「Key 为空」
-  const rawKey = String(b.api_key == null ? "" : b.api_key).trim();
-  const key = !rawKey || /^\*+$/.test(rawKey) ? String(known.api_key || "") : rawKey;
+  const plan = chatModels.testPlan(config, b);
+  if (plan.error) return res.json({ ok: false, error: plan.error });
+  const { known, kind, base, key } = plan;
   const local = kind === "ollama" || /localhost|127\.0\.0\.1|0\.0\.0\.0/.test(base);
   if (!key && !local) return res.json({ ok: false, error: "这个渠道还没填 Key，填完再测" });
   // 判断模型（Jev）没有 /chat/completions 这条路，拿它去 ping 必然 400。
   // 它有自己的测活：真问一道题，把答案也带回来——「通了」和「答得对不对」一次看完
   if ((mediaModels.PROVIDER_KINDS.find((k) => k.kind === kind) || {}).decide_only) {
     const t = Date.now();
-    const r = await jev.selftest({ providers: [{ id: known.id || "tmp", kind, base_url: base, api_key: key }] }, { timeoutMs: 20000 });
+    // 型号跟真跑时同一个：config.decide.model 钉过就测钉的那个，没钉才是出厂型号
+    const pinned = String((config.decide || {}).model || "").trim();
+    const r = await jev.selftest({ providers: [{ id: known.id || "tmp", kind, base_url: base, api_key: key }], ...(pinned ? { decide: { model: pinned } } : {}) }, { timeoutMs: 20000 });
     return res.json({
       ok: !!r.ok, ms: Date.now() - t, model: r.model || "",
       error: r.ok ? "" : r.error || "没答上来",
       answers: r.ok ? r.answers.map((a) => systemOne.lineOf(a)) : [],
     });
   }
-  const api = mediaModels.protoOfChannel({ kind, api: b.api == null ? known.api : b.api });
+  const api = mediaModels.protoOfChannel({ kind, api: plan.api });
   if (!["anthropic", "gemini"].includes(api) && !/^https?:\/\//i.test(base)) return res.json({ ok: false, error: "接口地址得是 http(s) 开头的完整地址" });
-  const mine = (config.models || []).filter((m) => m.channel === known.id);
-  const model = String(b.model || "").trim()
-    || (mine[0] || {}).model
-    || ((mediaModels.catalogFor("chat", kind) || [])[0] || {}).id;
+  const model = plan.model;
   if (!model) {
     // 专门挂生图 / 生视频的渠道底下本来就一个对话模型都没有。以前这儿直接甩一句
     // 「还没有对话模型」，等于告诉人「你这条渠道没法测」——可它明明配好了、也在用。
@@ -1738,11 +1817,18 @@ app.get("/api/migrations", (_req, res) => res.json({ notes: global.__wbMigration
 
 function embeddingView(req) {
   const e = config.embedding || {};
+  const own = !e.provider; // 单独填的一组地址 / Key；点名渠道的那种 Key 在渠道表里，这儿不回
+  const prov = e.provider ? (config.providers || []).find((p) => p && String(p.id) === String(e.provider)) : null;
   return {
-    base_url: e.base_url || "", model: e.model || "",
-    api_key: e.api_key ? "********" : "",
-    key_hint: isPlatformOwner(req) ? keyHint(e.api_key) : "",
-    has_key: !!e.api_key,
+    provider: e.provider ? String(e.provider) : "",
+    base_url: own ? e.base_url || "" : "", model: e.model || "",
+    api_key: own && e.api_key ? "********" : "",
+    key_hint: own && isPlatformOwner(req) ? keyHint(e.api_key) : "",
+    has_key: own && !!e.api_key,
+    // 能挑的已配渠道（只聊天 / 只做媒体的不在里面），只回名字和型号建议
+    channels: embedChannels(config),
+    // 选的那条渠道被删了、或换成了算不了向量的类型：界面照实说，让人重选
+    missing: e.provider && !(prov && embedHostable(prov.kind)) ? String(e.provider) : "",
   };
 }
 
@@ -1869,6 +1955,10 @@ app.get("/api/settings", (req, res) => {
     // 启动时替用户改挂过的媒体模型，只回一次。只给平台管理员：改的是整台机器的配置
     moved_on_boot: isPlatformOwner(req) ? takeMovedOnBoot() : [],
     security: config.security,
+    // 系统沙箱眼下立没立起来、为什么：开着却没生效时界面要说出来，不能只摆一个「已开启」
+    sandbox_status: require("./src/agent/tools").sandboxStatus(),
+    // 安全中心「命令能看到的环境变量」那张卡要照实说：像 Key 的名字现在写进清单给不给，看的是账号数
+    env_keys_pass: !admin.multiUser(),
     shortcuts: prefs.shortcutsCfg(config),
     // 执行追踪。私钥跟别的 Key 一个待遇：只有平台管理员看得见原文，其余人拿到八个星号。
     // stats 是**实打实的上报账本**（发出去多少、丢了多少、上一次为什么失败）——
@@ -1914,6 +2004,17 @@ function setGlobalModel(name) {
   config.last_picked_model = name;
 }
 
+/** 属主给成员放行的型号：数组或逗号/换行分隔的一串都收，去空去重，最多 50 个 */
+function engineModelList(v) {
+  const raw = Array.isArray(v) ? v : String(v == null ? "" : v).split(/[,，\n]/);
+  const out = [];
+  for (const x of raw) {
+    const s = String(x == null ? "" : x).trim().slice(0, 120);
+    if (s && !out.includes(s)) out.push(s);
+  }
+  return out.slice(0, 50);
+}
+
 function ownPrefs(req) {
   return !(admin.isSoloDesktop() || ownsGlobalWorkspace(req && req.user));
 }
@@ -1925,6 +2026,10 @@ function savePersonalPrefs(user, personal) {
     if (personal.agent.engine !== undefined) {
       const id = String(personal.agent.engine || "builtin").trim() || "builtin";
       if (engines.get(id) === undefined) throw new Error("没有这个底层引擎：" + id);
+      // 多人共用时外部引擎要属主逐个打开；没打开的现在就说，别等开跑才报
+      if (id !== "builtin" && security.isMultiUser() && !engines.gateView(id, config).enabled) {
+        throw new Error(`多人共用时${engines.get(id).label || id}默认关着，等平台属主打开，或在 ${engineGate.WHERE} 切回内置引擎。`);
+      }
       a.engine = id;
     }
     if (personal.agent.thinking !== undefined) {
@@ -1937,7 +2042,15 @@ function savePersonalPrefs(user, personal) {
       for (const [id, v] of Object.entries(personal.agent.engine_options)) {
         if (engines.get(id) === undefined) continue; // 前端可能带上已经不存在的引擎，忽略即可，不值得整单失败
         const cur = {};
-        if (v.model !== undefined) cur.model = String(v.model || "").trim();
+        if (v.model !== undefined) {
+          // 成员自己挑的型号必须落在属主放行的列表里；空串 = 跟属主钉的那个走
+          const m = String(v.model || "").trim();
+          const allowed = engines.gateView(id, config).allowed;
+          const name = engines.get(id).label || id;
+          if (m && !allowed.length) throw new Error(`属主还没给${name}放行型号，请平台属主在 ${engineGate.WHERE} 里填。`);
+          if (m && !allowed.includes(m)) throw new Error(`型号「${m}」不在属主给${name}放行的列表里，从列表里选一个。`);
+          cur.model = m;
+        }
         if (v.thinking !== undefined) {
           const lv = String(v.thinking || "").trim().toLowerCase();
           if (lv && !thinking.LEVELS.includes(lv)) throw new Error("没有这个思考模式档位：" + lv);
@@ -2008,6 +2121,11 @@ app.post("/api/settings", (req, res) => {
         error: `这些是整台服务器一份的设置，归平台管理员改：${Object.keys(b).join("、")}`,
         platform_only: true,
       });
+    }
+    // 能换型号的附加参数在动任何配置之前就拦：型号只认「模型」栏和放行列表（engines/gate.js）
+    for (const [id, v] of Object.entries((b.agent && b.agent.engine_options) || {})) {
+      const badArg = v && Array.isArray(v.extraArgs) ? engineGate.modelArg(v.extraArgs, id) : "";
+      if (badArg) throw new Error(`附加参数里有换型号的「${badArg}」，型号请在「模型」栏里填。`);
     }
     if (Array.isArray(b.models)) {
       const old = new Map((config.models || []).map((m) => [m.name, m]));
@@ -2093,6 +2211,9 @@ app.post("/api/settings", (req, res) => {
           if (!v || typeof v !== "object") continue;
           const cur = (config.agent.engine_options[id] = config.agent.engine_options[id] || {});
           for (const k of ["model", "bin", "permissionMode", "sandbox"]) if (v[k] !== undefined) cur[k] = String(v[k] || "").trim();
+          // 多人共用时这个引擎开不开、成员能挑哪几个型号：只有属主写得进来（这一段只有属主走得到）
+          if (v.enabled !== undefined) cur.enabled = !!v.enabled;
+          if (v.models !== undefined) cur.models = engineModelList(v.models);
           if (v.thinking !== undefined) {
             const lv = String(v.thinking || "").trim().toLowerCase();
             if (lv && !thinking.LEVELS.includes(lv)) throw new Error("没有这个思考模式档位：" + lv);
@@ -2228,6 +2349,9 @@ app.post("/api/settings", (req, res) => {
           api_key: /^\*+$/.test(key) ? prev.api_key || "" : key,
           // 接口格式：空 = 按渠道类型；认不出的值不落盘，免得一个拼错的字把整条渠道带去走最通用那种还不自知
           ...(mediaModels.isApiFormat(p.api) ? { api: p.api } : {}),
+          // 中转站「放行任意型号」只能在中转站页由平台超级管理员开关（admin.js 那条路由会记审计）。
+          // 这里只从旧值抄过来、不认表单里的：设置页的保存权限比那个开关宽，不能变成一条绕过去的路
+          ...(prev.relay_any_model === true ? { relay_any_model: true } : {}),
         };
       });
       auditKeyChanges(req, old, config.providers);
@@ -2286,6 +2410,17 @@ app.post("/api/settings", (req, res) => {
       }
       // 指死一个可执行文件的路径。这是条会被执行的路径，长度掐住，别让它变成往配置里塞东西的口子
       if (b.security.toolward_bin !== undefined) sec.toolward_bin = String(b.security.toolward_bin || "").trim().slice(0, 500);
+      // 子进程额外放行的环境变量名。只收合法变量名、最多 50 条；像 Key 的照收，给不给由账号数在起子进程时判
+      if (Array.isArray(b.security.env_passthrough)) sec.env_passthrough = childEnv.cleanNames(b.security.env_passthrough);
+      // 本机/内网放行清单：只收 host:端口（端口可写 *），写成网址的剥成 host:端口，主机写 * 的不收，最多 50 条
+      if (Array.isArray(b.security.url_allow_local)) sec.url_allow_local = netAddr.cleanAllow(b.security.url_allow_local);
+      // 系统沙箱档位：认不出的值一律当没填过（按部署走），不能因为一个错字就变成不套
+      if (b.security.sandbox !== undefined) {
+        const m = String(b.security.sandbox || "");
+        sec.sandbox = ["default", "auto", "required", "off"].includes(m) ? m : "default";
+      }
+      if (b.security.sandbox_level !== undefined) sec.sandbox_level = b.security.sandbox_level === "basic" ? "basic" : "hardened";
+      if (b.security.sandbox !== undefined || b.security.sandbox_level !== undefined) require("./src/agent/tools").warmSandbox(sec);
     }
     if (b.langfuse && typeof b.langfuse === "object") {
       const cur = config.langfuse || (config.langfuse = { enabled: false, host: "https://cloud.langfuse.com", public_key: "", secret_key: "" });
@@ -2309,20 +2444,28 @@ app.post("/api/settings", (req, res) => {
       }
     }
     if (b.embedding !== undefined) {
-      // 语义召回用的嵌入接口。地址和模型都空 = 清掉，回到从已配渠道里自动找（llm.js embedCandidates）。
-      // 自动找只认得通义/智谱/OpenAI/Ollama，只接了 DeepSeek 或中转站的人全靠这一栏
+      // 语义召回用的嵌入模型。全空 = 清掉，记忆按关键词召回——不会再从聊天 / 媒体渠道里借 Key 自己找一个，
+      // 用户没选过的型号不该花他的钱（llm.js embedCandidates）。两种存法：点名一条已配渠道 + 型号
+      // （Key 用时从渠道表现取），或者单独填一组地址 / Key / 型号（只接了 DeepSeek 这类没有嵌入接口的人靠它）
       const e = b.embedding || {};
+      const provider = String(e.provider || "").trim();
       const base = String(e.base_url || "").trim().replace(/\/+$/, "");
       const model = String(e.model || "").trim();
-      if (!base && !model) delete config.embedding;
-      else {
+      if (!provider && !base && !model) delete config.embedding;
+      else if (provider) {
+        const p = (config.providers || []).find((x) => x && String(x.id) === provider);
+        if (!p) throw new Error("没有这条渠道，先去 设置 → 模型 把它加上");
+        if (!embedHostable(p.kind)) throw new Error(`「${p.name || p.id}」算不了向量，换一条渠道或单独填接口`);
+        if (!model) throw new Error("模型名要填，比如 text-embedding-3-small");
+        config.embedding = { provider: String(p.id), model };
+      } else {
         if (!/^https?:\/\/[^\s/]+/i.test(base)) throw new Error("接口地址要以 http:// 或 https:// 开头");
         if (!model) throw new Error("模型名要填，比如 text-embedding-3-small");
         const old = config.embedding || {};
         let key = String(e.api_key == null ? "" : e.api_key).trim();
         if (/^\*+$/.test(key)) {
           // 八颗星 = 没改。可地址换了还沿用旧 Key，等于把这家的 Key 发给了另一家
-          if (String(old.base_url || "").replace(/\/+$/, "") !== base) throw new Error("换了接口地址，Key 要重新填一遍");
+          if (old.provider || String(old.base_url || "").replace(/\/+$/, "") !== base) throw new Error("换了接口地址，Key 要重新填一遍");
           key = String(old.api_key || "");
         }
         config.embedding = { base_url: base, api_key: key, model };
@@ -2627,7 +2770,9 @@ app.get("/api/onboarding", async (req, res) => {
     // 「自己填地址」那一项的接口格式下拉：跟设置里渠道卡用的同一份
     api_formats: mediaModels.API_FORMATS.map((f) => ({ id: f.id, label: f.label })),
     any_key: models.some((m) => m.has_key && !m.local),
-    engines: found.map((e) => ({ id: e.id, label: e.label, installed: e.installed, version: e.version, install: e.install || "", note: e.note || "" })),
+    // models / model：向导里给本机 CLI 钉型号用（候选 + 已存的那个），型号不填不让过
+    engines: found.map((e) => ({ id: e.id, label: e.label, installed: e.installed, version: e.version, install: e.install || "", note: e.note || "",
+      models: Array.isArray(e.models) ? e.models.slice(0, 50) : [], model: String(((e.options || {}).model) || "") })),
     engine: engineId,
     // 「配好了」不等于「有 Key」：自定义那家认的是地址，不要鉴权的自建接口本来就没有 Key
     search: { provider: sp, has_key: searchProviderReady(sc, sp, searchProviderKey(sc, sp)) },
@@ -2942,7 +3087,9 @@ app.get("/api/engines", async (req, res) => {
     // 跟启动时那份合并（体检、run_shell 都用这一份）。读不成它自己会留日志，照旧按手里那份 PATH 检测；别的系统直接返回
     if (req.query.force === "1") await require("./src/platform/which").refreshWinPath();
     const found = await engines.detectAll(myAgent.engine_options || {}, { force: req.query.force === "1" });
-    res.json({ current: myAgent.engine || "builtin", builtin: engines.BUILTIN, engines: found });
+    // 闸的状态一并给前端：多人共用时开没开、放行哪些型号、命令能不能联网。只读属主那份，成员改不了
+    const withGate = found.map((e) => ({ ...e, gate: engines.gateView(e.id, config) }));
+    res.json({ current: myAgent.engine || "builtin", builtin: engines.BUILTIN, engines: withGate, multiUser: security.isMultiUser(), shellOff: orgShellOff() });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -3151,14 +3298,23 @@ app.post("/api/engines/test", async (req, res) => {
   if (!id || id === "builtin") return res.status(400).json({ error: "内置引擎不用测，它走的是你配的 API Key" });
   try {
     // 用户可能刚在输入框里改了路径/模型还没保存，先用他正在填的那份测
-    const saved = (prefs.agentCfg(config).engine_options || {})[id] || {};
     const patch = (req.body && req.body.options) || {};
-    const opts = { ...saved };
+    const member = ownPrefs(req);
+    const typed = patch.model !== undefined ? String(patch.model || "").trim() : undefined;
+    // 试连也过闸：成员试的型号得在放行列表里、引擎得已打开；属主试连可以先于打开和保存，
+    // 但命令行开关、附加参数、要有型号这几条照查——试连本身就是真跑一句话
+    let pass;
+    try {
+      pass = engines.admit(id, config, { shellOff: orgShellOff(), ...(typed ? { model: typed } : {}), trial: !member });
+    } catch (e) {
+      if (!e || !e.engineGate) throw e;
+      return res.json({ ok: false, ms: 0, engine: id, path: "", version: "", reply: "", model: "", why: e.message, hint: "" });
+    }
+    const opts = { ...pass.opts };
     // bin 是「起哪个可执行文件」——在多人服务器上等于任意命令执行。只有平台管理员能指定，
     // 其他人一律用已保存的那份（他们本来也改不了它）
-    const fields = ownPrefs(req) ? ["model"] : ["bin", "model"];
-    for (const k of fields) if (patch[k] !== undefined) opts[k] = String(patch[k] || "").trim();
-    for (const k of Object.keys(opts)) if (!opts[k]) delete opts[k];
+    if (!member && patch.bin !== undefined) opts.bin = String(patch.bin || "").trim();
+    for (const k of Object.keys(opts)) if (opts[k] === "" || opts[k] == null) delete opts[k];
     res.json(await engines.testConnect(id, opts));
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -4459,21 +4615,33 @@ app.get("/api/memory", (req, res) => {
   });
 });
 
-// 记忆面板「测一下」：拿表单里的地址/Key/模型真打一次。Key 传八颗星 = 用已存的那把（地址得没换）
+// 记忆面板「测一下」：拿表单里的选择真打一次。点名渠道的用那条渠道的地址和 Key；
+// 单独填的那种 Key 传八颗星 = 用已存的那把（地址得没换）
 app.post("/api/embedding/test", async (req, res) => {
   if (!isPlatformOwner(req)) return res.status(403).json({ ok: false, error: "嵌入接口是整台服务器一份的，归平台管理员配", platform_only: true });
   const b = req.body || {};
-  const base = String(b.base_url || "").trim().replace(/\/+$/, "");
+  const provider = String(b.provider || "").trim();
+  let base = String(b.base_url || "").trim().replace(/\/+$/, "");
   const model = String(b.model || "").trim();
-  if (!/^https?:\/\/[^\s/]+/i.test(base)) return res.status(400).json({ ok: false, error: "接口地址要以 http:// 或 https:// 开头" });
   if (!model) return res.status(400).json({ ok: false, error: "模型名要填，比如 text-embedding-3-small" });
   let key = String(b.api_key == null ? "" : b.api_key).trim();
-  if (/^\*+$/.test(key)) {
-    const old = config.embedding || {};
-    if (String(old.base_url || "").replace(/\/+$/, "") !== base) return res.status(400).json({ ok: false, error: "换了接口地址，Key 要重新填一遍" });
-    key = String(old.api_key || "");
+  if (provider) {
+    const p = (config.providers || []).find((x) => x && String(x.id) === provider);
+    if (!p) return res.status(400).json({ ok: false, error: "没有这条渠道，先去 设置 → 模型 把它加上" });
+    if (!embedHostable(p.kind)) return res.status(400).json({ ok: false, error: `「${p.name || p.id}」算不了向量，换一条渠道或单独填接口` });
+    // 跟真用的时候同一个取法，测的就是记忆会走的那条路
+    const c = embedCandidates({ providers: config.providers, embedding: { provider, model } })[0];
+    if (!c) return res.status(400).json({ ok: false, error: "这条渠道没有接口地址，先去 设置 → 模型 补上" });
+    base = c.base_url; key = c.api_key;
+  } else {
+    if (!/^https?:\/\/[^\s/]+/i.test(base)) return res.status(400).json({ ok: false, error: "接口地址要以 http:// 或 https:// 开头" });
+    if (/^\*+$/.test(key)) {
+      const old = config.embedding || {};
+      if (old.provider || String(old.base_url || "").replace(/\/+$/, "") !== base) return res.status(400).json({ ok: false, error: "换了接口地址，Key 要重新填一遍" });
+      key = String(old.api_key || "");
+    }
   }
-  const r = await probeEmbedding({ base_url: base, api_key: key, model });
+  const r = await probeEmbedding({ base_url: base, api_key: key, model, provider });
   if (r.ok) {
     // 通了就把死渠道记号擦了、重建一次：先前全挂停用的 embedder 不会自己活过来
     memory.setEmbedder(createEmbedder(config));
@@ -6963,6 +7131,11 @@ app.post("/api/chat", async (req, res) => {
     const row = cliLive.get(sessionId);
     if (row && row.live) return res.status(409).json({ error: "这条会话正在终端里跑。要补充说明可以在「工程」里插话，跑完再接着聊。" });
   }
+  // 价目闸放在归属检查之后：这条会话点了哪个模型，得先确认会话是你的才轮得到看
+  {
+    const why = unpricedChat(user, llmForSession(getSession(sessionId)));
+    if (why) return res.status(402).json({ error: why });
+  }
 
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache");
@@ -7017,6 +7190,7 @@ app.post("/api/chat", async (req, res) => {
 
   runState.events = asstEvents; // 续流端点靠它补发已记录的事件
   activeRuns.set(sessionId, runState);
+  metrics.wake(); // 定时任务、IM 进来的任务不走上面那条请求，这里再叫一声
   runState.rid = Date.now().toString(36) + "." + (++liveRunSeq).toString(36); // 同一条对话前后两趟靠它分开
   lastRuns.set(sessionId, runState);
   persistRunning();
@@ -7073,6 +7247,10 @@ app.post("/api/chat", async (req, res) => {
   // 这一轮真正干活的模型。本机引擎接管时它不是 sessLLM：以前账本和健康账本都记到 config 里那个
   // 云模型头上——跑的是 Claude Code，账本写 deepseek-chat，DeepSeek 的健康分还替别人挨了刀
   let ranLLM = { model: sessLLM.model, provider: sessLLM.provider };
+  // 每一轮按真实跑的渠道记一笔。中途换过备用渠道的那轮，agent 把用量按渠道拆开交回来（usageBy），
+  // 记账时各按各的价；没换过道就照旧按 ranLLM 记整趟（mixed 为假时不传 usageBy）
+  const spentBy = [];
+  let spentMixed = false;
   // 首轮对话：并行起一个真正的短标题（拿消息前 24 个字截断当标题太丑）。
   // 跟任务并行跑，任务收尾时基本已就绪，不给任务加等待；花的 token 记进同一笔账
   let titleP = null;
@@ -7173,6 +7351,8 @@ app.post("/api/chat", async (req, res) => {
         mediaReopened = [];   // 只报给这一轮：后面的目标轮/插队不是「人又说了一次话」
         addUsage(total, r && r.usage);
         if (r && r.provider) ranLLM = { model: r.model || r.provider, provider: r.provider };
+        if (r && Array.isArray(r.usageBy)) { spentBy.push(...r.usageBy); spentMixed = true; }
+        else if (r && r.usage) spentBy.push({ provider: ranLLM.provider, model: ranLLM.model, usage: r.usage });
         if (r && r.sessionId) lanes.rememberEngineSession(sess, r.engine || laneEngine, r.sessionId);
         if (r && r.finalText) lastFinal = r.finalText;
         if (r && r.stopped) roundStopped = r.stopped;
@@ -7258,7 +7438,7 @@ app.post("/api/chat", async (req, res) => {
 
   // 记账：按整个任务（含插队追加轮）的总 tokens 扣积分
   if (user && total.calls > 0) {
-    const spent = account.chargeRun(user, { ...total, model: ranLLM.model, provider: ranLLM.provider, source: "web", sessionId });
+    const spent = account.chargeRun(user, { ...total, model: ranLLM.model, provider: ranLLM.provider, source: "web", sessionId, ...(spentMixed ? { usageBy: spentBy } : {}) });
     // 不限额时 spent 是 0，就别在结果下面挂一行「扣 0 积分」了，那只是噪声
     if (spent > 0) emitFn({ type: "credits", spent, balance: user.credits });
   }
@@ -8166,6 +8346,11 @@ function accountedRuntime(baseRuntime, source) {
       // 调用方没指定时，IM 跟着助理页那个选择走（见 assistModelOf）
       const want = modelName || (source === "im" ? assistModelOf(owner) : "");
       const runLLM = want ? llmForSession({ model: want }) : llm;
+      // 价目闸：跟钱闸一样记在负责人头上，没价目的型号一个 cron 能刷出多少都扣不到预算
+      if (owner) {
+        const why = unpricedChat(owner, runLLM);
+        if (why) throw Object.assign(new Error(why), { budget: { unpriced: true } });
+      }
       // 「记谁的账」和「用谁的记忆、替谁审批」是两件事：钱记在管理员头上（他才是掏 API 费的人），
       // 身份则听调用方的。助理页那边是真有登录态的，成员发的消息不能顶着管理员的身份跑；
       // 飞书确实没有登录态，那才退回管理员。定时任务报了负责人的，钱和身份都归负责人（见上面 runner）。
@@ -8207,7 +8392,7 @@ function accountedRuntime(baseRuntime, source) {
       if (owner && r && r.usage && r.usage.calls > 0) {
         const ran = r.provider ? { model: r.model || r.provider, provider: r.provider } : runLLM;
         // 带上会话：定时任务那一趟的用量要能对回运行记录上那段回放（不带的话账本里只剩一行没来由的数）
-        account.chargeRun(owner, { ...r.usage, model: ran.model, provider: ran.provider, source, sessionId: rest.sessionId || "" });
+        account.chargeRun(owner, { ...r.usage, model: ran.model, provider: ran.provider, source, sessionId: rest.sessionId || "", ...(Array.isArray(r.usageBy) ? { usageBy: r.usageBy } : {}) });
       }
       return r;
     },
@@ -8485,6 +8670,8 @@ async function main() {
   const got = await listenWithFallback(app, host, port);
   if (!got) return; // 不由这个进程提供服务了，为什么在 listenWithFallback 里已经交代过
   const { server, bound } = got;
+  // 这个口上挂着全部接口和中转站：AI 的联网工具能打到它，就能绕过模型白名单和企业限额，加白也不放
+  netGuard.registerOwnPort(bound, "主服务");
   if (host !== "127.0.0.1" && host !== "localhost") {
     console.warn(`▲ 正在监听 ${host}:${bound}（非本机）。请确认前面有反向代理 + HTTPS，且已经注册了管理员账号——否则任何人都能拿到这台机器的 shell。`);
   }

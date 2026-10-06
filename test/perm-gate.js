@@ -24,6 +24,8 @@
  *   ⑩ 真起一台 server.js：对话里加的当场在连接器页上、同一趟下一步就能调；外面手改 config.json
  *      不用重启也认（只重连变了的），存别的设置、连接器页拿旧列表保存都不会把它盖回去；
  *      页开着时别处换了的那台不被旧样子改回去；手写坏了形状的一条不卡同步、不拖垮开机；外面刚关的不被对话里加的拉起来
+ *   ⑪ 多人共用：命令、代码碰了文件黑名单直接拦、不出审批卡；挂着的黑名单卡成员批不了（平台管理员也批不了），
+ *      单机桌面照旧弹卡
  *
  * 模型是本地假的，一分钱不花、一个字节不出网。
  *   node test/perm-gate.js
@@ -47,6 +49,7 @@ const ROOT = path.join(__dirname, "..");
 const { src } = require("./lib/src");
 const security = require(mod("security"));
 const tools = require(mod("tools"));
+const netGuard = require(mod("net-guard"));
 const cliApprove = require(mod("cli-approve"));
 const { BRIDGE, havePty } = require("./lib/pty");
 
@@ -78,9 +81,12 @@ security.watchApprovals((ev) => {
   if (a) setImmediate(() => security.resolveApproval(ev.entry.id, a === "allow", "once"));
 });
 const WS = fs.mkdtempSync(path.join(os.tmpdir(), "owb-permgate-ws-"));
-// 跟网页服务、命令行一样先补齐默认策略再交给工具：只给半截对象的话 gateway 是 undefined，测的就不是真实路径了
+// 跟网页服务、命令行一样先补齐默认策略再交给工具：只给半截对象的话 gateway 是 undefined，测的就不是真实路径了。
+// 假 MCP 服务都开在 127.0.0.1 的随机端口：本机地址默认不让 AI 连（net-guard），这里照属主在安全页加白的样子放行，
+// 「不加白就拦」那一条在 ⑧ 段开头单独验
+const LOCAL_OK = ["127.0.0.1:*"];
 const run = (name, input, sec) => tools.withWorkspace(WS, () =>
-  tools.executeTool(name, input, { security: security.getSecurity({ security: { approval_timeout_s: 5, ...sec } }), timeoutMs: 20000 }));
+  tools.executeTool(name, input, { security: security.getSecurity({ security: { approval_timeout_s: 5, url_allow_local: LOCAL_OK, ...sec } }), timeoutMs: 20000 }));
 const fresh = () => { cards.length = 0; security.clearSessionAllow(); };
 const wsFile = (n) => path.join(WS, n);
 const SKILLS = path.join(HOME, "skills");
@@ -435,6 +441,74 @@ async function cliRun(args, call, { stopAt, pty } = {}) {
     security.clearSessionAllow();
   });
 
+  await section("⑪ 多人共用：碰了文件黑名单直接拦、不出审批卡；成员批不了自己的黑名单卡", async () => {
+    const SSH = path.join(os.homedir(), ".ssh", "id_rsa_permgate_probe");
+    try {
+      // 单机（没注册 = 一个人）：照旧弹卡，拒了就不跑
+      fresh(); answer = () => "deny";
+      let r = await run("run_shell", { command: `cat ${SSH}` }, {});
+      ok(cards.length === 1 && /黑名单/.test(cards[0].rule || "") && r.isError, "单机：命令碰了 ~/.ssh 弹卡问一声", { cards: cards.map((c) => c.rule), r: r.content });
+      // 工具层摆卡时得把「碰了黑名单」记在卡上：靠它，切成多人以后这张还挂着的卡谁也批不了
+      ok(cards[0].blacklist === true, "★工具层摆的黑名单卡带着黑名单记号★", cards[0]);
+      fresh(); answer = () => { security.setMultiUser(() => true); return "allow"; };
+      r = await run("run_shell", { command: `cat ${SSH}` }, {});
+      ok(cards.length === 1 && r.isError && /未获批准/.test(r.content), "★卡挂着时切成多人，再点允许 → 任务拿到拒绝★（走真工具，不是手搭的卡）", r.content);
+      security.setMultiUser(null);
+      fresh(); answer = () => "allow";
+      r = await run("run_shell", { command: "echo hi" }, { permission_mode: "ask" });
+      ok(cards.length === 1 && cards[0].blacklist === false && !r.isError, "反向对照：普通卡不带黑名单记号，照常批得了", { card: cards[0], r: r.content });
+      fresh(); answer = () => "deny";
+
+      security.setMultiUser(() => true);
+      fresh(); answer = () => "allow";
+      r = await run("run_shell", { command: `cat ${SSH}` }, {});
+      ok(cards.length === 0 && r.isError && /拦截/.test(r.content) && /多人共用/.test(r.content), "★多人：命令碰了黑名单直接拦，一张卡都不出★", { cards: cards.length, r: r.content });
+      r = await run("run_node", { code: `require("fs").readFileSync(${JSON.stringify(SSH)})` }, {});
+      ok(cards.length === 0 && r.isError && /拦截/.test(r.content), "★多人：代码碰了黑名单也直接拦★", { cards: cards.length, r: r.content });
+      r = await run("run_shell", { command: `cat ${SSH}` }, { permission_mode: "full" });
+      ok(cards.length === 0 && r.isError, "  └ 全自动也一样拦", r.content);
+      const v = security.checkCommand(security.getSecurity({}), "cat ~/.ssh/id_rsa");
+      ok(v.action === "deny" && v.blacklist === true && !("ruleKey" in v && v.ruleKey), "  └ 判定是 deny，带黑名单记号", v);
+      security.setMultiUser(() => { throw new Error("账号库读坏了"); });
+      eq(security.checkCommand(security.getSecurity({}), "cat ~/.ssh/id_rsa").action, "deny", "  └ 判断几个人时出错按多人算");
+
+      // 挂着的黑名单卡（切成多人之前就摆出来的）：走 server.js 那条批卡路由，成员点允许 → 403、任务拿到拒绝
+      security.setMultiUser(() => true);
+      const SERVER = src("server");
+      const at = SERVER.indexOf('app.post("/api/security/approvals/:id"');
+      const end = SERVER.indexOf("\n});", at);
+      const routes = {};
+      for (const who of ["bob", undefined]) {
+        new Function("app", "security", "config", "saveConfig", "approvalScope", SERVER.slice(at, end + 4))(
+          { post: (p, fn) => (routes[p] = fn) }, security, {}, () => {}, () => who);
+        const post = (id, body) => new Promise((resolve) => {
+          const res = { code: 200, status(c) { this.code = c; return this; }, json(o) { resolve({ status: this.code, json: o }); } };
+          routes["/api/security/approvals/:id"]({ params: { id }, body }, res);
+        });
+        const pending = security.requestApproval("命令执行", "cat ~/.ssh/id_rsa", { timeoutMs: 5000, owner: "bob", rule: "命令碰到了文件黑名单（~/.ssh）", blacklist: true });
+        const item = security.listApprovals("bob").find((x) => x.text === "cat ~/.ssh/id_rsa");
+        const res = await post(item.id, { allow: true, scope: "once" });
+        const tag = who ? "成员批自己任务的卡" : "平台管理员批";
+        ok(res.status === 403 && /黑名单/.test(res.json.error || ""), `★多人：${tag} → 403★`, res);
+        eq(await pending, false, `  └ ${tag}：任务拿到的是「拒绝」，不用干等超时`);
+      }
+      // 反向对照：不碰黑名单的普通卡，成员照样能批自己的
+      const pending = security.requestApproval("命令执行", "git push --force", { timeoutMs: 5000, owner: "bob", ruleKey: "danger:force-push" });
+      const item = security.listApprovals("bob").find((x) => x.text === "git push --force");
+      const rr = security.resolveApproval(item.id, true, "once", "bob");
+      ok(rr.ok, "反向对照：普通卡成员照样批得了", rr);
+      eq(await pending, true, "  └ 任务拿到的是「允许」");
+      // 「几个人在用」由入口注册：没注册按一个人算、一路放行，所以漏了这行谁也不会报错——这里盯住两个入口
+      const CLI = fs.readFileSync(path.join(__dirname, "..", "cli.js"), "utf8");
+      ok(/\nsecurity\.setMultiUser\(\(\) => admin\.multiUser\(\)\);/.test(SERVER), "★网页服务注册了「几个人在用」★（漏了就按一个人算，黑名单卡又能自己批）");
+      ok(/\nsecurity\.setMultiUser\(\(\) => \{\s*try \{ return account\.userCount\(\) > 1; \} catch \{ return true; \}\s*\}\);/.test(CLI),
+        "★命令行也注册了★ 读账号库出错按多人算");
+    } finally {
+      security.setMultiUser(null);
+      security.clearSessionAllow();
+    }
+  });
+
   await section("⑥ install_skill：装进本软件的技能库，过档位、过扫描，整目录替换前要点头", async () => {
     // github.com 换成本地的 git 仓库：走的是真 clone，一个字节不出网
     const GITBASE = path.join(HOME, "gitfix");
@@ -648,8 +722,18 @@ async function cliRun(args, call, { stopAt, pty } = {}) {
       fs.writeFileSync(CFG, JSON.stringify({ mcp_servers: [] }));
       const HTTP_IN = { name: "fake", url: srv.url, headers: { Authorization: "Bearer " + SENT } };
 
+      // 本机地址：属主没在安全页加白，就不连、不弹卡、不存，回话指到放行的地方
       fresh(); answer = () => "allow";
-      let r = await run("add_connector", HTTP_IN, { permission_mode: "plan" });
+      let r = await run("add_connector", HTTP_IN, { permission_mode: "full", url_allow_local: [] });
+      ok(r.isError && cards.length === 0 && !conn("fake") && /本机地址/.test(r.content) && /安全 → 沙箱安全 · 网络/.test(r.content) && r.content.includes(new URL(srv.url).host),
+        "★本机地址没加白：不加、不弹卡，回话写明去哪儿放行、加哪一行★", r.content);
+      ok(!srv.seen.length, "  └ 一次都没去连", srv.seen.length);
+      ok(!leak(r.content), "  └ 回话里没有 Key");
+      r = await run("add_connector", HTTP_IN, { permission_mode: "plan", url_allow_local: [new URL(srv.url).host] });
+      ok(r.isError && !/本机地址/.test(r.content), "  └ 反向对照：按 host:端口 加白就过了地址闸（接着由档位管）", r.content);
+
+      fresh(); answer = () => "allow";
+      r = await run("add_connector", HTTP_IN, { permission_mode: "plan" });
       ok(r.isError && cards.length === 0 && !conn("fake"), "★plan：不加、不弹卡★", r.content);
 
       fresh(); answer = () => "deny";
@@ -763,9 +847,12 @@ async function cliRun(args, call, { stopAt, pty } = {}) {
         r = await run("add_connector", W, {});
         ok(!r.isError && committed.includes("warny"), "  └ 点了允许才加", r.content);
         fresh(); answer = () => "deny";
+        // x.example 在 CI 上解析不出来（本机走代理的假 IP 能解析，所以本机一直是绿的），给它一个公网地址；别的名字照走系统 DNS
+        netGuard.setLookup(async (host) => host === "x.example" ? [{ address: "93.184.215.14", family: 4 }] : require("dns").promises.lookup(host, { all: true, verbatim: true }));
         r = await run("add_connector", { name: "calm", url: "https://x.example/mcp" }, {});
         ok(!r.isError && cards.length === 0 && committed.includes("calm"), "  └ 反向对照：体检没话说的远程连接器，auto 直接加", r.content);
       } finally {
+        netGuard.setLookup(null);
         tools.setConnectorHost(null);
       }
 
@@ -901,7 +988,7 @@ async function cliRun(args, call, { stopAt, pty } = {}) {
         },
       };
       try {
-        const rt = agentMod.createAgentRuntime({ config: { agent: { max_steps: 5 } }, llm, mcpManager: mgr2, experts: [] });
+        const rt = agentMod.createAgentRuntime({ config: { agent: { max_steps: 5 }, security: { ...security.DEFAULTS, url_allow_local: LOCAL_OK } }, llm, mcpManager: mgr2, experts: [] });
         await tools.withWorkspace(WS, () => rt.runTask({ history: [{ role: "user", content: "接一下这个 MCP 再用它查一下" }], emit: (e) => events.push(e) }));
       } finally {
         tools.setConnectorHost(null);
@@ -1006,6 +1093,7 @@ async function cliRun(args, call, { stopAt, pty } = {}) {
       cfg.mcp_servers = [];
       cfg.pet = { enabled: false };
       cfg.agent = { ...(cfg.agent || {}), max_steps: 6, llm_retries: 0 };
+      cfg.security = { ...(cfg.security || {}), url_allow_local: LOCAL_OK }; // 假 MCP 在本机随机端口上，照属主加白放行
       // PORT=0 已经在环境变量里了；config 里再钉一个不是 3800 的口，万一哪条路没吃到环境变量也撞不上用户那台
       cfg.server = { ...(cfg.server || {}), port: 41000 + Math.floor(Math.random() * 20000) };
       if (mut) mut(cfg);

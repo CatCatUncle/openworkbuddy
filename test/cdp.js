@@ -189,19 +189,20 @@ function fakeChrome(opts = {}) {
     const fs = require("fs"), os = require("os"), path = require("path");
     // 假 Chrome：写出 DevToolsActivePort、应答 /json/version，再多开一个子进程当「GPU / 渲染器」。
     // 真 Chrome 就是这个形状——上次漏收的正是这些子进程，主进程 0.1% CPU，子进程 160%。
+    // 本文件里的假进程都最多活两分钟：被测代码没收干净时，测试自己也不能在机器上留一个不退的进程。
     const FAKE = `#!/usr/bin/env node
 const http=require("http"),fs=require("fs"),path=require("path"),cp=require("child_process");
 const ud=(process.argv.find(a=>a.startsWith("--user-data-dir="))||"").split("=").slice(1).join("=");
-const kid=cp.spawn(process.execPath,["-e","setInterval(()=>{},1e9)"],{stdio:"ignore"});
+const kid=cp.spawn(process.execPath,["-e","setTimeout(()=>process.exit(0),12e4)"],{stdio:"ignore"});
 const srv=http.createServer((req,res)=>{const p=srv.address().port;
   if(req.url.startsWith("/json/version"))return res.end(JSON.stringify({Browser:"FakeChrome/1",webSocketDebuggerUrl:"ws://127.0.0.1:"+p+"/devtools/browser/x"}));
   res.end("[]");});
 srv.listen(0,"127.0.0.1",()=>{fs.writeFileSync(path.join(ud,"kid.pid"),String(kid.pid));
   fs.writeFileSync(path.join(ud,"DevToolsActivePort"),srv.address().port+"\\n/devtools/browser/x\\n");});
-setInterval(()=>{},1e9);
+setTimeout(()=>process.exit(0),12e4);
 `;
     const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
-    const made = [];
+    const made = [], pids = [];
     const mk = () => { const d = fs.mkdtempSync(path.join(os.tmpdir(), "owb-cdp-close-")); made.push(d);
       const bin = path.join(d, "fake-chrome"); fs.writeFileSync(bin, FAKE, { mode: 0o755 }); return { d, bin }; };
     const oldPath = process.env.OWB_CHROME_PATH, oldIdle = process.env.OWB_CDP_IDLE_MS;
@@ -213,6 +214,7 @@ setInterval(()=>{},1e9);
       const r = await cdp.launch({ user_data_dir: d });
       ok(r.launched === true && r.pid > 0, "拉起来之后要把 pid 交出来，不然根本没法收", JSON.stringify(r));
       const kid = Number(fs.readFileSync(path.join(d, "kid.pid"), "utf8"));
+      pids.push(r.pid, kid);
       ok(alive(r.pid) && alive(kid), "刚起来的时候父子都活着");
       ok(cdp.run && (await cdp.run({ action: "close" })).closed === true, "close 这个 action 要真的关掉，并如实回报");
       await new Promise((res) => setTimeout(res, 2500));
@@ -227,12 +229,15 @@ setInterval(()=>{},1e9);
       process.env.OWB_CHROME_PATH = bin; process.env.OWB_CDP_IDLE_MS = "600";
       const r = await cdp.launch({ user_data_dir: d });
       const kid = Number(fs.readFileSync(path.join(d, "kid.pid"), "utf8"));
+      pids.push(r.pid, kid);
       await new Promise((res) => setTimeout(res, 3200));
       ok(!alive(r.pid) && !alive(kid), "闲置超过 OWB_CDP_IDLE_MS 之后要自己关掉，整棵树一起");
     }
 
     if (oldPath === undefined) delete process.env.OWB_CHROME_PATH; else process.env.OWB_CHROME_PATH = oldPath;
     if (oldIdle === undefined) delete process.env.OWB_CDP_IDLE_MS; else process.env.OWB_CDP_IDLE_MS = oldIdle;
+    // 上面哪条断言挂了，被测进程也不许留下来（这几个 pid 都是本段刚拉起的）
+    for (const pid of pids) if (pid > 1 && alive(pid)) { try { process.kill(pid, "SIGKILL"); } catch {} }
     for (const d of made) { try { fs.rmSync(d, { recursive: true, force: true }); } catch {} }
   }
 
@@ -387,9 +392,9 @@ const ud=(process.argv.find(a=>a.startsWith("--user-data-dir="))||"").split("=")
 if(process.env.FAKE_PID_OUT)fs.writeFileSync(process.env.FAKE_PID_OUT,String(process.pid));
 if(process.env.FAKE_MODE==="exit"){process.stderr.write("boom: 假浏览器起不来\\n");process.exit(3);}
 fs.writeFileSync(path.join(ud,"argv.json"),JSON.stringify(process.argv.slice(2)));
-const kid=cp.spawn(process.execPath,["-e","setInterval(()=>{},1e9)"],{stdio:"ignore"});
+const kid=cp.spawn(process.execPath,["-e","setTimeout(()=>process.exit(0),12e4)"],{stdio:"ignore"});
 fs.writeFileSync(path.join(ud,"kid.pid"),String(kid.pid));
-if(process.env.FAKE_MODE==="mute"){setInterval(()=>{},1e9);}else{
+if(process.env.FAKE_MODE==="mute"){setTimeout(()=>process.exit(0),12e4);}else{
 let n=0;const srv=http.createServer((req,res)=>{const p=srv.address().port;
   if(req.url.startsWith("/json/version"))return res.end(JSON.stringify({Browser:"FakeChrome/1",webSocketDebuggerUrl:"ws://127.0.0.1:"+p+"/devtools/browser/iso"}));
   if(req.url.startsWith("/json/list"))return res.end("[]");
@@ -398,7 +403,7 @@ let n=0;const srv=http.createServer((req,res)=>{const p=srv.address().port;
   if(req.url.startsWith("/json/close/"))return res.end("Target is closing");
   res.writeHead(404);res.end("[]");});
 srv.listen(0,"127.0.0.1",()=>fs.writeFileSync(path.join(ud,"DevToolsActivePort"),srv.address().port+"\\n/devtools/browser/iso\\n"));
-setInterval(()=>{},1e9);}
+setTimeout(()=>process.exit(0),12e4);}
 `;
     const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
     const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-cdp-isobin-"));
@@ -536,16 +541,25 @@ setInterval(()=>{},1e9);}
     const on = (srv, tab) => (srv.calls || []).filter((c) => c.tab === tab).map((c) => c.method === "Page.setWebLifecycleState" ? "state:" + c.state : c.method);
     const srv = fakeChrome({ headless: true });
     const port = await listen(srv);
+    // P1/P2 这一段冻结线放宽到 600ms：P2 每 50ms 动一下，要证明的是「一直在动就不冻」，
+    // 冻结线只有 150ms 时，CI 机器上计时器晚个一两百毫秒，P2 两下之间就够着了（2026-10-06 真红过一次）
+    process.env.OWB_CDP_PARK_MS = "600";
     const a = await cdp.run({ action: "navigate", port, url: "http://a.test/", wait_ms: 0, owner: "P1" });
     const seqA = on(srv, a.tab_id);
     ok(seqA.indexOf("state:active") >= 0 && seqA.indexOf("Page.bringToFront") > seqA.indexOf("state:active") && seqA.indexOf("Page.navigate") > seqA.indexOf("Page.bringToFront"),
       "动之前先解冻、再拉到前台，然后才做动作本身", JSON.stringify(seqA));
     // P2 一直在动（每 50ms 一下）：P1 的冻结不能被它往后推
     const b = await cdp.run({ action: "navigate", port, url: "http://b.test/", wait_ms: 0, owner: "P2" });
-    for (let i = 0; i < 6; i++) { await sleep(50); await cdp.run({ action: "evaluate", port, expression: "1", owner: "P2" }); }
+    // 动到 P1 冻住为止（最多 10 秒），不按固定时长猜；顺手量 P2 两下之间最长隔了多久，挂了好对数
+    let gap = 0;
+    for (let t0 = Date.now(), last = t0; !on(srv, a.tab_id).includes("state:frozen") && Date.now() - t0 < 10000;) {
+      await sleep(50); await cdp.run({ action: "evaluate", port, expression: "1", owner: "P2" });
+      const now = Date.now(); gap = Math.max(gap, now - last); last = now;
+    }
     ok(on(srv, a.tab_id).includes("state:frozen"), "P1 闲过 OWB_CDP_PARK_MS 就冻住，P2 在旁边一直动也挡不住", JSON.stringify(on(srv, a.tab_id)));
-    ok(!on(srv, b.tab_id).includes("state:frozen"), "  └ P2 自己一直在动：它那页不冻（反向对照）", JSON.stringify(on(srv, b.tab_id)));
-    await sleep(400);
+    ok(!on(srv, b.tab_id).includes("state:frozen"), "  └ P2 自己一直在动：它那页不冻（反向对照）", JSON.stringify({ maxGapMs: gap, calls: on(srv, b.tab_id) }));
+    process.env.OWB_CDP_PARK_MS = "150";
+    for (let t0 = Date.now(); !on(srv, b.tab_id).includes("state:frozen") && Date.now() - t0 < 3000;) await sleep(50);
     ok(on(srv, b.tab_id).includes("state:frozen"), "  └ P2 停手之后它那页也冻住");
     // status / list_tabs 只看不碰：不能顺手把冻住的页解冻
     const before = on(srv, a.tab_id).length;
@@ -690,7 +704,7 @@ const srv=http.createServer((req,res)=>{const p=srv.address().port;
   if(req.url.startsWith("/json/version"))return res.end(JSON.stringify({Browser:"FakeChrome/1",webSocketDebuggerUrl:"ws://127.0.0.1:"+p+"/devtools/browser/x"}));
   res.end("[]");});
 srv.listen(0,"127.0.0.1",()=>fs.writeFileSync(path.join(ud,"DevToolsActivePort"),srv.address().port+"\\n/devtools/browser/x\\n"));
-setInterval(()=>{},1e9);
+setTimeout(()=>process.exit(0),12e4);
 `;
     const binDir = mkdir("owb-cdp-fake-");
     const bin = path.join(binDir, "fake-chrome");
@@ -735,7 +749,7 @@ setInterval(()=>{},1e9);
     ok(!alive(kid.pid), "  └ 进程真没了");
 
     // 锁指着一个不相干的进程（pid 被复用了）：不认领这个 pid，更不能去杀它
-    const stray = cp.spawn(process.execPath, ["-e", "setInterval(()=>{},1e9)"], { detached: true, stdio: "ignore" });
+    const stray = cp.spawn(process.execPath, ["-e", "setTimeout(()=>process.exit(0),12e4)"], { detached: true, stdio: "ignore" });
     stray.unref();
     const adopt2 = mkdir("owb-cdp-adopt2-");
     const kid2 = cp.spawn(process.execPath, [bin, `--user-data-dir=${adopt2}`], { detached: true, stdio: "ignore" });

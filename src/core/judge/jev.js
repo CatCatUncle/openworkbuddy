@@ -82,6 +82,19 @@ function pickRoute(config) {
   };
 }
 
+/**
+ * 调用方点名的型号对不对得上配置。对不上返回一句人话，对得上（或没点名）返回空串。
+ *
+ * 只认配置里定下的那一个：config.decide.model，没写就是这条路的出厂型号。
+ * 点了别的一律不发——原样透传的话，接口那头传什么型号就拿用户的 Key 去打什么型号，
+ * 而那个型号用户从没配过；悄悄换回配置里那个也不行，人以为问的是 A，答案其实出自 B。
+ */
+function wrongModel(routeModel, want) {
+  const w = trim(want);
+  if (!w || w === trim(routeModel)) return "";
+  return "判断型号「" + w.slice(0, 60) + "」没配置过，这一趟没发。要换型号改 config.decide.model";
+}
+
 /** 判断模型现在能不能用，给界面和 doctor 看的一张小卡片（**不含 Key**） */
 function status(config) {
   const r = pickRoute(config);
@@ -100,6 +113,9 @@ async function ask(config, { state, questions, model, timeoutMs, signal } = {}) 
   const r = pickRoute(config);
   if (!r.ok) return { ok: false, error: r.why + "。" + r.how, notReady: true };
 
+  const bad = wrongModel(r.model, model);
+  if (bad) return { ok: false, error: bad, badRequest: true };
+
   const { questions: qs, errs } = so.normalizeQuestions(questions);
   if (errs.length) return { ok: false, error: errs.join("；"), badRequest: true };
   const st = so.stateOf(state);
@@ -110,7 +126,7 @@ async function ask(config, { state, questions, model, timeoutMs, signal } = {}) 
   let key = "";
   try { key = cleanKey(r.key, { name: r.label }); } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
 
-  const body = so.buildBody({ model: trim(model) || r.model, state: st.state, questions: qs });
+  const body = so.buildBody({ model: r.model, state: st.state, questions: qs });
   const ms0 = Date.now();
   let res, text;
   try {
@@ -141,7 +157,7 @@ async function ask(config, { state, questions, model, timeoutMs, signal } = {}) 
   const out = so.readAnswers(json);
   return {
     ok: true, ...out,
-    ms: Date.now() - ms0, route: r.route, label: r.label, asked: trim(model) || r.model,
+    ms: Date.now() - ms0, route: r.route, label: r.label, asked: r.model,
     // 截过就说，别让人以为它看了全文——判断是拿前半段做的，这种错事后最难查
     truncated: st.cut, state_chars: st.chars,
   };
@@ -164,6 +180,9 @@ async function askMetered(config, args, opts) {
   const n = Object.keys((args && args.questions) || {}).length;
   const st = status(config);
   if (!st.ready) return { ok: false, error: st.why, how: st.how, notReady: true };
+  // 型号不对在过闸之前就挡：这一趟根本不会发，不该先占一份额度再退
+  const bad = wrongModel(st.model, args && args.model);
+  if (bad) return { ok: false, error: bad, badRequest: true };
   const g = quota.gate("decide", { n, model: st.model, provider: st.route });
   if (!g.ok) return { ok: false, error: g.why, quota: true };
   const out = await ask(config, args || {});
@@ -187,15 +206,18 @@ function pick(out, key) {
  */
 async function selftest(config, opts) {
   const state = "客服工单：我的 Stripe 收款账号连了三天都连不上，一直失败，现在订单都在丢，麻烦尽快。";
-  const out = await ask(config, {
+  // metered：测活也是真问三道题，命令行那条要跟正经提问一样过额度闸、记进账本
+  const { metered, ...rest } = opts || {};
+  const args = {
     state,
     questions: {
       归谁处理: so.choice("这条工单该交给哪个组", { 支付: "收款、账单、订阅相关", 技术: "程序出错、对接不上", 销售: "问价格、问方案" }),
       有多急: so.score("这位客户有多着急", ["不急，只是问一声", "希望尽快", "已经在造成损失了"]),
       要不要升级: so.noul("这条工单该升级给主管跟进"),
     },
-    ...(opts || {}),
-  });
+    ...rest,
+  };
+  const out = metered ? await askMetered(config, args, { meta: "测活" }) : await ask(config, args);
   return { ...out, state };
 }
 

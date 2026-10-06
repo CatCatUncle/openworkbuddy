@@ -640,8 +640,10 @@ async function runSourcePins() {
      "POST /api/settings 真的按 prefs.split 分流（跟闸共用同一张表）");
   ok(/if \(!Object\.keys\(b\)\.length\) return res\.json\(\{ ok: true, personal: true/.test(serverSrc),
      "整单都是个人项时不去动 config.json");
-  ok(/const fields = ownPrefs\(req\) \? \["model"\] : \["bin", "model"\]/.test(serverSrc),
+  ok(/const member = ownPrefs\(req\);[\s\S]{0,1500}?if \(!member && patch\.bin !== undefined\) opts\.bin =/.test(serverSrc),
      "/api/engines/test 把非平台管理员传来的 bin 丢掉（闸放行了这条路，bin 就得在路由里挡）");
+  ok(/app\.post\("\/api\/engines\/test"[\s\S]{0,1500}?engines\.admit\(id, config, \{[\s\S]{0,160}?trial: !member/.test(serverSrc),
+     "  └ 试连也过外部引擎那道闸，只有平台管理员能先于「打开」试");
   ok(/if \(ownPrefs\(req\)\) prefs\.write\(req\.user, \{ last_picked_model:/.test(serverSrc),
      "选模型时按账号记「上次用的」");
   ok(/if \(ownPrefs\(req\)\) \{\s*\n\s*prefs\.write\(req\.user, \{ assist_model:/.test(serverSrc),

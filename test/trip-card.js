@@ -207,14 +207,26 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
     const g = TC.legNavUrl(P1, P2, "walking");
     ok(g.startsWith("https://www.google.com/maps/dir/?api=1&origin=48.8584,2.2945&destination=48.8606,2.3376") && g.includes("travelmode=walking"),
       "国外：Google 地图，纬度在前", g);
+    // 只有直线（国外、没填 Key）时按直线距离定：两公里内步行，再远开车
+    const P3 = { lng: 2.2950, lat: 48.8738, datum: "wgs84", name: "凯旋门" };
+    ok(TC.legNavUrl(P1, P3, "line").includes("travelmode=walking"), "国外只有直线、两站 1.7 公里：步行", TC.legNavUrl(P1, P3, "line"));
+    ok(TC.legNavUrl(P1, P2, "line").includes("travelmode=driving"), "国外只有直线、两站 3 公里多：开车（反向对照）", TC.legNavUrl(P1, P2, "line"));
+    ok(TC.legNavUrl(A, B, "line").includes("&mode=walk") && TC.legNavUrl(A, D, "line").includes("&mode=car"), "国内没 Key 只有直线：一样按两公里分步行和开车");
     ok(TC.dayNavUrl([A]) === "", "一天只有一站：不给整天路线");
     ok(/^https:\/\/uri\.amap\.com\/navigation\?/.test(TC.dayNavUrl([A, B])) && !TC.dayNavUrl([A, B]).includes("via="), "国内两站：高德，没有途经点");
     ok(TC.dayNavUrl([A, B, C]).includes("&via=102.71,25.04," + encodeURIComponent("南强街")), "国内三站：中间那站当途经点");
-    ok(TC.dayNavUrl([A, B, C, D]) === "", "国内四站以上不给（高德网页导航只认一个途经点），每两站之间的「导航」还在");
+    ok(TC.dayNavUrl([A, B]).includes("&mode=walk") && TC.dayNavUrl([A, B, C, D]).includes("travelmode=walking"), "一天里每两站都在两公里内：整天按步行");
+    ok(TC.dayNavUrl([A, D]).includes("&mode=car"), "有一段超过两公里：整天按开车（反向对照）", TC.dayNavUrl([A, D]));
+    const cn4 = TC.dayNavUrl([A, B, C, D]);
+    ok(cn4 === "https://www.google.com/maps/dir/?api=1&origin=25.048,102.703&destination=25.02,102.73&waypoints=" + encodeURIComponent("25.04,102.71|25.03,102.72") + "&travelmode=walking",
+      "国内四站：高德网页导航只认一个途经点，改交 Google，坐标用 GCJ-02（Google 国内底图也是这套）", cn4);
     const gd = TC.dayNavUrl([P1, P2, P1, P2]);
     ok(gd.startsWith("https://www.google.com/maps/dir/") && gd.includes("&waypoints=" + encodeURIComponent("48.8606,2.3376|48.8584,2.2945")), "国外四站：Google，带途经点", gd);
-    ok(TC.dayNavUrl([A, P1]) === "", "国内外混着的不给");
-    ok(TC.dayNavUrl(Array.from({ length: 11 }, () => P1)) === "", "国外超过 10 站不给");
+    const mix = TC.dayNavUrl([A, P1]);
+    ok(mix.startsWith("https://www.google.com/maps/dir/?api=1&origin=25.048,102.703&destination=48.8584,2.2945") && mix.includes("travelmode=driving"), "国内外混着：Google，国内那站 GCJ-02、国外那站原样", mix);
+    const mixLeg = TC.legNavUrl({ ...A, datum: "wgs84" }, P1, "driving");
+    ok(mixLeg.startsWith("https://www.google.com/maps/dir/") && !mixLeg.includes("origin=25.048,102.703&"), "两站一国内一国外：Google，国内那站 WGS-84 先换成 GCJ-02", mixLeg);
+    ok(TC.dayNavUrl(Array.from({ length: 10 }, () => P1)) !== "" && TC.dayNavUrl(Array.from({ length: 11 }, () => P1)) === "", "十站给，超过 10 站不给（Google 途经点有上限）");
     eq([5, 834, 1234, 12345, NaN].map(TC.fmtDist), ["10 米", "830 米", "1.2 公里", "12 公里", ""], "距离：米取整十、公里一位小数、十公里以上取整");
     eq([0, 30, 600, 3600, 5400, NaN].map(TC.fmtDur), ["", "约 1 分钟", "约 10 分钟", "约 1 小时", "约 1 小时 30 分", ""], "用时：分钟 / 小时几分");
 

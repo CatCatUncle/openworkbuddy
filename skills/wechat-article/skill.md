@@ -103,8 +103,10 @@ python3 skills/wechat-article/scripts/publish.py \
   --html 文章.html --title "标题" --cover 封面.jpg --author "你的署名"
 ```
 
-- 凭据：环境变量 `WECHAT_APPID` / `WECHAT_SECRET`，或 `~/.openworkbuddy/wechat.json`
-  （`{"appid": "...", "secret": "..."}`，**别提交进仓库**）
+- 凭据：`~/.openworkbuddy/wechat.json`（`{"appid": "...", "secret": "..."}`，**别提交进仓库**），
+  或环境变量 `WECHAT_APPID` / `WECHAT_SECRET`——AI 跑的命令只拿系统基础变量，这两个**都**拿不到，
+  两个名字都要写进 设置 → 安全 →「命令能看到的环境变量」；`WECHAT_SECRET` 像密钥，这台机器只有一个账号时才给。
+  多人共用的机器用上面那个 wechat.json
 - **脚本只推草稿，永远不群发**。发布是用户在后台自己点的，我们不替他按下不可逆的按钮。
 - 正文里的图片必须先传成公众号自己的域名，外链图会被吞掉：
   `python3 scripts/publish.py --upload-image 图.png` 拿到 URL 再写进 Markdown。

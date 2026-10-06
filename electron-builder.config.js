@@ -76,7 +76,23 @@ async function afterPack(ctx) {
   await gate.assertDepsRequirable(appDir);
   gate.assertSlimmed(appDir);
   gate.assertBundlesSlim(appDir);
+  assertSandboxHelper(ctx, appDir);
   await adhocSign(ctx);
+}
+
+/**
+ * Windows 包里得有本架构的系统沙箱小助手（native/bin，发版流水线现编）：缺了，用户机器上沙箱就立不起来。
+ * 另一个架构那份顺手删掉，用不上
+ */
+function assertSandboxHelper(ctx, appDir) {
+  if (ctx.electronPlatformName !== "win32") return;
+  const arch = { 1: "x64", 3: "arm64" }[ctx.arch]; // electron-builder 的 Arch：x64 = 1，arm64 = 3
+  if (!arch) throw new Error(`[打包] 认不出的架构 ${ctx.arch}，核不了沙箱小助手`);
+  const dir = path.join(appDir, "native", "bin");
+  const name = `owb-sandbox-${arch}.exe`;
+  if (!fs.existsSync(path.join(dir, name))) throw new Error(`[打包] 包里没有沙箱小助手 native/bin/${name}：先跑 npm run build:sandbox（要装 Go）`);
+  for (const f of fs.readdirSync(dir)) if (f !== name) fs.rmSync(path.join(dir, f), { force: true });
+  console.log(`[打包] 沙箱小助手：native/bin/${name}`);
 }
 
 async function adhocSign(ctx) {
@@ -186,6 +202,8 @@ module.exports = {
 
   win: {
     icon: "build/icon.ico",
+    // 系统沙箱小助手只有 Windows 用（跟上面那份 files 合在一起算）
+    files: ["native/bin/*.exe"],
     target: [
       // 纯 JS 依赖、没有原生模块，arm64（骁龙 X / Surface Pro X 一类）直接多打一份
       { target: "nsis", arch: ["x64", "arm64"] },

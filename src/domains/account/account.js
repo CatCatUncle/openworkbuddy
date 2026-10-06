@@ -1002,17 +1002,52 @@ function creditsFor(usage) {
  * 一次任务结束后记账：按 tokens 扣积分 + 写用量流水。
  * 积分闸门关着（默认）时只写流水不扣数，返回 0——用量该看还得看，额度不该拦人。
  * @param user  users.json 里的用户对象（会同步更新其 credits 字段）
- * @param info  { prompt, cached, completion, calls, elapsed_ms, model, provider, source, sessionId }
+ * @param info  { prompt, cached, completion, calls, elapsed_ms, model, provider, source, sessionId, usageBy? }
+ *   usageBy：这趟中途换过渠道时按渠道拆开的用量 [{ provider, model, usage }]（agent runTask 交回来的）。
+ *   每段各按各的价记一行；总数里拆剩下的（标题、目标验收那几句）记在 info.model 那条上。
  * @returns 本次扣掉的积分数（不限额时为 0）
  */
 function chargeRun(user, info) {
+  const parts = splitByChannel(info);
+  if (!parts) return chargeOne(user, info);
+  // 积分是「所有模型一个价」的字数折算，按整趟算一次（拆开算会多出几次「不足 1 按 1」）；
+  // 钱按每段的型号各算各的，流水里一段一行
+  const whole = fixLegacyCache(info);
+  let spent = 0;
+  parts.forEach((p, i) => { spent += chargeOne(user, p, i === 0 ? creditsFor(whole) : 0); });
+  return spent;
+}
+
+/** 把 info 按 usageBy 拆成几笔；没拆（只跑过一条渠道）回 null */
+function splitByChannel(info) {
+  const by = info && Array.isArray(info.usageBy) ? info.usageBy.filter((x) => x && x.usage) : [];
+  if (!by.length) return null;
+  const { usageBy, ...base } = info;
+  const n = (v) => Math.max(0, +v || 0);
+  const parts = by.map((x) => ({
+    ...base, model: String(x.model || ""), provider: String(x.provider || ""),
+    prompt: n(x.usage.prompt), cached: n(x.usage.cached), completion: n(x.usage.completion), calls: n(x.usage.calls), elapsed_ms: 0,
+  }));
+  const sum = (k) => parts.reduce((t, p) => t + p[k], 0);
+  const rest = { ...base, prompt: n(base.prompt) - sum("prompt"), cached: n(base.cached) - sum("cached"),
+    completion: n(base.completion) - sum("completion"), calls: n(base.calls) - sum("calls"), elapsed_ms: 0 };
+  if (rest.prompt > 0 || rest.completion > 0 || rest.calls > 0) {
+    parts.push({ ...rest, prompt: Math.max(0, rest.prompt), cached: Math.max(0, Math.min(rest.cached, rest.prompt)),
+      completion: Math.max(0, rest.completion), calls: Math.max(0, rest.calls) });
+  }
+  parts[0].elapsed_ms = n(base.elapsed_ms); // 耗时不分段，整趟记在第一行，合计对得上
+  return parts;
+}
+
+/** 记一笔。credits 给了就按它扣积分（拆段时只在第一段扣整趟的数），不给按这一笔的 tokens 折算 */
+function chargeOne(user, info, credits) {
   info = fixLegacyCache(info);
   const st = loadUsers();
   const u = st.users.find((x) => x.username === user.username);
   // 「这个组织开没开用量限额」要按**账本里**的那条记录判，不能按调用方手上那个对象判：
   // 定时任务、IM 入站传进来的 user 可能是几小时前取的，缺 org 字段就会被当成默认组织，
   // 于是整条任务一分不扣——账对不上还查不出来。以库里的为准，传进来的只当兜底。
-  const spent = creditsEnabled(u || user) ? creditsFor(info) : 0;
+  const spent = creditsEnabled(u || user) ? (credits === undefined ? creditsFor(info) : credits) : 0;
   // 真金白银那一笔，跟积分各算各的、一起记。
   // 为什么不用积分代替钱：积分是「所有模型一个价」的字数折算（creditsFor 那一行），
   // 拿它排「这个月谁花得多」，排出来的是「谁的字数多」——而 Opus 的输出价是

@@ -90,6 +90,9 @@ skills/*-pro/
 # 注意：桌面壳那几个文件（electron-main.js / src/desktop/）故意不排除。
 # server.js 就 require 着 src/desktop/pet-sprites.js，排掉它容器直接起不来——省这几 KB 不值当。
 
+# Windows 沙箱小助手（编出来的 exe），Linux 容器用不上
+native/bin/
+
 # --- Docker 自己 ---
 Dockerfile
 .dockerignore

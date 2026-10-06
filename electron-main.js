@@ -149,7 +149,13 @@ const MAIN_STALL = require("./src/desktop/bridge-main").createStallWatch({
     if (BOOT_LOG) fs.appendFile(BOOT_LOG, `[${new Date().toISOString()}] ${line}\n`, () => {});
   },
 });
-MAIN_STALL.start();
+// 只在本应用有窗口拿着焦点时开：100ms 一拍，人在别的应用里时界面线程卡一下谁也看不见，
+// 这一拍却一直挡着 CPU 进深睡（2026-10-07 实测，空闲主进程每秒被叫醒的次数里它占大头）。
+// 测试给了 OWB_MAIN_STALL_MS 就常开：浸泡测试的窗口是藏着的，永远拿不到焦点
+const MAIN_STALL_ALWAYS = Number(process.env.OWB_MAIN_STALL_MS) > 0;
+if (MAIN_STALL_ALWAYS) MAIN_STALL.start();
+app.on("browser-window-focus", () => MAIN_STALL.start());
+app.on("browser-window-blur", () => { if (!MAIN_STALL_ALWAYS && !BrowserWindow.getFocusedWindow()) MAIN_STALL.stop(); });
 global.__owbMainStall = MAIN_STALL;   // 浸泡测试跟 electron-main 同一个进程，从这儿读卡顿记录
 global.__owbMainOps = MAIN_OPS;
 

@@ -189,6 +189,46 @@ const MIGRATIONS = [
       return r.moved ? `整理了 ${r.moved} 个旧文件 → ${r.to}/（原件一个没删，清单在 ${r.to}/整理清单.json）` : "";
     },
   },
+  {
+    id: "embed-explicit-v1",
+    title: "记忆向量只用设置里选定的嵌入模型",
+    // 以前没选嵌入模型时，记忆会借聊天 / 媒体渠道的 Key 去算向量；这一版起只认设置里选定的那个。
+    // 靠借来的那条在算的人（调用方看盘上有向量、设置里没选，给 embedOff），升上来后记忆改按关键词召回：
+    // 功能照常、已算好的向量不删，但要告诉他去哪儿选回来。什么文件都不动
+    upgradeOnly: true,
+    run: (ctx) => (ctx.options && ctx.options.embedOff
+      ? "记忆改用关键词召回，不再借用聊天渠道的 Key；去设置 → 记忆选个嵌入模型可恢复" : ""),
+  },
+  {
+    id: "relay-registered-only-v1",
+    title: "中转站只转登记过的型号",
+    // 以前渠道没登记型号就当通用网关，什么名字都拿管理员的上游 Key 转出去；这一版起只转登记过的。
+    // 发过 Key、又有渠道因此停转或有 Key 受影响的（调用方算好给 relayHit），升上来后要说一声去哪儿看。
+    // 什么配置都不改：要不要放行、登记哪些型号，由属主自己决定
+    upgradeOnly: true,
+    run: (ctx) => (ctx.options && ctx.options.relayHit
+      ? "中转站不再转没登记的型号，有渠道或 Key 受影响；去后台 → API 中转站看怎么恢复" : ""),
+  },
+  {
+    id: "engine-pin-model-v1",
+    title: "外部引擎必须指定型号",
+    // 以前本机 Claude Code / Codex 的型号能留空，跑的是 CLI 自己配置里的默认型号；这一版起不钉型号就不开跑
+    // （不拿 CLI 的默认顶上——属主管不到那份配置）。选着外部引擎、属主又没给它放行任何型号的
+    // （调用方算好给 engineNoModel：引擎名），升上来第一句话就会被拒，得先说一声去哪儿填。什么配置都不改
+    upgradeOnly: true,
+    run: (ctx) => (ctx.options && ctx.options.engineNoModel
+      ? `${ctx.options.engineNoModel}现在要先指定型号才能跑；去设置 → 智能体 → 底层引擎 填一个` : ""),
+  },
+  {
+    id: "codex-offline-v1",
+    title: "Codex 里的命令默认不联网",
+    // 以前 Codex 沙箱里的命令默认能联网；这一版起默认关（查资料走它自带的联网搜索）。
+    // 装依赖、下载这类命令会在 Codex 里报网络错，看不出是这个开关。在用 Codex、属主又没表过态的
+    // （调用方给 codexNet），升上来说一声开关在哪。不替人打开
+    upgradeOnly: true,
+    run: (ctx) => (ctx.options && ctx.options.codexNet
+      ? "本机 Codex 里的命令默认不再联网，装依赖、下载会失败；要用去设置 → 智能体 → 底层引擎 打开" : ""),
+  },
 ];
 
 /**

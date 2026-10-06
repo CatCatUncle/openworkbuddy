@@ -120,6 +120,10 @@ async function main() {
     throw new Error(`装完 ${dir} 里没有 OpenWorkBuddy.exe` + (elsewhere.length ? `，倒是在 ${elsewhere[0]}（/D= 没生效）` : ""));
   }
 
+  // 系统沙箱的小助手得跟着装进去：漏了的话设置页照样有开关，命令却一直不在沙箱里跑
+  const helper = path.join(dir, "resources", "app", "native", "bin", `owb-sandbox-${process.arch}.exe`);
+  if (!fs.existsSync(helper)) throw new Error(`装完没有沙箱小助手：${helper}`);
+
   let failed = false;
   const a = await boot(exe, "安装版", 3 * 60 * 1000);
   report("安装版", a);

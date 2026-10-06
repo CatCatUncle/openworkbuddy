@@ -311,6 +311,19 @@ const config = store.readJson(CONFIG_PATH, {});
 // 不补的话 gateway 是 undefined → 闸门当成关着，删除保护、黑名单、高危拦截全都不生效。
 // 只补内存里这份，不回写文件
 security.getSecurity(config);
+// AI 起的子进程只拿最小环境变量，跟网页服务同一套策略（见 src/platform/child-env.js）：
+// 属主清单照 config 走；像 Key 的名字只在一个账号时给，读账号库出错按「多个」算
+require("./src/platform/child-env").setPolicy(() => {
+  let solo = false;
+  try { solo = account.userCount() <= 1; } catch {}
+  return { allow: security.getSecurity(config).env_passthrough, keys: solo };
+});
+// 多人共用时碰了文件黑名单直接拦、不出审批卡（同网页服务）；读账号库出错按「多个」算
+security.setMultiUser(() => {
+  try { return account.userCount() > 1; } catch { return true; }
+});
+// 桌面版 / 网页服务多半正开着：它的端口按同一套规则算出来登记进地址闸，AI 的联网工具在命令行里也打不到
+require("./src/core/safety/net-guard").registerOwnPort(require("./src/platform/paths").resolvePort(process.env, config), "主服务");
 
 // ---------- --perm：这一趟放多少权 ----------
 // 网页那边四档是点得到的（设置里一个下拉），命令行原来只能改 config.json —— 而 config.json 是
@@ -559,6 +572,8 @@ if (sub === "jev") {
   const jevApi = require("./src/core/judge/jev");
   const st = jevApi.status(config);
   const say = (s) => process.stdout.write(s);
+  // 命令行没有登录态，按本机属主过额度闸、记账：组织配的限额在这儿照样生效，不是网页上的专属
+  const meter = (fn) => require("./src/core/billing/quota").withActor(require("./src/domains/account/admin").ownerActor({ source: "cli", readConfig: () => config }), fn);
   (async () => {
     if (!st.ready) {
       process.stderr.write(red("判断模型还没法用：" + st.why + "\n") + dim(st.how + "\n"));
@@ -569,7 +584,7 @@ if (sub === "jev") {
     if (!words.length) {
       head();
       prog(dim("没给材料，那就拿一段固定的客服工单测一下——答得对不对一眼能看出来\n"));
-      out = await jevApi.selftest(config);
+      out = await meter(() => jevApi.selftest(config, { metered: true }));
       asked = out.state || "";
     } else if (words.length === 1) {
       process.stderr.write(red("还得说要判断什么。\n") + dim(
@@ -582,11 +597,12 @@ if (sub === "jev") {
       const [state, ask, ...opt] = words;
       asked = state;
       const q = !opt.length ? so.noul(ask) : opts.score ? so.score(ask, opt) : so.choice(ask, opt);
-      out = await jevApi.ask(config, { state, questions: { 判断: q } });
+      out = await meter(() => jevApi.askMetered(config, { state, questions: { 判断: q } }, { meta: "命令行" }));
     }
     if (!out.ok) {
-      if (opts.json) say(JSON.stringify({ ok: false, error: out.error }) + "\n");
-      else process.stderr.write(red("没答上来：" + out.error + "\n"));
+      // 被额度闸挡下的那趟根本没发，别说成「没答上来」——人会去查渠道，而该看的是额度
+      if (opts.json) say(JSON.stringify({ ok: false, error: out.error, ...(out.quota ? { quota: true } : {}) }) + "\n");
+      else process.stderr.write(red((out.quota ? "这一趟没发：" : "没答上来：") + out.error + "\n"));
       process.exit(1);
     }
     if (opts.json) {
@@ -658,7 +674,10 @@ const mcpManager = new McpManager();
 // 没配渠道就返回 ok:false，goal.js 自己退回对话模型那条老路——命令行这边不用管
 const goalKit = require("./src/core/automation/goal").createGoalEngine({
   workspaceDir: getWorkspaceDir,
-  decide: (args) => require("./src/core/judge/jev").ask(config, args),
+  // 跟网页端同一道额度闸，主体是本机属主（见 openworkbuddy jev 那段）
+  decide: (args) => require("./src/core/billing/quota").withActor(
+    require("./src/domains/account/admin").ownerActor({ source: "cli", readConfig: () => config }),
+    () => require("./src/core/judge/jev").askMetered(config, args, { meta: "目标验收" })),
 });
 /**
  * 拆验收标准、对着标准判分，这两句问谁。
@@ -671,7 +690,9 @@ async function goalThink({ system, prompt, timeoutMs }) {
   const id = cfgEngine();
   const engMod = require("./src/engines");
   if (id !== "builtin" && engMod.get(id)) {
-    return await engMod.ask({ id, opts: ((config.agent || {}).engine_options || {})[id] || {}, system, prompt, timeoutMs });
+    // 跟开跑那条过同一道闸（型号要钉、附加参数不许换型号、多人共用要属主打开），不行就报错，不改问 API 模型
+    const pass = engMod.admit(id, config);
+    return await engMod.ask({ id, opts: pass.opts, system, prompt, timeoutMs });
   }
   const r = await llm.chat({ system, history: [{ role: "user", content: prompt }], tools: [], signal: AbortSignal.timeout(timeoutMs) });
   return r.text;
@@ -3150,7 +3171,8 @@ function splitFiles(text) {
         ? `项目规范 ${memos.map((m) => m.body === null ? `${m.rel}（超上限没带上）` : `${m.rel}（${m.chars} 字）`).join("、")}\n`
         : "项目规范 没有（/init 可以在工作目录生成一份 AGENTS.md）\n"));
       let costOf = null;
-      try { const pr = require("./src/core/billing/pricing"); costOf = (u) => pr.costOf(u, { local: !!u.local }); } catch {}
+      // 带上 config：本机模型 0 元认的是它挂的渠道地址（pricing.isPrivateBase），不再看型号名
+      try { const pr = require("./src/core/billing/pricing"); costOf = (u) => pr.costOf(u, { local: !!u.local, config }); } catch {}
       prog(dim(repl.sessionUsageText(sess.transcript, costOf) + "\n"));
       prog(dim(contextLine() + "\n"));
       if (pending.length) prog(dim(`还带着没发出去的文件：${pending.join("、")}\n`));

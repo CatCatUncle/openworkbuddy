@@ -39,6 +39,8 @@ const continueGate = require("./gates/continue-gate"); // 续跑之前那道闸�
 const askGate = require("./gates/ask-gate");   // 弹给用户那一问之前那道闸的纯判据（同上，不发网络）
 const skillGate = require("./gates/skill-gate"); // 开工之前「该照哪个技能做」的纯判据，以及已加载技能挂进系统提示词那一段（同上，不发网络）
 const recipes = require("../domains/content/recipes"); // 内容配方：开头一张表单定岔路、答案钉进系统提示词、按配方放宽上限
+const quotaMod = require("../core/billing/quota");   // 这趟任务记在谁的额度上（网页请求 / IM / 定时任务进门时挂好的那份）
+const budgetMod = require("../core/billing/budget"); // 价目闸：有限额的人不许跑没价目的远端型号
 
 const DELEGATE_TOOL = {
   name: "delegate_to_expert",
@@ -858,6 +860,56 @@ const IMPLIED_BASE = {
   gemini: "https://generativelanguage.googleapis.com/v1beta",
   ollama: "http://localhost:11434",
 };
+
+/**
+ * 备用渠道能不能接手：跟入口那道价目闸（server.js unpricedChat）同一个判据，只是换成备用那条。
+ * 这趟任务没挂额度主体（单机、没配任何限额）就不拦，跟入口一致。返回拦下的那句话，放行回 ""。
+ * 预算模块自己坏了不拦正事，跟入口同一个选择：放行，但喊一声。
+ */
+function backupUnpriced(next, name) {
+  const who = quotaMod.currentActor();
+  if (!who || !who.budget || !next || !next.model) return "";
+  try {
+    const hit = budgetMod.unpriced({
+      ...who.budget,
+      usage: { model: next.model },
+      price: { ...(who.price || {}), name: next.provider || name },
+    });
+    return hit ? hit.message : "";
+  } catch (e) {
+    console.warn("[预算] 备用渠道的价目闸没能判（本次放行）：" + (e && e.message));
+    return "";
+  }
+}
+
+/**
+ * 一次模型调用的用量记进这趟任务的账：总数一份，再按渠道分开记一份。
+ * 中途换过备用渠道的，两段各按各的价目记账——全按主渠道的价算，备用那条更贵时预算就少扣了。
+ */
+function tallyUsage(stats, u, lm) {
+  if (!stats || !u) return;
+  stats.prompt += u.prompt || 0;
+  stats.completion += u.completion || 0;
+  stats.cached = (stats.cached || 0) + (u.cached || 0);
+  stats.calls++;
+  const provider = (lm && lm.provider) || "";
+  const model = (lm && lm.model) || "";
+  const by = stats.byChannel || (stats.byChannel = new Map());
+  const k = provider + "\u0000" + model;
+  const row = by.get(k) || { provider, model, prompt: 0, completion: 0, cached: 0, calls: 0 };
+  row.prompt += u.prompt || 0;
+  row.completion += u.completion || 0;
+  row.cached += u.cached || 0;
+  row.calls++;
+  by.set(k, row);
+}
+
+/** 用过不止一条渠道时，按渠道拆开的用量（给记账用）；只用过一条就回 null，老调用方照旧按总数记 */
+function usageByChannel(stats) {
+  const by = stats && stats.byChannel;
+  if (!by || by.size < 2) return null;
+  return [...by.values()].map(({ provider, model, ...u }) => ({ provider, model, usage: u }));
+}
 
 /**
  * 当前生效的模型渠道（base_url / api_key / model / provider / caps），给「拿主模型看图」用。
@@ -2116,12 +2168,7 @@ function modePrompt(mode) {
         onTextDelta: (delta) => emit({ type: "text", delta, depth }),
       });
       gen.end({ output: result.text || "", usage: result.usage });
-      if (result.usage) {
-        stats.prompt += result.usage.prompt;
-        stats.completion += result.usage.completion;
-        stats.cached = (stats.cached || 0) + (result.usage.cached || 0);
-        stats.calls++;
-      }
+      tallyUsage(stats, result.usage, L2);
       // 不认 tool_choice 的中转可能还是回了 tool_use 块：没人执行，留在 raw 里就是一条配不上对的调用
       const raw = Array.isArray(result.raw) ? result.raw.filter((b) => !b || b.type !== "tool_use") : result.raw;
       history.push({ role: "assistant", text: result.text, toolCalls: [], raw });
@@ -2280,7 +2327,7 @@ function modePrompt(mode) {
       throw e;
     }
     gen.end({ output: result.text || "", usage: result.usage });
-    if (result.usage && stats) { stats.prompt += result.usage.prompt; stats.completion += result.usage.completion; stats.cached = (stats.cached || 0) + (result.usage.cached || 0); stats.calls++; }
+    tallyUsage(stats, result.usage, lm);
     const summary = String(result.text || "").trim();
     if (!summary) { emit({ type: "compact", removed: 0, failed: "模型没吐出摘要，这一次没压成" }); return; }
     // 先归档再动刀：压缩只做搬家不做销毁，真要翻旧账去 data/compact-archive 找
@@ -2576,8 +2623,7 @@ function modePrompt(mode) {
     // 用裸命令名，不用绝对路径：路径写法会被 CLI 的权限层判成「需要审批」，
     // 非交互模式下没人能点同意。bridge 已经把脚本目录挂进子进程 PATH 了。
     const shim = bridged.shimBin || "";
-    // 两条路：MCP 工具（claude 那边好使）和命令行（谁都拦不住）。
-    // codex 接到非 OpenAI 模型上时一个 MCP 工具都不挂，所以那边把命令行摆在前面。
+    // 两条路：MCP 工具是主路（两个 CLI 都由它们自己拉起服务器，不在命令沙箱里），命令行是后备。
     const cliBlock = shim ? [
       bridged.shimIsPrimary
         ? "OpenWorkBuddy 把它自己的工具借给你了，用命令行调（这台 CLI 挂不上 MCP，命令行是唯一入口）："
@@ -2588,7 +2634,10 @@ function modePrompt(mode) {
       `例：${shim} generate_image '{"prompt":"雪山日出，写实摄影","filename":"fig_a.jpg"}'`,
       `例：${shim} gen_diagram '{"kind":"dot","source":"digraph{A->B}","filename":"flow.png"}'`,
       "退出码 0 是成功，1 是失败；失败时 stdout 里就是失败原因原文。",
-    ].join("\n") : "";
+      // codex 的命令沙箱只写工作区、默认不联网，owb 脚本跑在里面：要联网、要写数据目录的工具从这条路调不成
+      bridged.shimSandboxed &&
+        `${shim} 跑在你的命令沙箱里：写不了 OpenWorkBuddy 的数据目录（记忆、技能存不进去），沙箱没开网时也联不了网（生图、出视频调不成）。这几样用上面的 mcp__openworkbuddy__ 工具。`,
+    ].filter(Boolean).join("\n") : "";
     const mcpBlock = bridged.shimIsPrimary ? "" : [
       "另外：OpenWorkBuddy 已经把它自己的工具挂给你了，名字都以 mcp__openworkbuddy__ 开头，其中——",
       has("generate_image") && "  · mcp__openworkbuddy__generate_image  生图（用户在本项目里配好的图像模型，你直接调，图会落到工作目录）",
@@ -2616,7 +2665,7 @@ function modePrompt(mode) {
       (has("check_page") || has("html_to_image") || has("render_page")) &&
         "网页自测、截图、看渲染效果，一律用 " + ["check_page", "html_to_image", "render_page"].filter(has).join(" / ") +
         "，不要自己在命令行里起 Chrome / Playwright / Puppeteer 无头浏览器、也不要自己开调试端口连 CDP——沙箱里浏览器起不来（macOS 上报 Abort trap: 6），" +
-        "起得来的环境里它跑完也没人收，会一直挂在后台吃 CPU。这几个工具在沙箱外跑，用完即走。",
+        "起得来的环境里它跑完也没人收，会一直挂在后台吃 CPU。这几个工具走 mcp__openworkbuddy__ 调时在沙箱外跑，用完即走。",
       "工具挑最轻、最对口的那个，拿到结果就停：别为同一个问题反复截图、反复体检，也别拿到了再换个工具重拿一遍。",
       "调用失败了就把失败原因如实写进交付（比如「图像模型未配置」），那是用户能动手解决的信息；不要假装图已经有了。",
     ].filter(Boolean).join("\n");
@@ -2700,6 +2749,11 @@ function modePrompt(mode) {
       // 引擎是用户在设置里挑一次、两条线都照着跑的另一件事。绑在一起的话，切个标签能把别人配的模型换掉。
       const picked = engines.resolve(prefs.agentView(config)); // 引擎名写错会在这里抛错，不会静默退回内置
       if (picked.backend) {
+        // 开跑前过闸（engines/gate.js）：组织关了命令行、多人共用属主没打开、型号没钉或不在放行列表、
+        // 附加参数能换型号——当场报错，不退回内置引擎。收原始 config：属主那份不能被个人设置盖掉
+        const shellOff = !!(orgPolicy() && orgPolicy().allow_shell === false);
+        try { picked.opts = engines.admit(picked.backend.id, config, { shellOff }).opts; }
+        catch (e) { if (ownsTrace) tr.end({ error: (e && e.message) || String(e) }); throw e; }
         const sp = tr.span({
           name: `外部引擎 ${picked.backend.label || picked.backend.id}`,
           input: tracing._internals.messagesOf("", history),
@@ -2860,8 +2914,18 @@ function modePrompt(mode) {
       if (!name || failedOver) return false;
       if ((L.provider || "") === name) return false; // 当前就跑在这条渠道上（主选=备用），没有道可换
       if (!(config.models || []).some((m) => m.name === name)) return false; // 渠道已被删掉，配置过期
-      try { L = makeLLM({ ...config, active_model: name }); }
+      let next;
+      try { next = makeLLM({ ...config, active_model: name }); }
       catch (e) { console.warn("[agent] 备用渠道创建失败:", e.message); return false; }
+      // 入口那道价目闸只看了主渠道。有限额的人换到一条没价目的备用渠道，后半截记不进预算，
+      // 限额就成了摆设——所以换道前同一把尺子再量一次，量不过就不换，照实说卡在哪儿
+      const why = backupUnpriced(next, name);
+      if (why) {
+        failedOver = true; // 这趟不再试第二次：同一条渠道、同一张价目表，结论不会变
+        emit({ type: "failover", blocked: true, note: `${reason}。没换到备用渠道「${name}」：${why}`, channel: name, depth });
+        return false;
+      }
+      L = next;
       failedOver = true;
       emit({ type: "failover", note: `${reason}，已切换到备用渠道「${name}」继续本任务`, channel: name, depth });
       return true;
@@ -3105,10 +3169,7 @@ function modePrompt(mode) {
       }
 
       if (result.usage) {
-        stats.prompt += result.usage.prompt;
-        stats.completion += result.usage.completion;
-        stats.cached = (stats.cached || 0) + (result.usage.cached || 0);
-        stats.calls++;
+        tallyUsage(stats, result.usage, L);
         // 累计到这一步为止用了多少：终端那行「· 12s · 8.4k tokens」靠它走字，不用等到整趟跑完的 usage
         if (depth === 0) emit({ type: "step_usage", prompt: stats.prompt, completion: stats.completion, calls: stats.calls });
       }
@@ -3524,8 +3585,10 @@ function modePrompt(mode) {
       calls: stats.calls,
       elapsed_ms: Date.now() - stats.startedAt,
     };
+    // 换过备用渠道的，用量按渠道拆开交回去：记账两段各按各的价，不拿最后那条的价算整趟
+    const usageBy = usageByChannel(stats);
     if (depth === 0) {
-      emit({ type: "usage", model: L.model, provider: L.provider, ...usage });
+      emit({ type: "usage", model: L.model, provider: L.provider, ...usage, ...(usageBy ? { usageBy } : {}) });
     }
     if (ownsTrace) {
       tr.end({
@@ -3535,7 +3598,8 @@ function modePrompt(mode) {
       });
       tracer.flush(); // 任务刚结束正是用户点开链接的时刻，别让最后几条在队列里压两秒
     }
-    return { finalText, usage, stopped: stopNote || null };
+    // provider / model 是收尾时真在跑的那条（换过道就是备用那条），server 那边的健康账本、记账都认它
+    return { finalText, usage, stopped: stopNote || null, provider: L.provider || "", model: L.model || "", ...(usageBy ? { usageBy } : {}) };
     } finally {
       // 最后一批产出必须在这一轮结束前发出去，不能等尾随定时器。
       // 出错路径上也要发：半截产出照样是用户的东西，不能因为任务栽了就藏起来

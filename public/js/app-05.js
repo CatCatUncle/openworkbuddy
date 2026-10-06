@@ -2986,14 +2986,27 @@ function engVerdictHtml(v, on) {
  */
 async function renderEngineCard(box, force) {
   if (!box) return;
+  // 每画一次记个号：晚到的那次（存完 600ms 后补画的、慢的那次请求）不许盖掉已经画好的新一版
+  const seq = box._engSeq = (box._engSeq || 0) + 1;
   box.innerHTML = '<div class="eng-msg">正在找本机装了哪些…</div>';
   // 平时读服务端缓存（探测要给每个 CLI 起子进程，开个设置页不该等）；点「重新检测本机」才真去重探
   const d = await fetch("/api/engines" + (force ? "?force=1" : "")).then((r) => r.json()).catch(() => null);
+  if (seq !== box._engSeq) return;
   if (!d) { box.innerHTML = '<div class="eng-msg">检测失败：拿不到引擎列表</div>'; return; }
   const cur = d.current || "builtin";
   const all = [d.builtin, ...(d.engines || [])];
+  const ctx = { multi: !!d.multiUser, shellOff: !!d.shellOff };
   box.innerHTML = all.map((e) => {
     const on = cur === e.id, builtin = e.id === "builtin", ready = builtin || e.installed;
+    const g = e.gate || {};
+    // 开跑前那道闸的状态直接写在卡上：组织关了命令行 / 多人共用属主还没打开。别等用户切过去、跑一个任务才撞上报错
+    const gateNote = builtin ? ""
+      : ctx.shellOff ? '<div class="eng-i">本组织关了命令行，外部引擎自带命令行，所以也不能用。</div>'
+      : ctx.multi && !g.enabled ? `<div class="eng-i">${amPlatformOwner() ? "多人共用时默认关着，勾上下面这项才能用。" : "多人共用时默认关着，平台属主打开后才能用。"}</div>`
+      : "";
+    // 开关只画给平台属主，而且画在每张装了的卡上——画在「选中后的展开区」里的话，得先切过去才看得见它
+    const gateRow = !builtin && e.installed && ctx.multi && amPlatformOwner()
+      ? `<label class="eng-gate eng-row"><input type="checkbox" data-act="enable"${g.enabled ? " checked" : ""}> <span>在这台服务器上打开它（多人共用时默认关）</span></label>` : "";
     const v = engTested.get(e.id);
     // 从补全的 PATH / 登录 shell 里找到的，说一声——用户要是纳闷"我明明装了它怎么现在才看见"，这就是答案
     const howNote = !builtin && e.installed && e.how && e.how !== "PATH"
@@ -3009,9 +3022,11 @@ async function renderEngineCard(box, force) {
       <div class="eng-h"><span class="eng-dot">${on ? "●" : "○"}</span><b>${esc(e.label)}</b><span class="eng-bs">${engBadgeHtml(e, v)}</span></div>
       <div class="eng-n">${esc(e.note || "")}</div>
       ${howNote}
+      ${gateNote}
       ${!builtin && !e.installed ? `<div class="eng-i">${esc(e.error || "没找到")}<br>装法：<code>${esc(e.install || "")}</code></div>${engineBinRowHtml(e)}` : ""}
+      ${gateRow}
       ${tryRow}
-      ${builtin || !on ? "" : engineExtraHtml(e)}
+      ${builtin || !on ? "" : engineExtraHtml(e, ctx)}
     </div>`;
   }).join("") + '<div class="eng-row" style="margin-top:4px"><button class="btn-plain" id="ag-eng-rescan">重新检测本机</button><span class="eng-msg" id="ag-eng-msg"></span></div>';
 
@@ -3023,6 +3038,13 @@ async function renderEngineCard(box, force) {
     if (el.classList.contains("on")) bindEngineExtra(el, id, box);
     const tb = el.querySelector('[data-act="test"]');
     if (tb) tb.onclick = (ev) => { ev.stopPropagation(); testEngineConnect(el, id); };
+    const eb = el.querySelector('[data-act="enable"]');
+    if (eb) eb.onchange = async () => {
+      msg.textContent = "保存中…";
+      const ok = await saveSettings({ agent: { engine_options: { [id]: { enabled: eb.checked } } } }, null);
+      if (!ok) { eb.checked = !eb.checked; msg.textContent = lastSaveError || "保存失败"; return; }
+      return renderEngineCard(box);
+    };
     const bb = el.querySelector('[data-act="bin"]');
     if (bb) bb.onclick = async (ev) => {
       ev.stopPropagation();
@@ -3035,7 +3057,7 @@ async function renderEngineCard(box, force) {
     };
     el.onclick = async (ev) => {
       // 展开区的输入框、试一试那一行、测出来的结论、填路径那一行，点了都不算"切引擎"
-      if (ev.target.closest(".eng-x, .eng-try, .eng-r, .eng-bin")) return;
+      if (ev.target.closest(".eng-x, .eng-try, .eng-r, .eng-bin, .eng-gate")) return;
       if (el.classList.contains("on")) return;
       if (el.dataset.ready !== "1") {
         // 没找到的那条：点了不切。静默切到一个跑不起来的引擎，用户会以为在用本机订阅，
@@ -3074,30 +3096,41 @@ function engineBinRowHtml(e) {
 const ENGINE_THINK_LEVELS = [
   ["", "跟随全局思考模式"], ["auto", "跟随 CLI 默认"], ["off", "关闭思考"], ["low", "低"], ["medium", "中"], ["high", "高"],
 ];
-function engineExtraHtml(e) {
+function engineExtraHtml(e, ctx = {}) {
   const o = e.options || {};
+  const g = e.gate || {};
+  const owner = amPlatformOwner();
   const listId = "eng-models-" + e.id;
-  const models = Array.isArray(e.models) ? e.models : [];
-  const modelHint = e.modelSource === "codex_account"
-    ? "列的是你这个 Codex 账号能用的模型；留空用默认。"
+  const allowed = Array.isArray(g.allowed) ? g.allowed : [];
+  // 型号必须钉死（不再用 CLI 自己的默认型号）。成员只能在属主放行的那几个里挑，下拉也只列这几个
+  const models = owner ? (Array.isArray(e.models) ? e.models : []) : allowed;
+  const modelHint = !owner
+    ? (allowed.length ? "只能从属主放行的型号里选；留空跟属主钉的那个走。" : "属主还没放行型号，先找平台属主在这里填。")
+    : e.modelSource === "codex_account"
+    ? "列的是这个 Codex 账号能用的模型，选一个钉住。"
     : e.modelSource === "claude_local"
-    ? "别名（opus / sonnet…）永远指向最新一代，外加你 Claude Code 配置里用过的；留空用默认。"
+    ? "别名（opus / sonnet…）指向最新一代，外加你配置里用过的；选一个钉住。"
     : e.modelSource === "codex_config"
-    ? "只列 Codex 配置里有的模型；留空用默认，也可手填。"
+    ? "只列 Codex 配置里有的模型，也可手填；必须填一个。"
     : e.id === "codex"
-      ? "Codex 无模型目录可查。留空用默认，或手填模型名。"
-      : "留空 = 用 CLI 自己的默认模型；也可以直接输入它支持的模型名。";
+      ? "Codex 没有模型目录可查，手填一个模型名。"
+      : "填一个它支持的模型名，必须填。";
+  const placeholder = owner ? "必填" : (g.pinned || "从放行的型号里选");
   // 路径框只画给平台管理员：成员存的时候带上它（哪怕是空串）整单都会 403，连模型和思考档也存不下
   return `<div class="eng-x" onclick="event.stopPropagation()">
-    ${amPlatformOwner() ? `<label>可执行文件路径<span style="color:var(--owb-text-3)">（留空自动查找，找不到时再填绝对路径）</span>
+    ${owner ? `<label>可执行文件路径<span style="color:var(--owb-text-3)">（留空自动查找，找不到时再填绝对路径）</span>
       <input type="text" data-k="bin" placeholder="${esc(e.path || e.id)}" value="${esc(o.bin || "")}"></label>` : ""}
     <label>模型<span style="color:var(--owb-text-3)">（${esc(modelHint)}）</span>
-      <input type="text" data-k="model" list="${listId}" placeholder="默认" value="${esc(o.model || "")}" autocomplete="off">
+      <input type="text" data-k="model" list="${listId}" placeholder="${esc(placeholder)}" value="${esc(o.model || "")}" autocomplete="off">
       <datalist id="${listId}">${models.map((m) => `<option value="${esc(m)}">`).join("")}</datalist></label>
+    ${!owner && allowed.length ? `<div class="eng-c">放行的型号：${esc(allowed.join(" / "))}</div>` : ""}
+    ${owner && ctx.multi ? `<label>成员可选的型号<span style="color:var(--owb-text-3)">（逗号隔开；上面钉的那个总能选。成员只能在这些里挑）</span>
+      <input type="text" data-k="models" placeholder="不填 = 成员只能用上面钉的那个" value="${esc(allowed.filter((m) => m !== g.pinned).join(", "))}" autocomplete="off"></label>` : ""}
+    ${owner && e.id === "codex" ? `<label class="eng-chk"><input type="checkbox" data-k="network"${g.network ? " checked" : ""}> <span>引擎里的命令能联网</span><span style="color:var(--owb-text-3)">（默认关，只管它在沙箱里跑的命令）</span></label>` : ""}
     <label>${esc(e.thinkingLabel || "思考模式")}<span style="color:var(--owb-text-3)">（只对这个引擎生效；「跟随全局」= 用助理设置里的思考模式）</span>
       <select data-k="thinking">${ENGINE_THINK_LEVELS.map(([v, l]) => `<option value="${v}"${(o.thinking || "") === v ? " selected" : ""}>${l}</option>`).join("")}</select></label>
     <div class="eng-row">
-      <button class="btn-plain" data-act="save">${amPlatformOwner() ? "保存路径 / 模型 / 思考档" : "保存模型 / 思考档"}</button>
+      <button class="btn-plain" data-act="save">${owner ? "保存路径 / 模型 / 思考档" : "保存模型 / 思考档"}</button>
       <span class="eng-msg" data-role="xmsg"></span>
     </div>
     <div class="eng-c">跑起来是这条命令：${esc(e.launchHeader || "")}${e.version ? "　本机这一份：" + esc(e.version) : ""}</div>
@@ -3109,7 +3142,12 @@ function bindEngineExtra(card, id, box) {
   if (!x) return;
   const readOpts = () => {
     const o = {};
-    x.querySelectorAll("input[data-k],select[data-k]").forEach((i) => (o[i.dataset.k] = i.value.trim()));
+    x.querySelectorAll("input[data-k],select[data-k]").forEach((i) => {
+      const k = i.dataset.k;
+      o[k] = i.type === "checkbox" ? i.checked
+        : k === "models" ? i.value.split(/[,，\n]/).map((v) => v.trim()).filter(Boolean)
+        : i.value.trim();
+    });
     return o;
   };
   x.querySelector('[data-act="save"]').onclick = async () => {
@@ -3117,7 +3155,8 @@ function bindEngineExtra(card, id, box) {
     m.textContent = "保存中…";
     const ok = await saveSettings({ agent: { engine_options: { [id]: readOpts() } } }, null);
     m.textContent = ok ? "✓ 已保存" : (lastSaveError || "保存失败");
-    if (ok) setTimeout(() => renderEngineCard(box), 600);
+    // 停 600ms 让「✓ 已保存」看得见再重画；这期间已经重画过（切了引擎、点了重新检测）就不再补这一遍
+    if (ok) { const seq = box._engSeq; setTimeout(() => { if (box._engSeq === seq) renderEngineCard(box); }, 600); }
   };
 }
 
@@ -3134,7 +3173,8 @@ async function testEngineConnect(card, id) {
   if (!btn || !out) return;
   const on = card.classList.contains("on");
   const opts = {};
-  card.querySelectorAll(".eng-x input[data-k]").forEach((i) => (opts[i.dataset.k] = i.value.trim()));
+  // 只带文字框（路径 / 型号）：勾选项和成员列表是存盘用的，试连不看它们
+  card.querySelectorAll('.eng-x input[data-k]:not([type="checkbox"])').forEach((i) => { if (i.dataset.k !== "models") opts[i.dataset.k] = i.value.trim(); });
   btn.disabled = true;
   const t0 = Date.now();
   const paint = () => { out.innerHTML = `<div class="eng-r">正在真连一次…已等 ${Math.round((Date.now() - t0) / 1000)} 秒（第一次会慢一点）</div>`; };
@@ -3318,7 +3358,7 @@ function squareThumb(file, size) {
 }
 
 async function renderMemoryPane(pane) {
-  // 常见的几家嵌入接口。自动找已经认得通义/智谱/OpenAI/Ollama，硅基流动补给只接了 DeepSeek 或中转站的人
+  // 常见的几家嵌入接口，单独填一组时点一下就填好。没选嵌入模型就按关键词召回，不会自己借聊天渠道的 Key
   const EMBED_PRESETS = [
     ["硅基流动 · bge-m3", "https://api.siliconflow.cn/v1", "BAAI/bge-m3"],
     ["OpenAI · 3-small", "https://api.openai.com/v1", "text-embedding-3-small"],
@@ -3332,10 +3372,12 @@ async function renderMemoryPane(pane) {
   const vs = m.vectors || {};
   // 嵌入接口表单只画给平台管理员（后端对别人回 null）；提示语要指向真的存在的那个地方
   const emb = m.embedding;
-  const vecOk = !vs.failed && (!vs.enabled || !vs.total || vs.have >= vs.total);
+  const vecOk = !vs.failed && !vs.blocked && (!vs.enabled || !vs.total || vs.have >= vs.total);
   const vecLine = !vs.enabled
-    ? `语义召回没开，现按关键词召回。${emb ? "在下面填一个嵌入接口就能开。" : "嵌入接口由平台管理员配置。"}`
+    ? `向量检索没开，正在用关键词检索。${!emb ? "嵌入模型由平台管理员配置。" : emb.missing ? "选的渠道不在了，在下面重选一个。" : "在下面选一个嵌入模型就能开。"}`
     : vs.failed ? `嵌入接口调不通，已退回关键词召回。${emb ? "点下面「测一下」看上游怎么说。" : "请平台管理员看一下。"}`
+    // 额度闸门拦下的：渠道没坏，原因是服务端那句原话（缺哪个价目 / 哪一级预算用完），单独一行照搬
+    : vs.blocked ? "额度闸门拦下了向量计算，现按关键词召回。"
     : !vs.total ? `语义召回已接上（${vs.model}），记了东西就会自动算向量。`
     : vs.have >= vs.total ? `语义召回开着：${vs.total} 条都算好了向量（${vs.model}）。`
     : `语义召回：${vs.have}/${vs.total} 条有向量，嵌入渠道可能不通，现按关键词召回。日志搜「[记忆向量]」查原因。`;
@@ -3356,7 +3398,7 @@ async function renderMemoryPane(pane) {
     <div class="card-item">
       <div class="t">${ic("pin")} 记住的事（AI 自己记的 + 你手动加的）</div>
       <div class="d" style="margin-bottom:8px">一条一句话，跨任务保留。「共享」全员可见，其余只属本人。每人最多 ${esc(String((m.limits || {}).max_items || 120))} 条。</div>
-      <div class="d" id="mem-vec" style="margin-bottom:8px">${ic(vecOk ? "search" : "triangle-alert")} ${esc(vecLine)}</div>
+      <div class="d" id="mem-vec" style="margin-bottom:8px">${ic(vecOk ? "search" : "triangle-alert")} ${esc(vecLine)}${vs.enabled && !vs.failed && vs.blocked ? `<div>${esc(vs.blocked)}</div>` : ""}</div>
       <div id="mem-items">${rows}</div>
       <div class="form-row" style="margin-top:8px">
         <input id="mem-new" placeholder="手动加一条，例如：周报只要三段——进展 / 问题 / 下周计划">
@@ -3371,7 +3413,12 @@ async function renderMemoryPane(pane) {
     ${!emb ? "" : `
     <div class="card-item" id="emb-card">
       <div class="t">${ic("search")} 嵌入接口（语义召回用）</div>
-      <div class="d" style="margin-bottom:8px">不填就从已配渠道自动找：通义、智谱、OpenAI、本机 Ollama。${vs.enabled && vs.source ? `<span id="emb-src">现在用的是${esc(vs.source)}。</span>` : ""}</div>
+      <div class="d" style="margin-bottom:8px">没选就按关键词召回，不会借聊天渠道的 Key。${vs.enabled && vs.source ? `<span id="emb-src">现在用的是${esc(vs.source)}。</span>` : ""}</div>
+      ${(emb.channels || []).length ? `
+      <div class="d" style="margin-bottom:4px">用已配渠道：</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">${emb.channels.map((c) =>
+        `<span class="chip${c.id === emb.provider ? " active" : ""}" data-emb-ch="${esc(c.id)}" data-emb-model="${esc(c.model)}">${esc(c.name)}</span>`).join("")}</div>
+      <div class="d" style="margin-bottom:4px">或单独填一个接口：</div>` : ""}
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">${EMBED_PRESETS.map(([nm, base, model]) =>
         `<span class="chip" data-emb-base="${esc(base)}" data-emb-model="${esc(model)}">${esc(nm)}</span>`).join("")}</div>
       <div class="form-row"><input id="emb-base" placeholder="接口地址，如 https://api.siliconflow.cn/v1" value="${esc(emb.base_url)}"></div>
@@ -3382,7 +3429,7 @@ async function renderMemoryPane(pane) {
       <div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <button class="btn-plain" id="emb-test">${ic("zap")} 测一下</button>
         <button class="btn-brand" id="emb-save">保存</button>
-        ${emb.base_url ? `<a href="#" class="link" id="emb-clear">清空，改回自动找</a>` : ""}
+        ${emb.base_url || emb.provider || emb.model ? `<a href="#" class="link" id="emb-clear">清空，改回关键词召回</a>` : ""}
         <span class="ok-msg" id="emb-msg"></span>
       </div>
     </div>`}
@@ -3408,15 +3455,43 @@ async function renderMemoryPane(pane) {
   if (emb) {
     const q = (id) => pane.querySelector(id);
     const msg = q("#emb-msg");
-    const form = () => ({ base_url: q("#emb-base").value.trim(), api_key: q("#emb-key").value.trim(), model: q("#emb-model").value.trim() });
+    const KEY_PH = "API Key（本机接口可空）", BASE_PH = "接口地址，如 https://api.siliconflow.cn/v1";
+    const chs = emb.channels || [];
+    // 点名已配渠道时，地址和 Key 用那条渠道的，这两格锁上；点预设或清掉渠道就回到单独填
+    let chan = chs.some((c) => c.id === emb.provider) ? emb.provider : "";
+    const useChan = (id) => {
+      const c = chs.find((x) => x.id === id);
+      chan = c ? c.id : "";
+      const b = q("#emb-base"), k = q("#emb-key");
+      b.disabled = k.disabled = !!c;
+      if (c) { b.value = ""; k.value = ""; b.placeholder = `用渠道「${c.name}」的地址`; k.placeholder = `用渠道「${c.name}」的 Key`; }
+      else {
+        b.placeholder = BASE_PH;
+        // 原先单独填过一组的，Key 还按「没改」带着；地址一换，上面那条监听会把它清掉
+        if (emb.has_key && !k.value) k.value = "********";
+        else if (!/^\*+$/.test(k.value)) k.placeholder = KEY_PH;
+      }
+      pane.querySelectorAll("[data-emb-ch]").forEach((x) => x.classList.toggle("active", x.dataset.embCh === chan));
+    };
+    if (chan) useChan(chan);
+    const form = () => chan
+      ? { provider: chan, model: q("#emb-model").value.trim() }
+      : { base_url: q("#emb-base").value.trim(), api_key: q("#emb-key").value.trim(), model: q("#emb-model").value.trim() };
     // 换了地址，已存的那把 Key 不能跟着过去（后端也会拦）：星号清掉，让人看见要重填
-    q("#emb-base").addEventListener("input", () => { if (/^\*+$/.test(q("#emb-key").value)) { q("#emb-key").value = ""; q("#emb-key").placeholder = "API Key（本机接口可空）"; } });
+    q("#emb-base").addEventListener("input", () => { if (/^\*+$/.test(q("#emb-key").value)) { q("#emb-key").value = ""; q("#emb-key").placeholder = KEY_PH; } });
+    pane.querySelectorAll("[data-emb-ch]").forEach(c => c.onclick = () => {
+      useChan(c.dataset.embCh);
+      if (c.dataset.embModel) q("#emb-model").value = c.dataset.embModel;
+      pane.querySelectorAll("[data-emb-base]").forEach(x => x.classList.remove("active"));
+    });
     pane.querySelectorAll("[data-emb-base]").forEach(c => c.onclick = () => {
-      if (q("#emb-base").value.trim() !== c.dataset.embBase && /^\*+$/.test(q("#emb-key").value)) { q("#emb-key").value = ""; q("#emb-key").placeholder = "API Key（本机接口可空）"; }
+      useChan("");
+      if (q("#emb-base").value.trim() !== c.dataset.embBase && /^\*+$/.test(q("#emb-key").value)) { q("#emb-key").value = ""; q("#emb-key").placeholder = KEY_PH; }
       q("#emb-base").value = c.dataset.embBase; q("#emb-model").value = c.dataset.embModel;
       pane.querySelectorAll("[data-emb-base]").forEach(x => x.classList.toggle("active", x === c));
     });
     const check = (f) => {
+      if (f.provider) { if (!f.model) { setMsg(msg, "circle-x", "模型名要填", "err"); return false; } return true; }
       if (!f.base_url || !f.model) { setMsg(msg, "circle-x", "接口地址和模型名都要填", "err"); return false; }
       return true;
     };
@@ -3437,7 +3512,7 @@ async function renderMemoryPane(pane) {
     };
     q("#emb-save").onclick = () => { const f = form(); return check(f) ? save(f, "嵌入接口已保存，向量在后台补算") : undefined; };
     const clr = q("#emb-clear");
-    if (clr) clr.onclick = (e) => { e.preventDefault(); return save({ base_url: "", api_key: "", model: "" }, "已清空，改回从已配渠道自动找"); };
+    if (clr) clr.onclick = (e) => { e.preventDefault(); return save({ provider: "", base_url: "", api_key: "", model: "" }, "已清空，记忆改按关键词召回"); };
   }
   if (m.can_edit_manual) pane.querySelector("#mem-save").onclick = async () => {
     const resp = await fetch("/api/memory", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: pane.querySelector("#mem-text").value }) });

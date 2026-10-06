@@ -142,21 +142,46 @@ function auditBlocked(sinceMs) {
  *   · loop_util：事件循环忙的比例。**只在纯 node 跑的服务端才有**——Electron 主进程里
  *     eventLoopUtilization 实测恒为 0（它的循环不是 node 自己在转），记个 0 会被读成「一点都不忙」，不如不记。
  * 只在 start() 之后才开，测试里单调 snapshot() 的不受影响。
+ *
+ * 闲着就关表（2026-10-07 实测）：空转的服务端每秒被叫醒 40 次，38 次是这张表——50ms 一拍，
+ * 一拍醒两回。闲的时候没有东西会卡，量出来一排 0，却一直挡着 CPU 进深睡（耗电、发热）。
+ * 所以表只在有事时开：来一条请求、起一趟任务就开（wake）；分钟快照那一拍看到这一分钟闲着、
+ * 离上次 wake 也满一分钟，就关掉。关着的那些行里没有 loop_p99_ms / loop_max_ms（没量 ≠ 0）。
+ * loop_util 不靠定时器，start 之后一直记。
  */
 const LOOP_RES_MS = 50;
+const LOOP_QUIET_MS = 60000;
 let loopHist = null;
 let eluPrev = null;
-function loopArm() {
+let loopOn = false; // start() 之后才是 true：没 start 的进程（测试、命令行）wake() 什么都不开
+let lastWake = 0;
+function histArm() {
   if (loopHist) return;
   try { loopHist = perfHooks.monitorEventLoopDelay({ resolution: LOOP_RES_MS }); loopHist.enable(); } catch { loopHist = null; }
-  eluPrev = null;
-  if (!process.versions.electron) {
-    try { eluPrev = perfHooks.performance.eventLoopUtilization(); } catch { eluPrev = null; }
-  }
+}
+function histDisarm() {
+  try { if (loopHist) loopHist.disable(); } catch {}
+  loopHist = null;
+}
+function loopArm() {
+  loopOn = true;
+  lastWake = Date.now();
+  histArm();
+  if (eluPrev || process.versions.electron) return;
+  try { eluPrev = perfHooks.performance.eventLoopUtilization(); } catch { eluPrev = null; }
 }
 function loopDisarm() {
-  try { if (loopHist) loopHist.disable(); } catch {}
-  loopHist = null; eluPrev = null;
+  histDisarm();
+  loopOn = false; eluPrev = null;
+}
+/** 有事了（来了请求、起了任务）：表关着就打开。每条请求都会叫，所以只做两次比较 */
+function wake() {
+  lastWake = Date.now();
+  if (loopOn && !loopHist) histArm();
+}
+/** 分钟快照那一拍：这一分钟闲、离上次 wake 也满一分钟，表就先关了，等下一次 wake */
+function loopNap(row, now) {
+  if (loopHist && isIdle(row) && now - lastWake >= LOOP_QUIET_MS) histDisarm();
 }
 /** 读完就清零：每一行记的是「这一分钟」，跟上面的计数器一个口径 */
 function loopRead() {
@@ -370,6 +395,7 @@ function start({ getConfig = () => ({}), gauges = () => ({}), notifyFn = null, i
       const now = Date.now();
       // 闲行不落盘，但告警照样每分钟判：磁盘快满这种事不等十分钟
       if (shouldWrite(row, last, now)) { write(row); last = { at: now, idle: isIdle(row) }; }
+      loopNap(row, now);
     } catch (e) { log.warn("metrics", "滚快照出错", { err: e }); return; }
     let alerts = [];
     try { alerts = evaluate(row); } catch (e) { log.warn("metrics", "规则判断出错", { err: e }); return; }
@@ -390,6 +416,6 @@ function stop() {
 }
 
 module.exports = {
-  bump, observe, snapshot, write, read, evaluate, start, stop,
-  _internals: { RULES, DIR, STATE_FILE, COOLDOWN_MS, KEEP_MONTHS, IDLE_EVERY_MS, isIdle, shouldWrite, loadState, saveState, shards, fileOf, diskFreePct, channelStreaks, channelHealth, STREAK_FRESH_MS, auditBlocked, pct, loopArm, loopDisarm, loopRead, LOOP_RES_MS },
+  bump, observe, wake, snapshot, write, read, evaluate, start, stop,
+  _internals: { RULES, DIR, STATE_FILE, COOLDOWN_MS, KEEP_MONTHS, IDLE_EVERY_MS, isIdle, shouldWrite, loadState, saveState, shards, fileOf, diskFreePct, channelStreaks, channelHealth, STREAK_FRESH_MS, auditBlocked, pct, loopArm, loopDisarm, loopRead, loopNap, LOOP_RES_MS, LOOP_QUIET_MS, get loopArmed() { return !!loopHist; } },
 };

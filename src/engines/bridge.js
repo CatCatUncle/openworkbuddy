@@ -13,12 +13,12 @@
  * 用户自己在设置里配的 MCP 连接器一并塞进去：切到本机引擎之后，
  * 那些连接器不该跟着消失——它们本来就是 MCP，转手给 CLI 是最直接的做法。
  *
- * 但 MCP 这条路不是每次都通。实测（2026-09-08）：codex 0.146 接到非 OpenAI 模型上时，
- * 它照常拉起我们这台服务器、照常收下 tools/list，然后一个工具都不往模型手里挂——
- * 问模型「你能调什么」，答案里只有 list_mcp_resources 这类内置项。
- * 这不是我们能修的，但用户不该因此失去生图能力。
- * 所以再铺一条不依赖 MCP 的路：把环境变量烘进一个叫 owb 的可执行脚本，
- * 提示词里把命令给模型。两个 CLI 都有 shell，这条路谁也拦不住。
+ * 两个 CLI 上 MCP 都是主路：MCP 服务器由 CLI 直接拉起，不在 codex 给命令套的沙箱里，
+ * 命令不能联网、不能写数据目录时，借过去的工具照样能生图、能记东西。
+ * （2026-09-08 记过 codex 0.146 接非 OpenAI 模型时工具挂不上；OpenWorkBuddy 里 codex 只走
+ * 默认供应商——换供应商的参数在开跑前就被拒了，见 gate.js——这条旧结论不再决定主路。）
+ * 再铺一条后备：把环境变量烘进一个叫 owb 的可执行脚本，提示词里把命令给模型。
+ * 它跑在 CLI 的命令沙箱里——codex 关网、只写工作区时，要联网或写数据目录的工具从这条路调不成。
  */
 
 const fs = require("fs");
@@ -117,6 +117,8 @@ function codexArgs(servers) {
     // codex exec 的审批策略是 never：要审批的 MCP 工具不会问人，直接判拒绝，
     // 模型看得见工具却一次也调不成。跟 Claude Code 那边 --allowed-tools mcp__<name> 对齐，整台放行。
     out.push("-c", `mcp_servers.${name}.default_tools_approval_mode="approve"`);
+    // 生图、出视频动辄几分钟，codex 默认的工具超时一到就判失败——钱已经花了，图却没交到手里
+    if (name === SERVER_NAME) out.push("-c", `mcp_servers.${name}.tool_timeout_sec=900`);
   }
   return out;
 }
@@ -155,17 +157,19 @@ function attach(engineId, { home, baseDir = "", user = "", tools, extraServers =
   const lent = (tools && tools.length ? tools : require("./tool-bridge").LENDABLE)
     .filter((n) => require("./tool-bridge").LENDABLE.includes(n));
   const shim = writeShim(servers[SERVER_NAME]);
-  // codex 那边 MCP 挂不上（见文件头），命令行是它唯一能用到这些工具的路，所以标成主路。
-  const shimIsPrimary = engineId === "codex";
+  // 两边都以 MCP 为主（见文件头）；命令行脚本只是后备
+  const shimIsPrimary = false;
   // 脚本目录挂到子进程 PATH 最前面，模型敲裸 `owb` 就能调到——带绝对路径的写法会被两个
   // CLI 的权限层拦下（见 writeShim 上面那段），裸命令加一条放行规则才通得了。
   const shimEnv = { PATH: shim.dir + path.delimiter + (process.env.PATH || "") };
-  const common = { names, lent, toolCount: lent.length, shim: shim.path, shimDir: shim.dir, shimBin: shim.bin, shimIsPrimary };
+  // codex 的命令跑在它自己的沙箱里（只写工作区、默认不联网），owb 脚本也在里面；MCP 服务器不在
+  const shimSandboxed = engineId === "codex";
+  const common = { names, lent, toolCount: lent.length, shim: shim.path, shimDir: shim.dir, shimBin: shim.bin, shimIsPrimary, shimSandboxed };
   if (engineId === "codex") {
     return {
-      // writableRoots：codex 的 workspace-write 沙箱只让写 cwd，而 remember / save_skill
-      // 要写到数据目录里去。不开这个口子，模型调得动工具但存不下东西，报错还特别难懂。
-      runOpts: { mcpArgs: codexArgs(servers), env: shimEnv, shimBin: shim.bin, writableRoots: [home] },
+      // 不再把数据根加进可写目录：那等于让引擎里的任何命令都能改配置和账号。
+      // remember / save_skill 走 MCP，MCP 服务器在沙箱外，用不着这个口子
+      runOpts: { mcpArgs: codexArgs(servers), env: shimEnv, shimBin: shim.bin },
       ...common,
       cleanup: shim.cleanup,
     };
