@@ -152,10 +152,24 @@ async function main() {
 
     console.log("\n【6】删画布进回收站：挪过去、列得出来、拿得回来，原名被占了就叫 _2");
     store.canvasWriteState(board([node("t1", "note", { title: "第3集的卡" }), node("t2", "image", { title: "回收站里的图", image: "回收站里的图.png" })]), "第3集");
+    // 再存两回：身边攒出 .bak、.bak.1、每小时、每天几份；再造一份「坏了」的、一份快照
+    store.canvasWriteState(board([node("t1", "note", { title: "第3集的卡" }), node("t2", "image", { title: "回收站里的图", image: "回收站里的图.png" })]), "第3集");
+    store.canvasWriteState(board([node("t1", "note", { title: "第3集的卡" }), node("t2", "image", { title: "回收站里的图", image: "回收站里的图.png" })]), "第3集");
+    put(".openworkbuddy/canvases/第3集.json.坏了-2026-01-02T03-04-05.bak", "{\"t1\":1}");
+    put(".openworkbuddy/canvases/第3集.json.json.bak", "别的画布的");   // 名字恰好以它开头的另一张画布（叫「第3集.json」）的备份：不沾
+    store.canvasSnapshotSave("第3集", "清空前", store.canvasReadState("第3集"));
+    const bakOf = (base) => fs.readdirSync(CAN).filter((n) => n.startsWith(base + ".json.") && !n.startsWith(base + ".json.json")).sort();
+    const baksBefore = bakOf("第3集");
+    ok(baksBefore.includes("第3集.json.bak") && baksBefore.includes("第3集.json.bak.1") && baksBefore.some((n) => /\.每小时-/.test(n)) && baksBefore.some((n) => /\.每天-/.test(n)), "（前提）删之前身边有 .bak、.bak.1、每小时、每天几份", baksBefore);
     put("回收站里的图.png");
     store.canvasSetCurrentName("第3集");
     r = await call("DELETE", "/api/canvas/boards/第3集");
     const trashed = r.json && r.json.trashed;
+    const bakDir = trashed ? path.join(WS, trashed.path.replace(/\.json$/, ".备份")) : "";
+    ok(trashed && bakOf("第3集").length === 0, "★备份跟着进了回收站，画布目录里一份不剩★ 以前留在原地，同名新画布的每小时、每天那一格被上一张占着", bakOf("第3集"));
+    ok(trashed && baksBefore.every((n) => fs.existsSync(path.join(bakDir, n))) && fs.existsSync(path.join(bakDir, "快照")), "  └ 原样放在回收站里那张旁边的 .备份 文件夹，快照也在", trashed && fs.existsSync(bakDir) ? fs.readdirSync(bakDir) : "没有 .备份");
+    ok(fs.existsSync(path.join(CAN, "第3集.json.json.bak")), "  └ 反向对照：名字恰好以它开头的别的画布的备份没被挪走");
+    ok(!fs.existsSync(path.join(OWB, "canvas-snapshots", "第3集")) && store.canvasSnapshotList("第3集").length === 0, "★快照不再挂在这个名字下★ 不然同名新画布点「放回去」，补进来的是上一张的节点");
     ok(r.code === 200 && trashed && /^\.openworkbuddy\/canvas-trash\/第3集@\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d\.json$/.test(trashed.path), "删掉回 200，说清挪到了哪个路径", r.body.slice(0, 300));
     ok(trashed && fs.existsSync(path.join(WS, trashed.path)) && !fs.existsSync(path.join(CAN, "第3集.json")), "★文件真在回收站里，画布目录里没了★ 以前是 unlink，点错一下就白干");
     ok(!r.json.canvases.some((c) => c.name === "第3集"), "画布列表里不再有它");
@@ -163,13 +177,23 @@ async function main() {
     r = await call("GET", "/api/canvas/list");
     const inTrash = (r.json.trash || []).find((t) => t.id === trashed.id);
     ok(inTrash && inTrash.name === "第3集" && inTrash.nodes === 2 && inTrash.path === trashed.path && inTrash.deletedAt > 0, "画布列表接口带上回收站：名字、几个节点、路径、什么时候删的", r.json.trash);
+    ok((r.json.trash || []).length === 1 && r.json.trash.every((t) => /\.json$/.test(t.id)), "回收站列表只列画布本身，.备份 文件夹不当成一张画布", r.json.trash);
     r = await call("GET", "/api/canvas/assets?name=main");
     m = by(r);
     ok(m.get("回收站里的图.png") && m.get("回收站里的图.png").orphan === false && m.get("回收站里的图.png").usedBy.some((u) => /回收站里的画布 第3集/.test(u.title)),
       "★回收站里的画布引用的素材不算「没人用」★ 它随时会被放回来，这时删了素材就是一屏「找不到」", m.get("回收站里的图.png"));
     store.canvasWriteState(board([node("new1", "note", { title: "后来新建的第3集" })]), "第3集");
+    store.canvasWriteState(board([node("new1", "note", { title: "后来新建的第3集" }), node("new2", "note", { title: "又加一张" })]), "第3集");
+    const hourly = bakOf("第3集").find((n) => /\.每小时-/.test(n));
+    ok(hourly && /new1/.test(fs.readFileSync(path.join(CAN, hourly), "utf8")) && !/t1/.test(fs.readFileSync(path.join(CAN, hourly), "utf8")),
+      "★同名新画布的每小时备份存的是它自己★ 以前那一格被上一张占着，这一小时就留不下它", hourly);
     r = await call("POST", "/api/canvas/trash/restore", { id: trashed.id });
     ok(r.code === 200 && r.json.name === "第3集_2", "原名被新画布占了：放回来叫 第3集_2", r.body.slice(0, 200));
+    const backBaks = bakOf("第3集_2");
+    ok(baksBefore.every((n) => backBaks.includes(n.replace(/^第3集\.json/, "第3集_2.json"))) && /t1/.test(fs.readFileSync(path.join(CAN, "第3集_2.json.bak"), "utf8")),
+      "★备份跟回来了，按新名字改名（第3集_2.json.bak…）★", backBaks);
+    ok(store.canvasSnapshotList("第3集_2").length === 1 && store.canvasSnapshotList("第3集").length === 0, "快照跟着回到 第3集_2 名下，新的 第3集 那张不沾");
+    ok(!fs.existsSync(bakDir), "挪空了的 .备份 文件夹删掉，回收站里不留空壳");
     ok(store.canvasReadState("第3集").nodes[0].id === "new1" && store.canvasReadState("第3集_2").nodes.map((n) => n.id).join() === "t1,t2", "★两张都在，谁也不盖谁★");
     ok(!(r.json.trash || []).some((t) => t.id === trashed.id) && !fs.existsSync(path.join(WS, trashed.path)), "放回来之后回收站里就没它了");
     r = await call("POST", "/api/canvas/trash/restore", { id: "../canvas.json" });

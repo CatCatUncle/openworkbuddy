@@ -192,7 +192,27 @@ function canvasStampTime(text) {
  */
 function canvasTrashDir() { return path.join(ws(), ".openworkbuddy", "canvas-trash"); }
 const CANVAS_TRASH_RE = /@\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d(?:-\d+)?\.json$/;
-/** 把一张画布挪进回收站。返回 { id, name, file, deletedAt }；主画布不收 */
+/**
+ * 一张画布身边那几类备份的后缀：.bak、.bak.N、.每小时-…、.每天-…、.坏了-…（见 canvasRotateBackups / canvasBackup）。
+ * 只认这几种，名字恰好以它开头的别的画布（「第3集.json」那张的 第3集.json.json）不沾
+ */
+const CANVAS_BAK_SUFFIX_RE = /^\.(?:bak(?:\.\d+)?|每小时-\d{4}-\d\d-\d\dT\d\d\.bak|每天-\d{4}-\d\d-\d\d\.bak|坏了-\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d\.bak)$/;
+/** file 身边的备份，返回后缀（".bak"、".每天-2026-10-06.bak"…），不是全名 */
+function canvasBackupSuffixes(file) {
+  const base = path.basename(file);
+  let names = [];
+  try { names = fs.readdirSync(path.dirname(file)); } catch { return []; }
+  return names.filter((n) => n.startsWith(base) && CANVAS_BAK_SUFFIX_RE.test(n.slice(base.length))).map((n) => n.slice(base.length));
+}
+/** 回收站里那张画布的备份放在哪：跟它并排的 <画布名@时间>.备份/。不是 .json 结尾，回收站列表不会把它当成一张画布 */
+function canvasTrashBackupDir(id) { return path.join(canvasTrashDir(), String(id).replace(/\.json$/, ".备份")); }
+/**
+ * 把一张画布挪进回收站。返回 { id, name, file, deletedAt }；主画布不收
+ *
+ * 它身边的 .bak / 每小时 / 每天几份、还有快照，跟着一起挪进去：以前只挪了正本，那几十份留在原地——
+ * 再建一张同名的，它的每小时、每天那一格已经被上一张占着（canvasKeepPeriodic 见到有就不写），
+ * 「上午那一版」翻出来是上一张的；快照列表里也冒出上一张的，点「放回去」就把上一张的节点补进了这一张
+ */
 function canvasTrashPut(name, now = Date.now()) {
   const safe = canvasSafeName(name);
   if (safe !== String(name)) throw new Error("画布名称不合法");
@@ -203,6 +223,14 @@ function canvasTrashPut(name, now = Date.now()) {
   let id = `${safe}@${stamp}.json`;
   for (let n = 2; fs.existsSync(path.join(dir, id)); n++) id = `${safe}@${stamp}-${n}.json`;
   fs.renameSync(src, path.join(dir, id));
+  // 备份跟着走。挪不动的（权限、跨盘）就留在原地，不拦着删：正本已经进了回收站
+  try {
+    const bakDir = canvasTrashBackupDir(id), suffixes = canvasBackupSuffixes(src), snaps = canvasSnapDir(safe);
+    const hasSnaps = fs.existsSync(snaps);
+    if (suffixes.length || hasSnaps) fs.mkdirSync(bakDir, { recursive: true });
+    for (const suf of suffixes) { try { fs.renameSync(src + suf, path.join(bakDir, path.basename(src) + suf)); } catch {} }
+    if (hasSnaps) { try { fs.renameSync(snaps, path.join(bakDir, "快照")); } catch {} }
+  } catch {}
   // 这张画布上没点的待生成清单一起作废：以后再建一张同名的，不能冒出一条上一张的横幅
   canvasProposalDrop(safe);
   // 删的正是 Agent 认的「当前画布」：指回主画布，免得它接着往一张已经不在的画布上写
@@ -244,9 +272,31 @@ function canvasTrashRestore(id) {
     if (fs.existsSync(file)) continue;
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.renameSync(path.join(dir, id), file);
+    canvasTrashBackupsBack(id, base, file, name);
     return { name, from: id };
   }
   throw new Error("同名画布太多，换不出空着的名字");
+}
+
+/** 放回来时备份也跟回去，按新名字改名（放回来叫 第3集_2 的，备份就叫 第3集_2.json.bak…）。盘上已经有的不盖；挪空了就把那个文件夹删掉 */
+function canvasTrashBackupsBack(id, oldName, file, name) {
+  const bakDir = canvasTrashBackupDir(id);
+  if (!fs.existsSync(bakDir)) return;
+  const oldBase = `${oldName}.json`;
+  let names = [];
+  try { names = fs.readdirSync(bakDir); } catch { return; }
+  for (const n of names) {
+    if (n === "快照") {
+      const snaps = canvasSnapDir(name);
+      if (!fs.existsSync(snaps)) { try { fs.mkdirSync(path.dirname(snaps), { recursive: true }); fs.renameSync(path.join(bakDir, n), snaps); } catch {} }
+      continue;
+    }
+    if (!n.startsWith(oldBase) || !CANVAS_BAK_SUFFIX_RE.test(n.slice(oldBase.length))) continue;
+    const to = file + n.slice(oldBase.length);
+    if (fs.existsSync(to)) continue;
+    try { fs.renameSync(path.join(bakDir, n), to); } catch {}
+  }
+  try { fs.rmdirSync(bakDir); } catch {}   // 不空（有挪不动的）就留着，回收站列表不认它
 }
 
 /**
