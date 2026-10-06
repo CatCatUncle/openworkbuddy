@@ -2281,7 +2281,7 @@ function bgListenPorts(opts) {
   if (!pgids.length) return Promise.resolve(new Set());
   const bin = fs.existsSync("/usr/sbin/lsof") ? "/usr/sbin/lsof" : "lsof";
   return new Promise((resolve) => {
-    require("child_process").execFile(bin, ["-nP", "-a", "-iTCP", "-sTCP:LISTEN", "-g", pgids.join(","), "-Fn"], { timeout: 3000 }, (_e, out) => {
+    require("child_process").execFile(bin, ["-nP", "-a", "-iTCP", "-sTCP:LISTEN", "-g", pgids.join(","), "-Fn"], { timeout: 3000, windowsHide: true }, (_e, out) => {
       const ports = new Set();
       for (const line of String(out || "").split("\n")) {
         const m = /^n.*:(\d+)$/.exec(line);

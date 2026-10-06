@@ -6117,6 +6117,10 @@ async function testParallelToolBatch() {
   });
   await new Promise((r) => srv.listen(0, "127.0.0.1", r));
   const base = `http://127.0.0.1:${srv.address().port}`;
+  // 假站开在 127.0.0.1 的随机端口：本机地址默认不让 AI 连（net-guard），这里照属主在安全页按 host:端口 加白的样子放行。
+  // 不加白就拦那一条由 test/net-guard.js 管，这里测的是并发
+  const security = require(modPath("security"));
+  const cfg = { ...config, security: { ...security.DEFAULTS, url_allow_local: [new URL(base).host] } };
   const scripted = (batches) => {
     let i = 0;
     return {
@@ -6134,7 +6138,7 @@ async function testParallelToolBatch() {
     // 全只读 → 并发
     let events = [];
     let hist = [{ role: "user", content: "抓三个页面" }];
-    await createAgentRuntime({ config, llm: scripted([[fetchCall(1), fetchCall(2), fetchCall(3)]]), mcpManager: new McpManager(), experts })
+    await createAgentRuntime({ config: cfg, llm: scripted([[fetchCall(1), fetchCall(2), fetchCall(3)]]), mcpManager: new McpManager(), experts })
       .runTask({ history: hist, emit: (ev) => events.push(ev) });
     assert.strictEqual(peak, 3, `三个只读工具没有并发跑（实际最高并发 ${peak}）`);
     const par = events.find((e) => e.type === "parallel");
@@ -6152,7 +6156,7 @@ async function testParallelToolBatch() {
     events = [];
     hist = [{ role: "user", content: "抓两个页面再写文件" }];
     await createAgentRuntime({
-      config,
+      config: cfg,
       llm: scripted([[fetchCall(1), fetchCall(2), { id: "t9", name: "write_file", input: { path: tmpFile, content: "x" } }]]),
       mcpManager: new McpManager(),
       experts,
