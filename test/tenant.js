@@ -86,7 +86,8 @@ app.get("/api/files", (_req, res) => res.json(tools.outputFiles()));
 app.get("/api/settings", (_req, res) =>
   res.json({ workspace_dir: tools.getWorkspaceDir(), search: { provider: "jina", jina_key: "REAL-JINA-KEY" },
              im: { feishu: { app_id: "cli_x", app_secret: "REAL-APP-SECRET" } },
-             models: [{ name: "m1", api_key: "REAL-MODEL-KEY" }] }));
+             models: [{ name: "m1", api_key: "REAL-MODEL-KEY" }],
+             map: { provider: "amap", amap_key: "REAL-AMAP-KEY", amap_daily_cap: 2000 } }));
 app.post("/api/settings", (req, res) => res.json({ ok: true, got: req.body }));
 app.get("/api/schedules", (_req, res) => res.json([{ id: "s1", task: "平台的定时任务" }]));
 app.post("/api/engines/test", (_req, res) => res.json({ ok: true }));
@@ -387,12 +388,16 @@ async function login(username, password) {
   console.log("\n【7】红线三：非平台管理员读不到 API Key");
   r = await call("GET", "/api/settings", { cookie: boss });
   eq(r.json.search.jina_key, "REAL-JINA-KEY", "反向对照：平台管理员拿到真 key（不然就是全抹了）");
+  eq(r.json.map.amap_key, "REAL-AMAP-KEY", "反向对照：平台管理员拿到真高德 Key");
   r = await call("GET", "/api/settings", { cookie: fen });
   eq(r.json.search.jina_key, "", "分公司管理员拿不到搜索 key");
   eq(r.json.im.feishu.app_secret, "", "分公司管理员拿不到飞书 App Secret");
   eq(r.json.im.feishu.app_id, "cli_x", "非凭证字段照常返回（app_id 不该被抹）");
   eq(r.json.models[0].api_key, "", "模型 api_key 被抹");
   eq(r.json.models[0].name, "m1", "模型名照常返回");
+  eq(r.json.map.amap_key, "", "高德 Key 被抹");
+  eq(r.json.map.provider, "amap", "地图服务商照常返回");
+  eq(r.json.map.amap_daily_cap, 2000, "高德每日上限照常返回");
   r = await call("GET", "/api/settings", { cookie: yuan });
   eq(r.json.search.jina_key, "", "同组织的普通成员一样拿不到 key");
 
