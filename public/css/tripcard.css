@@ -87,7 +87,8 @@ html[data-theme="dark"] .tc-tiles { filter: invert(1) hue-rotate(180deg) brightn
 .tc-card:hover, .tc-card.on { background: var(--owb-bg-hover); }
 .tc-card:focus-visible { box-shadow: 0 0 0 2px var(--owb-brand); }
 .tc-ph { position: relative; flex: none; width: 64px; height: 64px; border-radius: var(--radius-md); background: var(--owb-bg-side); }
-.tc-ph img { width: 100%; height: 100%; object-fit: cover; border-radius: var(--radius-md); display: block; }
+.tc-ph img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: var(--radius-md); display: block; }
+.tc-ini { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; color: var(--owb-text-3); font-size: 24px; font-weight: 600; user-select: none; }
 .tc-no { position: absolute; left: -4px; top: -4px; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 9px; background: var(--owb-brand); color: #fff; font-size: 11px; font-weight: 600; line-height: 18px; text-align: center; box-sizing: border-box; }
 .tc-info { flex: 1; min-width: 0; }
 .tc-nm { font-weight: 600; line-height: 1.35; }

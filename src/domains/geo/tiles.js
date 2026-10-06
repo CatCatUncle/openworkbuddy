@@ -45,7 +45,8 @@ const SOURCES = {
 };
 
 /** 照片只代理这几个图床 */
-let imgHosts = [/(^|\.)amap\.com$/, /(^|\.)autonavi\.com$/, /^upload\.wikimedia\.org$/, /^commons\.wikimedia\.org$/];
+// Wikimedia 的缩略图会从 commons 跳到 upload / thumb 等子域，跳去哪家说变就变，所以整个 wikimedia.org 都认
+let imgHosts = [/(^|\.)amap\.com$/, /(^|\.)autonavi\.com$/, /(^|\.)wikimedia\.org$/];
 /** 测试时把瓦片指到本机假服务 */
 let tileBase = "";
 let capBytes = CAP_BYTES;

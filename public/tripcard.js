@@ -335,8 +335,10 @@
         const kind = s.kind || (p && p.kind) || "";
         const meta = [s.time ? esc(s.time) : "", p && p.rating ? `<span class="tc-star">★ ${p.rating}</span>` : "", kind ? esc(kind) : ""].filter(Boolean).join(" · ");
         const ph = p && p.photo ? `<img alt="" loading="lazy" src="${esc(imgUrl(p.photo))}">` : "";
+        // 没照片、照片取不到：方块里写地名头一个字，不留一块空白像没加载完
+        const ini = [...String(s.name || "").trim()][0] || "";
         h += `<div class="tc-card${i === st.active ? " on" : ""}" data-i="${i}" tabindex="0">`
-          + `<div class="tc-ph">${ph}<span class="tc-no">${i + 1}</span></div>`
+          + `<div class="tc-ph"><span class="tc-ini" aria-hidden="true">${esc(ini.toUpperCase())}</span>${ph}<span class="tc-no">${i + 1}</span></div>`
           + `<div class="tc-info"><div class="tc-nm">${esc(s.name)}</div>${meta ? `<div class="tc-meta">${meta}</div>` : ""}`
           + (s.note ? `<div class="tc-note">${esc(s.note)}</div>` : "")
           + (p === null ? `<div class="tc-miss">地图上没找到这个地方</div>` : "") + `</div></div>`;

@@ -243,11 +243,22 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
     "埃菲尔铁塔": [{ name: "埃菲尔铁塔", location: "120.30,30.40", cityname: "杭州市", pname: "浙江省", adname: "余杭区", address: "天都城", type: "风景名胜", business: {}, photos: [] }],
     "天安门": [{ name: "天安门", location: "116.397469,39.908821", cityname: "北京市", pname: "北京市", adname: "东城区", address: "长安街", type: "风景名胜;风景名胜;国家级景点", business: { rating: [] }, photos: [] }],
     "南强街": [{ name: "南强街巷", location: "102.711,25.036", cityname: "昆明市", pname: "云南省", adname: "五华区", address: "南强街", type: "购物服务;特色商业街;步行街", business: { rating: "4.5" }, photos: [] }],
+    "金马碧鸡坊": [{ name: "金马碧鸡坊", location: "102.709,25.034", cityname: "昆明市", pname: "云南省", adname: "五华区", address: "三市街", type: "风景名胜", business: {}, photos: [] }],
   };
   const OSM = {
     "埃菲尔铁塔, 巴黎": [{ lat: "48.8584", lon: "2.2945", name: "埃菲尔铁塔", display_name: "埃菲尔铁塔, 战神广场, 第七区, 巴黎, 法国", type: "attraction", category: "tourism", extratags: { wikidata: "Q243" } }],
     "天安门, 北京": [{ lat: "39.9075", lon: "116.39723", name: "天安门", display_name: "天安门, 东长安街, 东城区, 北京市, 中国", type: "monument", category: "historic", extratags: { image: "https://upload.wikimedia.org/wikipedia/commons/a/ab/Tiananmen.jpg" } }],
+    // 没标 wikidata 的：照片要按名字去 Wikidata 搜
+    "岳麓山, 长沙": [{ lat: "28.1830", lon: "112.9330", name: "岳麓山", display_name: "岳麓山, 岳麓区, 长沙市, 湖南省, 中国", type: "peak", category: "natural", extratags: {} }],
+    "昙华林, 武汉": [{ lat: "30.5550", lon: "114.3000", name: "昙华林", display_name: "昙华林, 武昌区, 武汉市, 湖北省, 中国", type: "pedestrian", category: "highway", extratags: {} }],
+    "炸图, 长沙": [{ lat: "28.2000", lon: "112.9700", name: "炸图", display_name: "炸图, 长沙市, 中国", type: "attraction", category: "tourism", extratags: {} }],
   };
+  /** Wikidata 条目：P625 坐标（WGS-84）、P18 头图 */
+  const wd = (lng, lat, file) => ({ ...(lng == null ? {} : { P625: [{ mainsnak: { datavalue: { value: { latitude: lat, longitude: lng } } } }] }), ...(file ? { P18: [{ mainsnak: { datavalue: { value: file } } }] } : {}) });
+  // 岳麓山：头一个没坐标、第二个在杭州，第三个才是；第四个也近但排在后面。昙华林：第一个近的没图，第二个是旁边的地铁站
+  const WIKI_SEARCH = { "岳麓山": ["Q899", "Q900", "Q901", "Q902"], "昙华林": ["Q910", "Q911"], "金马碧鸡坊": ["Q920"] };
+  const WIKI_ENT = { Q899: wd(null, null, "No Coords.jpg"), Q900: wd(120.1, 30.2, "Far Away.jpg"), Q901: wd(112.935, 28.185, "Yuelu Mountain.jpg"), Q902: wd(112.93, 28.18, "Other.jpg"),
+    Q910: wd(114.302, 30.556), Q911: wd(114.303, 30.557, "Metro Station.jpg"), Q920: wd(102.704, 25.037, "Jinma Biji.jpg") };
   const srv = http.createServer((req, res) => {
     const u = new URL(req.url, "http://x");
     const q = Object.fromEntries(u.searchParams);
@@ -265,6 +276,8 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
     }
     if (u.pathname === "/search") return json(OSM[q.q] || []);
     if (u.pathname === "/w/api.php") {
+      if (q.action === "wbsearchentities") return q.search === "炸图" ? json({ oops: true }, 500) : json({ search: (WIKI_SEARCH[q.search] || []).map((id) => ({ id })) });
+      if (q.action === "wbgetentities") return json({ entities: Object.fromEntries(String(q.ids).split("|").map((id) => [id, { claims: WIKI_ENT[id] || {} }])) });
       return json(q.entity === "Q243" ? { claims: { P18: [{ mainsnak: { datavalue: { value: "Tour Eiffel Wikimedia Commons.jpg" } } }] } } : { claims: {} });
     }
     const t = /^\/tiles\/(\w+)\/(\d+)\/(\d+)\/(\d+)$/.exec(u.pathname);
@@ -289,10 +302,11 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
   // 照片代理默认那份名单：换成测试名单之前先查
   console.log("\n五、图片代理名单（默认那份）");
   {
-    const yes = ["https://aos-comment.amap.com/a.jpg", "https://store.is.autonavi.com/x.jpg", "https://upload.wikimedia.org/a.jpg", "https://commons.wikimedia.org/wiki/Special:FilePath/a.jpg"];
-    const no = ["https://evil.com/a.jpg", "https://upload.wikimedia.org.evil.com/a.jpg", "https://fakeamap.com/a.jpg", "https://upload.wikimedia.org:8443/a.jpg",
+    const yes = ["https://aos-comment.amap.com/a.jpg", "https://store.is.autonavi.com/x.jpg", "https://upload.wikimedia.org/a.jpg", "https://commons.wikimedia.org/wiki/Special:FilePath/a.jpg",
+      "https://thumb.wikimedia.org/wikipedia/commons/thumb/5/5d/a.jpg/330px-a.jpg"];
+    const no = ["https://evil.com/a.jpg", "https://upload.wikimedia.org.evil.com/a.jpg", "https://wikimedia.org.evil.com/a.jpg", "https://notwikimedia.org/a.jpg", "https://fakeamap.com/a.jpg", "https://upload.wikimedia.org:8443/a.jpg",
       "https://u:p@upload.wikimedia.org/a.jpg", "file:///etc/passwd", "javascript:alert(1)", "ftp://upload.wikimedia.org/a.jpg", "not a url", "http://127.0.0.1/a.jpg"];
-    ok(yes.every(tiles.allowed), "高德、Wikimedia 的图床放行", yes.filter((u) => !tiles.allowed(u)));
+    ok(yes.every(tiles.allowed), "高德、Wikimedia 的图床放行（缩略图会从 commons 跳到 thumb.wikimedia.org）", yes.filter((u) => !tiles.allowed(u)));
     ok(no.every((u) => !tiles.allowed(u)), "名单外的域名、带端口、带账号密码、file:/javascript:/ftp:、本机地址一律不代理", no.filter(tiles.allowed));
     eq([PNG, JPG, Buffer.from("RIFF0000WEBPVP8 "), Buffer.from("GIF89a1234"), Buffer.from("<html>")].map(tiles.sniff),
       ["image/png", "image/jpeg", "image/webp", "image/gif", ""], "只认图片头几个字节");
@@ -376,10 +390,29 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
     ok(many.items.length === places.MAX_ITEMS && many.items.every((x) => x.ok === false), `一次最多 ${places.MAX_ITEMS} 个，没名字的直接算没找到（不打接口）`);
     eq(await places.lookup(withKey, "乱给的"), { provider: "amap", items: [], notes: [] }, "items 不是数组：回空的，不抛错");
 
+    const yl = await places.lookup({}, [{ name: "岳麓山", city: "长沙" }, { name: "昙华林", city: "武汉" }]);
+    ok(yl.items[0].photo === "https://commons.wikimedia.org/wiki/Special:FilePath/Yuelu_Mountain.jpg?width=320",
+      "OSM 没标 Wikidata：拿名字去搜，按排名取第一个 3 公里内的条目的头图（没坐标的、离太远的跳过）", yl.items[0].photo);
+    ok(yl.items[1].ok && yl.items[1].photo === "", "第一个离得近的条目没头图：就不配图，不往下拿旁边地铁站那张", yl.items[1]);
+    const ws = hits.filter((h) => h.path === "/w/api.php" && h.q.action === "wbsearchentities").slice(-2);
+    ok(ws.length === 2 && ws.map((h) => h.q.search).sort().join() === "岳麓山,昙华林" && ws.every((h) => h.q.language === "zh" && /OpenWorkBuddy/.test(h.ua)),
+      "Wikidata 按中文名搜，带 User-Agent", ws.map((h) => h.q));
+    const nw = count("/w/api.php");
+    await places.lookup({}, [{ name: "岳麓山", city: "长沙" }, { name: "昙华林", city: "武汉" }]);
+    ok(count("/w/api.php") === nw, "补过的照片记住了（找到的、没找到的都算）：第二次不再搜");
+    const jm = await places.lookup(withKey, [{ name: "金马碧鸡坊", city: "昆明" }]);
+    ok(jm.items[0].src === "amap" && jm.items[0].photo === "https://commons.wikimedia.org/wiki/Special:FilePath/Jinma_Biji.jpg?width=320",
+      "高德没给照片：同样去 Wikidata 补", jm.items[0]);
+    const zt = await places.lookup({}, [{ name: "炸图", city: "长沙" }]);
+    ok(zt.items[0].ok && zt.items[0].photo === "" && zt.notes.length === 0, "Wikidata 回 500：地点照样给，没照片，不往卡片上报错", zt);
+    const nz = count("/w/api.php");
+    await places.lookup({}, [{ name: "炸图", city: "长沙" }]);
+    ok(count("/w/api.php") === nz + 1, "补照片出错不进缓存：下次再试");
+
     const ctl = places._testing({});
     await ctl.flush();
     const disk = fs.readFileSync(ctl.cacheFile, "utf8");
-    ok(disk.includes("a|昆明|翠湖公园") && disk.includes("o|巴黎|埃菲尔铁塔"), "查过的记了盘", ctl.cacheFile);
+    ok(disk.includes("a|昆明|翠湖公园") && disk.includes("o|巴黎|埃菲尔铁塔") && disk.includes("w|长沙|岳麓山"), "查过的记了盘（补的照片单记一条）", ctl.cacheFile);
     ok(!disk.includes("sk-test"), "盘上的缓存里没有 Key");
     places._testing({ reset: true });
     const nd = count("/v5/place/text");

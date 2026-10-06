@@ -6382,6 +6382,11 @@ const TRIP_CHECKS = `
   ok("照片走本机代理（/api/geo/img），页面不直连外部图床", ![...w.querySelectorAll("img")].some((i) => /^https?:/.test(i.getAttribute("src") || "")));
   ok("照片取不到（图床回 404）：卡片上去掉那张图，序号还在，不留裂图", !cards[1].querySelector(".tc-ph img") && txt(cards[1], ".tc-no") === "2");
   ok("地图上没找到的那站照样列着，说一句「地图上没找到这个地方」", txt(cards[3], ".tc-miss") === "地图上没找到这个地方" && !cards[3].querySelector(".tc-ph img"));
+  const ini = (c) => txt(c, ".tc-ini");
+  ok("没照片、照片取不到、地图上没找到：方块里写地名头一个字，不留一块空白", ini(cards[1]) === "南" && ini(cards[3]) === [...txt(cards[3], ".tc-nm")][0].toUpperCase()
+    && cards[1].querySelector(".tc-ini").getBoundingClientRect().height > 20, [ini(cards[1]), ini(cards[3])]);
+  const phBox = c0.querySelector(".tc-ph").getBoundingClientRect(), imBox = c0.querySelector(".tc-ph img").getBoundingClientRect();
+  ok("有照片：照片铺满方块，把那个字盖住", ["left", "top", "width", "height"].every((k) => Math.abs(phBox[k] - imBox[k]) < 1), [phBox, imBox]);
   const legs = [...panel.querySelectorAll(".tc-leg")];
   ok("两站之间：步行 · 1.2 公里 · 约 15 分钟，带「导航 ›」", legs.length === 3 && txt(legs[0], ".tc-legt") === "步行 · 1.2 公里 · 约 15 分钟"
     && /^https:\\/\\/uri\\.amap\\.com\\/navigation\\?/.test(legs[0].querySelector("a").href) && !legs[2].querySelector("a"),

@@ -11,6 +11,7 @@
  *     高德没查到（多半是国外的地方）再去 OpenStreetMap 查一遍。
  *   · 没 Key：OpenStreetMap 的 Nominatim 查坐标，照片从 Wikidata 拿（有就有，没有就算了），
  *     没有评分；两站之间画直线、标直线距离。一个 Key 都不用填也能看到地图。
+ * 不管哪条路，查到的地方没带照片，就拿名字去 Wikidata 搜一次，位置对得上才用它的头图。
  *
  * 坐标系：高德给的是 GCJ-02，OpenStreetMap 给的是 WGS-84。每个点都带上 datum，
  * 画在哪张底图上由前端换算（src/util/geo-coords.js / public/tripcard.js）。
@@ -42,6 +43,8 @@ const MAX_LEGS = 20;
 const MAX_ROUTE_M = 150e3;
 /** 直线这么近以内按步行查，再远按驾车 */
 const WALK_M = 2000;
+/** 按名字在 Wikidata 搜到的条目，坐标离查到的点这么近以内才算同一个地方（湖、山的中心点能差出两公里） */
+const WIKI_NEAR_M = 3000;
 
 let bases = { ...BASES };
 let gaps = { ...GAPS };
@@ -212,6 +215,14 @@ const OSM_KIND = /** @type {Record<string,string>} */ ({
   pedestrian: "步行街", university: "大学", library: "图书馆", theatre: "剧院", stadium: "体育场", station: "车站",
 });
 
+/** Commons 上一张图的 320 宽缩略图地址 @param {string} file */
+const commonsThumb = (file) => `https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(file.replace(/ /g, "_"))}?width=320`;
+/** Wikidata 一条声明的值 @param {any} claims @param {string} prop */
+const claimValue = (claims, prop) => {
+  const c = claims && Array.isArray(claims[prop]) ? claims[prop][0] : null;
+  return c && c.mainsnak && c.mainsnak.datavalue ? c.mainsnak.datavalue.value : undefined;
+};
+
 /** Wikidata 上这个地方的头图（P18）。拿不到就空着，不算错 @param {string} qid */
 async function wikiPhoto(qid) {
   if (!/^Q\d{1,12}$/.test(qid)) return "";
@@ -221,9 +232,34 @@ async function wikiPhoto(qid) {
   u.searchParams.set("property", "P18");
   u.searchParams.set("format", "json");
   const j = await gated("wikidata", () => getJson(u.toString(), { timeoutMs: 6000 }));
-  const claim = j && j.claims && Array.isArray(j.claims.P18) ? j.claims.P18[0] : null;
-  const file = claim && claim.mainsnak && claim.mainsnak.datavalue && s(claim.mainsnak.datavalue.value);
-  return file ? `https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(file.replace(/ /g, "_"))}?width=320` : "";
+  const file = s(claimValue(j && j.claims, "P18"));
+  return file ? commonsThumb(file) : "";
+}
+
+/**
+ * 地图服务没给照片的地方：拿名字去 Wikidata 搜，按搜索排名看，第一个坐标离查到的点 WIKI_NEAR_M 以内的条目算数。
+ * 它没头图就算了，不往下找——再往下多半是同名的别处，或者旁边的地铁站，配上去是错图。
+ * @param {string} name @param {{ lng: number, lat: number, datum: string }} at
+ */
+async function wikiPhotoByName(name, at) {
+  const [lng, lat] = geo.convert(at.lng, at.lat, at.datum, "wgs84");
+  const q = new URL("/w/api.php", bases.wikidata);
+  for (const [k, v] of Object.entries({ action: "wbsearchentities", search: name, language: "zh", uselang: "zh", type: "item", limit: "5", format: "json" })) q.searchParams.set(k, v);
+  const found = await gated("wikidata", () => getJson(q.toString(), { timeoutMs: 6000 }));
+  const ids = (found && Array.isArray(found.search) ? found.search : []).map((x) => s(x && x.id)).filter((id) => /^Q\d{1,12}$/.test(id));
+  if (!ids.length) return "";
+  const g = new URL("/w/api.php", bases.wikidata);
+  for (const [k, v] of Object.entries({ action: "wbgetentities", ids: ids.join("|"), props: "claims", format: "json" })) g.searchParams.set(k, v);
+  const j = await gated("wikidata", () => getJson(g.toString(), { timeoutMs: 8000 }));
+  for (const id of ids) {
+    const claims = j && j.entities && j.entities[id] && j.entities[id].claims;
+    const co = claimValue(claims, "P625");
+    if (!co || !Number.isFinite(+co.longitude) || !Number.isFinite(+co.latitude)) continue;
+    if (geo.distance(lng, lat, +co.longitude, +co.latitude) > WIKI_NEAR_M) continue;
+    const file = s(claimValue(claims, "P18"));
+    return file ? commonsThumb(file) : "";
+  }
+  return "";
 }
 
 /** OpenStreetMap 的 Nominatim。每秒一次，带上能认出是谁的 User-Agent（它的使用条款要求） @param {string} name @param {string} city */
@@ -258,6 +294,25 @@ async function osmPlace(name, city) {
 // ---------------- 对外：查地点 ----------------
 
 /**
+ * 补照片。另记一条缓存（w|城市|名字），不动地点那条——不然为了补张图要把高德 / Nominatim 再打一遍。
+ * 搜不到记 ""，按「没查到」那档过期，过几天再试。出错只记日志，地点照样给。
+ * @param {string} name @param {string} city @param {{ lng: number, lat: number, datum: string }} at
+ */
+async function photoByName(name, city, at) {
+  const k = `w|${city}|${name}`;
+  const hit = cached(k);
+  if (hit !== undefined) return hit || "";
+  try {
+    const photo = await wikiPhotoByName(name, at);
+    remember(k, photo);
+    return photo;
+  } catch (e) {
+    log.warn("geo", "按名字找 Wikidata 头图没成", { err: String(/** @type {any} */ (e).message || e) });
+    return "";
+  }
+}
+
+/**
  * @param {any} config
  * @param {Array<{ name?: string, city?: string }>} items
  * @returns {Promise<{ provider: string, items: Array<any>, notes: string[] }>}
@@ -278,7 +333,7 @@ async function lookup(config, items) {
         try { r = await amapPlace(st, name, city); remember(k, r); }
         catch (e) { r = null; failed = true; notes.add(/** @type {any} */ (e).message); }
       }
-      if (r) return { ok: true, ...r };
+      if (r) return { ok: true, ...r, photo: r.photo || await photoByName(name, city, r) };
     }
     const k = `o|${city}|${name}`;
     let r = cached(k);
@@ -286,7 +341,7 @@ async function lookup(config, items) {
       try { r = await osmPlace(name, city); remember(k, r); }
       catch (e) { r = null; failed = true; notes.add(/** @type {any} */ (e).message); }
     }
-    return r ? { ok: true, ...r } : { ok: false, failed };
+    return r ? { ok: true, ...r, photo: r.photo || await photoByName(name, city, r) } : { ok: false, failed };
   }));
   return { provider: st.key ? "amap" : "osm", items: out, notes: [...notes] };
 }
