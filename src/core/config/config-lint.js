@@ -59,7 +59,7 @@ function nearest(key, known) {
  */
 const KNOWN_EXTRA = {
   "": ["active_project", "assist_model", "assistant", "backup", "diagram", "embedding", "evolve", "last_picked_model",
-       "media", "media_migrated", "media_models", "model_follow_last", "onboarding", "persona", "pet", "presets_pruned", "projects", "providers",
+       "map", "media", "media_migrated", "media_models", "model_follow_last", "onboarding", "persona", "pet", "presets_pruned", "projects", "providers",
        "security", "shortcuts", "workspace_dir"],
   server: ["host"],
   agent: ["compact_keep_chars", "compact_keep_turns", "compact_threshold_chars", "engine",

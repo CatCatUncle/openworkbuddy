@@ -23,6 +23,7 @@
  */
 
 const { cols } = require("../util/text-width");
+const itinerary = require("../util/itinerary");
 
 // 关的时候用精确的「关」码，不用 0m 全清：0m 会把外层（比如引用块的灰）一起抹掉
 const A = {
@@ -230,17 +231,30 @@ function createRenderer(opts) {
   let done = 0;   // 这半行里已经按正文吐出去的原文长度
   let fence = ""; // 代码块围栏的记号（空串 = 不在代码块里）
   let prev = "";  // done 左边那个字（prevAt 的结果），done 挪一次算一次
+  let trip = null; // ```itinerary 围栏里攒着的行（null = 不在行程卡里）
+
+  const codeLine = (line) => on("dim") + "│ " + on("dimOff") + on("cyan") + line + on("colorOff") + "\n";
+  // 行程卡在网页上是地图；终端里等围栏收齐、换成按天排的文字行程。解不开就照代码块原样打，不吞内容
+  const flushTrip = () => {
+    const lines = trip || [];
+    trip = null;
+    const it = itinerary.parse(lines.join("\n"));
+    if (it) return itinerary.toMarkdown(it).split("\n").map(renderLine).join("");
+    return on("dim") + "│ itinerary" + on("dimOff") + "\n" + lines.map(codeLine).join("");
+  };
 
   const renderLine = (line) => {
     if (fence) {
       const b = blockOf(line);
-      if (b.kind === "fence" && b.mark === fence) { fence = ""; return ""; }
-      return on("dim") + "│ " + on("dimOff") + on("cyan") + line + on("colorOff") + "\n";
+      if (b.kind === "fence" && b.mark === fence) { fence = ""; return trip ? flushTrip() : ""; }
+      if (trip) { trip.push(line); return ""; }
+      return codeLine(line);
     }
     const b = blockOf(line);
     switch (b.kind) {
       case "fence":
         fence = b.mark;
+        if (/^itinerary$/i.test(b.lang)) { trip = []; return ""; }
         return b.lang ? on("dim") + "│ " + b.lang + on("dimOff") + "\n" : "";
       case "head": {
         // 标题里的 **、`代码`、链接照样渲染（原来原样打出 ** 和 [x](u)）。
@@ -305,7 +319,9 @@ function createRenderer(opts) {
       let out = "";
       if (buf) out += done > 0 ? inlineFrom(buf, done, color, prev) + "\n" : renderLine(buf);
       else if (done > 0) out += "\n";
-      buf = ""; done = 0; fence = ""; prev = "";
+      fence = "";
+      if (trip) out += flushTrip(); // 围栏没收尾就结束了：攒着的照样交代出去
+      buf = ""; done = 0; prev = "";
       return out;
     },
   };

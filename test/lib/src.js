@@ -111,7 +111,7 @@ const CANVAS_PART = /^public\/js\/app-07-canvas(?:-[^/]+)?\.js$/;
 // 为什么不按目录扫：目录重整把这些文件散到了 src/ 各层，按目录扫一搬就悄悄扫成零个，
 // 拼出来只剩 server.js，「找不到就跳过」的断言跟着静悄悄变绿。按名字取，少一个当场抛。
 const SERVER_PARTS = Object.freeze([
-  "routes/canvas", "routes/compose", "routes/drama", "routes/library", "routes/prompt-tpls",
+  "routes/canvas", "routes/compose", "routes/drama", "routes/geo", "routes/library", "routes/prompt-tpls",
   "compose-jobs", "demo-mask", "demo-timing", "deps-guard", "font-family", "im-reply", "media-probe",
   "out-decode", "pptx-layout", "task-dirs", "timeline-cards", "timeline-compose", "timeline-subs",
   "web-demo-plan", "web-demo-recorder", "winname", "ws-browse",

@@ -26,6 +26,7 @@ const bridge = require("../engines/bridge"); // 把本项目的工具借给那�
 const prefs = require("../core/config/prefs"); // 底层引擎 / 思考档是按账号存的，跑任务时得看**发起人**的那份
 const HK = require("./hooks"); // 用户配的钩子：done 没过不许收尾
 const callout = require("../util/callout"); // 正文里的提示条：网页画图标，终端/IM 换文字标签
+const itinerary = require("../util/itinerary"); // 行程卡：```itinerary 围栏，网页画成地图卡片，终端/IM 换成文字行程
 const security = require("../core/safety/security"); // 审计中心：对外推送这种「出了门就收不回来」的动作必须留痕
 const mailer = require("../core/obs/mailer"); // 发信：配没配、地址合不合法、白名单放不放行，判据只有这一份
 const tracing = require("../core/obs/trace"); // 执行追踪：整趟任务的模型调用/工具调用发去 Langfuse，默认关
@@ -1181,6 +1182,7 @@ ${hasRenderer() ? "   - fetch_url 拿回来是空壳 → 原样再发一次 fetc
 mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要改名。
 唯一允许动的是宽度：给 \`<svg>\` 加 \`width="100%"\` 并去掉写死的 width/height 像素值。
 写完 write_file 会自动查这一项，报出来说明你确实改坏了，把图重新原样贴一遍。`;
+    p += "\n\n" + itinerary.PROMPT_BLOCK;
     if (config.persona) {
       p += `\n\n## 用户的个性化偏好\n${config.persona}`;
     }
@@ -2530,6 +2532,8 @@ function modePrompt(mode) {
       modeLine,
       bridgedLine(bridged),
       "全程用中文回复。",
+      // 回复正文同样走网页那套渲染，行程卡照样画得出来
+      "\n" + itinerary.PROMPT_BLOCK,
     ];
     // ── 下面四块跟内置引擎那条路（baseSystemPrompt / runTask）一模一样 ─────────────
     // 以前这条路一块都没带。用户换到本机 claude/codex 一跑就发现"上周告诉过你的它全忘了"、

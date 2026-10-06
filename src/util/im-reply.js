@@ -9,7 +9,9 @@
  *    能发图片的通道转成 PNG 另发一条，发不了的在原位置换成一句实话。
  *    认图的规矩跟网页那份（public/svgfig.js 的 extractSvgFigures）一致：网页画成图的，这里也当图。
  * 2. 长回复切成几条。以前飞书那条是 out.slice(0, 3500) 直接砍，4000 多字的回答后半截就没了。
+ * 3. ```itinerary 行程卡在网页上是地图，聊天软件里换成按天排好的文字行程（三个出口都先过这一道）。
  */
+const itinerary = require("./itinerary");
 
 const SKIP = "```[\\s\\S]*?```|```[\\s\\S]*$|``[^\\n]*?``|`[^`\\n]*`";
 const MARK = /\n?\x00SVG(\d+)\x00\n?/g;
@@ -111,6 +113,7 @@ const MAX_FIGS = 4;
  * @returns {Promise<{ text: string, pngs: { png: Buffer, name: string }[], failed: number }>}
  */
 async function prepareFigures(text, o) {
+  text = itinerary.fencesToMarkdown(text);
   const { text: held, figs } = pullFigures(text);
   if (!figs.length) return { text: String(text || ""), pngs: [], failed: 0 };
   /** @type {{ png: Buffer, name: string }[]} */
@@ -140,6 +143,7 @@ async function prepareFigures(text, o) {
 
 /** 发不了图的地方（群机器人摘要之类）：图换成一句话就行 */
 function dropFigures(/** @type {string} */ text) {
+  text = itinerary.fencesToMarkdown(text);
   const { text: held, figs } = pullFigures(text);
   return figs.length ? putNotes(held, figs.map(() => NOTE_NO_IMAGE)) : String(text || "");
 }
@@ -225,7 +229,7 @@ function hardSplit(block, max) {
  */
 function chunks(text, o = {}) {
   const max = Math.max(200, o.max || 3000), maxTables = Math.max(1, o.tables || 5);
-  const src = String(text || "");
+  const src = itinerary.fencesToMarkdown(String(text || ""));
   if (src.length <= max && tablesIn(src) <= maxTables) return [src];
   /** @type {string[]} */
   const out = [];
