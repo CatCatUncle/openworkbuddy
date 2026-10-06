@@ -266,6 +266,51 @@ function redactGuard(req, res, next) {
 }
 
 /**
+ * 付费 API 的额度上下文（quota.withActor 要的那份）。只在**真配了限制**时才建，否则回 null：
+ * 没配的时候连流水都不必带着 org/user 走一遍 ALS，跟以前一模一样。
+ * 两道闸分开判，不能合成一个条件：
+ *   次数闸（quota）管「一天最多生多少张图」，钱闸（budget）管「这个月最多花多少元」。
+ *   很多公司一路次数都没限，却给每个人设了月预算——只看 quota 的话，
+ *   那笔预算一分钱也拦不住，而后台上那个输入框看着很像在干活。
+ * 网页请求（tenantScope）和命令行（ownerActor）共用这一份，两边算出来的主体不会漂开。
+ */
+function quotaActor(o, s, user, source, readConfig) {
+  const qt = quota.quotaTable(s);
+  const anyCap = Object.values(qt).some((c) => c.enabled);
+  const bctx = { orgId: o.id, org: s, user: user || null };
+  const anyBudget = Object.values(budget.limitsOf(bctx)).some((x) => x > 0);
+  if (!anyCap && !anyBudget) return null;
+  return {
+    org: o.id, user: (user && user.username) || "",
+    dept: (user && user.dept) || "", source,
+    quota: anyCap ? qt : null,
+    budget: anyBudget ? bctx : null,
+    // 价目要跟着走：管理员改过的价、这个组织谈下来的折扣，都影响这一趟扣多少。
+    // 不带的话闸门按原价算、账本按原价记，谈下来的折扣等于没谈。
+    price: { config: safeCall(readConfig, null) || {}, discount: s.price_discount },
+  };
+}
+
+/**
+ * 本机属主的额度主体：命令行没有登录态（openworkbuddy jev、命令行里的目标验收），用它过闸、记账。
+ *
+ * 能在这台机器上起命令行的人，碰到的就是平台那份配置和账本，所以按默认组织的属主算：
+ * 默认组织配了限额，命令行照样受管；没配就照旧不限，但账上记清是谁、从命令行来的。
+ * 以前这几条路压根不进 withActor，组织配的限额对它们形同虚设。
+ */
+function ownerActor({ source = "cli", readConfig } = {}) {
+  const o = org.getOrg(org.DEFAULT_ORG);
+  const s = org.settingsOf(o);
+  let user = null;
+  try {
+    const u = account.defaultUser();
+    if (u && org.orgIdOf(u) === org.DEFAULT_ORG) user = u;
+  } catch {}
+  return quotaActor(o, s, user, source, readConfig)
+    || { org: o.id, user: (user && user.username) || "", dept: (user && user.dept) || "", source, quota: null, budget: null };
+}
+
+/**
  * 租户工作目录：把这条请求整条异步链绑到调用者所属组织的成果根目录上。
  *
  * 绑在这一层而不是每个接口里各自判：文件相关的入口有十几个（列表/下载/预览/删除/整理/保存/
@@ -300,26 +345,7 @@ function tenantScope({ withWorkspace, withPolicy, getWorkspaceDir, readConfig, w
       // 连上的进程和密钥都在这台服务器上，所有人的任务都会多出那批工具
       if (s.allow_shell === false || (s.net_allow || []).length || (s.net_deny || []).length || skillsOff)
         policy = { allow_shell: s.allow_shell !== false, net_allow: s.net_allow || [], net_deny: s.net_deny || [], ...(skillsOff ? { skills_write: false, connectors_write: false } : {}) };
-      // 付费 API 的额度上下文。同样只在**真配了限制**时才建：
-      // 没配的时候连流水都不必带着 org/user 走一遍 ALS，跟以前一模一样。
-      // 两道闸分开判，不能合成一个条件：
-      //   次数闸（quota）管「一天最多生多少张图」，钱闸（budget）管「这个月最多花多少元」。
-      //   很多公司一路次数都没限，却给每个人设了月预算——只看 quota 的话，
-      //   那笔预算一分钱也拦不住，而后台上那个输入框看着很像在干活。
-      const qt = quota.quotaTable(s);
-      const anyCap = Object.values(qt).some((c) => c.enabled);
-      const bctx = { orgId: o.id, org: s, user: req.user || null };
-      const anyBudget = Object.values(budget.limitsOf(bctx)).some((x) => x > 0);
-      if (anyCap || anyBudget)
-        actor = {
-          org: o.id, user: (req.user && req.user.username) || "",
-          dept: (req.user && req.user.dept) || "", source: req.quotaSource || "web",
-          quota: anyCap ? qt : null,
-          budget: anyBudget ? bctx : null,
-          // 价目要跟着走：管理员改过的价、这个组织谈下来的折扣，都影响这一趟扣多少。
-          // 不带的话闸门按原价算、账本按原价记，谈下来的折扣等于没谈。
-          price: { config: safeCall(readConfig, null) || {}, discount: s.price_discount },
-        };
+      actor = quotaActor(o, s, req.user || null, req.quotaSource || "web", readConfig);
     } catch (e) {
       console.warn("[租户] 取组织工作目录失败：" + e.message);
     }
@@ -1031,4 +1057,4 @@ function safeCall(fn, arg) {
   try { return fn(arg); } catch { return null; }
 }
 
-module.exports = { createAdminRouter, platformAdmin, ownsGlobalWorkspace, platformGuard, redactGuard, tenantScope, redactSecrets, setDeployment, isSoloDesktop, multiUser, PLATFORM_WRITE, PLATFORM_READ, PERSONAL_WRITE, PERSONAL_WRITE_PREFIX, PERSONAL_READ };
+module.exports = { createAdminRouter, platformAdmin, ownsGlobalWorkspace, platformGuard, redactGuard, tenantScope, ownerActor, redactSecrets, setDeployment, isSoloDesktop, multiUser, PLATFORM_WRITE, PLATFORM_READ, PERSONAL_WRITE, PERSONAL_WRITE_PREFIX, PERSONAL_READ };

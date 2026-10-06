@@ -20,8 +20,12 @@
  * 跑法：node test/systemone.js　（不联网、不花钱：请求怎么拼、回答怎么读都是纯函数）
  */
 
+// 后面几节真问一趟（假上游）、真走额度闸记账，账本和账号要落在临时家里，不碰真数据
+const HOME = require("./lib/own-home")("systemone");
 const path = require("path");
 const fs = require("fs");
+const http = require("http");
+const { spawn } = require("child_process");
 const { mod } = require("./lib/mod");
 
 const ROOT = path.join(__dirname, "..");
@@ -432,6 +436,142 @@ console.log("\n⑰ 答不上来的时候，不替人下结论");
   ok(/连不上：/.test(src(mod.rel("jev"))), "（反向对照）非超时的错还是原样抬出来，没被一块含糊掉");
   ok(!/一定是网络层面的事/.test(src(mod.rel("jev"))), "注释里那句同样的断言也得一并抹掉——证伪了就回头删文档");
 }
+
+// 下面两节真发请求：本机起一个假上游，记下每一趟收到的型号，回一份最小的合法回答
+const 上游 = await (async () => {
+  const seen = [];
+  const srv = http.createServer((req, res) => {
+    let raw = "";
+    req.on("data", (c) => (raw += c));
+    req.on("end", () => {
+      let b = {};
+      try { b = JSON.parse(raw); } catch {}
+      seen.push({ path: req.url, model: b.model });
+      const answers = {};
+      for (const k of Object.keys(b.questions || {})) answers[k] = { type: "noul", noul: 0.9 };
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ model: b.model, answers, usage: { input_tokens: 10, output_tokens: 2 } }));
+    });
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  return { seen, srv, base: `http://127.0.0.1:${srv.address().port}` };
+})();
+const 判断配置 = { route: "typesafe", base_url: 上游.base + "/v1/systemone", api_key: "sk-test-0000", model: "jev-1.13.0" };
+const 一道题 = { 急不急: { type: "noul", instructions: "客户急不急" } };
+const 材料 = "客户说等了三天没人回，订单在丢";
+
+// ─────────────────────────────────────────────────────────────
+console.log("\n⑱ 判断型号只认配置过的那一个：点了别的不发，也不悄悄换");
+{
+  // 原先请求里点什么型号就原样发什么型号：接口那头传一个用户从没配过的型号，
+  // 花的是用户的 Key。悄悄换回配置里那个也不行——人以为问的是 A，答案出自 B。
+  const cfg = { decide: { ...判断配置 } };
+  let r = await jev.ask(cfg, { state: 材料, questions: 一道题 });
+  ok(r.ok, "没点名型号：照配置发", r.error);
+  eq(上游.seen.length && 上游.seen[上游.seen.length - 1].model, "jev-1.13.0", "发出去的就是 config.decide.model");
+  r = await jev.ask(cfg, { state: 材料, questions: 一道题, model: " jev-1.13.0 " });
+  ok(r.ok, "点名点的正是配置里那个（前后带空格也算）：照发", r.error);
+  eq(r.asked, "jev-1.13.0", "回执里写的型号就是真发出去的那个");
+
+  const n0 = 上游.seen.length;
+  for (const m of ["jev-latest", "typesafe/jev-1.13", "deepseek-chat", "anthropic/claude-sonnet-5"]) {
+    r = await jev.ask(cfg, { state: 材料, questions: 一道题, model: m });
+    eq(r.ok + ":" + !!r.badRequest, "false:true", `★点了没配过的「${m}」：本地就打回★`);
+  }
+  eq(上游.seen.length, n0, "★一趟都没发出去★ 打回在发请求之前，不是发完了再说不对");
+  ok(/config\.decide\.model/.test(r.error), "错话里说清去哪儿改", r.error);
+  ok(/没发/.test(r.error), "错话里说清这一趟没发，不让人以为已经花了", r.error);
+  ok(上游.seen.every((x) => x.model === "jev-1.13.0"), "（反向对照）上游从头到尾只见过配置里那一个型号", 上游.seen.map((x) => x.model));
+
+  // 计费那条路：型号不对要在过额度闸之前挡，不该先占一份额度再退
+  const quota = require(mod("quota"));
+  const realGate = quota.gate;
+  let gated = 0;
+  quota.gate = (...a) => { gated++; return realGate.apply(quota, a); };
+  try {
+    r = await jev.askMetered(cfg, { state: 材料, questions: 一道题, model: "deepseek-chat" }, { meta: "测" });
+    eq(r.ok + ":" + !!r.badRequest + ":" + !!r.quota, "false:true:false", "计费那条路同样打回，而且不被说成额度满");
+    eq(gated, 0, "★型号不对根本不过额度闸★");
+    r = await jev.askMetered(cfg, { state: 材料, questions: 一道题 }, { meta: "测" });
+    ok(r.ok && gated === 1, "（反向对照）型号对的照常过闸、照常发", { ok: r.ok, gated, error: r.error });
+  } finally { quota.gate = realGate; }
+  eq(上游.seen.length, n0 + 1, "这一段下来上游只多了那一趟正经的");
+
+  // 渠道那条路：没写 config.decide.model，就只认这条路的出厂型号
+  const viaChan = { providers: [{ id: "ts", kind: "typesafe", api_key: "sk-test-1111", base_url: 上游.base + "/v1" }] };
+  const st = jev.status(viaChan);
+  ok(st.ready && !!st.model, "走渠道也能用", st);
+  r = await jev.ask(viaChan, { state: 材料, questions: 一道题, model: "typesafe/jev-1.13" });
+  eq(r.ok + ":" + !!r.badRequest, "false:true", "★走渠道时点别的型号也打回★ 出厂型号之外一个都不认");
+  r = await jev.ask(viaChan, { state: 材料, questions: 一道题, model: st.model });
+  ok(r.ok, "（反向对照）点的就是这条路认的那个：照发", r.error);
+  eq(上游.seen[上游.seen.length - 1].model, st.model, "发出去的是这条路认的那个型号");
+
+  const srv = srcLib.src("server");
+  ok(/jev\.askMetered\(config, \{[^}]*model: b\.model/.test(srv), "接口把请求里的型号交给 askMetered 去判，路由里不自己放行");
+  ok(/out\.badRequest \? 400/.test(srv), "型号不对回 400：是请求错了，不是上游坏了");
+  ok(!/model: trim\(model\) \|\|/.test(src(mod.rel("jev"))), "（反向对照）请求体里不再有「点什么发什么」的写法");
+}
+
+// ─────────────────────────────────────────────────────────────
+console.log("\n⑲ 命令行 jev 也过额度闸、也记账，算在本机属主头上");
+{
+  // 命令行没有登录态。原先它直接调 jev.ask：组织配的判断额度在网页上生效、在终端里不生效，
+  // 一段脚本循环跑 openworkbuddy jev 就绕过去了，账本里也一笔没有。
+  const account = require(mod("account"));
+  const org = require(mod("org"));
+  const quota = require(mod("quota"));
+  account._internals.register("boss", "Tq7-mx92-kLp");   // 开服第一个人：平台属主
+  account._internals.register("xiaoli", "Rw4-pz83-nVb"); // 后来的成员：不该被记到头上
+  fs.writeFileSync(path.join(HOME, "config.json"), JSON.stringify({ decide: { ...判断配置 } }));
+  const ws = path.join(HOME, "ws");
+  fs.mkdirSync(ws, { recursive: true });
+  const CLI = path.join(ROOT, "cli.js");
+  const run = (args) => new Promise((resolve) => {
+    const kid = spawn(process.execPath, [CLI, ...args], { cwd: ws, env: { ...process.env, OPENWORKBUDDY_HOME: HOME, NO_COLOR: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "", err = "";
+    kid.stdout.on("data", (c) => (out += c));
+    kid.stderr.on("data", (c) => (err += c));
+    const t = setTimeout(() => kid.kill("SIGKILL"), 30000);
+    kid.on("close", (code) => { clearTimeout(t); resolve({ code, out, err }); });
+  });
+  const 账 = () => quota._internals.ledger.read({}).filter((x) => x.cap === "decide" && x.user === "boss");
+
+  // 组织没配限额：照常发，但账要记，而且记在属主名下
+  let n0 = 上游.seen.length;
+  let r = await run(["jev", 材料, "急不急"]);
+  eq(r.code, 0, "没配限额：照常答", r.err);
+  eq(上游.seen.length, n0 + 1, "真发了一趟");
+  let rows = 账();
+  eq(rows.length, 1, "★命令行这一趟进了账本★ 原先一笔都不记");
+  ok(rows[0] && rows[0].org === "default" && rows[0].n === 1, "记在默认组织下、按题数记", rows[0]);
+  eq(quota._internals.ledger.read({}).filter((x) => x.cap === "decide" && x.user === "xiaoli").length, 0, "（反向对照）没记到后来的普通成员头上");
+
+  // 配上限额：每人每天 2 道。已用 1，再问一道正好用完，第三趟要挡
+  org.updateOrg("default", { settings: { api_quota: { decide: { enabled: true, user_daily: 2 } } } });
+  r = await run(["jev", 材料, "急不急"]);
+  eq(r.code, 0, "额度内：照常答", r.err);
+  n0 = 上游.seen.length;
+  r = await run(["jev", 材料, "急不急"]);
+  eq(r.code, 1, "★超了额度：命令行也挡★", r.out + r.err);
+  ok(/这一趟没发/.test(r.err), "挡下的说「没发」，不说「没答上来」——该看的是额度不是渠道", r.err);
+  eq(上游.seen.length, n0, "挡下的那趟一个字节都没发出去");
+  eq(账().length, 2, "挡下的不记账");
+
+  // 不给材料就是测活：三道题，同样过闸
+  r = await run(["jev", "--json"]);
+  eq(r.code, 1, "测活也过额度闸", r.out + r.err);
+  let j = {};
+  try { j = JSON.parse(r.out.trim().split("\n").pop()); } catch {}
+  eq(j.quota, true, "--json 里标明是额度挡的，脚本分得清", r.out);
+  eq(上游.seen.length, n0, "测活被挡也没发");
+
+  const cli = src("cli.js");
+  ok(/ownerActor\(\{ source: "cli"/.test(cli), "命令行按本机属主立额度主体");
+  ok(!/jevApi\.ask\(|jev"\)\.ask\(/.test(cli), "（反向对照）命令行里没有绕开额度闸的直调");
+  ok(/askMetered\(config, args, \{ meta: "目标验收" \}\)/.test(cli), "命令行的目标验收也走计费那条");
+}
+上游.srv.close();
 
 console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
 process.exit(fail === 0 ? 0 : 1);

@@ -572,6 +572,8 @@ if (sub === "jev") {
   const jevApi = require("./src/core/judge/jev");
   const st = jevApi.status(config);
   const say = (s) => process.stdout.write(s);
+  // 命令行没有登录态，按本机属主过额度闸、记账：组织配的限额在这儿照样生效，不是网页上的专属
+  const meter = (fn) => require("./src/core/billing/quota").withActor(require("./src/domains/account/admin").ownerActor({ source: "cli", readConfig: () => config }), fn);
   (async () => {
     if (!st.ready) {
       process.stderr.write(red("判断模型还没法用：" + st.why + "\n") + dim(st.how + "\n"));
@@ -582,7 +584,7 @@ if (sub === "jev") {
     if (!words.length) {
       head();
       prog(dim("没给材料，那就拿一段固定的客服工单测一下——答得对不对一眼能看出来\n"));
-      out = await jevApi.selftest(config);
+      out = await meter(() => jevApi.selftest(config, { metered: true }));
       asked = out.state || "";
     } else if (words.length === 1) {
       process.stderr.write(red("还得说要判断什么。\n") + dim(
@@ -595,11 +597,12 @@ if (sub === "jev") {
       const [state, ask, ...opt] = words;
       asked = state;
       const q = !opt.length ? so.noul(ask) : opts.score ? so.score(ask, opt) : so.choice(ask, opt);
-      out = await jevApi.ask(config, { state, questions: { 判断: q } });
+      out = await meter(() => jevApi.askMetered(config, { state, questions: { 判断: q } }, { meta: "命令行" }));
     }
     if (!out.ok) {
-      if (opts.json) say(JSON.stringify({ ok: false, error: out.error }) + "\n");
-      else process.stderr.write(red("没答上来：" + out.error + "\n"));
+      // 被额度闸挡下的那趟根本没发，别说成「没答上来」——人会去查渠道，而该看的是额度
+      if (opts.json) say(JSON.stringify({ ok: false, error: out.error, ...(out.quota ? { quota: true } : {}) }) + "\n");
+      else process.stderr.write(red((out.quota ? "这一趟没发：" : "没答上来：") + out.error + "\n"));
       process.exit(1);
     }
     if (opts.json) {
@@ -671,7 +674,10 @@ const mcpManager = new McpManager();
 // 没配渠道就返回 ok:false，goal.js 自己退回对话模型那条老路——命令行这边不用管
 const goalKit = require("./src/core/automation/goal").createGoalEngine({
   workspaceDir: getWorkspaceDir,
-  decide: (args) => require("./src/core/judge/jev").ask(config, args),
+  // 跟网页端同一道额度闸，主体是本机属主（见 openworkbuddy jev 那段）
+  decide: (args) => require("./src/core/billing/quota").withActor(
+    require("./src/domains/account/admin").ownerActor({ source: "cli", readConfig: () => config }),
+    () => require("./src/core/judge/jev").askMetered(config, args, { meta: "目标验收" })),
 });
 /**
  * 拆验收标准、对着标准判分，这两句问谁。

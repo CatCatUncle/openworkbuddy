@@ -1582,39 +1582,35 @@ app.post("/api/provider-models", async (req, res) => {
  * 余额扣光了、Key 是别家的、模型名在这家不存在，界面全都看不出来，非要等某个任务跑到一半才炸。
  * probeModel 早就把 401/402/404/429 翻成了人话，只是一直只有开箱向导在用；这里把它摆到渠道卡上。
  *
- * 拿哪个模型去 ping：优先用调用方点名的 → 这条渠道下面的第一个对话模型 → 精选目录里这个 kind 的第一条。
- * 一个都没有就直说「先加个模型」，而不是拿 gpt-3.5 之类瞎猜一个去打——猜错了报的 404 会让人以为 Key 坏了。
+ * 拿哪个模型去 ping：只认这条渠道底下已登记的（点名的必须在列表里，没点名拿第一个）。
+ * 不再退到精选目录：那是用户没配过的型号，拿他的 Key 去打，猜错了报的 404 还会让人以为 Key 坏了。
+ * 用存着的 Key 测时地址和类型不许改，要换地址就连 Key 一起重填。规矩在 chatModels.testPlan 一处。
  */
 app.post("/api/provider-test", async (req, res) => {
   // 出网请求 + 带着 Key，跟 /api/provider-models 同一条规矩：只有平台管理员能发起
   if (!isPlatformOwner(req)) return res.status(403).json({ ok: false, error: "渠道归平台管理员配", platform_only: true });
   const b = req.body || {};
-  const known = (config.providers || []).find((p) => p.id === b.id) || {};
-  const kind = String(b.kind || known.kind || "").trim();
-  const base = String(b.base_url == null ? known.base_url || "" : b.base_url).trim();
-  // 掩码原样传回来时用库里那把真的：界面上 Key 框平时是空的（只显示末四位），
-  // 没重填就点「测一下」是最常见的一次点击，这时候不该测成「Key 为空」
-  const rawKey = String(b.api_key == null ? "" : b.api_key).trim();
-  const key = !rawKey || /^\*+$/.test(rawKey) ? String(known.api_key || "") : rawKey;
+  const plan = chatModels.testPlan(config, b);
+  if (plan.error) return res.json({ ok: false, error: plan.error });
+  const { known, kind, base, key } = plan;
   const local = kind === "ollama" || /localhost|127\.0\.0\.1|0\.0\.0\.0/.test(base);
   if (!key && !local) return res.json({ ok: false, error: "这个渠道还没填 Key，填完再测" });
   // 判断模型（Jev）没有 /chat/completions 这条路，拿它去 ping 必然 400。
   // 它有自己的测活：真问一道题，把答案也带回来——「通了」和「答得对不对」一次看完
   if ((mediaModels.PROVIDER_KINDS.find((k) => k.kind === kind) || {}).decide_only) {
     const t = Date.now();
-    const r = await jev.selftest({ providers: [{ id: known.id || "tmp", kind, base_url: base, api_key: key }] }, { timeoutMs: 20000 });
+    // 型号跟真跑时同一个：config.decide.model 钉过就测钉的那个，没钉才是出厂型号
+    const pinned = String((config.decide || {}).model || "").trim();
+    const r = await jev.selftest({ providers: [{ id: known.id || "tmp", kind, base_url: base, api_key: key }], ...(pinned ? { decide: { model: pinned } } : {}) }, { timeoutMs: 20000 });
     return res.json({
       ok: !!r.ok, ms: Date.now() - t, model: r.model || "",
       error: r.ok ? "" : r.error || "没答上来",
       answers: r.ok ? r.answers.map((a) => systemOne.lineOf(a)) : [],
     });
   }
-  const api = mediaModels.protoOfChannel({ kind, api: b.api == null ? known.api : b.api });
+  const api = mediaModels.protoOfChannel({ kind, api: plan.api });
   if (!["anthropic", "gemini"].includes(api) && !/^https?:\/\//i.test(base)) return res.json({ ok: false, error: "接口地址得是 http(s) 开头的完整地址" });
-  const mine = (config.models || []).filter((m) => m.channel === known.id);
-  const model = String(b.model || "").trim()
-    || (mine[0] || {}).model
-    || ((mediaModels.catalogFor("chat", kind) || [])[0] || {}).id;
+  const model = plan.model;
   if (!model) {
     // 专门挂生图 / 生视频的渠道底下本来就一个对话模型都没有。以前这儿直接甩一句
     // 「还没有对话模型」，等于告诉人「你这条渠道没法测」——可它明明配好了、也在用。

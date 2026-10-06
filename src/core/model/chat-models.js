@@ -336,7 +336,45 @@ function modelsOf(config, channelId) {
   return (Array.isArray(config.models) ? config.models : []).filter((m) => m && String(m.channel || "") === id);
 }
 
+/**
+ * 渠道「测一下」拿哪个型号、用哪把 Key、发去哪儿。纯函数：不联网、不读盘，server.js 那条路由照着发。
+ *
+ * 两条规矩，护的都是「存着的 Key 只用在用户配过的地方」：
+ *   1. 型号只认这条渠道底下已登记的。点名的不在列表里就报错，没点名就拿列表第一个。
+ *      以前列表空着会退到精选目录的第一条——那是用户从没配过的型号，拿他的 Key 去打；
+ *      打出来的 404 还会让人以为 Key 坏了。
+ *   2. 用存着的那把 Key 时，地址、渠道类型、协议都得是存着的那一套。要换地址就连 Key 一起重填：
+ *      存着的 Key 跟着一个改过的地址走，等于把它送到了一个没人核对过的门口。
+ *
+ * 返回 { known, kind, base, api, key, model } 或 { error }。
+ * model 为空 = 这条渠道底下一个对话模型都没有，走不走媒体清单那条不花钱的测活由调用方定。
+ * @param {any} config
+ * @param {any} body
+ */
+function testPlan(config, body) {
+  const b = body || {};
+  const provs = Array.isArray(config && config.providers) ? config.providers : [];
+  const known = (b.id != null && provs.find((p) => p && p.id === b.id)) || {};
+  const kind = String(b.kind || known.kind || "").trim();
+  const base = String(b.base_url == null ? known.base_url || "" : b.base_url).trim();
+  const api = b.api == null ? known.api : b.api;
+  // 掩码原样传回来时用库里那把真的：界面上 Key 框平时是空的（只显示末四位），
+  // 没重填就点「测一下」是最常见的一次点击，这时候不该测成「Key 为空」
+  const rawKey = String(b.api_key == null ? "" : b.api_key).trim();
+  const stored = !rawKey || /^\*+$/.test(rawKey);
+  const key = stored ? String(known.api_key || "") : rawKey;
+  if (stored && key) {
+    const same = (/** @type {any} */ x, /** @type {any} */ y) => trimEndpoint(x) === trimEndpoint(y);
+    if (!same(base, known.base_url) || !same(kind, known.kind) || (b.api != null && !same(b.api, known.api)))
+      return { error: "改了地址或类型就要重新填 Key 再测：存着的 Key 只发往原来那家" };
+  }
+  const mine = modelsOf(config || {}, known.id).map((m) => String(m.model || "").trim()).filter(Boolean);
+  const want = String(b.model || "").trim();
+  if (want && !mine.includes(want)) return { error: "「" + want.slice(0, 60) + "」没登记在这条渠道下。先到 设置 → 模型 加上再测" };
+  return { known, kind, base, api, key, model: want || mine[0] || "" };
+}
+
 module.exports = {
-  normalize, modelsOf, chanKeyOf, nameForKind, wantsChannel,
+  normalize, modelsOf, testPlan, chanKeyOf, nameForKind, wantsChannel,
   pruneSeededPresets, SEEDED_PRESETS, templates, planTemplate, planCustom, trimEndpoint, commitTemplate, legacyRows, isLocalBase,
 };
