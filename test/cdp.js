@@ -536,16 +536,25 @@ setInterval(()=>{},1e9);}
     const on = (srv, tab) => (srv.calls || []).filter((c) => c.tab === tab).map((c) => c.method === "Page.setWebLifecycleState" ? "state:" + c.state : c.method);
     const srv = fakeChrome({ headless: true });
     const port = await listen(srv);
+    // P1/P2 这一段冻结线放宽到 600ms：P2 每 50ms 动一下，要证明的是「一直在动就不冻」，
+    // 冻结线只有 150ms 时，CI 机器上计时器晚个一两百毫秒，P2 两下之间就够着了（2026-10-06 真红过一次）
+    process.env.OWB_CDP_PARK_MS = "600";
     const a = await cdp.run({ action: "navigate", port, url: "http://a.test/", wait_ms: 0, owner: "P1" });
     const seqA = on(srv, a.tab_id);
     ok(seqA.indexOf("state:active") >= 0 && seqA.indexOf("Page.bringToFront") > seqA.indexOf("state:active") && seqA.indexOf("Page.navigate") > seqA.indexOf("Page.bringToFront"),
       "动之前先解冻、再拉到前台，然后才做动作本身", JSON.stringify(seqA));
     // P2 一直在动（每 50ms 一下）：P1 的冻结不能被它往后推
     const b = await cdp.run({ action: "navigate", port, url: "http://b.test/", wait_ms: 0, owner: "P2" });
-    for (let i = 0; i < 6; i++) { await sleep(50); await cdp.run({ action: "evaluate", port, expression: "1", owner: "P2" }); }
+    // 动到 P1 冻住为止（最多 10 秒），不按固定时长猜；顺手量 P2 两下之间最长隔了多久，挂了好对数
+    let gap = 0;
+    for (let t0 = Date.now(), last = t0; !on(srv, a.tab_id).includes("state:frozen") && Date.now() - t0 < 10000;) {
+      await sleep(50); await cdp.run({ action: "evaluate", port, expression: "1", owner: "P2" });
+      const now = Date.now(); gap = Math.max(gap, now - last); last = now;
+    }
     ok(on(srv, a.tab_id).includes("state:frozen"), "P1 闲过 OWB_CDP_PARK_MS 就冻住，P2 在旁边一直动也挡不住", JSON.stringify(on(srv, a.tab_id)));
-    ok(!on(srv, b.tab_id).includes("state:frozen"), "  └ P2 自己一直在动：它那页不冻（反向对照）", JSON.stringify(on(srv, b.tab_id)));
-    await sleep(400);
+    ok(!on(srv, b.tab_id).includes("state:frozen"), "  └ P2 自己一直在动：它那页不冻（反向对照）", JSON.stringify({ maxGapMs: gap, calls: on(srv, b.tab_id) }));
+    process.env.OWB_CDP_PARK_MS = "150";
+    for (let t0 = Date.now(); !on(srv, b.tab_id).includes("state:frozen") && Date.now() - t0 < 3000;) await sleep(50);
     ok(on(srv, b.tab_id).includes("state:frozen"), "  └ P2 停手之后它那页也冻住");
     // status / list_tabs 只看不碰：不能顺手把冻住的页解冻
     const before = on(srv, a.tab_id).length;
