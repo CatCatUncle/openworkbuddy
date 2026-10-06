@@ -403,6 +403,8 @@ function vectorStatus() {
     // 走的是哪一条（「设置里显式指定的嵌入渠道」「模型渠道「通义」」…），全挂了就 failed——配了不等于通了
     source: embedder && typeof embedder.source === "function" ? String(embedder.source() || "") : "",
     failed: !!(embedder && typeof embedder.isDead === "function" && embedder.isDead()),
+    // 渠道没坏、是额度闸门没放行（没价目 / 预算用完 / 次数到顶）：看面板的这个人最近一次被拦的原话
+    blocked: embedder && typeof embedder.lastBlocked === "function" ? String(embedder.lastBlocked() || "") : "",
   };
 }
 

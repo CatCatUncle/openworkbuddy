@@ -3368,10 +3368,12 @@ async function renderMemoryPane(pane) {
   const vs = m.vectors || {};
   // 嵌入接口表单只画给平台管理员（后端对别人回 null）；提示语要指向真的存在的那个地方
   const emb = m.embedding;
-  const vecOk = !vs.failed && (!vs.enabled || !vs.total || vs.have >= vs.total);
+  const vecOk = !vs.failed && !vs.blocked && (!vs.enabled || !vs.total || vs.have >= vs.total);
   const vecLine = !vs.enabled
     ? `向量检索没开，正在用关键词检索。${!emb ? "嵌入模型由平台管理员配置。" : emb.missing ? "选的渠道不在了，在下面重选一个。" : "在下面选一个嵌入模型就能开。"}`
     : vs.failed ? `嵌入接口调不通，已退回关键词召回。${emb ? "点下面「测一下」看上游怎么说。" : "请平台管理员看一下。"}`
+    // 额度闸门拦下的：渠道没坏，原因是服务端那句原话（缺哪个价目 / 哪一级预算用完），单独一行照搬
+    : vs.blocked ? "额度闸门拦下了向量计算，现按关键词召回。"
     : !vs.total ? `语义召回已接上（${vs.model}），记了东西就会自动算向量。`
     : vs.have >= vs.total ? `语义召回开着：${vs.total} 条都算好了向量（${vs.model}）。`
     : `语义召回：${vs.have}/${vs.total} 条有向量，嵌入渠道可能不通，现按关键词召回。日志搜「[记忆向量]」查原因。`;
@@ -3392,7 +3394,7 @@ async function renderMemoryPane(pane) {
     <div class="card-item">
       <div class="t">${ic("pin")} 记住的事（AI 自己记的 + 你手动加的）</div>
       <div class="d" style="margin-bottom:8px">一条一句话，跨任务保留。「共享」全员可见，其余只属本人。每人最多 ${esc(String((m.limits || {}).max_items || 120))} 条。</div>
-      <div class="d" id="mem-vec" style="margin-bottom:8px">${ic(vecOk ? "search" : "triangle-alert")} ${esc(vecLine)}</div>
+      <div class="d" id="mem-vec" style="margin-bottom:8px">${ic(vecOk ? "search" : "triangle-alert")} ${esc(vecLine)}${vs.enabled && !vs.failed && vs.blocked ? `<div>${esc(vs.blocked)}</div>` : ""}</div>
       <div id="mem-items">${rows}</div>
       <div class="form-row" style="margin-top:8px">
         <input id="mem-new" placeholder="手动加一条，例如：周报只要三段——进展 / 问题 / 下周计划">

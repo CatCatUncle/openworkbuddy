@@ -2422,6 +2422,7 @@
       "向量检索没开，正在用关键词检索。嵌入模型由平台管理员配置。": "Vector search is off; using keyword search. The admin sets the embedding model.",
       "嵌入接口调不通，已退回关键词召回。点下面「测一下」看上游怎么说。": "The embedding endpoint isn't answering; back to keywords. Click Test it below to see the reply.",
       "嵌入接口调不通，已退回关键词召回。请平台管理员看一下。": "The embedding endpoint isn't answering; back to keywords. Ask the admin to check it.",
+      "额度闸门拦下了向量计算，现按关键词召回。": "The quota gate blocked embedding; using keyword recall for now.",
       "嵌入接口（语义召回用）": "Embedding endpoint (for semantic recall)",
       "没选就按关键词召回，不会借聊天渠道的 Key。": "Nothing picked means keyword recall; chat channel keys are never borrowed.",
       "用已配渠道：": "Use a configured channel:",

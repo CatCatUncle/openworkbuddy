@@ -226,12 +226,41 @@ async function main() {
     const other = await quota.withActor(actor("o-emb2", 0, {}), () => emb(["别的组织"]));
     ok(Array.isArray(other) && seen.length - n0 === 2, "同一个 embedder 换个没限额的组织照常算", seen.length - n0);
 
+    // 被拦的那趟只回 null、按关键词召回；记忆面板不说的话，向量早就算好的人看到的还是「语义召回开着」
+    memory.setEmbedder(emb);
+    const vsB = quota.withActor(who, () => memory.vectorStatus());
+    ok(vsB.enabled && !vsB.failed && !!vsB.blocked && blocked.said.some((s) => s.includes(vsB.blocked)),
+      "★记忆面板说出最近一次被额度闸门拦下★，原话照搬", vsB);
+    eq(quota.withActor(actor("o-emb2", 0, {}), () => memory.vectorStatus()).blocked, "",
+      "反向对照：算成了的那个组织，面板上不挂别人被拦的事");
+    eq(memory.vectorStatus().blocked, "", "反向对照：没限额的（不在任何额度主体里）也不挂");
+    eq(seen.length - n0, 2, "看面板状态不打上游");
+    const rowsAfter = quota._internals.loadAll().usage.filter((e) => e.org === "o-emb" && e.cap === "embedding");
+    eq(rowsAfter.length, 1, "看面板状态不占次数、不记流水");
+    let shut = true;
+    const flip = createEmbedder(c3, { meter: { gate: () => (shut ? { ok: false, why: "测试闸：这次不放" } : { ok: true, hold: null }), undo() {}, record() {}, who: () => "k1" } });
+    memory.setEmbedder(flip);
+    await quiet(() => flip(["一句"]));
+    eq(memory.vectorStatus().blocked, "测试闸：这次不放", "被拦之后面板挂着那句原话");
+    shut = false;
+    ok(Array.isArray(await flip(["再一句"])), "放行之后照常算");
+    eq(memory.vectorStatus().blocked, "", "★同一个人算成了一次，那句就撤掉★（不会一直挂着旧事）");
+    memory.setEmbedder(null);
+    const app05 = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-05.js"), "utf8");
+    ok(/const vecOk = !vs\.failed && !vs\.blocked/.test(app05) && /vs\.blocked \?/.test(app05),
+      "记忆页把这件事画出来：不再打「开着」的勾", app05.match(/const vecOk[^\n]*/));
+
     // 没价目的远端型号：头上有预算的人，发出去之前就拦（地址是 .invalid，真漏了也被外层 fetch 拦下记账）
     const far = { embedding: { base_url: "https://embed.example.invalid/v1", api_key: "sk-test-far", model: "acme-embed-unpriced" } };
     const rich = actor("o-unpriced", 100, {});
-    const r = await quiet(() => quota.withActor(rich, () => createEmbedder(far)(["一句"])));
+    const farEmb = createEmbedder(far);
+    const r = await quiet(() => quota.withActor(rich, () => farEmb(["一句"])));
     eq(r.out, null, "有预算 + 没价目：这一趟不算向量");
     ok(r.said.some((s) => /价目/.test(s)), "说清是缺价目，不是渠道挂了", r.said);
+    memory.setEmbedder(farEmb);
+    const vsU = quota.withActor(rich, () => memory.vectorStatus());
+    ok(/价目表/.test(vsU.blocked) && !vsU.failed, "记忆面板上说缺价目、去哪补，不说渠道坏了", vsU);
+    memory.setEmbedder(null);
     const p = await quota.withActor(rich, () => probeEmbedding(far.embedding));
     ok(p.ok === false && /价目/.test(p.error), "设置页「测一下」也过同一道闸", p);
     eq(outbound, [], "★没价目的那两次一个请求都没往外发★");

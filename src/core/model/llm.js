@@ -1582,11 +1582,13 @@ const defaultEmbedMeter = {
   gate: (call) => require("../billing/quota").gate("embedding", call),
   undo: (hold) => require("../billing/quota").undo(hold),
   record: (call) => require("../billing/quota").record("embedding", call),
+  // 这一趟算在谁头上：记忆面板只给被拦的那个人看「最近一次被拦」，别人的额度用完不挂到你这儿
+  who: () => { const a = require("../billing/quota").currentActor(); return a ? `${a.org || ""}\u0000${a.user || ""}` : ""; },
 };
 
 /**
  * @param {object} config
- * @param {{ meter?: { gate: Function, undo: Function, record: Function } }} [opts] meter 只给测试换
+ * @param {{ meter?: { gate: Function, undo: Function, record: Function, who?: Function } }} [opts] meter 只给测试换
  */
 function createEmbedder(config, opts = {}) {
   const meter = (opts && opts.meter) || defaultEmbedMeter;
@@ -1603,6 +1605,11 @@ function createEmbedder(config, opts = {}) {
 
   let fails = 0, dead = false;
   const warnedBlock = new Set();
+  // 谁 → 最近一次被额度闸门拦下的原话。被拦的那趟只回 null、按关键词召回，日志里喊一声没人看得见；
+  // 记忆面板要拿它说实话，不然向量早就算好的人看到的一直是「语义召回开着」。同一个人算成一次就撤掉
+  /** @type {Map<string, string>} */
+  const lastBlock = new Map();
+  const whoKey = () => { try { return typeof meter.who === "function" ? String(meter.who() || "") : ""; } catch { return ""; } };
   /** @param {string[]} texts @returns {Promise<number[][]|null>} 失败返回 null，绝不抛出 */
   /** 一次请求，条数不超过这条渠道的上限 */
   const embedOnce = async (cfg, texts) => {
@@ -1653,12 +1660,17 @@ function createEmbedder(config, opts = {}) {
       const out = [];
       for (let i = 0; i < texts.length; i += cfg.batch) out.push(...await embedOnce(cfg, texts.slice(i, i + cfg.batch)));
       fails = 0;
+      lastBlock.delete(whoKey());
       return out;
     } catch (e) {
       // 额度闸拦下的：这一趟按关键词召回，渠道照旧可用，换个人、换个月就又能算
       if (e && e.blocked) {
         const why = String(e.message || "").slice(0, 200);
         if (!warnedBlock.has(why)) { warnedBlock.add(why); console.warn(`[记忆向量] 这次没算向量，按关键词召回：${why}`); }
+        const k = whoKey();
+        lastBlock.delete(k);
+        lastBlock.set(k, why);
+        if (lastBlock.size > 500) lastBlock.delete(String(lastBlock.keys().next().value)); // 只留最近的，别跟着人头无限长
         return null;
       }
       fails = e && e.fatalForChannel ? 3 : fails + 1; // 4xx 一次就够，不用陪它试满三次
@@ -1680,6 +1692,7 @@ function createEmbedder(config, opts = {}) {
   // 记忆面板要说实话：走的是哪一条、是不是已经挂了（挂了还显示「已开」就是摆设）
   embed.source = () => cands[0].label;
   embed.isDead = () => dead;
+  embed.lastBlocked = () => lastBlock.get(whoKey()) || "";
   return embed;
 }
 
