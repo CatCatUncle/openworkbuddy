@@ -213,7 +213,7 @@ function probe(w) {
     let err = "";
     let c;
     try {
-      c = spawn(w.bin, w.args, { stdio: ["ignore", "ignore", "pipe"], env: { PATH: "/usr/bin:/bin" } });
+      c = spawn(w.bin, w.args, { stdio: ["ignore", "ignore", "pipe"], env: { PATH: "/usr/bin:/bin" }, windowsHide: true });
     } catch (e) {
       resolve({ code: null, err: "", spawnError: String((e && /** @type {any} */ (e).message) || e) });
       return;
