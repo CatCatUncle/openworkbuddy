@@ -472,10 +472,13 @@ async function sendAttach(item) {
       method: "POST", headers: { "Content-Type": "application/json" },
       // 带上会话 id：服务端好把文件直接放进本对话的成果文件夹，别再堆到工作空间根目录。
       // ensureSessionId 而不是裸 sessionId——新开一条对话时它还是 null，那就等于没带（见上面那段注释）
-      body: JSON.stringify({ name: item.asked || item.name, data_b64: b64, session: ensureSessionId() }),
+      // replace：同一枚重拖过，上一趟那份已经落了盘。带上它的路径，服务端认得出是这一枚自己那份就原地换，
+      // 不再另起 名字_2——另起的话上一趟那份没人认了，模型列目录看见两份不知道用哪份
+      body: JSON.stringify({ name: item.asked || item.name, data_b64: b64, session: ensureSessionId(), ...(item.replace ? { replace: item.replace } : {}) }),
     });
     if (!resp.ok) throw new Error("HTTP " + resp.status);
     const data = await resp.json().catch(() => ({}));
+    item.replace = "";                  // 这一趟用掉了；服务端没认（data.replaced 不在）就是另起了名字，下面照常改名
     // 工作目录里已经有同名的：服务端另起了 名字_2 存，没盖掉那份。chip 和输入框里的锚点跟着改名，
     // 不改的话模型照着原名去读，读到的是盘上原来那份
     if (data.name && data.name !== item.name) renameAttach(item, String(data.name));
@@ -538,10 +541,12 @@ async function uploadFiles(fileList, { rename, dirs } = {}) {
     const name = rename ? rename(file) : file.name;
     const dup = pendingAttach.find(x => x.name === name || x.asked === name);
     if (dup) {
-      // 同名的已经在这条消息里了：不再挂第二枚 chip（模型会当成两份素材），但内容照样传一遍
-      // 覆盖成最新的——用户重拖一个文件，多半就是因为它刚改过。
+      // 同名的已经在这条消息里了：不再挂第二枚 chip（模型会当成两份素材），但内容照样传一遍——
+      // 用户重拖一个文件，多半就是因为它刚改过。上一趟已经落了盘的，带上它的路径让服务端原地换
+      // （sendAttach 里的 replace）；服务端认不出来就另起名字，renameAttach 会照实说「原来那份没动」
       flashAttach(dup);
-      toast(`${name} 已经在这条消息里了，内容更新成最新的了`, "circle-check");
+      toast(`${name} 已经在这条消息里了，换成刚拖进来的这份`, "circle-check");
+      if (dup.path && !dup.blob) dup.replace = dup.path;
       dup.blob = file;
       dup.size = file.size;
       jobs.push(dup);

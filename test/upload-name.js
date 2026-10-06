@@ -22,7 +22,7 @@ function ok(cond, name, extra) {
   else { fail++; console.log("  ✗ " + name + (extra !== undefined ? "  ← " + String(typeof extra === "string" ? extra : JSON.stringify(extra)).slice(0, 300) : "")); }
 }
 
-const { uploadCandidate, writeUploadFresh } = require(mod("upload-name"));
+const { uploadCandidate, writeUploadFresh, uploadIsCandidate, writeUploadReplace } = require(mod("upload-name"));
 const WS = fs.mkdtempSync(path.join(os.tmpdir(), "owb-upload-name-"));
 const read = (n) => fs.readFileSync(path.join(WS, n), "utf8");
 
@@ -77,6 +77,32 @@ const chat = fs.readFileSync(path.join(ROOT, "public/js/app-02.js"), "utf8");
 ok(/data\.name !== item\.name\) renameAttach\(item/.test(chat), "对话附件：服务端改了名，chip 和输入框里的锚点跟着改");
 const inspector = fs.readFileSync(path.join(ROOT, "public/js/app-07-canvas-inspector.js"), "utf8");
 ok(/name !== file\.name \? canvasT\("工作区里已有同名文件/.test(inspector), "画布：卡上挂的是新名字，并且说一声存成了什么");
+
+console.log("\n【6】同一枚附件又拖了一遍：认得出是自己那份就原地换，认不出就另起名字");
+// 以前一律另起：chip 改叫 名字_2，上一趟那份没人认了还躺在目录里，模型列目录看见两份
+ok(uploadIsCandidate("图.png", "图.png") && uploadIsCandidate("图.png", "图_2.png") && uploadIsCandidate("图.png", "图_13.png"), "原名、名字_N 都算这一枚挑得到的名字");
+ok(!uploadIsCandidate("图.png", "图_1.png") && !uploadIsCandidate("图.png", "图_x.png") && !uploadIsCandidate("图.png", "别的.png") && !uploadIsCandidate("图.png", "图_2.jpg") && !uploadIsCandidate("图.png", "图_02.png"),
+  "名字_1、名字_x、别的名字、换了扩展名的都不算");
+ok(uploadIsCandidate(".env", ".env_2") && !uploadIsCandidate(".env", ".env.bak"), "点开头的整个当名字：.env → .env_2");
+const R = path.join(WS, "重拖");
+fs.mkdirSync(R, { recursive: true });
+const first = writeUploadFresh(R, "封面.png", Buffer.from("旧的"));
+const yes = () => true, no = () => false;
+const asked = [];
+const swapped = writeUploadReplace(R, "封面.png", first, Buffer.from("新的"), (n, f) => { asked.push([n, f]); return true; });
+ok(swapped === "封面.png" && fs.readFileSync(path.join(R, "封面.png"), "utf8") === "新的", "★认得出是自己那份：原地换成新内容，名字不变★", swapped);
+ok(!fs.existsSync(path.join(R, "封面_2.png")), "没再多出一份 封面_2.png");
+ok(asked.length === 1 && asked[0][0] === "封面.png" && asked[0][1] === path.join(R, "封面.png"), "问过一声「这份是不是这一枚自己的」，问的是盘上那份的路径", asked);
+ok(fs.readdirSync(R).every((n) => !/\.tmp$/.test(n)), "临时文件没留下");
+ok(writeUploadReplace(R, "封面.png", "封面.png", Buffer.from("盖错了"), no) === "" && fs.readFileSync(path.join(R, "封面.png"), "utf8") === "新的",
+  "★认不出（Agent 改写过、服务重启过）：不换，交给调用方另起名字★");
+ok(writeUploadReplace(R, "封面.png", "别人的.png", Buffer.from("x"), yes) === "" && !fs.existsSync(path.join(R, "别人的.png")), "名字不是这一枚挑得到的：不换");
+ok(writeUploadReplace(R, "封面.png", "../封面.png", Buffer.from("x"), yes) === "" && writeUploadReplace(R, "封面.png", "子/封面.png", Buffer.from("x"), yes) === "", "带目录的一律不认，只在本目录里换");
+ok(writeUploadReplace(R, "封面.png", "", Buffer.from("x"), yes) === "" && writeUploadReplace(R, "封面.png", "封面.png", Buffer.from("x")) === "", "没带上一趟的名字、没给认领判据：不换");
+ok(/uploadName\.writeUploadReplace\(/.test(up) && /isUserInput\(/.test(up) && /replaced: true/.test(up) && /swapped \|\| uploadName\.writeUploadFresh\(/.test(up),
+  "/api/upload：带 replace 的先试原地换（拿上传那一刻记的 mtime 认领），换不了照常另起名字");
+ok(/\.\.\.\(item\.replace \? \{ replace: item\.replace \}/.test(chat) && /if \(dup\.path && !dup\.blob\) dup\.replace = dup\.path/.test(chat), "前端：重拖的那枚带上上一趟落盘的路径");
+ok(!/内容更新成最新的了/.test(chat), "不再没传完就说「更新成最新的了」");
 
 try { fs.rmSync(WS, { recursive: true, force: true }); } catch {}
 console.log(fail ? `\n有失败：${pass} 过 / ${fail} 挂` : `\n全部通过：${pass} 过 / 0 挂`);

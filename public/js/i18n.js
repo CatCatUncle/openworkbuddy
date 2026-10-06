@@ -2537,6 +2537,8 @@
       [/^第 (\d+) 步$/, "Step $1"],
       // 上传同名不覆盖：服务端另存成 名字_2（app-02 renameAttach）
       [/^工作目录里已经有 (.+?)，这一份存成了 (.+?)，原来那份没动$/, "$1 is already in the workspace. Saved this one as $2; the original is untouched"],
+      // 同一枚附件又拖了一遍：不挂第二枚 chip，换成新拖进来的那份（app-02 uploadFiles）
+      [/^(.+?) 已经在这条消息里了，换成刚拖进来的这份$/, "$1 is already attached. Swapped in the one you just dropped"],
       [/^计划 (\d+) 步$/, "Plan · $1 steps"],
       // 注意力：倒计时、侧栏那颗点的提示、后台会话来题时那条能点的提示
       [/^(\d+:\d\d) 后自动拒绝$/, "Auto-deny in $1"],

@@ -25,7 +25,7 @@ const { mergeBuiltinExperts } = require("./src/agent/experts-lib");
 const mcpCatalog = require("./src/core/ext/mcp-catalog");
 const { createLLM, createEmbedder, pingRequest, probeEmbedding } = require("./src/core/model/llm");
 const sessSearch = require("./src/core/memory/session-search");
-const { outputFiles, noteUserInput, moveUserInput, filesScope, safePath, safePathIn, workspaceKeyOf, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, setLibraryDir, withLibraryBase, libBase, notesFileOf, withWorkspace, enterWorkspace, withPolicy, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSafeName, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath } = require("./src/agent/tools");
+const { outputFiles, noteUserInput, moveUserInput, isUserInput, filesScope, safePath, safePathIn, workspaceKeyOf, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, setLibraryDir, withLibraryBase, libBase, notesFileOf, withWorkspace, enterWorkspace, withPolicy, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSafeName, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath } = require("./src/agent/tools");
 const checkpoints = require("./src/agent/checkpoints"); // 这条对话改过的文件：列出来、整步退回去
 const worktree = require("./src/agent/worktree"); // 两条任务同时改一个仓库时，后来的那条进自己的 git worktree
 const canvasRoutes = require("./src/server/routes/canvas"); // 画布读写 + 短剧素材台账 + 制片进度
@@ -5551,7 +5551,7 @@ async function startPluginMcp(pluginName) {
 // 所以没文件夹时先落根目录并记账，等文件夹一建好，assignSessionDir 再把它们搬进去。
 app.post("/api/upload", (req, res) => {
   try {
-    const { name, data_b64, session } = req.body || {};
+    const { name, data_b64, session, replace } = req.body || {};
     if (!name || !data_b64) return res.status(400).json({ error: "缺少 name 或 data_b64" });
     // basename 之后再洗一遍：控制字符和路径分隔符在文件名里没有正当用途，
     // 而这些名字会被拼进链接、传给系统程序、写进日志
@@ -5569,7 +5569,17 @@ app.post("/api/upload", (req, res) => {
     // 同名的已经在了就叫 名字_2、名字_3，不覆盖（见 src/util/upload-name.js）。挑出来的名字只多了个
     // 后缀，跟原名在同一个目录里，不用再判一次
     const dir = path.dirname(safePath(own ? path.join(own, base) : base));
-    const saved = uploadName.writeUploadFresh(dir, base, Buffer.from(data_b64, "base64"));
+    const buf = Buffer.from(data_b64, "base64");
+    // 同一枚附件重拖了一遍：replace 是它上一趟落盘的相对路径。只有那份确实是这一枚刚传的——同一个目录、
+    // 名字是原名或 原名_N、盘上的 mtime 跟上传那一刻记的对得上（Agent 改写过就对不上）——才原地换；
+    // 认不出来（服务重启过、路径是别处的）就照常另起名字，宁可多一份也不盖错
+    const prev = typeof replace === "string" ? replace : "";
+    const prevName = prev ? path.basename(prev) : "";
+    const sameSpot = !!prevName && prev === (own ? path.join(own, prevName) : prevName);
+    const swapped = sameSpot ? uploadName.writeUploadReplace(dir, base, prevName, buf, (n, file) => {
+      try { return isUserInput({ name: prev, mtime: fs.statSync(file).mtime.toISOString() }); } catch { return false; }
+    }) : "";
+    const saved = swapped || uploadName.writeUploadFresh(dir, base, buf);
     const rel = own ? path.join(own, saved) : saved;
     // 记一笔「这份是用户传的」。不记的话，正在跑的那趟任务下一次对账就会把它当成自己的产出
     // 摆进「本回合产出」——用户粘张图想追问，图当场出现在上一轮的成果里（见 tools.js userInputs）
@@ -5580,7 +5590,8 @@ app.post("/api/upload", (req, res) => {
     // 连相对路径一起回：前端那枚 chip 要按这个路径把文件打开给用户看。
     // 只回 name 的话，落进会话成果文件夹的文件在工作目录根上根本找不到。
     // 改了名就把原名也带上：前端得把 chip 和输入框里那枚【图片 N：…】一起改过来，不然模型照着原名去读，读到的是旧的那份
-    res.json({ ok: true, name: saved, path: rel, ...(saved !== base ? { renamedFrom: base } : {}) });
+    // replaced：原地换掉了这一枚上一趟那份，前端说「换成刚拖进来的这份」，不说「另存成了…」
+    res.json({ ok: true, name: saved, path: rel, ...(swapped ? { replaced: true } : {}), ...(saved !== base ? { renamedFrom: base } : {}) });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }

@@ -52,4 +52,43 @@ function writeUploadFresh(dir, base, buf, o = {}) {
   return name;
 }
 
-module.exports = { uploadCandidate, writeUploadFresh };
+/** name 是不是从 base 挑名字时挑得到的那几个之一：原名本身，或者 名字_N.扩展名（N 从 2 起） */
+function uploadIsCandidate(base, name) {
+  base = String(base || ""); name = String(name || "");
+  if (!base || !name) return false;
+  if (name === base) return true;
+  const ext = path.extname(base);
+  const stem = base.slice(0, base.length - ext.length) || base;
+  if (!name.startsWith(`${stem}_`) || !name.endsWith(ext)) return false;
+  const n = name.slice(stem.length + 1, name.length - ext.length);
+  return /^[1-9]\d*$/.test(n) && Number(n) >= 2;
+}
+
+/**
+ * 同一枚附件重拖了一遍（文件刚改过）：原地换掉它上一趟落的那份，不再另起 名字_2。
+ * 以前一律另起：chip 改叫 名字_2，上一趟那份没人认了，还躺在目录里，模型列目录时看见两份不知道用哪份。
+ *
+ * 只换「确实是这一枚自己那份」的：prevName 不带目录、是 base 的候选名，而且 owns(prevName, 绝对路径) 点头
+ * （服务端拿上传那一刻记下的 mtime 去对，Agent 改写过就对不上）。换不了返回 ""，调用方照常走 writeUploadFresh。
+ * 先写临时文件再改名：写到一半断了，原来那份还在
+ * @param {string} dir
+ * @param {string} base 这次请求洗过的文件名
+ * @param {string} prevName 上一趟落盘的名字（不含目录）
+ * @param {Buffer} buf
+ * @param {(name: string, file: string) => boolean} owns
+ * @param {{ fs?: typeof fs }} [o]
+ * @returns {string}
+ */
+function writeUploadReplace(dir, base, prevName, buf, owns, o = {}) {
+  const fsx = o.fs || fs;
+  const name = String(prevName || "");
+  if (!name || path.basename(name) !== name || !uploadIsCandidate(base, name)) return "";
+  const file = path.join(dir, name);
+  if (typeof owns !== "function" || !owns(name, file)) return "";
+  const tmp = `${file}.${process.pid}.tmp`;
+  fsx.writeFileSync(tmp, buf);
+  fsx.renameSync(tmp, file);
+  return name;
+}
+
+module.exports = { uploadCandidate, writeUploadFresh, uploadIsCandidate, writeUploadReplace };
