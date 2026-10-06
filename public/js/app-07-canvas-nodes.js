@@ -515,7 +515,7 @@ function canvasUndoAction() {
     canvasHistoryFlush();
     const top = canvasState.history.length - 1;
     if ((canvasState.historySeq || 0) !== mark || canvasState.historyIndex !== top || top <= 0) {
-      const key = typeof accelDisplay === "function" ? accelDisplay("Mod+Z") : "⌘Z";
+      const key = accelDisplay("Mod+Z");
       return canvasToast(canvasT("这之后画布又改过了，没撤。要退回去按 {key} 一步步退", { key }), "rotate-ccw");
     }
     canvasUndo();
