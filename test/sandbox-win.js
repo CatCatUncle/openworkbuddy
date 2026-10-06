@@ -52,7 +52,8 @@ process.on("exit", () => {
 });
 
 const SECRET = "placeholder-secret-for-sandbox-win-test";
-const src = (f) => fs.readFileSync(path.join(__dirname, "..", f), "utf8");
+// Windows 上 git 按 CRLF 检出：统一成 \n，下面按行切函数、按行认规则的正则才认得出
+const src = (f) => fs.readFileSync(path.join(__dirname, "..", f), "utf8").replace(/\r\n/g, "\n");
 
 /**
  * 按微软 C 运行库的规矩把一行命令拆回参数（CommandLineToArgvW 对 argv[0] 以外那几段的拆法）。
