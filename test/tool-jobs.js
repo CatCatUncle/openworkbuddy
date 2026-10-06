@@ -16,7 +16,7 @@
  *   3. 按人分：别人拿到这个号查不到、也等不到这一单。
  *   4. 上游一收单任务号就落盘；服务重启之后这一单是「没收完」，交出任务号，409，不重开。
  *   5. 台账写不进盘也照样认得出同一单（进程里兜着）。
- *   6. 过期、超量的清掉，在跑的一条不丢。
+ *   6. 过期、超量的清掉，真在跑的一条不丢；重启前没收完的（盘上写着在跑、进程里没有）跟收尾过的一样到期就清。
  * 外加生视频那一层：任务号在收单那一刻就报出来（onSubmitted），不等出片——假上游，不连任何厂商。
  */
 
@@ -124,16 +124,44 @@ async function main() {
     ok(warned.some((w) => /台账写不进去/.test(w)), "写不进去留了痕（不是悄悄吞掉）", warned);
   } finally { console.warn = warn; }
 
-  console.log("\n【8】清理：过期的、超量的清掉，在跑的一条不丢");
+  console.log("\n【8】清理：过期的、超量的清掉，真在跑的一条不丢");
   const now = Date.now(), DAY = jobs.JOB_KEEP_MS;
+  const RUN = jobs._internals.running;
   const big = {};
   big.old = { id: "old", state: "done", at: now - DAY - 1000, doneAt: now - DAY - 1000 };
-  big.stale = { id: "stale", state: "running", at: now - DAY * 3 };
+  big.stale = { id: "stale", state: "running", at: now - DAY * 3 };                          // 重启前没收完，放了三天
+  big.staleSub = { id: "staleSub", state: "running", at: now - DAY * 3, submittedAt: now - 100 };  // 开枪早、收单晚：从收单那一刻算
+  big.alive = { id: "alive", state: "running", at: now - DAY * 3 };                          // 这个进程里真在跑
+  big.fresh = { id: "fresh", state: "running", at: now - 5000 };                             // 刚中断的
   for (let i = 0; i < jobs.JOB_MAX + 5; i += 1) big[`k${i}`] = { id: `k${i}`, state: "done", at: now - 1000 + i, doneAt: now - 1000 + i };
-  const kept = jobs.toolJobPrune(big, now);
+  RUN.set("alive", Promise.resolve());
+  let kept;
+  try { kept = jobs.toolJobPrune(big, now); } finally { RUN.delete("alive"); }
   ok(!kept.old, "过了一天的已收尾条目清掉");
-  ok(!!kept.stale, "★在跑的不清，哪怕放了三天★ 清了就查不到它收过单");
-  ok(Object.keys(kept).length === jobs.JOB_MAX && !kept.k0 && !!kept[`k${jobs.JOB_MAX + 4}`], "超量先丢最老的已收尾条目", Object.keys(kept).length);
+  ok(!!kept.alive, "★这个进程里真在跑的不清，哪怕放了三天★ 清了就查不到它收过单");
+  ok(!kept.stale, "★重启前没收完的、放了三天：清掉★ 它不会再收尾了，以前一条都不清，台账只涨不落");
+  ok(!!kept.staleSub, "  └ 年龄从收单那一刻算：昨天开枪、刚收单的还留着");
+  ok(Object.keys(kept).length === jobs.JOB_MAX && !kept.k0 && !!kept[`k${jobs.JOB_MAX + 4}`] && !!kept.alive, "超量先丢最老的，真在跑的不算在可丢的里", Object.keys(kept).length);
+  ok(!kept.fresh, "  └ 刚中断的那条比满额里最老的还老：超量时照样排进可丢的（以前它永远占着一格）");
+
+  // 满额全是重启前没收完的：这一趟正在写的那条（keep）不许被挤掉。以前中断的一条都不清、也不算可丢的，
+  // 攒满 300 条之后，刚收尾写下的那条 done 成了唯一「可丢的」，写进去当场就被清掉
+  const crowd = {};
+  for (let i = 0; i < jobs.JOB_MAX + 3; i += 1) crowd[`i${i}`] = { id: `i${i}`, state: "running", at: now - 60000 + i };
+  crowd.mine = { id: "mine", state: "running", at: now - 120000 };
+  const kept2 = jobs.toolJobPrune(crowd, now, "mine");
+  ok(!!kept2.mine && Object.keys(kept2).length === jobs.JOB_MAX, "★满额全是中断的：这一趟正在写的那条留下，挤掉的是最老的中断条目★", Object.keys(kept2).length);
+  const kept3 = jobs.toolJobPrune(crowd, now);
+  ok(!kept3.mine, "  反向对照：不说 keep，最老的那条照样排进可丢的");
+
+  // 真走一遍 toolJobPatch：台账里塞满中断的，新收尾的一条写进去还在
+  const PF = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "owb-tooljobs-prune-")), "tool-jobs.json");
+  fs.writeFileSync(PF, JSON.stringify({ version: 1, jobs: crowd }));
+  jobs.toolJobPatch(PF, "newest", { id: "newest", state: "done", at: now - DAY * 2, doneAt: now - DAY * 2 });
+  const ledger = jobs.toolJobRead(PF).jobs;
+  ok(!!ledger.newest, "★toolJobPatch 刚写的那条不被同一趟清理清掉（哪怕时间戳很老）★", Object.keys(ledger).length);
+  ok(Object.keys(ledger).length <= jobs.JOB_MAX, "台账照样不超额", Object.keys(ledger).length);
+  try { fs.rmSync(path.dirname(PF), { recursive: true, force: true }); } catch {}
 
   console.log("\n【9】生视频：任务号在收单那一刻就报出来，不等出片（假上游）");
   const tools = require(mod("tools"));

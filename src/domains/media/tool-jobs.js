@@ -20,7 +20,7 @@ const fs = require("fs");
 const path = require("path");
 
 const JOB_KEEP_MS = 24 * 3600 * 1000;   // 留一天：断网回来、重启回来、第二天打开画布点「看结果」都还在
-const JOB_MAX = 300;                    // 一个项目的台账最多这么多条，满了先丢最老的已收尾那几条
+const JOB_MAX = 300;                    // 一个项目的台账最多这么多条，满了先丢最老的那几条（真在跑的不丢）
 const JOB_TEXT_MAX = 4000;              // 回执原话留这么长：够贴在卡片上，台账不至于长成几兆
 const JOB_ID_RE = /^[A-Za-z0-9_.:-]{8,80}$/;
 
@@ -48,17 +48,25 @@ function toolJobRead(file) {
   } catch { return { version: 1, jobs: {} }; }
 }
 
-/** 过期的、超出条数的清掉。在跑的一条都不丢：丢了就查不到它收过单 */
-function toolJobPrune(jobs, now = Date.now()) {
+/**
+ * 过期的、超出条数的清掉。这个进程里真在跑的（running 里有它）和这一趟正在写的那条（keep）一条都不丢：
+ * 丢了就查不到它收过单。
+ *
+ * 盘上写着 running、进程里却没有的，是服务重启前没收完的（对外叫 interrupted）：它不会再收尾了，
+ * 跟收尾过的一样按时间过期（从收单那一刻算，没收单就从开枪那一刻算）。以前它们一条都不清——
+ * 重启一次留几条，日积月累台账只涨不落，满了以后挤掉的反而是刚收尾、人还要回来看的那几条
+ */
+function toolJobPrune(jobs, now = Date.now(), keep = "") {
   const out = {};
+  const live = (k) => k === keep || (jobs[k].state === "running" && running.has(k));
+  const when = (j) => Number(j.doneAt || j.submittedAt || j.at) || 0;
   const keys = Object.keys(jobs).filter((k) => {
     const j = jobs[k];
     if (!j || typeof j !== "object") return false;
-    if (j.state === "running") return true;
-    return now - (Number(j.doneAt || j.at) || 0) < JOB_KEEP_MS;
+    return live(k) || now - when(j) < JOB_KEEP_MS;
   });
-  const done = keys.filter((k) => jobs[k].state !== "running").sort((a, b) => (Number(jobs[a].doneAt || jobs[a].at) || 0) - (Number(jobs[b].doneAt || jobs[b].at) || 0));
-  const drop = new Set(done.slice(0, Math.max(0, keys.length - JOB_MAX)));
+  const old = keys.filter((k) => !live(k)).sort((a, b) => when(jobs[a]) - when(jobs[b]));
+  const drop = new Set(old.slice(0, Math.max(0, keys.length - JOB_MAX)));
   for (const k of keys) if (!drop.has(k)) out[k] = jobs[k];
   return out;
 }
@@ -68,7 +76,7 @@ function toolJobPatch(file, key, patch) {
   const data = toolJobRead(file);
   const cur = data.jobs[key] || {};
   data.jobs[key] = { ...cur, ...patch };
-  data.jobs = toolJobPrune(data.jobs);
+  data.jobs = toolJobPrune(data.jobs, Date.now(), key);
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const tmp = `${file}.${process.pid}.tmp`;
