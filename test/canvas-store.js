@@ -293,6 +293,26 @@ async function main() {
     r = await call("POST", "/api/canvas/proposal/dismiss", { name: "报价测" });
     const r2 = await call("POST", "/api/canvas/proposal/dismiss", { name: "../报价测", id: "p_x" });
     ok(r.code === 400 && r2.code === 400, "反向对照：不带清单号、画布名带 ../，都不收", [r.body, r2.body]);
+    // 只开跑了其中几类：划掉跑过的，剩下的换新号留着（号不换的话 ETag 不变，别的标签页还是 304、横幅上还是整份）
+    propose([{ node_id: "s1", kind: "image" }, { node_id: "s2", kind: "video" }, { node_id: "s2", kind: "audio" }]);
+    const p4 = store.canvasProposalRead("报价测");
+    r = await call("GET", "/api/canvas?name=报价测");
+    const tag4 = r.etag;
+    r = await call("POST", "/api/canvas/proposal/dismiss", { name: "报价测", id: p4.id, kinds: ["image"] });
+    const p5 = store.canvasProposalRead("报价测");
+    ok(r.code === 200 && r.json.dropped === false && r.json.left === 2 && p5 && r.json.id === p5.id && p5.id !== p4.id && p5.at === p4.at
+      && JSON.stringify(p5.items) === JSON.stringify([{ node_id: "s2", kind: "video" }, { node_id: "s2", kind: "audio" }]),
+      "★开跑了图那一类：只划掉图，视频、配音留着，换了新清单号★", { r: r.json, p5 });
+    r = await call("GET", "/api/canvas?name=报价测", undefined, { "If-None-Match": tag4 });
+    ok(r.code === 200 && r.json.proposal && r.json.proposal.id === p5.id && r.json.proposal.items.length === 2,
+      "★划掉之后别的标签页再问：不回 304，拿到的是剩下的那两项★", { code: r.code, proposal: r.json && r.json.proposal });
+    r = await call("POST", "/api/canvas/proposal/dismiss", { name: "报价测", id: p4.id, kinds: ["video"] });
+    ok(r.code === 200 && r.json.dropped === false && !r.json.id && store.canvasProposalRead("报价测").id === p5.id, "拿旧号来划：号对不上，一项不动", r.json);
+    r = await call("POST", "/api/canvas/proposal/dismiss", { name: "报价测", id: p5.id, kinds: ["music"] });
+    const r3 = await call("POST", "/api/canvas/proposal/dismiss", { name: "报价测", id: p5.id, kinds: [] });
+    ok(r.code === 400 && r3.code === 400 && store.canvasProposalRead("报价测").id === p5.id, "反向对照：kinds 写错、给空的，都退回、不动清单", [r.body, r3.body]);
+    r = await call("POST", "/api/canvas/proposal/dismiss", { name: "报价测", id: p5.id, kinds: ["video", "audio"] });
+    ok(r.code === 200 && r.json.dropped === true && store.canvasProposalRead("报价测") === null, "剩下的全跑了：跟收掉一样，整份没了", r.json);
     propose([{ node_id: "s1", kind: "image" }]);
     store.canvasTrashPut("报价测");
     store.canvasWriteState(board([node("s1", "shot", { id: "s1", prompt: "新的一镜" })]), "报价测");

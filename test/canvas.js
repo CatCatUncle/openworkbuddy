@@ -190,7 +190,10 @@ const STUB2 = `
       if (clash) return Promise.resolve({ ok: false, status: 409, json: async () => ({ ok: false, conflict: true, name: b.name, state: disk, error: "画布已被别处改过" }) });
       window.__puts.push({ 项目: window.__active, 画布: b.name, 标题: (b.state.nodes || []).map((n) => (n.payload || {}).title) });
       mine[b.name] = { ...b.state, updatedAt: Date.now() };
-      return J({ ok: true, updatedAt: mine[b.name].updatedAt, state: mine[b.name] });
+      const reply = J({ ok: true, updatedAt: mine[b.name].updatedAt, state: { ...mine[b.name] } });
+      // Agent 交的待生成清单住在画布文件旁边（src/tools/canvas.js canvasProposalPath），存画布不碰它
+      if (disk.proposal) mine[b.name].proposal = disk.proposal;
+      return reply;
     }
     if (s.includes("/api/canvas")) {
       if (window.__offline) return Promise.reject(new Error("断网"));   // 只掐这一条：取画布内容
@@ -299,10 +302,18 @@ const STUB3 = `
     // 号对不上的不动（Agent 刚交的新一份不受牵连）
     if (s.includes("/api/canvas/proposal/dismiss")) {
       window.__bodies.push({ url: "/api/canvas/proposal/dismiss", body });
+      if (window.__dismissFail) return J({ ok: false, error: window.__dismissFail }, 500);
       const board = window.__store[window.__active][(body && body.name) || "main"];
-      const dropped = !!(board && board.proposal && board.proposal.id === (body && body.id));
-      if (dropped) delete board.proposal;
-      return J({ ok: true, dropped });
+      const hit = !!(board && board.proposal && board.proposal.id === (body && body.id));
+      // 带 kinds：只划掉开跑过的那几类，剩下的换新号（跟 canvasProposalTrim 一样）
+      if (hit && Array.isArray(body.kinds)) {
+        const left = board.proposal.items.filter((it) => !body.kinds.includes(it.kind));
+        if (!left.length) { delete board.proposal; return J({ ok: true, dropped: true }); }
+        board.proposal = { ...board.proposal, id: board.proposal.id + "_剩", items: left };
+        return J({ ok: true, dropped: false, id: board.proposal.id, left: left.length });
+      }
+      if (hit) delete board.proposal;
+      return J({ ok: true, dropped: hit });
     }
     if (s.includes("/api/canvas/list") && window.__trash) { const d = await (await inner.apply(this, arguments)).json(); return J({ ...d, trash: window.__trash }); }
     if (s.includes("/api/canvas/boards/") && m === "DELETE" && window.__trash) {
@@ -3407,8 +3418,34 @@ app.whenReady().then(async () => {
       delete window.__store.jia.main.proposal;
       await canvasLoadRemote(); ${等(200)}
       const 戊 = { 有: 戊有, 收后: !!条(), 发了: window.__runs.length };
-      window.__estimate = null; window.askConfirm = 原问;
-      return { 甲, 乙, 丙, 丁, 戊 };
+      window.__estimate = null;
+      // ⑥ 一图一视频，图那批点了确认、视频那批点「先不了」：图照跑，视频那一项留在横幅上，服务端只划掉图
+      const 字 = () => ((document.querySelector("#owb-toast span") || {}).textContent) || "";
+      // 两张卡先改一笔提示词：上面 ③ 已经按原提示词生成过，参数没变会沿用那一版、不发请求
+      ["q1", "q3"].forEach((id) => { const n = canvasState.graph.getCell(id); n.set("canvasPayload", { ...n.get("canvasPayload"), prompt: n.get("canvasPayload").prompt + "重写" }); });
+      ${等(300)}
+      window.__runs = []; window.__bodies = []; 问了 = 0;
+      let 答序 = [true, false]; window.askConfirm = async () => { 问了 += 1; return 答序.length ? 答序.shift() : true; };
+      window.__store.jia.main.proposal = { id: "p_test4", at: Date.now(), items: [{ node_id: "q1", kind: "image" }, { node_id: "q3", kind: "video" }] };
+      await canvasLoadRemote(); ${等(300)}
+      点("开跑"); ${等(900)}
+      const 己一 = { 问了, 发了: [...window.__runs], 条: 条况(), 收: 收的(), 盘上: window.__store.jia.main.proposal || null, 本机号: canvasState.proposal && canvasState.proposal.id };
+      await canvasLoadRemote(); ${等(200)}
+      const 己二 = { 条: 条况() };
+      window.__runs = []; window.__bodies = []; 问了 = 0; 答序 = [true];
+      点("开跑"); ${等(900)}
+      const 己 = { 一: 己一, 再拉: 己二, 再跑: { 问了, 发了: [...window.__runs], 条: !!条(), 收: 收的(), 盘上: !!window.__store.jia.main.proposal } };
+      // ⑦ 点「不要」时服务端回了错：横幅照样收，原话报出来，说清刷新后还会再摆出来
+      window.__runs = []; window.__bodies = [];
+      window.__store.jia.main.proposal = { id: "p_test5", at: Date.now(), items: [{ node_id: "q9", kind: "image" }] };
+      await canvasLoadRemote(); ${等(300)}
+      window.__dismissFail = "磁盘满了";
+      点("不要"); ${等(200)}
+      const 庚 = { 条: !!条(), 提示: 字(), 收: 收的().length, 发了: window.__runs.length };
+      window.__dismissFail = null; delete window.__store.jia.main.proposal;
+      await canvasLoadRemote(); ${等(100)}
+      window.askConfirm = 原问;
+      return { 甲, 乙, 丙, 丁, 戊, 己, 庚 };
     })()`);
   ok(清单.甲.条 && /^Agent 列了待生成清单：2 张图（假图模型-甲 \/ 默认型号）、1 段视频（假视频模型）。预计 ¥0\.90，点「开跑」才扣费。$/.test(清单.甲.条.字)
      && 清单.甲.条.钮 === "开跑|不要" && 清单.甲.发了 === 0 && 清单.甲.问了 === 0,
@@ -3425,6 +3462,18 @@ app.whenReady().then(async () => {
      "★点「不要」：一个生成请求都不发、不弹扣费框，请服务端收掉；服务端没收成也不再冒出来★", 清单.丁);
   ok(清单.戊.有 && 清单.戊.有.字 === "Agent 列了待生成清单：1 张图（默认型号）。没拿到报价：估价服务没开" && 清单.戊.有.钮 === "开跑|不要" && !清单.戊.收后 && 清单.戊.发了 === 0,
      "估价接口出错照抄原话、横幅照样能点；服务端那份没了（别处点过）横幅就收", 清单.戊);
+  ok(清单.己.一.问了 === 2 && JSON.stringify(清单.己.一.发了) === JSON.stringify(["一号镜头重写"]) && 清单.己.一.条
+     && /^Agent 列了待生成清单：1 段视频（假视频模型）。/.test(清单.己.一.条.字) && 清单.己.一.条.可点
+     && 清单.己.一.收.length === 1 && JSON.stringify(清单.己.一.收[0].kinds) === JSON.stringify(["image"])
+     && 清单.己.一.盘上 && 清单.己.一.盘上.items.length === 1 && 清单.己.一.盘上.items[0].kind === "video" && 清单.己.一.本机号 === 清单.己.一.盘上.id,
+     "★图那批跑了、视频那批点「先不了」：视频那一项留在横幅上（带型号、新报价），服务端只划掉图★ 以前开了一批就整份收掉，没跑的视频连同报价一起没了", 清单.己.一);
+  ok(清单.己.再拉.条 && /^Agent 列了待生成清单：1 段视频/.test(清单.己.再拉.条.字),
+     "再拉一圈：横幅上还是只剩视频那一项，跑过的图不回来", 清单.己.再拉);
+  ok(清单.己.再跑.问了 === 1 && JSON.stringify(清单.己.再跑.发了) === JSON.stringify(["三号镜头重写"]) && !清单.己.再跑.条 && !清单.己.再跑.盘上
+     && 清单.己.再跑.收.length === 1 && !清单.己.再跑.收[0].kinds,
+     "★再点「开跑」只跑剩下的视频，一号镜头不再买一遍；跑完整份收掉★", 清单.己.再跑);
+  ok(!清单.庚.条 && 清单.庚.收 === 1 && 清单.庚.提示 === "服务端没收掉这份清单：磁盘满了。刷新后它会再摆出来" && 清单.庚.发了 === 0,
+     "★点「不要」服务端回了错：横幅照样收，原话报出来、说清刷新后还会摆出来★ 以前一律吞掉", 清单.庚);
 
   console.log("\n— 四十三、整图重铺收成一批：两百张卡只存一次盘，铺到一半抛了画纸也不冻着 —");
   const 一批 = await run(`

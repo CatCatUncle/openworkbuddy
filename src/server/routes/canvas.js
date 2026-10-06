@@ -388,13 +388,20 @@ app.post("/api/canvas/trash/restore", (req, res) => {
     res.json({ ok: true, name: r.name, canvases: canvasList(), trash: canvasStore.canvasTrashList() });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
-// 用户在画布上点了「开跑」或「不要」：收掉那份清单。带 id 只收那一份，Agent 这期间又交了新的就不动
+// 用户在画布上点了「开跑」或「不要」：收掉那份清单。带 id 只收那一份，Agent 这期间又交了新的就不动。
+// 带 kinds（只开跑了其中几类）：只划掉这几类，剩下的换新号留着（见 canvasProposalTrim），回 { id, left }
 app.post("/api/canvas/proposal/dismiss", (req, res) => {
   try {
     const body = req.body || {};
     const name = String(body.name || "").trim() || "main";
     if (canvasSafeName(name) !== name) return res.status(400).json({ ok: false, error: "画布名称不合法" });
     if (!body.id) return res.status(400).json({ ok: false, error: "缺清单号 id" });
+    if (body.kinds !== undefined) {
+      const kinds = Array.isArray(body.kinds) ? body.kinds.map(String) : [];
+      if (!kinds.length || kinds.some((k) => !["image", "video", "audio"].includes(k))) return res.status(400).json({ ok: false, error: "kinds 只能是 image / video / audio" });
+      const r = canvasStore.canvasProposalTrim(name, String(body.id), kinds);
+      return res.json({ ok: true, dropped: !!(r && r.dropped), ...(r && r.id ? { id: r.id, left: r.left } : {}) });
+    }
     res.json({ ok: true, dropped: canvasStore.canvasProposalDrop(name, String(body.id)) });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });

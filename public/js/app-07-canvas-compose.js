@@ -530,17 +530,38 @@ async function canvasRenderProposal(p) {
         : canvasT("预计 {m}，点「开跑」才扣费。", { m: canvasFormatYuan(est.total) }));
 }
 
-/** 「不要」，或者开跑之后：这台机器先记下点过了，再请服务端收掉那一份（带清单号，Agent 新交的不受牵连） */
+/**
+ * 请服务端收掉（kinds 为空）或划掉其中几类（kinds）。回服务端的回话；没收成就照原话报一句：
+ * 以前一律吞掉，这台机器上横幅是没了，刷新一下整份又摆出来，跑过的那几项再点「开跑」就是再买一遍
+ */
+async function canvasProposalPost(p, kinds) {
+  const body = { name: p.name, id: p.id, ...(kinds && kinds.length ? { kinds } : {}) };
+  try {
+    const r = await fetch("/api/canvas/proposal/dismiss", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d || d.ok === false) throw new Error((d && d.error) || `HTTP ${r.status}`);
+    return d;
+  } catch (e) {
+    const why = String((e && e.message) || e);
+    canvasToast(kinds && kinds.length ? canvasT("服务端没划掉跑过的那几类：{why}。刷新后整份清单会再摆出来", { why })
+      : canvasT("服务端没收掉这份清单：{why}。刷新后它会再摆出来", { why }), "triangle-alert", "err");
+    return null;
+  }
+}
+
+/** 「不要」，或者开跑之后全跑了：这台机器先记下点过了，再请服务端收掉那一份（带清单号，Agent 新交的不受牵连） */
 function canvasDropProposal(p) {
   if (!(canvasState.proposalGone instanceof Set)) canvasState.proposalGone = new Set();
   canvasState.proposalGone.add(p.id);
   if (canvasState.proposal === p) canvasHideBar("proposal");
-  fetch("/api/canvas/proposal/dismiss", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: p.name, id: p.id }) }).catch(() => {});
+  return canvasProposalPost(p);
 }
 
 /**
  * 「开跑」：按图 → 视频 → 配音的顺序一类一批（视频要用刚出的首帧），每批照常过 canvasRunQueue 的扣费确认。
- * 第一批就点了「先不了」就把横幅摆回去，清单不作废；开了任何一批就收掉（没跑的那几类在一键补齐里还能补）
+ * 第一批就点了「先不了」就把横幅摆回去，清单不作废。开了几批：跑过的那几类从清单里划掉，
+ * 没跑的（后面那批点了「先不了」、跑到一半换了画布）留在横幅上，带着新报价再等人点——
+ * 以前开了任何一批就整份收掉，后面没跑的那几类连同型号、报价一起没了
  */
 async function canvasRunProposal(p) {
   if (canvasState.proposal !== p) return;
@@ -562,17 +583,26 @@ async function canvasRunProposal(p) {
     return;
   }
   canvasHideBar("proposal");
-  let started = false;
+  // done：这一趟开过枪的那几类。整类都在等上一单的也算——那几格已经下过单，留在清单上再点就是买两次
+  let started = false; const done = new Set();
   for (const g of groups) {
     if (canvasScope() !== p.scope) break;   // 跑前一批的工夫换了画布：后面几批不在这张图上开枪
     const waiting = waitingOf(g), queue = g.nodes.filter((n) => !waiting.includes(n));
-    if (!queue.length) continue;
+    if (!queue.length) { done.add(g.kind); continue; }
     // 哪一批的确认框上点了「先不了」就整张清单停在那儿，不接着问下一类
     if (!(await canvasRunQueue(g.kind, queue, [], waiting.length ? `，${waiting.length} 个上一单没收到结果，没排进来` : ""))) break;
-    started = true;
+    started = true; done.add(g.kind);
   }
-  if (started) canvasDropProposal(p);
-  else if (canvasState.proposal === p && canvasScope() === p.scope) canvasRenderProposal(p);
+  const here = () => canvasState.proposal === p && canvasScope() === p.scope;
+  if (!started) { if (here()) canvasRenderProposal(p); return; }
+  // 还没跑的：画布上还有节点、又没开过枪的那几类。一项不剩就整份收掉
+  const live = new Set(groups.map((g) => g.kind));
+  const left = p.items.filter((it) => live.has(it.kind) && !done.has(it.kind));
+  if (!left.length) { canvasDropProposal(p); return; }
+  p.items = left;
+  if (here()) canvasRenderProposal(p);
+  const d = await canvasProposalPost(p, [...done]);
+  if (d && d.id) p.id = String(d.id);   // 剩下的换了新号：下一圈同步认得出还是这一份，不当成新交的再摆一遍
 }
 
 /**

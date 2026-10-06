@@ -2517,6 +2517,8 @@
       "、": ", ",
       "默认型号": "default model",
       "正在估价…": "Estimating the price…",
+      "服务端没收掉这份清单：{why}。刷新后它会再摆出来": "The server didn't remove this list: {why}. It will show up again after a refresh",
+      "服务端没划掉跑过的那几类：{why}。刷新后整份清单会再摆出来": "The server didn't cross off what already ran: {why}. The full list will show up again after a refresh",
       "预计 {m}，点「开跑」才扣费。": "About {m}. Nothing is charged until you click \"Run\".",
       "预计 {m}，另有 {n} 条价格未知。": "About {m}, plus {n} with unknown price.",
       "价格未知，点「开跑」才扣费。": "Price unknown. Nothing is charged until you click \"Run\".",

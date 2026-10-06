@@ -408,6 +408,24 @@ function canvasProposalDrop(name, id) {
   try { fs.unlinkSync(canvasProposalPath(name)); } catch {}
   return true;
 }
+function canvasProposalNewId() { return `p_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`; }
+/**
+ * 开跑了其中几类（比如图跑完了、视频那一批点了「先不了」）：把跑过的那几类从清单里划掉，没跑的留着。
+ * 剩下的换一个新清单号——GET /api/canvas 的 ETag 带着清单号，号不变的话别的标签页拿到的还是 304、
+ * 横幅上还是整份，再点一次「开跑」就把跑过的又买一遍。全划光了就跟收掉一样。
+ * 号对不上（Agent 这期间又交了一份）不动，返回 null
+ * @returns {{ dropped: true } | { id: string, left: number } | null}
+ */
+function canvasProposalTrim(name, id, kinds) {
+  const cur = canvasProposalRead(name);
+  if (!cur || cur.id !== String(id)) return null;
+  const gone = new Set((kinds || []).map(String));
+  const left = cur.items.filter((it) => !gone.has(it.kind));
+  if (!left.length) { canvasProposalDrop(name, cur.id); return { dropped: true }; }
+  const next = { ...cur, id: canvasProposalNewId(), items: left };
+  fs.writeFileSync(canvasProposalPath(name), JSON.stringify(next), "utf8");
+  return { id: next.id, left: left.length };
+}
 /** canvas_manage propose：核对清单、落盘。不碰节点、不发任何生成请求 */
 function canvasPropose(input, state, canvasName) {
   const raw = Array.isArray(input.items) ? input.items : [];
@@ -428,7 +446,7 @@ function canvasPropose(input, state, canvasName) {
     seen.add(id + "\n" + kind);
     items.push({ node_id: id, kind });
   }
-  const proposal = { id: `p_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`, at: Date.now(), items };
+  const proposal = { id: canvasProposalNewId(), at: Date.now(), items };
   const file = canvasProposalPath(canvasName);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(proposal), "utf8");
@@ -599,5 +617,5 @@ module.exports = {
   canvasList, canvasManage, canvasRebasePaths, canvasStamp,
   canvasTrashPut, canvasTrashList, canvasTrashRead, canvasTrashRestore,
   CANVAS_SNAP_KEEP, canvasSnapshotSave, canvasSnapshotList, canvasSnapshotRestore, canvasSnapshotBeforeDelete,
-  CANVAS_QUOTE_FIRST, CANVAS_QUOTE_FIRST_NOTE, canvasSessionOf, canvasProposalRead, canvasProposalDrop
+  CANVAS_QUOTE_FIRST, CANVAS_QUOTE_FIRST_NOTE, canvasSessionOf, canvasProposalRead, canvasProposalDrop, canvasProposalTrim
 };
