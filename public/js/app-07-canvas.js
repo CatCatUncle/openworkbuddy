@@ -180,7 +180,8 @@ async function renderCanvasPage() {
   });
   // 整份传进去，别在这儿把「空的」换成 null：那样里头就只剩「现在是空的」可看，
   // 而「服务器上那份是空的、但早就有人动过」正是不该再铺起手卡的那种
-  canvasRestoreOrSeed(remote); canvasHistoryReset(canvasSnapshot()); canvasStartRemoteSync();
+  // 刷新、重启前发出去还没收到结果的那几单，铺完就挂回卡片上（摆「看结果」），赶在撤销起点之前
+  canvasRestoreOrSeed(remote); canvasAdoptLocalJobs(); canvasHistoryReset(canvasSnapshot()); canvasStartRemoteSync();
   window.setTimeout(() => canvasFitAll(page), 0);
   canvasLoadLibrary();
 }

@@ -348,10 +348,20 @@ async function canvasRunPending(kind) {
   // 不是画布上写没写路径——写着路径而文件没了，照样得重跑。
   const castRows = (canvasState.progress && canvasState.progress.cast) || [];
   const castOk = (id) => { const row = castRows.find((r) => String(r.nodeId) === String(id)); return !!(row && row.image && row.image.ok); };
-  const todo = kind === "cast"
+  const missing = kind === "cast"
     ? elements.filter((n) => canvasKind(n) === "character" && !castOk(n.id) && !canvasIsPlaceholderPrompt(canvasPayload(n).description))
     : elements.filter((n) => canvasKind(n) === "shot" && !has(n.id, kind)
       && !canvasIsPlaceholderPrompt(canvasPayload(n).prompt));
+  // 上一单还没收回来的格子（断线、刷新、服务重启过）不进这一批：那一单可能已经在上游出片、扣费，
+  // 再排进来就是同一格买两次。单列出来，让人去卡片上点「看结果」
+  const jobKind = kind === "cast" ? "image" : kind;
+  const waiting = missing.filter((n) => typeof canvasPendingJob === "function" && canvasPendingJob(canvasPayload(n), jobKind));
+  const todo = missing.filter((n) => !waiting.includes(n));
+  if (!todo.length && waiting.length) {
+    canvasToast(canvasT("{n} 格的上一单还没收到结果，先在卡片上点「看结果」。", { n: waiting.length }), "triangle-alert", "err");
+    canvasProgressFocus(waiting.map((n) => n.id));
+    return;
+  }
   if (!todo.length) {
     // 「没有要补的了」和「有要补的，但都还没写设定」是两回事，不能都报一句绿的
     const held = kind === "cast" && elements.some((n) => canvasKind(n) === "character" && !castOk(n.id));
@@ -364,7 +374,8 @@ async function canvasRunPending(kind) {
   // 最后那句「N 个没成」盖掉——所以把它们摘出来单算，跑完一起说清楚，再跳到那几个镜头上。
   const noSpeaker = kind === "audio" ? todo.filter((n) => canvasResolveVoice(n, canvasPayload(n)).error) : [];
   const queue = todo.filter((n) => !noSpeaker.includes(n));
-  const heldNote = noSpeaker.length ? `，${noSpeaker.length} 个不知道该用谁的嗓子（去镜头的「说话的角色」里点个名）` : "";
+  const heldNote = (noSpeaker.length ? `，${noSpeaker.length} 个不知道该用谁的嗓子（去镜头的「说话的角色」里点个名）` : "")
+    + (waiting.length ? `，${waiting.length} 个上一单没收到结果，没排进来` : "");
   if (!queue.length) {
     canvasToast(`${noSpeaker.length} 个镜头连了多个角色，先指定说话人。`, "triangle-alert", "err");
     canvasProgressFocus(noSpeaker.map((n) => n.id));
@@ -395,6 +406,8 @@ async function canvasRunQueue(kind, queue, noSpeaker = [], heldNote = "") {
   canvasRenderProgress();
   let ok = 0;
   const failed = [];
+  // 没收到结果、或者上游收过单之后才出错的：不进「重试失败的」——重试就是再下一单
+  const parked = [];
   // 记下是哪张画布发起的：重试按钮要认这个，换到别的画布上点，不能拿同名 id 去那张图上开枪
   const where = { board: canvasState.canvasName, project: canvasState.workspaceName }, hadGraph = !!canvasState.graph;
   let moved = false, next = 0;
@@ -415,7 +428,7 @@ async function canvasRunQueue(kind, queue, noSpeaker = [], heldNote = "") {
       canvasState.batch.label = String(canvasPayload(node).id || canvasPayload(node).name || canvasPayload(node).title || "");
       canvasRenderProgress();
       const r = await canvasGenerate(node, kind === "cast" ? "image" : kind);
-      if (r && r.ok) ok += 1; else failed.push(node.id);
+      if (r && r.ok) ok += 1; else if (r && (r.unknown || r.submitted)) parked.push(node.id); else failed.push(node.id);
     }
   };
   try {
@@ -426,8 +439,8 @@ async function canvasRunQueue(kind, queue, noSpeaker = [], heldNote = "") {
     const bad = failed.length;
     // 按钮上的字是模板 + 参数：英文界面按整句查词条，数字单独塞进去
     const retry = bad ? { label: "重试失败的 {n} 条", params: { n: bad }, run: () => canvasRetryFailed(kind, failed, where) } : undefined;
-    const warn = bad || noSpeaker.length || moved;
-    canvasToast(`${ok} 个做好了${bad ? `，${bad} 个没成` : ""}${heldNote}${stopped ? "（手动停了）" : ""}${moved ? "（换了画布，没跑完）" : ""}`, warn ? "triangle-alert" : "circle-check", warn ? "err" : undefined, retry);
+    const warn = bad || parked.length || noSpeaker.length || moved || /没收到结果/.test(heldNote);
+    canvasToast(`${ok} 个做好了${bad ? `，${bad} 个没成` : ""}${parked.length ? `，${parked.length} 个没收到结果（没重发，卡片上点「看结果」）` : ""}${heldNote}${stopped ? "（手动停了）" : ""}${moved ? "（换了画布，没跑完）" : ""}`, warn ? "triangle-alert" : "circle-check", warn ? "err" : undefined, retry);
     if (noSpeaker.length) canvasProgressFocus(noSpeaker.map((n) => n.id));
     await canvasLoadProgress();
     canvasLoadLibrary();

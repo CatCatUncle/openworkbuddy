@@ -19,6 +19,8 @@ function canvasScope(name = canvasState.canvasName) { return `${canvasState.work
 function canvasStorageKey(name = canvasState.canvasName) { return `${CANVAS_STORAGE_KEY}:${canvasScope(name)}`; }
 // 「两边都改了、人还没选」这件事也得记在本机（见 canvasSavePendingConflict）
 function canvasConflictStoreKey(scope = canvasScope()) { return `${CANVAS_STORAGE_KEY}.conflict:${scope}`; }
+// 发出去还没收到结果的那几单也记在本机（见 canvasAdoptLocalJobs）：刷新、重启之后还认得出来
+function canvasJobStoreKey(scope = canvasScope()) { return `${CANVAS_STORAGE_KEY}.jobs:${scope}`; }
 
 const CANVAS_NODE_DEFS = {
   note: { label: "笔记", icon: "notebook-pen", width: 340, height: 205, subtitle: "自由记录想法与任务", group: "策划" },

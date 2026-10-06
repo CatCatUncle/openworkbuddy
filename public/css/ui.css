@@ -529,6 +529,10 @@ html[data-theme="dark"] .ui-select {
 .canvas-generation-lineage { display: inline-flex; align-items: center; max-width: 100%; gap: 5px; margin: 8px 0 2px; padding: 4px 7px; border: 1px solid color-mix(in srgb, var(--owb-brand) 18%, var(--owb-border)); border-radius: 999px; background: color-mix(in srgb, var(--owb-brand-weak) 44%, var(--owb-bg)); color: var(--owb-text-3); font-size: 10px; line-height: 1.2; }
 .canvas-generation-lineage .i { width: 12px; height: 12px; color: var(--owb-brand-text); flex: none; }
 .canvas-generation-lineage span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 上一单没收回来：红边一条，三颗按钮跟在后面，窄卡片上自动折行 */
+.canvas-job-pending { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin: 8px 0 2px; padding: 6px 8px; border: 1px solid color-mix(in srgb, var(--owb-err) 34%, var(--owb-border)); border-radius: var(--radius-md, 8px); background: var(--danger-bg); color: var(--danger-text); font-size: 11px; line-height: 1.4; }
+.canvas-job-pending .i { width: 12px; height: 12px; flex: none; }
+.canvas-job-pending span { flex: 1 1 140px; min-width: 0; }
 .canvas-empty { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; color: var(--owb-text-3); }
 /* 「这张画布读不出来」的整页兜底。要长得像一条说明，不像一张空白布——
    看着像空白布，用户就会开始在上面画，而那正是我们拦下来的动作 */

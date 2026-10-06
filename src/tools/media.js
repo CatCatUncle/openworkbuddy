@@ -758,6 +758,12 @@ async function generateVideo(media, input, opts = {}) {
   // 下载失败——这一单多半还在渲染、照样扣费。带着它回去，画布就不自动补枪：补一枪等于再下一单
   let submitted = "";
   const billedNote = () => `\n上游已经收下这一单（任务号 ${submitted}），多半照样出片、照样扣费。先到渠道控制台按任务号查，别直接重跑——重跑是再下一单。`;
+  // 收单那一刻就报出去（opts.onSubmitted，直调接口拿它记台账），不等出片：出片要几分钟，
+  // 这期间服务一重启，没报出去的任务号就只剩上游那边知道了
+  const took = (id) => {
+    submitted = String(id);
+    if (typeof opts.onSubmitted === "function") { try { opts.onSubmitted({ taskId: submitted, proto, model: cfg.model }); } catch {} }
+  };
   // 上游自己回了「这单失败」：一般不收钱，照常可以重试，所以这种不带 submitted
   const taskFailed = (detail) => Object.assign(new Error("视频任务失败：" + detail), { taskFailed: true });
   try {
@@ -782,7 +788,7 @@ async function generateVideo(media, input, opts = {}) {
       vWm = stripped ? "stripped" : "clean";
       const taskId = ((j || {}).output || {}).task_id;
       if (!r.ok || !taskId) return { content: `视频接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}${kfHint}`, isError: true };
-      upstream = taskId; submitted = String(taskId);
+      upstream = taskId; took(taskId);
       videoUrl = await poll(async () => {
         const s = await askJson(`${base}/tasks/${taskId}`, { headers: auth }, 30000);
         const st = ((s || {}).output || {}).task_status;
@@ -809,7 +815,7 @@ async function generateVideo(media, input, opts = {}) {
       }, 60000);
       const j = await r.json().catch(() => ({}));
       if (!r.ok || !j.id) return { content: `视频接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}${kfHint}`, isError: true };
-      upstream = j.id; submitted = String(j.id);
+      upstream = j.id; took(j.id);
       videoUrl = await poll(async () => {
         const s = await askJson(`${base}/contents/generations/tasks/${j.id}`, { headers: auth }, 30000);
         if (s.status === "succeeded") return ((s.content || {}).video_url) || null;
@@ -827,7 +833,7 @@ async function generateVideo(media, input, opts = {}) {
       const j = await r.json().catch(() => ({}));
       const id = j.id || j.request_id;
       if (!r.ok || !id) return { content: `视频接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}${kfHint}`, isError: true };
-      submitted = String(id);
+      took(id);
       videoUrl = await poll(async () => {
         const s = await askJson(`${base}/async-result/${id}`, { headers: auth }, 30000);
         const st = String((s || {}).task_status || "").toUpperCase();
@@ -851,7 +857,7 @@ async function generateVideo(media, input, opts = {}) {
       if (!r.ok || !j.task_id || (code != null && code !== 0)) {
         return { content: `视频接口错误 ${r.status}${code ? `（base_resp ${code}）` : ""}: ${JSON.stringify(j).slice(0, 300)}${kfHint}`, isError: true };
       }
-      submitted = String(j.task_id);
+      took(j.task_id);
       const fileId = await poll(async () => {
         const s = await askJson(`${base}/query/video_generation?task_id=${encodeURIComponent(j.task_id)}`,
           { headers: auth }, 30000);
@@ -878,7 +884,7 @@ async function generateVideo(media, input, opts = {}) {
       const j = await r.json().catch(() => ({}));
       const rid = j.requestId || j.request_id;
       if (!r.ok || !rid) return { content: `视频接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}${kfHint}`, isError: true };
-      submitted = String(rid);
+      took(rid);
       videoUrl = await poll(async () => {
         const s = await askJson(`${base}/video/status`, {
           method: "POST", headers, body: JSON.stringify({ requestId: rid }),

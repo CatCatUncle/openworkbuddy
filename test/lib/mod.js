@@ -159,6 +159,7 @@ const TABLE = Object.freeze({
   "thumb-worker": "src/platform/render/thumb-worker.js",
   thumb: "src/platform/render/thumb.js",
   tiles: "src/domains/geo/tiles.js",
+  "tool-jobs": "src/domains/media/tool-jobs.js",
   tools: "src/agent/tools.js",
   toolward: "src/core/safety/toolward.js",
   totp: "src/util/totp.js",

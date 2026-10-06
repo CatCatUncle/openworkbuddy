@@ -2454,6 +2454,30 @@
       "（{a} 没成，按设置里的备用顺序换成了 {b}）": " ({a} failed, switched to {b} per your fallback order in Settings)",
       "{n} 没成，换了设置里排的备用模型": "{n} failed; used the fallback model from Settings",
       "备用模型": "Fallback model",
+      // 画布：断线没收到结果的那一单（看结果只查不发，再生成一次才再扣费）
+      "看结果": "Check result",
+      "再生成一次（会再扣费）": "Generate again (charges again)",
+      "忽略": "Ignore",
+      "只划掉这条记录，不发请求": "Only clears this record. Sends nothing",
+      "上一单还没收到结果，先看结果，没有重发。": "The last job hasn't come back. Check its result first. Nothing was resent.",
+      "上游收过上一单（任务号 {t}），先看结果，没有重发。": "The provider took the last job (task {t}). Check its result first. Nothing was resent.",
+      "{a}没收到结果，没有重发：{m}": "{a}: no result came back, nothing was resent: {m}",
+      "收到上一单的{a}：{n}": "{a} from the last job received: {n}",
+      "节点已不在画布上。": "The node is no longer on the canvas.",
+      "这一格没有在等的单。": "Nothing is pending on this card.",
+      "没查到这一单：{m}": "Couldn't look up this job: {m}",
+      "这一单还在生成，过一会儿再点「看结果」。": "Still generating. Click \"Check result\" again in a while.",
+      "服务重启前没收完，没有重发。上游任务号 {t}": "The service restarted before this finished. Nothing was resent. Provider task {t}",
+      "服务重启前没收完，没有重发。": "The service restarted before this finished. Nothing was resent.",
+      "上游收过单（任务号 {t}），结果没收回来：{m}": "The provider took the job (task {t}) but the result never came back: {m}",
+      "这一单没成：{m}": "This job failed: {m}",
+      "这一单的记录只留一天，已经查不到了。": "Job records are kept for one day. This one is gone.",
+      "服务端没有这一单的记录，可以重新生成。": "The server has no record of this job. You can generate again.",
+      "已划掉这一单的记录，没发任何请求。": "Cleared the record. No request was sent.",
+      "上一单{a}上游收过单（任务号 {t}），结果没收回来": "Last {a} job: the provider took it (task {t}) but the result never came back",
+      "上一单{a}没收完（服务重启过），没有重发": "Last {a} job didn't finish (service restarted). Not resent",
+      "上一单{a}没收到结果，没有重发": "Last {a} job: no result came back. Not resent",
+      "{n} 格的上一单还没收到结果，先在卡片上点「看结果」。": "{n} card(s) have a job with no result yet. Click \"Check result\" on the card first.",
       // 历史版本按产物分组的小标题（首帧、配音在上面「制片进度」那段已有）
       "视频": "Video",
     },
@@ -2725,10 +2749,12 @@
   PATTERNS.en.push([/^历史过长，已截短较早的工具输出（约 (\d+) 千字符），最近几步保留原文。可在 设置→智能体设置 调上下文上限$/,
     "History got long: older tool output trimmed (~$1k chars), recent steps kept as-is. Adjust the context cap in Settings \u2192 Agent settings"]);
   // 画布批量跑完的那句：后面四段各自可有可无（见 canvasRunQueue）
-  PATTERNS.en.push([/^(\d+) 个做好了(?:，(\d+) 个没成)?(?:，(\d+) 个不知道该用谁的嗓子（去镜头的「说话的角色」里点个名）)?(（手动停了）)?(（换了画布，没跑完）)?$/,
+  PATTERNS.en.push([/^(\d+) 个做好了(?:，(\d+) 个没成)?(?:，(\d+) 个没收到结果（没重发，卡片上点「看结果」）)?(?:，(\d+) 个不知道该用谁的嗓子（去镜头的「说话的角色」里点个名）)?(?:，(\d+) 个上一单没收到结果，没排进来)?(（手动停了）)?(（换了画布，没跑完）)?$/,
     (m) => `${m[1]} done` + (m[2] ? `, ${m[2]} failed` : "") +
-      (m[3] ? `, ${m[3]} with no voice picked (set \u201cWho speaks\u201d on the shot)` : "") +
-      (m[4] ? " (stopped by you)" : "") + (m[5] ? " (canvas switched before it finished)" : "")]);
+      (m[3] ? `, ${m[3]} with no result yet (not resent; click \u201cCheck result\u201d on the card)` : "") +
+      (m[4] ? `, ${m[4]} with no voice picked (set \u201cWho speaks\u201d on the shot)` : "") +
+      (m[5] ? `, ${m[5]} skipped (last job has no result yet)` : "") +
+      (m[6] ? " (stopped by you)" : "") + (m[7] ? " (canvas switched before it finished)" : "")]);
   PATTERNS.en.push([/^解散专家团「(.+)」？$/, "Dissolve the expert team \u201c$1\u201d?"]);
   PATTERNS.en.push([/^卸载插件「(.+)」？$/, "Uninstall the plugin \u201c$1\u201d?"]);
   PATTERNS.en.push([/^清空「(.+)」的 API Key？$/, "Clear the API key for \u201c$1\u201d?"]);

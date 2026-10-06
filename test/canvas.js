@@ -205,10 +205,14 @@ const STUB2 = `
 // 第三层，套在 STUB2 外面：生成、合成、分镜表这几条接口。发出去的请求体一条条记下来（__bodies / __runs），
 // 断言看的是「真发出去了什么」，不是函数被叫了几次。
 //   __failRun(提示词第一行) 返回 true 的那几条回 500；__holdRun 是个 promise，挂着它就等于「生成还在跑」。
+//   __dropRun(提示词第一行, body) 返回 true 的那几条：请求记下了，回来的却是断线（fetch 抛错）——
+//   跟真服务端一样，那一单在「服务端」照常跑完、按 clientJobId 记进 __jobs；__jobState 可以改写台账里那一单的样子。
+//   GET /api/tool/job 按 __jobs 回（真服务端 /api/tool/job 的口径），问过哪些号记在 __jobAsks。
 // 一律假的：这套测试不许真花一分钱
 const STUB3 = `
 (() => {
   window.__bodies = []; window.__runs = []; window.__failRun = null; window.__holdRun = null;
+  window.__dropRun = null; window.__jobs = {}; window.__jobAsks = []; window.__jobState = null;
   window.__progress = null; window.__board = null;
   window.__deletes = []; window.__assets = null; window.__shotHistory = null; window.__echoName = false;
   // 生成成功后会顺手打开右侧预览，那条路要真文件，这儿用不着
@@ -221,6 +225,15 @@ const STUB3 = `
     try { body = o && typeof o.body === "string" ? JSON.parse(o.body) : null; } catch {}
     // 删文件、覆盖文件的请求一律记一笔：「用这一版」那条断言要的就是这里一条都没有
     if (m === "DELETE" || s.includes("/api/drama/shot-history/restore")) window.__deletes.push({ url: s, method: m, body });
+    if (s.includes("/api/tool/job")) {
+      const id = decodeURIComponent((s.split("id=")[1] || "").split("&")[0]);
+      window.__jobAsks.push(id);
+      const got = window.__jobs[id];
+      const job = got ? got.job : { id, state: "missing" };
+      const view = window.__jobState ? window.__jobState(id, job) : null;
+      if (view) return J(view);
+      return J({ ok: true, job, response: got && got.job.state !== "running" ? got.response : null });
+    }
     if (s.includes("/api/tool/run")) {
       const first = String((body && body.input && (body.input.prompt || body.input.text)) || "").split("\\n")[0];
       window.__runs.push(first);
@@ -234,7 +247,13 @@ const STUB3 = `
         const 失败 = window.__failRun && window.__failRun(first, body);
         // 返回对象 = 按它给的原样回（比如 200 但 isError、带 submitted 的那种工具失败）
         if (失败 && typeof 失败 === "object") return J(失败.body, 失败.status);
-        if (失败) return J({ error: "假服务器：这一条故意失败" }, 500);
+        // 真服务端带了 clientJobId 的那一单，5xx 回执里也带着 job（这一单的状态），画布凭它认出「是服务端说的没成」
+        if (失败) return J({ error: "假服务器：这一条故意失败", ...(body && body.clientJobId ? { job: { id: body.clientJobId, state: "failed", submitted: "" } } : {}) }, 500);
+        if (window.__dropRun && window.__dropRun(first, body)) {
+          const id = body && body.clientJobId;
+          if (id && !window.__jobs[id]) window.__jobs[id] = { job: { id, state: "done", submitted: "" }, response: { status: 200, body: { ok: true, file: "outputs/收回-" + window.__runs.length + ".png", path: "outputs/收回-" + window.__runs.length + ".png" } } };
+          throw new TypeError("Failed to fetch");
+        }
         // __echoName：照真服务端那样，按请求里的文件名落盘、path 带上子目录
         if (window.__echoName && body && body.input && body.input.filename) {
           return J({ ok: true, file: body.input.filename, path: (body.subdir ? body.subdir + "/" : "") + body.input.filename });
@@ -2010,14 +2029,20 @@ app.whenReady().then(async () => {
       const 带单号 = { 次数: window.__runs.length, 结果, 提示: 字() };
       window.__bodies = []; window.__runs = [];
       window.__failRun = () => 工具失败("");
+      // 上游收过单的那一格记在卡片上：再点「生成」不开枪，得先看结果或点「忽略」
+      await canvasGenerate(卡(), "image");
+      const 挂着 = { 次数: window.__runs.length, 记: ((卡().get("canvasPayload") || {}).pending_jobs || {}).image || null };
+      canvasDismissJob(卡(), "image");
       await canvasGenerate(卡(), "image");
       const 不带 = { 次数: window.__runs.length };
       settingsCache.media_fallback = 原设置; window.__failRun = null;
       await canvasFlushRemoteWrite(); ${等(200)}
-      return { 带单号, 不带 };
+      return { 带单号, 挂着, 不带 };
     })()`);
   ok(已下单.带单号.次数 === 1 && 已下单.带单号.结果 && 已下单.带单号.结果.ok === false && /任务号 vt-9/.test(已下单.带单号.提示),
      "★回执带 submitted（上游已经收下那一单）：不补枪、也不换备用模型，原话贴出来★ 补一枪等于再买一单", 已下单.带单号);
+  ok(已下单.挂着.次数 === 0 && 已下单.挂着.记 && 已下单.挂着.记.submitted === "vt-9",
+     "★上游收过单的那一格记在卡片上（任务号 vt-9），再点「生成」不开枪★", 已下单.挂着);
   ok(已下单.不带.次数 === 3, "反向对照：同样的工具失败不带 submitted，照常补枪、再按备用顺序换", 已下单.不带);
 
   console.log("\n— 二十八、滚轮：捏合 / 鼠标滚轮以光标为锚点缩放，双指滑动只平移 —");
@@ -2931,6 +2956,110 @@ app.whenReady().then(async () => {
      { 写了: 比例.量完写了, 推开: 比例.又推开, 前: 比例.前高, 挤后: 比例.挤后高, 回: 比例.回高 });
   ok(比例.盘上高 === 比例.前高, "下一次真改动时，量好的尺寸跟着一起存上", { 盘上: 比例.盘上高, 屏幕: 比例.前高 });
   ok(比例.旧样式 && !比例.旧样式.ia && !比例.旧样式.ic && !比例.旧样式.id, "反向对照：换回写死高度 + cover 的老样式，上面那把尺子量得出变形", 比例.旧样式);
+
+  console.log("\n— 三十九、断了线不重发：每一枪带单号，没收到结果就标「状态未知」，看结果只查不发 —");
+  const 断线 = await run(`
+    (async () => {
+      ${摆画布([镜头("j1", "断线镜头", 40), 镜头("j2", "照常镜头", 300), 镜头("j3", "还在跑镜头", 560)])}
+      window.__bodies = []; window.__runs = []; window.__echoName = false; window.__jobs = {}; window.__jobAsks = []; window.__jobState = null;
+      const 卡 = (id) => canvasState.graph.getCell(id);
+      const 字 = () => ((document.querySelector("#owb-toast span") || {}).textContent) || "";
+      const 发的 = () => window.__bodies.filter((b) => b.url === "/api/tool/run").map((b) => ({ 首行: String(b.body.input.prompt || "").split("\\n")[0], 单号: b.body.clientJobId || "" }));
+      const 原设置 = settingsCache.media_fallback;
+      settingsCache.media_fallback = { image: ["备用图模型"] };
+      // ① 断线、服务端那一单其实跑完了：问一次台账就拿回结果，一枪都不补
+      window.__dropRun = (first) => first === "断线镜头";
+      const r1 = await canvasGenerate(卡("j1"), "image");
+      const 甲 = { 结果: r1, 发的: 发的(), 问过: [...window.__jobAsks], 首帧: (卡("j1").get("canvasPayload") || {}).first_frame || "", 记录: (卡("j1").get("canvasPayload") || {}).pending_jobs || null };
+      // ② 断线、那一单还在跑：标「状态未知」，不补枪、不换备用模型；卡片上摆看结果 / 再生成一次
+      window.__bodies = []; window.__runs = []; window.__jobAsks = [];
+      window.__dropRun = (first) => first === "还在跑镜头";
+      window.__jobState = (id, job) => ({ ok: true, job: { ...job, state: "running" }, response: null });
+      const r2 = await canvasGenerate(卡("j3"), "image");
+      await new Promise((r) => setTimeout(r, 60));
+      const 记 = ((卡("j3").get("canvasPayload") || {}).pending_jobs || {}).image || null;
+      canvasRefreshNode(卡("j3")); await new Promise((r) => setTimeout(r, 60));
+      const 视图 = canvasState.paper.findViewByModel(卡("j3")), 卡片 = 视图 && 视图.el;
+      const 按钮 = 卡片 ? [...卡片.querySelectorAll("[data-canvas-job-collect],[data-canvas-job-again],[data-canvas-job-dismiss]")].map((b) => b.textContent.trim()) : [];
+      const 乙 = { 结果: r2, 发的: 发的(), 记, 提示: 字(), 按钮 };
+      // ③ 再点「生成」：不开枪，提示先看结果
+      window.__bodies = []; window.__runs = [];
+      const r3 = await canvasGenerate(卡("j3"), "image");
+      const 丙 = { 结果: r3, 发的: 发的().length, 提示: 字() };
+      // ④ 一键补齐的队列跑到它：照样不开枪，也不进「重试失败的」
+      window.__bodies = []; window.__runs = [];
+      const 原问 = window.askConfirm; window.askConfirm = async () => true;
+      await canvasRunQueue("image", [卡("j3"), 卡("j2")]);
+      window.askConfirm = 原问;
+      const 丁 = { 发的: 发的().map((x) => x.首行), 提示: 字(), 有重试钮: !!document.querySelector("#owb-toast .owb-toast-act") && /重试/.test(document.querySelector("#owb-toast .owb-toast-act").textContent) };
+      // ⑤ 那一单跑完了，点「看结果」：只问台账，一枪不发，放上画布、划掉记录
+      window.__bodies = []; window.__runs = []; window.__jobAsks = [];
+      window.__jobState = (id) => ({ ok: true, job: { id, state: "done", submitted: "" }, response: { status: 200, body: { ok: true, file: "outputs/后来收的.png", path: "outputs/后来收的.png" } } });
+      const r5 = await canvasCollectJob(卡("j3"), "image");
+      const p5 = 卡("j3").get("canvasPayload") || {};
+      const 戊 = { 结果: r5, 发的: 发的().length, 问过: window.__jobAsks.length, 首帧: p5.first_frame || "", 记录: p5.pending_jobs || null, 提示: 字() };
+      // ⑥ 「再生成一次」：明说再花一次钱，换个新单号真发
+      window.__jobState = null; window.__dropRun = (first) => first === "还在跑镜头";
+      window.__jobState = (id, job) => ({ ok: true, job: { ...job, state: "running" }, response: null });
+      canvasState.reroll.add("j3:image");   // 参数跟刚收回来那张一样，不「换一版」就直接沿用、不发了
+      await canvasGenerate(卡("j3"), "image");
+      const 旧号 = (((卡("j3").get("canvasPayload") || {}).pending_jobs || {}).image || {}).id || "";
+      window.__dropRun = null; window.__jobState = null; window.__bodies = []; window.__runs = [];
+      const r6 = await canvasGenerateAgain(卡("j3"), "image");
+      const 己 = { 结果: r6, 发的: 发的(), 旧号, 记录: (卡("j3").get("canvasPayload") || {}).pending_jobs || null };
+      // ⑦ 服务端说「没收到这一单」：同一个号再递一次（号不变，前一趟万一刚到也只算一单）
+      window.__bodies = []; window.__runs = []; window.__jobs = {};
+      let 丢 = 1;
+      window.__dropRun = () => { if (丢 > 0) { 丢 -= 1; return true; } return false; };
+      window.__jobState = (id, job) => (window.__runs.length === 1 ? { ok: true, job: { id, state: "missing" }, response: null } : null);
+      canvasState.reroll.add("j2:image");
+      const r7 = await canvasGenerate(卡("j2"), "image");
+      const 庚 = { 结果: r7, 发的: 发的() };
+      window.__dropRun = null; window.__jobState = null;
+      // ⑧ 一枪在路上：只记在本机，不写进节点（写进去就是「本机改过这张卡」，远端同步撞上要问人）；
+      // 刷新之后打开画布，本机记着、这页里没人在等的那一单挂回卡片上，标「没收到结果」
+      const 键 = canvasJobStoreKey();
+      let 放 = null; window.__holdRun = new Promise((r) => { 放 = r; });
+      canvasState.reroll.add("j1:image");
+      const 跑8 = canvasGenerate(卡("j1"), "image");
+      ${等(80)}
+      const 途中 = { 节点上: (卡("j1").get("canvasPayload") || {}).pending_jobs || null, 本机: JSON.parse(localStorage.getItem(键) || "{}") };
+      放(); await 跑8; window.__holdRun = null;
+      const 收完本机 = localStorage.getItem(键);
+      localStorage.setItem(键, JSON.stringify({ "j2:video": { id: "job_reload_0001", tool: "generate_video", state: "sent", at: Date.now(), model: "", submitted: "" },
+        "早删了的卡:image": { id: "job_reload_0002", tool: "generate_image", state: "sent", at: Date.now() } }));
+      canvasAdoptLocalJobs();
+      const 辛 = { 途中, 收完本机, 记: ((卡("j2").get("canvasPayload") || {}).pending_jobs || {}).video || null, 本机: localStorage.getItem(键) };
+      canvasDismissJob(卡("j2"), "video");
+      settingsCache.media_fallback = 原设置;
+      await canvasFlushRemoteWrite(); ${等(200)}
+      const 盘上 = ((window.__store.jia.main || {}).nodes || []).find((n) => n.id === "j3");
+      return { 甲, 乙, 丙, 丁, 戊, 己, 庚, 辛, 盘上记录: 盘上 && 盘上.payload ? 盘上.payload.pending_jobs || null : "无" };
+    })()`);
+  const 号形 = (x) => /^[A-Za-z0-9_.:-]{8,80}$/.test(String(x || ""));
+  ok(断线.甲.发的.length === 1 && 号形(断线.甲.发的[0].单号) && 断线.甲.问过[0] === 断线.甲.发的[0].单号
+     && 断线.甲.结果 && 断线.甲.结果.ok && /收回-/.test(断线.甲.首帧) && !断线.甲.记录,
+     "★断线、服务端那一单其实跑完了：拿同一个单号问一次就收回结果，一枪都不补★", 断线.甲);
+  ok(断线.乙.发的.length === 1 && 断线.乙.结果 && 断线.乙.结果.ok === false && 断线.乙.结果.unknown
+     && 断线.乙.记 && 断线.乙.记.state === "unknown" && 断线.乙.记.id === (断线.乙.发的[0] || {}).单号 && /没有重发/.test(断线.乙.提示),
+     "★断线、那一单还在跑：标「状态未知」，不补枪、不换备用模型，单号记在节点上★", 断线.乙);
+  ok(断线.乙.按钮.length === 3 && /看结果/.test(断线.乙.按钮[0]) && /再扣费/.test(断线.乙.按钮[1]),
+     "卡片上摆「看结果」「再生成一次（会再扣费）」「忽略」三颗按钮", 断线.乙.按钮);
+  ok(断线.丙.发的 === 0 && 断线.丙.结果 && 断线.丙.结果.unknown && /看结果/.test(断线.丙.提示),
+     "★再点「生成」：不开枪，让人先看结果★", 断线.丙);
+  ok(断线.丁.发的.length === 1 && 断线.丁.发的[0] === "照常镜头" && !断线.丁.有重试钮 && /没收到结果/.test(断线.丁.提示),
+     "★一键补齐跑到状态未知的那格：不开枪，也不进「重试失败的」★ 重试就是再下一单", 断线.丁);
+  ok(断线.戊.发的 === 0 && 断线.戊.问过 === 1 && 断线.戊.结果 && 断线.戊.结果.ok && 断线.戊.首帧 === "outputs/后来收的.png" && !断线.戊.记录 && /收到上一单/.test(断线.戊.提示),
+     "★「看结果」：只问台账、一枪不发，放上画布、划掉记录★", 断线.戊);
+  ok(断线.己.发的.length === 1 && 号形(断线.己.发的[0].单号) && 断线.己.发的[0].单号 !== 断线.己.旧号 && 断线.己.结果 && 断线.己.结果.ok && !断线.己.记录,
+     "「再生成一次」：换个新单号真发一枪，成了就划掉记录", 断线.己);
+  ok(断线.庚.发的.length === 2 && 断线.庚.发的[0].单号 === 断线.庚.发的[1].单号 && 断线.庚.结果 && 断线.庚.结果.ok,
+     "★服务端说没收到这一单：用同一个单号再递一次★ 号不变，服务端认得出是同一单，只跑一回", 断线.庚);
+  ok(!断线.辛.途中.节点上 && 断线.辛.途中.本机["j1:image"] && 号形(断线.辛.途中.本机["j1:image"].id) && 断线.辛.收完本机 === null,
+     "★一枪在路上只记在本机、不改卡片★ 改了卡片，生成途中别处改同一张卡，远端同步就停下来问人；收完本机那一笔划掉", 断线.辛);
+  ok(断线.辛.记 && 断线.辛.记.state === "unknown" && 断线.辛.记.id === "job_reload_0001" && 断线.辛.本机 === null,
+     "★刷新前发出去的那一单，打开画布挂回卡片上标「没收到结果」★ 卡已删的那笔直接划掉", 断线.辛);
+  ok(断线.盘上记录 === null || 断线.盘上记录 === undefined, "收完之后存进项目的那份也没有残留的记录", 断线.盘上记录);
 
   srv.close();
   console.log(fail ? `\n有失败：${pass} 过 / ${fail} 挂` : `\n全部通过：${pass} 过 / 0 挂`);

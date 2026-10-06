@@ -2006,7 +2006,7 @@ function modePrompt(mode) {
    * 各写各的早晚会漂：少传一个 media，generate_image 连模型都点不了名；
    * 少传一个 actor，审批卡片就跑去问了别人。
    */
-  function execOpts({ depth = 0, deadline, stopSignal, signal, taskLabel, user, baseDir, sec, sessionId, callId, name, emit, llmOverride }) {
+  function execOpts({ depth = 0, deadline, stopSignal, signal, taskLabel, user, baseDir, sec, sessionId, callId, name, emit, llmOverride, onSubmitted }) {
     return {
       onProgress: emit ? progressSink(emit, { id: callId, name, depth }) : undefined, // 长工具（渲染 / 配音 / 合成）往回报进度；只直播不存盘
       knownTools: toolList(depth, "craft").map((t) => t.name), // 拼错工具名时用来给出最接近的真名
@@ -2031,6 +2031,9 @@ function modePrompt(mode) {
       // 记之前先判一句：开关 + 这一趟在干什么（判一句话是不是只在这一趟里成立，得知道这一趟是什么活）
       memory: { user, gate: (config.agent || {}).memory_gate === true, task: taskLabel },
       sessionId, // 文件检查点记在哪个会话名下：回退只认自己这个会话动过的文件
+      // 上游一收单就回报任务号（生视频那条，见 media.js generateVideo）。直调接口拿它记台账：
+      // 断线、重启之后还查得到「这一单收过、任务号是几」
+      onSubmitted,
       callId, // 这一步的工具调用 id，检查点账本上和过程卡对得上号
       hooks: hooksCfg(), // 用户在 config.json 里配的钩子（hooks.js）
     };
@@ -3546,7 +3549,7 @@ function modePrompt(mode) {
    * 白名单只有这四个，形状都是「给定输入 → 一个产物文件」的纯函数。写文件、跑脚本这些
    * 不在里面：那些要的是模型的判断，不该做成一颗界面上能直接按的按钮。
    */
-  async function runTool(name, input, { user, baseDir, taskLabel, sec, stopSignal, signal } = {}) {
+  async function runTool(name, input, { user, baseDir, taskLabel, sec, stopSignal, signal, onSubmitted } = {}) {
     if (!DIRECT_TOOLS.includes(String(name || ""))) {
       throw Object.assign(new Error(`「${name}」不支持直调。能直接跑的只有：${DIRECT_TOOLS.join("、")}`), { status: 400 });
     }
@@ -3557,6 +3560,7 @@ function modePrompt(mode) {
     return await executeTool(String(name), input || {}, execOpts({
       stopSignal,
       signal,
+      onSubmitted,
       taskLabel: taskLabel || "直调工具",
       user,
       baseDir,

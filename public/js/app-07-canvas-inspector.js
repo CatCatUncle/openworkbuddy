@@ -76,6 +76,10 @@ function canvasBindNode(node, root) {
   root.querySelector("[data-canvas-agent]")?.addEventListener("click", (evt) => { evt.preventDefault(); evt.stopPropagation(); canvasRunInternal(node); });
   root.querySelector("[data-canvas-compose]")?.addEventListener("click", (evt) => { evt.preventDefault(); evt.stopPropagation(); canvasComposeOpen(); });
   root.querySelectorAll("[data-canvas-generate]").forEach((button) => button.addEventListener("click", (evt) => { evt.preventDefault(); evt.stopPropagation(); canvasGenerate(node, button.dataset.canvasGenerate); }));
+  // 上一单没收回来那一条（canvasPendingJobsRow）：看结果只查不发，再生成一次才真花钱，忽略只划掉记录
+  root.querySelectorAll("[data-canvas-job-collect]").forEach((button) => button.addEventListener("click", (evt) => { evt.preventDefault(); evt.stopPropagation(); canvasCollectJob(node, button.dataset.canvasJobCollect); }));
+  root.querySelectorAll("[data-canvas-job-again]").forEach((button) => button.addEventListener("click", (evt) => { evt.preventDefault(); evt.stopPropagation(); canvasGenerateAgain(node, button.dataset.canvasJobAgain); }));
+  root.querySelectorAll("[data-canvas-job-dismiss]").forEach((button) => button.addEventListener("click", (evt) => { evt.preventDefault(); evt.stopPropagation(); canvasDismissJob(node, button.dataset.canvasJobDismiss); }));
   root.querySelector("[data-canvas-draft]")?.addEventListener("click", (evt) => { evt.preventDefault(); evt.stopPropagation(); canvasDraftStoryboard(node); });
   root.querySelectorAll("[data-canvas-inline-key]").forEach((field) => field.addEventListener("input", () => { const next = canvasPayload(node); next[field.dataset.canvasInlineKey] = field.value; node.set("canvasPayload", next); canvasPersist(); }));
   root.querySelector("[data-canvas-expand]")?.addEventListener("click", async (evt) => {
