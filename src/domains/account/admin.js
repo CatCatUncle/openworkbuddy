@@ -613,6 +613,8 @@ function createAdminRouter(deps = {}) {
       // 看图可以单配一条，也可以主模型自己看（设置页里勾了「能看图」的那几条）
       vision: !!at(cfg, "media.vision.model") || !!at(cfg, "media.vision.provider")
         || (Array.isArray(cfg.models) && cfg.models.some((m) => m && Array.isArray(m.caps) && m.caps.includes("vision"))),
+      // 记忆向量只认设置里选定的嵌入模型，没选就压根不调
+      embedding: !!(cfg.embedding && String(cfg.embedding.model || "").trim()),
       fetch: true, // 抓网页不需要钥匙，永远是「已就绪」
     };
     return {
@@ -783,8 +785,10 @@ function createAdminRouter(deps = {}) {
       // 这条规矩唯一的出口：不催的话，那几笔就永远记成 0，而钱是真花了的。
       const cat = pricing.catalog({
         config: cfg,
-        // 看图按 token 记，查的是对话那张价目表；只催真没查到价的那几条（本机渠道 0 元不算缺）
-        seen: rows.filter((r) => !r.cap || r.cap === "chat" || r.cap === "embedding" || (r.cap === "vision" && r.cost_unknown)).map((r) => r.model),
+        // 看图、记忆向量按 token 记，查的是对话那张价目表；只催真没查到价的那几条（本机渠道 0 元不算缺）。
+        // 中转站转发的向量请求（kind:"relay"）照旧全算进来
+        seen: rows.filter((r) => !r.cap || r.cap === "chat" || (r.cap === "embedding" && (r.kind !== "api" || r.cost_unknown))
+          || (r.cap === "vision" && r.cost_unknown)).map((r) => r.model),
         seen_units: rows.filter((r) => r.cap && pricing.UNITS[r.cap]).map((r) => ({ cap: r.cap, model: r.price_key || r.model })),
       });
       out.prices = cat.rows;

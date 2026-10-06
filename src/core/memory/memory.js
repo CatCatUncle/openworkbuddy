@@ -154,8 +154,9 @@ function save(items) {
 }
 
 // ---------- 向量召回层 ----------
-// embedder 由 server 启动时注入（llm.createEmbedder），可能是 null（没有可用的
-// embeddings 渠道）。null 时打分退回中文二元组关键词匹配，promptBlock 照常工作。
+// embedder 由 server 启动时注入（llm.createEmbedder），设置里没选嵌入模型就是 null——
+// 不会自己去借聊天渠道的 Key 凑一个。null 时打分退回中文二元组关键词匹配，promptBlock 照常工作。
+// 每次调用都过额度闸：被拦下的那一趟 embedder 回 null，这里同样按关键词走。
 let embedder = null;
 function setEmbedder(fn) { embedder = typeof fn === "function" ? fn : null; }
 

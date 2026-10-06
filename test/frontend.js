@@ -3763,7 +3763,10 @@ const MEM_CHECKS = `
   ok("普通成员：提示说由平台管理员配，不指向一个不存在的地方", /平台管理员/.test(vecText()) && !/设置 → 模型/.test(pane.textContent), vecText());
   await draw({ can_share: true, can_edit_manual: true, embedding: { base_url: "", model: "", api_key: "", has_key: false } });
   ok("平台管理员：嵌入接口那张表画出来了", !!q("#emb-card") && !!q("#emb-base") && !!q("#emb-key") && !!q("#emb-model"));
-  ok("平台管理员：提示指向下面这张表", /在下面填一个嵌入接口/.test(vecText()) && !/设置 → 模型/.test(pane.textContent), vecText());
+  ok("平台管理员：提示指向下面这张表", /在下面选一个嵌入模型/.test(vecText()) && !/设置 → 模型/.test(pane.textContent), vecText());
+  // 没选嵌入模型就不算向量：界面得看得出来，而且不能再说「不填就自动找」
+  ok("没开时说清「向量检索没开，正在用关键词检索」", /向量检索没开/.test(vecText()) && /关键词检索/.test(vecText()), vecText());
+  ok("不再许诺「不填就从已配渠道自动找」", !/自动找/.test(pane.textContent) && /不会借聊天渠道的 Key/.test(q("#emb-card").textContent));
   ok("没存过就不画「清空」", !q("#emb-clear"));
   // 缺模型名：拦在前端，一个请求都不发
   q("#emb-base").value = "https://relay.example.com/v1"; q("#emb-model").value = "";
@@ -3812,7 +3815,41 @@ const MEM_CHECKS = `
   calls = [];
   await q("#emb-clear").onclick({ preventDefault() {} });
   const cl = lastPost("/api/settings");
-  ok("清空：三样都发空串", cl && cl.body.embedding.base_url === "" && cl.body.embedding.model === "" && cl.body.embedding.api_key === "", JSON.stringify(cl && cl.body));
+  ok("清空：几样都发空串（连点名的渠道一起清）", cl && cl.body.embedding.base_url === "" && cl.body.embedding.model === "" && cl.body.embedding.api_key === "" && cl.body.embedding.provider === "", JSON.stringify(cl && cl.body));
+  ok("清空后说的是改回关键词召回", window.toasts.some((t) => /已清空，记忆改按关键词召回/.test(t)), JSON.stringify(window.toasts));
+
+  // ⑥ 用已配渠道：点一条渠道，地址和 Key 用那条渠道的（两格锁上），存的只是「哪条渠道 + 哪个型号」
+  const CHS = [{ id: "p-sf", name: "硅基流动", kind: "siliconflow", model: "BAAI/bge-m3" }, { id: "p-gw", name: "自建网关", kind: "custom", model: "" }];
+  await draw({ can_share: true, can_edit_manual: true, embedding: { provider: "", base_url: "", model: "", api_key: "", has_key: false, channels: CHS } });
+  const chip = (id) => pane.querySelector('[data-emb-ch="' + id + '"]');
+  ok("已配渠道列成一排可点的", !!chip("p-sf") && !!chip("p-gw"));
+  chip("p-sf").onclick();
+  ok("点了渠道：型号填上建议值，地址和 Key 两格锁上", q("#emb-model").value === "BAAI/bge-m3" && q("#emb-base").disabled && q("#emb-key").disabled && /硅基流动/.test(q("#emb-base").placeholder));
+  ok("点了的那条亮起来", chip("p-sf").classList.contains("active") && !chip("p-gw").classList.contains("active"));
+  calls = []; nextTest = { ok: true, dims: 1024 };
+  await q("#emb-test").onclick();
+  const t2 = lastPost("/api/embedding/test");
+  ok("测一下：只发渠道 id 和型号，不发地址和 Key", t2 && t2.body.provider === "p-sf" && t2.body.model === "BAAI/bge-m3" && !("api_key" in t2.body) && !("base_url" in t2.body), JSON.stringify(t2 && t2.body));
+  calls = [];
+  await q("#emb-save").onclick();
+  const sv2 = lastPost("/api/settings");
+  ok("保存：存的是「哪条渠道 + 哪个型号」", sv2 && sv2.body.embedding.provider === "p-sf" && sv2.body.embedding.model === "BAAI/bge-m3" && !("api_key" in sv2.body.embedding), JSON.stringify(sv2 && sv2.body));
+  // 渠道没给建议型号的（自建网关）：模型名得自己填，空着不发
+  chip("p-gw").onclick();
+  q("#emb-model").value = "";
+  calls = [];
+  await q("#emb-save").onclick();
+  ok("渠道选了但模型名空着：不发保存", !lastPost("/api/settings") && /模型名要填/.test(q("#emb-msg").textContent), q("#emb-msg").textContent);
+  // 点回预设 = 改成单独填一组：两格解锁，渠道不再亮
+  [...pane.querySelectorAll("[data-emb-base]")].find((c) => /硅基流动/.test(c.textContent)).onclick();
+  ok("点预设就回到单独填：两格解锁、渠道熄掉", !q("#emb-base").disabled && !q("#emb-key").disabled && !chip("p-gw").classList.contains("active") && q("#emb-base").value === "https://api.siliconflow.cn/v1");
+  // 存着的就是某条渠道：一进来就亮着那条、两格锁着
+  await draw({ can_share: true, can_edit_manual: true, embedding: { provider: "p-sf", base_url: "", model: "BAAI/bge-m3", api_key: "", has_key: false, channels: CHS },
+               vectors: { enabled: true, model: "BAAI/bge-m3", source: "渠道「硅基流动」", have: 2, total: 2 } });
+  ok("存着渠道：进来就亮那条、两格锁着、能清空", chip("p-sf").classList.contains("active") && q("#emb-base").disabled && !!q("#emb-clear"));
+  // 选的渠道被删了：照实说，让人重选
+  await draw({ can_share: true, can_edit_manual: true, embedding: { provider: "p-gone", base_url: "", model: "x", api_key: "", has_key: false, channels: CHS, missing: "p-gone" } });
+  ok("选的渠道没了：说向量检索没开、让人重选", /向量检索没开/.test(vecText()) && /重选/.test(vecText()), vecText());
   return names;
 })()
 `;

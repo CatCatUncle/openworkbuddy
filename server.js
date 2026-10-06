@@ -23,7 +23,7 @@ const migrate = require("./src/server/migrate");
 seedDataDir();
 const { mergeBuiltinExperts } = require("./src/agent/experts-lib");
 const mcpCatalog = require("./src/core/ext/mcp-catalog");
-const { createLLM, createEmbedder, pingRequest, probeEmbedding } = require("./src/core/model/llm");
+const { createLLM, createEmbedder, pingRequest, probeEmbedding, embedCandidates, embedChannels, embedHostable } = require("./src/core/model/llm");
 const sessSearch = require("./src/core/memory/session-search");
 const { outputFiles, noteUserInput, moveUserInput, filesScope, safePath, safePathIn, workspaceKeyOf, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, setLibraryDir, withLibraryBase, libBase, notesFileOf, withWorkspace, enterWorkspace, withPolicy, orgPolicy, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSafeName, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath } = require("./src/agent/tools");
 const checkpoints = require("./src/agent/checkpoints"); // 这条对话改过的文件：列出来、整步退回去
@@ -242,8 +242,14 @@ try {
     try { return fs.readdirSync(dataPath("data", "sessions")).some((f) => f.endsWith(".json")); } catch {}
     return false;
   })();
+  // 记忆向量以前没选嵌入模型时会借聊天 / 媒体渠道的 Key 去算，这一版起只认设置里选定的那个。
+  // 盘上有算好的向量、设置里却没选 = 以前靠的就是借来的那条，升上来后改按关键词召回，得说一声
+  const embedOff = (() => {
+    if (config.embedding && String(config.embedding.model || "").trim()) return false;
+    try { return memory.vectorStatus().have > 0; } catch { return false; }
+  })();
   const notes = migrate.runMigrations(getWorkspaceDir(), dataPath("data", "migrations.json"), {
-    version: String(require("./package.json").version || ""), priorUse,
+    version: String(require("./package.json").version || ""), priorUse, embedOff,
   });
   for (const n of notes) console.log(`[升级整理] ${n.note}`);
   global.__wbMigrationNotes = notes;   // 界面上给用户看一眼：动过他的文件，得说
@@ -251,7 +257,7 @@ try {
   console.warn("[升级整理] 这次没做成，不影响使用：" + e.message);
 }
 let llmInner = createLLM(config);
-// 记忆向量召回：有能算 embeddings 的渠道就接上，没有就退回关键词匹配（memory 自己兜底）
+// 记忆向量召回：只用设置里选定的嵌入模型，没选就是 null，记忆按关键词匹配（memory 自己兜底）
 memory.setEmbedder(createEmbedder(config));
 // 任务历史检索的向量渠道。这两个变量本该跟下面那一块检索代码放在一起，但接线在这儿就发生了——
 // let 声明在后面的话是暂时性死区，进程会直接起不来（不是搜索不好使，是整个服务起不来）
@@ -1780,11 +1786,18 @@ app.get("/api/migrations", (_req, res) => res.json({ notes: global.__wbMigration
 
 function embeddingView(req) {
   const e = config.embedding || {};
+  const own = !e.provider; // 单独填的一组地址 / Key；点名渠道的那种 Key 在渠道表里，这儿不回
+  const prov = e.provider ? (config.providers || []).find((p) => p && String(p.id) === String(e.provider)) : null;
   return {
-    base_url: e.base_url || "", model: e.model || "",
-    api_key: e.api_key ? "********" : "",
-    key_hint: isPlatformOwner(req) ? keyHint(e.api_key) : "",
-    has_key: !!e.api_key,
+    provider: e.provider ? String(e.provider) : "",
+    base_url: own ? e.base_url || "" : "", model: e.model || "",
+    api_key: own && e.api_key ? "********" : "",
+    key_hint: own && isPlatformOwner(req) ? keyHint(e.api_key) : "",
+    has_key: own && !!e.api_key,
+    // 能挑的已配渠道（只聊天 / 只做媒体的不在里面），只回名字和型号建议
+    channels: embedChannels(config),
+    // 选的那条渠道被删了、或换成了算不了向量的类型：界面照实说，让人重选
+    missing: e.provider && !(prov && embedHostable(prov.kind)) ? String(e.provider) : "",
   };
 }
 
@@ -2388,20 +2401,28 @@ app.post("/api/settings", (req, res) => {
       }
     }
     if (b.embedding !== undefined) {
-      // 语义召回用的嵌入接口。地址和模型都空 = 清掉，回到从已配渠道里自动找（llm.js embedCandidates）。
-      // 自动找只认得通义/智谱/OpenAI/Ollama，只接了 DeepSeek 或中转站的人全靠这一栏
+      // 语义召回用的嵌入模型。全空 = 清掉，记忆按关键词召回——不会再从聊天 / 媒体渠道里借 Key 自己找一个，
+      // 用户没选过的型号不该花他的钱（llm.js embedCandidates）。两种存法：点名一条已配渠道 + 型号
+      // （Key 用时从渠道表现取），或者单独填一组地址 / Key / 型号（只接了 DeepSeek 这类没有嵌入接口的人靠它）
       const e = b.embedding || {};
+      const provider = String(e.provider || "").trim();
       const base = String(e.base_url || "").trim().replace(/\/+$/, "");
       const model = String(e.model || "").trim();
-      if (!base && !model) delete config.embedding;
-      else {
+      if (!provider && !base && !model) delete config.embedding;
+      else if (provider) {
+        const p = (config.providers || []).find((x) => x && String(x.id) === provider);
+        if (!p) throw new Error("没有这条渠道，先去 设置 → 模型 把它加上");
+        if (!embedHostable(p.kind)) throw new Error(`「${p.name || p.id}」算不了向量，换一条渠道或单独填接口`);
+        if (!model) throw new Error("模型名要填，比如 text-embedding-3-small");
+        config.embedding = { provider: String(p.id), model };
+      } else {
         if (!/^https?:\/\/[^\s/]+/i.test(base)) throw new Error("接口地址要以 http:// 或 https:// 开头");
         if (!model) throw new Error("模型名要填，比如 text-embedding-3-small");
         const old = config.embedding || {};
         let key = String(e.api_key == null ? "" : e.api_key).trim();
         if (/^\*+$/.test(key)) {
           // 八颗星 = 没改。可地址换了还沿用旧 Key，等于把这家的 Key 发给了另一家
-          if (String(old.base_url || "").replace(/\/+$/, "") !== base) throw new Error("换了接口地址，Key 要重新填一遍");
+          if (old.provider || String(old.base_url || "").replace(/\/+$/, "") !== base) throw new Error("换了接口地址，Key 要重新填一遍");
           key = String(old.api_key || "");
         }
         config.embedding = { base_url: base, api_key: key, model };
@@ -4551,21 +4572,33 @@ app.get("/api/memory", (req, res) => {
   });
 });
 
-// 记忆面板「测一下」：拿表单里的地址/Key/模型真打一次。Key 传八颗星 = 用已存的那把（地址得没换）
+// 记忆面板「测一下」：拿表单里的选择真打一次。点名渠道的用那条渠道的地址和 Key；
+// 单独填的那种 Key 传八颗星 = 用已存的那把（地址得没换）
 app.post("/api/embedding/test", async (req, res) => {
   if (!isPlatformOwner(req)) return res.status(403).json({ ok: false, error: "嵌入接口是整台服务器一份的，归平台管理员配", platform_only: true });
   const b = req.body || {};
-  const base = String(b.base_url || "").trim().replace(/\/+$/, "");
+  const provider = String(b.provider || "").trim();
+  let base = String(b.base_url || "").trim().replace(/\/+$/, "");
   const model = String(b.model || "").trim();
-  if (!/^https?:\/\/[^\s/]+/i.test(base)) return res.status(400).json({ ok: false, error: "接口地址要以 http:// 或 https:// 开头" });
   if (!model) return res.status(400).json({ ok: false, error: "模型名要填，比如 text-embedding-3-small" });
   let key = String(b.api_key == null ? "" : b.api_key).trim();
-  if (/^\*+$/.test(key)) {
-    const old = config.embedding || {};
-    if (String(old.base_url || "").replace(/\/+$/, "") !== base) return res.status(400).json({ ok: false, error: "换了接口地址，Key 要重新填一遍" });
-    key = String(old.api_key || "");
+  if (provider) {
+    const p = (config.providers || []).find((x) => x && String(x.id) === provider);
+    if (!p) return res.status(400).json({ ok: false, error: "没有这条渠道，先去 设置 → 模型 把它加上" });
+    if (!embedHostable(p.kind)) return res.status(400).json({ ok: false, error: `「${p.name || p.id}」算不了向量，换一条渠道或单独填接口` });
+    // 跟真用的时候同一个取法，测的就是记忆会走的那条路
+    const c = embedCandidates({ providers: config.providers, embedding: { provider, model } })[0];
+    if (!c) return res.status(400).json({ ok: false, error: "这条渠道没有接口地址，先去 设置 → 模型 补上" });
+    base = c.base_url; key = c.api_key;
+  } else {
+    if (!/^https?:\/\/[^\s/]+/i.test(base)) return res.status(400).json({ ok: false, error: "接口地址要以 http:// 或 https:// 开头" });
+    if (/^\*+$/.test(key)) {
+      const old = config.embedding || {};
+      if (old.provider || String(old.base_url || "").replace(/\/+$/, "") !== base) return res.status(400).json({ ok: false, error: "换了接口地址，Key 要重新填一遍" });
+      key = String(old.api_key || "");
+    }
   }
-  const r = await probeEmbedding({ base_url: base, api_key: key, model });
+  const r = await probeEmbedding({ base_url: base, api_key: key, model, provider });
   if (r.ok) {
     // 通了就把死渠道记号擦了、重建一次：先前全挂停用的 embedder 不会自己活过来
     memory.setEmbedder(createEmbedder(config));

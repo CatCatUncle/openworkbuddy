@@ -102,14 +102,21 @@ const CAPS = {
     config: "media.vision", icon: "eye",
     suggest: { org_daily: 500, org_monthly: 8000, user_daily: 100 },
   },
+  // 记忆向量：只在设置里选了嵌入模型才会调。按 token 收，单价不高，但每存一条记忆、每问一句都要算一次
+  embedding: {
+    key: "embedding", label: "记忆向量", unit: "次", paid: true, order: 7, billing: "token",
+    why: "按 token 计费。每存一条记忆、每问一句都要算一次，单价低但次数多，导入一大批旧记忆时会集中跑一波。",
+    config: "embedding", icon: "brain",
+    suggest: { org_daily: 3000, org_monthly: 50000, user_daily: 500 },
+  },
   decide: {
-    key: "decide", label: "判断模型", unit: "道", paid: true, order: 7,
+    key: "decide", label: "判断模型", unit: "道", paid: true, order: 8,
     why: "Jev 这类判断模型一道题两万分之一美金，贵不起来；但它快得可以放进循环里，一段脚本跑一夜能问出几十万道。限的是失控的量，不是钱。",
     config: "providers", icon: "scale",
     suggest: { org_daily: 5000, org_monthly: 80000, user_daily: 800 },
   },
   fetch: {
-    key: "fetch", label: "抓取网页", unit: "次", paid: false, order: 8,
+    key: "fetch", label: "抓取网页", unit: "次", paid: false, order: 9,
     why: "自己不花钱，但浏览器渲染很吃这台服务器的内存，而且抓太狠会让对方站点把整台机器的 IP 封掉。",
     config: "", icon: "globe",
     suggest: { org_daily: 2000, org_monthly: 40000, user_daily: 300 },

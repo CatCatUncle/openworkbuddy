@@ -687,6 +687,8 @@ function dedupeProviders(config) {
   const to = (id) => { let v = String(id || ""); for (let i = 0; i < 8 && remap.has(v); i++) v = remap.get(v); return v; };
   for (const m of Array.isArray(config.models) ? config.models : []) if (m && m.channel) m.channel = to(m.channel);
   for (const m of Array.isArray(config.media_models) ? config.media_models : []) if (m && m.provider) m.provider = to(m.provider);
+  // 记忆向量点名的那条渠道也跟着改指，不然一合并它就成了「选的渠道不在了」
+  if (config.embedding && config.embedding.provider) config.embedding.provider = to(config.embedding.provider);
   return true;
 }
 

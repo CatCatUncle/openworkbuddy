@@ -14,7 +14,7 @@
  */
 
 const thinking = require("./thinking");
-const { baseForUse } = require("./media-models");
+const { baseForUse, PROVIDER_KINDS } = require("./media-models");
 
 // ---------- Anthropic (Claude) —— 官方 SDK 通道，@anthropic-ai/sdk 是正式依赖，跟着装机包一起走 ----------
 
@@ -1472,67 +1472,79 @@ function createLLM(config) {
 }
 
 // ---------- Embeddings（记忆向量召回用） ----------
-// 找一条能算文本向量的路：优先 config.embedding 显式指定；否则在 models 列表里找认识的
-// 厂商（DashScope/智谱/OpenAI/Ollama 本地）复用它的 key 和域名。DeepSeek/OpenRouter 压根
-// 没有 embeddings 接口，配了也是白配，所以不瞎猜。一条都找不到就返回 null——
-// 记忆召回自动退回关键词匹配，功能不缺，只是召回没那么聪明。
+// 只认设置里**显式选定**的那一条（config.embedding），两种写法：
+//   { provider, model }          —— 点名一条已配好的渠道，地址和 Key 用时现取，渠道换了 Key 跟着换；
+//   { base_url, api_key, model } —— 平台属主在「设置 → 记忆」里自己填的一组。
+// 没选就返回 null，记忆召回走关键词匹配：功能不缺，只是召回没那么聪明。
+// 不从聊天 / 媒体渠道里顺手借 Key 去调写死的嵌入型号：用户没点过头的型号不该花他的钱，
+// 而且那样的调用在额度和账本上都对不上人。
+// EMBED_KNOWN 只剩两个用处：各家一次最多收几条，以及设置页上给的型号建议。
 // batch = 这家一次请求最多收几条。DashScope 的 text-embedding-v4 超过 10 条整批 400
 // （batch size is invalid），而 4xx 会被当成「这条渠道不通」直接拉黑——所以得按各家的上限切开发。
 const EMBED_KNOWN = [
   { match: /dashscope\.aliyuncs\.com/i, model: "text-embedding-v4", batch: 10 },
   { match: /open\.bigmodel\.cn/i, model: "embedding-3", batch: 64 },
   { match: /api\.openai\.com/i, model: "text-embedding-3-small", batch: 256 },
+  { match: /api\.siliconflow\.cn/i, model: "BAAI/bge-m3" },
   { match: /localhost:11434|127\.0\.0\.1:11434/, model: "nomic-embed-text", batch: 32 },
 ];
 // 不认识的渠道（设置里显式填的自建网关之类）按最保守的 10 条走：切小了只是多几次请求，切大了整批 400
 const EMBED_BATCH_DEFAULT = 10;
 
 /**
- * 攒一份候选清单而不是只挑一条：配了 Ollama 但没开机、或某条渠道欠费，都不该让记忆召回
- * 直接哑掉。媒体渠道（图像/视频）的 key 也算数——用户常把通义的 key 只填在视频那一栏，
- * 但同一把 key 就能算向量，只是 DashScope 的原生地址要换成 OpenAI 兼容地址。
+ * 这条渠道能不能拿来算向量：只聊天的（Anthropic / Gemini / DeepSeek / Kimi 官方）、只做媒体的、
+ * 只做判断的，都没有 OpenAI 兼容的 /embeddings，摆进下拉只会让人选完挂不上。
+ */
+function embedHostable(kind) {
+  const row = PROVIDER_KINDS.find((k) => k.kind === kind);
+  if (!row) return true;
+  return !(row.chat_only || row.media_only || row.decide_only);
+}
+
+/** 设置页给的型号建议：只是填进输入框的默认值，存不存、存哪个由人定 */
+function embedSuggest(baseUrl) {
+  const b = baseForUse(String(baseUrl || ""), "chat");
+  return (EMBED_KNOWN.find((k) => k.match.test(b)) || {}).model || "";
+}
+
+/** 设置页「用已配渠道」那一排：能算向量的渠道，Key 不出服务端 */
+function embedChannels(config) {
+  return (Array.isArray(config && config.providers) ? config.providers : [])
+    .filter((p) => p && p.id && p.base_url && embedHostable(p.kind))
+    .map((p) => ({ id: String(p.id), name: String(p.name || p.id), kind: p.kind || "", model: embedSuggest(p.base_url) }));
+}
+
+const warnedEmbed = new Set(); // 同一句只说一次，别让每次重建 embedder 都刷一行
+
+/**
+ * 设置里选定的那一条，整理成调用要的样子。返回 0 或 1 条：没选、选的渠道没了，都是 0 条，
+ * 记忆召回按关键词走。不会因为选的那条没了就去别处找一条顶上。
  */
 function embedCandidates(config) {
-  const out = [];
-  const push = (base_url, api_key, model, label) => {
-    if (!base_url || !model) return;
-    let b = String(base_url).trim().replace(/\/+$/, "");
+  const ec = (config && config.embedding) || null;
+  const model = String((ec && ec.model) || "").trim();
+  if (!ec || !model) return [];
+  const one = (base_url, api_key, label, provider) => {
     // DashScope 原生 /api/v1 不认 /embeddings，OpenAI 兼容层在 /compatible-mode/v1（国际站、专属地址同理）
-    b = baseForUse(b, "chat");
-    if (out.some((c) => c.base_url === b && c.model === model)) return;
+    const b = baseForUse(String(base_url || "").trim().replace(/\/+$/, ""), "chat");
+    if (!b) return [];
     const batch = (EMBED_KNOWN.find((k) => k.match.test(b)) || {}).batch || EMBED_BATCH_DEFAULT;
-    out.push({ base_url: b, api_key: api_key || "", model, label, batch });
+    return [{ base_url: b, api_key: api_key || "", model, label, batch, provider: provider || "" }];
   };
-
-  const ec = config.embedding;
-  if (ec && ec.base_url && ec.model) push(ec.base_url, ec.api_key, ec.model, "设置里显式指定的嵌入渠道");
-
-  const knownFor = (url) => (EMBED_KNOWN.find((k) => k.match.test(String(url || ""))) || {}).model;
-  const isLocal = (url) => /localhost:11434|127\.0\.0\.1:11434/.test(String(url || ""));
-
-  const fromModels = [];
-  for (const m of Array.isArray(config.models) ? config.models : []) {
-    if (!m || !m.base_url) continue;
-    // 没填 key 的条目跳过（本地 Ollama 除外，它不要 key）：拿空 key 去打只会制造一堆 401 噪音
-    if (!m.api_key && !isLocal(m.base_url)) continue;
-    const model = knownFor(m.base_url);
-    if (model) fromModels.push({ m, model });
+  if (ec.provider) {
+    const id = String(ec.provider);
+    const p = (Array.isArray(config.providers) ? config.providers : []).find((x) => x && String(x.id) === id);
+    if (!p || !embedHostable(p.kind)) {
+      const msg = `[记忆向量] 设置里选的嵌入渠道「${id}」${p ? "算不了向量" : "已经不在渠道列表里"}，记忆按关键词召回。去 设置 → 记忆 重新选一条`;
+      if (!warnedEmbed.has(msg)) { warnedEmbed.add(msg); console.warn(msg); }
+      return [];
+    }
+    const name = String(p.name || p.id);
+    // Key 跟对话那边同一个取法：自己填的 → 按渠道点名的环境变量 → 官方地址才认的通用环境变量
+    const key = resolveKey({ api_key: p.api_key, channel: p.id, base_url: p.base_url, name }, "openai");
+    return one(baseForUse(p.base_url, "chat", p.kind), key, `渠道「${name}」`, p.id);
   }
-  for (const { m, model } of fromModels.filter((x) => !isLocal(x.m.base_url)))
-    push(m.base_url, m.api_key, model, `模型渠道「${m.name || m.model}」`);
-
-  // 媒体渠道（图像/视频/语音）的 key 也算数：用户常把通义的 key 只填在视频那一栏
-  const media = config.media || {};
-  for (const [key, mc] of [["图像", media.image], ["视频", media.video], ["语音", media.tts], ["看图", media.vision], ["听写", media.asr]]) {
-    if (!mc || !mc.base_url || !mc.api_key) continue;
-    const model = knownFor(String(mc.base_url).replace(/\/api\/v\d+$/i, "/compatible-mode/v1"));
-    if (model) push(mc.base_url, mc.api_key, model, `${key}渠道的 key`);
-  }
-
-  // 本地 Ollama 垫底：没开机时它必然 fetch failed，别让它占着第一顺位把功能拖死
-  for (const { m, model } of fromModels.filter((x) => isLocal(x.m.base_url)))
-    push(m.base_url, m.api_key, model, `本地 Ollama`);
-  return out;
+  return one(ec.base_url, ec.api_key, "设置里显式指定的嵌入渠道");
 }
 
 /**
@@ -1560,9 +1572,26 @@ function embedChannelDead(c) {
   return d;
 }
 
-function createEmbedder(config) {
+/**
+ * 嵌入调用的计量，跟看图同一套：发出去之前过额度闸（次数 + 钱闸预扣），回来按上游报的 token 结算。
+ * 价目表里没有的远端型号：有限额的人这一趟直接不算（记忆退回关键词），没限额的照算、记成「单价未知」。
+ * 没进过 withActor 的调用（启动时补算、命令行、单机版）两道闸都放行，账照记。
+ * 用时才 require：额度模块一加载就要定数据目录，只拿 llm 去聊天的地方不该被它牵着。
+ */
+const defaultEmbedMeter = {
+  gate: (call) => require("../billing/quota").gate("embedding", call),
+  undo: (hold) => require("../billing/quota").undo(hold),
+  record: (call) => require("../billing/quota").record("embedding", call),
+};
+
+/**
+ * @param {object} config
+ * @param {{ meter?: { gate: Function, undo: Function, record: Function } }} [opts] meter 只给测试换
+ */
+function createEmbedder(config, opts = {}) {
+  const meter = (opts && opts.meter) || defaultEmbedMeter;
   const all = embedCandidates(config);
-  // 跳过刚刚确认过不通的。不是静默降级：跳了哪条、为什么、什么时候再试，都说出来
+  // 刚确认过不通的先不用。跳了哪条、为什么、什么时候再试，都说出来
   const cands = all.filter((c) => !embedChannelDead(c));
   for (const c of all) {
     const d = embedChannelDead(c);
@@ -1572,24 +1601,45 @@ function createEmbedder(config) {
   }
   if (!cands.length) return null;
 
-  let idx = 0, fails = 0, dead = false;
+  let fails = 0, dead = false;
+  const warnedBlock = new Set();
   /** @param {string[]} texts @returns {Promise<number[][]|null>} 失败返回 null，绝不抛出 */
   /** 一次请求，条数不超过这条渠道的上限 */
   const embedOnce = async (cfg, texts) => {
-    const resp = await fetch(`${cfg.base_url}/embeddings`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${cleanKey(cfg.api_key, cfg) || "ollama"}` },
-      body: JSON.stringify({ model: cfg.model, input: texts }),
-      signal: AbortSignal.timeout(15000),
-    });
+    // 输入量按字数估，往多了取（中文一字约一个 token，英文远不到）。结算按上游回的用量
+    const guess = texts.reduce((n, t) => n + Array.from(String(t || "")).length, 0) || 1;
+    const call = { model: cfg.model, provider: cfg.provider || hostOf(cfg.base_url), base_url: cfg.base_url };
+    const g = meter.gate({ ...call, n: 1, tokens: { prompt: guess, max_tokens: 0 } }) || { ok: true, hold: null };
+    if (!g.ok) {
+      const err = new Error(String(g.why || "额度闸没放行"));
+      err.blocked = true; // 渠道本身没毛病，不算它失败、不拉黑
+      throw err;
+    }
+    let resp;
+    try {
+      resp = await fetch(`${cfg.base_url}/embeddings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${cleanKey(cfg.api_key, cfg) || "ollama"}` },
+        body: JSON.stringify({ model: cfg.model, input: texts }),
+        signal: AbortSignal.timeout(15000),
+      });
+    } catch (e) {
+      meter.undo(g.hold); // 没发出去，一分没花
+      throw e;
+    }
     if (!resp.ok) {
+      meter.undo(g.hold);
       const err = new Error(`${resp.status}: ${(await resp.text()).slice(0, 200)}`);
       // 4xx = 这条渠道压根不给用（没开通/欠费/key 不对/模型不存在），重试三次也是白试
       if (resp.status >= 400 && resp.status < 500 && resp.status !== 429) err.fatalForChannel = true;
       throw err;
     }
-    const data = await resp.json();
-    const out = (Array.isArray(data.data) ? data.data : [])
+    const data = await resp.json().catch(() => null);
+    // 回了 200 就当花了钱，先记账再看形状。上游没回用量就按估的记，记成 0 预算就拦不住
+    const u = (data && data.usage) || {};
+    const used = Math.max(0, +u.prompt_tokens || +u.total_tokens || 0) || guess;
+    try { meter.record({ ...call, n: 1, tokens: { prompt: used, cached: 0, completion: 0 }, meta: `记忆向量 ${texts.length} 条`, hold: g.hold }); } catch {}
+    const out = (data && Array.isArray(data.data) ? data.data : [])
       .slice()
       .sort((a, b) => (a.index || 0) - (b.index || 0))
       .map((d) => d.embedding);
@@ -1598,25 +1648,27 @@ function createEmbedder(config) {
   };
   const embed = async (texts) => {
     if (dead) return null;
-    const cfg = cands[idx];
+    const cfg = cands[0];
     try {
       const out = [];
       for (let i = 0; i < texts.length; i += cfg.batch) out.push(...await embedOnce(cfg, texts.slice(i, i + cfg.batch)));
       fails = 0;
       return out;
     } catch (e) {
+      // 额度闸拦下的：这一趟按关键词召回，渠道照旧可用，换个人、换个月就又能算
+      if (e && e.blocked) {
+        const why = String(e.message || "").slice(0, 200);
+        if (!warnedBlock.has(why)) { warnedBlock.add(why); console.warn(`[记忆向量] 这次没算向量，按关键词召回：${why}`); }
+        return null;
+      }
       fails = e && e.fatalForChannel ? 3 : fails + 1; // 4xx 一次就够，不用陪它试满三次
       const why = String((e && e.message) || e).slice(0, 160);
-      // 一条候选挂到头就换下一条；全部挂完才停用。换道要出声，不搞静默降级
+      // 只有选定的这一条：挂到头就停用，不去别处找一条顶上
       if (e && e.fatalForChannel) markEmbedChannelDead(cfg, why); // 4xx：下一个实例别再来撞这一下
-      if (fails >= 3 && idx < cands.length - 1) {
-        idx++; fails = 0;
-        embed.model = cands[idx].model; // 换了嵌入模型，memory 那边会自动把旧向量作废重算
-        console.warn(`[记忆向量] ${cfg.label} ${e && e.fatalForChannel ? "不可用" : "连挂 3 次"}（${why}），改用 ${cands[idx].label}（${cands[idx].model}）`);
-      } else if (fails >= 3) {
+      if (fails >= 3) {
         dead = true;
-        console.warn(`[记忆向量] ${cfg.label} 也不行（${why}）。可用的嵌入渠道已用尽，记忆召回退回关键词匹配——` +
-          `想恢复语义召回，去 设置 → 记忆 填一个嵌入接口，或配一条通义/智谱/OpenAI 渠道、本机跑起 Ollama`);
+        console.warn(`[记忆向量] ${cfg.label} 调不通（${why}），记忆召回退回关键词匹配——` +
+          `去 设置 → 记忆 检查嵌入模型，点「测一下」看上游怎么说`);
       } else {
         console.warn(`[记忆向量] ${cfg.label} 调用失败（${fails}/3）：${why}`);
       }
@@ -1625,8 +1677,8 @@ function createEmbedder(config) {
   };
   embed.model = cands[0].model;
   embed.candidates = cands.map((c) => `${c.label} → ${c.model}`); // 供 /api/info 之类如实展示
-  // 记忆面板要说实话：现在走的是哪一条、是不是已经全挂了（全挂了还显示「已开」就是摆设）
-  embed.source = () => cands[idx].label;
+  // 记忆面板要说实话：走的是哪一条、是不是已经挂了（挂了还显示「已开」就是摆设）
+  embed.source = () => cands[0].label;
   embed.isDead = () => dead;
   return embed;
 }
@@ -1634,11 +1686,15 @@ function createEmbedder(config) {
 /**
  * 设置页「测一下」：拿这组地址/Key/模型真打一次 /embeddings。
  * 跟 embedCandidates 用同一套地址改写（DashScope 原生 /api/v1 → 兼容层），测的就是真正会用的那条路。
- * 失败原样回上游的状态码和原文，不替人猜原因。
+ * 失败原样回上游的状态码和原文，不替人猜原因。这一下也是真花钱的调用，跟平时一样过闸记账。
  */
-async function probeEmbedding({ base_url, api_key, model }) {
+async function probeEmbedding({ base_url, api_key, model, provider }, opts = {}) {
+  const meter = (opts && opts.meter) || defaultEmbedMeter;
   const b = baseForUse(String(base_url || "").trim().replace(/\/+$/, ""), "chat");
   const cfg = { base_url: b, api_key: api_key || "", model: String(model || "").trim() };
+  const call = { model: cfg.model, provider: provider || hostOf(b), base_url: b };
+  const g = meter.gate({ ...call, n: 1, tokens: { prompt: 4, max_tokens: 0 } }) || { ok: true, hold: null };
+  if (!g.ok) return { ok: false, error: String(g.why || "额度闸没放行") };
   let resp;
   try {
     resp = await fetch(`${b}/embeddings`, {
@@ -1648,16 +1704,20 @@ async function probeEmbedding({ base_url, api_key, model }) {
       signal: AbortSignal.timeout(15000),
     });
   } catch (e) {
+    meter.undo(g.hold);
     return { ok: false, error: String((e && e.cause && e.cause.message) || (e && e.message) || e).slice(0, 200) };
   }
   const text = await resp.text();
-  if (!resp.ok) return { ok: false, status: resp.status, error: `${resp.status}：${text.slice(0, 200)}` };
-  let v = null;
-  try { v = (JSON.parse(text).data || [])[0]; } catch {}
+  if (!resp.ok) { meter.undo(g.hold); return { ok: false, status: resp.status, error: `${resp.status}：${text.slice(0, 200)}` }; }
+  let j = null;
+  try { j = JSON.parse(text); } catch {}
+  const used = Math.max(0, +((j && j.usage) || {}).prompt_tokens || 0) || 4;
+  try { meter.record({ ...call, n: 1, tokens: { prompt: used, cached: 0, completion: 0 }, meta: "设置页测一下", hold: g.hold }); } catch {}
+  const v = ((j && j.data) || [])[0];
   if (!v || !Array.isArray(v.embedding) || !v.embedding.length) return { ok: false, status: resp.status, error: `接口回了 ${resp.status}，但里面没有向量：${text.slice(0, 160)}` };
   forgetEmbedChannelDead(cfg);
   return { ok: true, dims: v.embedding.length, base_url: b };
 }
 
-module.exports = { createLLM, createEmbedder, probeEmbedding, anthropicBase, cleanKey, contextWindowOf, pingRequest, _internals: {
+module.exports = { createLLM, createEmbedder, probeEmbedding, embedCandidates, embedChannels, embedHostable, embedSuggest, anthropicBase, cleanKey, contextWindowOf, pingRequest, _internals: {
   responsesChat, geminiChat, ollamaChat, chatFor, toResponsesInput, toGeminiContents, toOllamaMessages, geminiSchema, ollamaRoot, geminiRoot, ollamaCtx, chatWithRetry, RETRY_DELAYS, anthropicSystemBlocks, parseWindowSize, CONTEXT_WINDOW_DEFAULT, CONTEXT_WINDOW_GUESS_MAX, resolveKey, headerKey, cleanKey, channelEnvName, warnedEnvSkip, markEmbedChannelDead, forgetEmbedChannelDead, embedChannelDead, deadEmbedChannels, warnedLeakedPairs, rescueLeakedToolCalls, createLeakGuard, openaiChat, EMBED_KNOWN, EMBED_BATCH_DEFAULT, embedCandidates, repairToolPairs, toOpenAIMessages, toAnthropicMessages, keepBadArgs, parseToolArgs, sliceFirstObject, sendableHistory, outputCap, outputCapField, DEFAULT_MAX_TOKENS } };

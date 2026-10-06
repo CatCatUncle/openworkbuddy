@@ -3354,7 +3354,7 @@ function squareThumb(file, size) {
 }
 
 async function renderMemoryPane(pane) {
-  // 常见的几家嵌入接口。自动找已经认得通义/智谱/OpenAI/Ollama，硅基流动补给只接了 DeepSeek 或中转站的人
+  // 常见的几家嵌入接口，单独填一组时点一下就填好。没选嵌入模型就按关键词召回，不会自己借聊天渠道的 Key
   const EMBED_PRESETS = [
     ["硅基流动 · bge-m3", "https://api.siliconflow.cn/v1", "BAAI/bge-m3"],
     ["OpenAI · 3-small", "https://api.openai.com/v1", "text-embedding-3-small"],
@@ -3370,7 +3370,7 @@ async function renderMemoryPane(pane) {
   const emb = m.embedding;
   const vecOk = !vs.failed && (!vs.enabled || !vs.total || vs.have >= vs.total);
   const vecLine = !vs.enabled
-    ? `语义召回没开，现按关键词召回。${emb ? "在下面填一个嵌入接口就能开。" : "嵌入接口由平台管理员配置。"}`
+    ? `向量检索没开，正在用关键词检索。${!emb ? "嵌入模型由平台管理员配置。" : emb.missing ? "选的渠道不在了，在下面重选一个。" : "在下面选一个嵌入模型就能开。"}`
     : vs.failed ? `嵌入接口调不通，已退回关键词召回。${emb ? "点下面「测一下」看上游怎么说。" : "请平台管理员看一下。"}`
     : !vs.total ? `语义召回已接上（${vs.model}），记了东西就会自动算向量。`
     : vs.have >= vs.total ? `语义召回开着：${vs.total} 条都算好了向量（${vs.model}）。`
@@ -3407,7 +3407,12 @@ async function renderMemoryPane(pane) {
     ${!emb ? "" : `
     <div class="card-item" id="emb-card">
       <div class="t">${ic("search")} 嵌入接口（语义召回用）</div>
-      <div class="d" style="margin-bottom:8px">不填就从已配渠道自动找：通义、智谱、OpenAI、本机 Ollama。${vs.enabled && vs.source ? `<span id="emb-src">现在用的是${esc(vs.source)}。</span>` : ""}</div>
+      <div class="d" style="margin-bottom:8px">没选就按关键词召回，不会借聊天渠道的 Key。${vs.enabled && vs.source ? `<span id="emb-src">现在用的是${esc(vs.source)}。</span>` : ""}</div>
+      ${(emb.channels || []).length ? `
+      <div class="d" style="margin-bottom:4px">用已配渠道：</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">${emb.channels.map((c) =>
+        `<span class="chip${c.id === emb.provider ? " active" : ""}" data-emb-ch="${esc(c.id)}" data-emb-model="${esc(c.model)}">${esc(c.name)}</span>`).join("")}</div>
+      <div class="d" style="margin-bottom:4px">或单独填一个接口：</div>` : ""}
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">${EMBED_PRESETS.map(([nm, base, model]) =>
         `<span class="chip" data-emb-base="${esc(base)}" data-emb-model="${esc(model)}">${esc(nm)}</span>`).join("")}</div>
       <div class="form-row"><input id="emb-base" placeholder="接口地址，如 https://api.siliconflow.cn/v1" value="${esc(emb.base_url)}"></div>
@@ -3418,7 +3423,7 @@ async function renderMemoryPane(pane) {
       <div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <button class="btn-plain" id="emb-test">${ic("zap")} 测一下</button>
         <button class="btn-brand" id="emb-save">保存</button>
-        ${emb.base_url ? `<a href="#" class="link" id="emb-clear">清空，改回自动找</a>` : ""}
+        ${emb.base_url || emb.provider || emb.model ? `<a href="#" class="link" id="emb-clear">清空，改回关键词召回</a>` : ""}
         <span class="ok-msg" id="emb-msg"></span>
       </div>
     </div>`}
@@ -3444,15 +3449,43 @@ async function renderMemoryPane(pane) {
   if (emb) {
     const q = (id) => pane.querySelector(id);
     const msg = q("#emb-msg");
-    const form = () => ({ base_url: q("#emb-base").value.trim(), api_key: q("#emb-key").value.trim(), model: q("#emb-model").value.trim() });
+    const KEY_PH = "API Key（本机接口可空）", BASE_PH = "接口地址，如 https://api.siliconflow.cn/v1";
+    const chs = emb.channels || [];
+    // 点名已配渠道时，地址和 Key 用那条渠道的，这两格锁上；点预设或清掉渠道就回到单独填
+    let chan = chs.some((c) => c.id === emb.provider) ? emb.provider : "";
+    const useChan = (id) => {
+      const c = chs.find((x) => x.id === id);
+      chan = c ? c.id : "";
+      const b = q("#emb-base"), k = q("#emb-key");
+      b.disabled = k.disabled = !!c;
+      if (c) { b.value = ""; k.value = ""; b.placeholder = `用渠道「${c.name}」的地址`; k.placeholder = `用渠道「${c.name}」的 Key`; }
+      else {
+        b.placeholder = BASE_PH;
+        // 原先单独填过一组的，Key 还按「没改」带着；地址一换，上面那条监听会把它清掉
+        if (emb.has_key && !k.value) k.value = "********";
+        else if (!/^\*+$/.test(k.value)) k.placeholder = KEY_PH;
+      }
+      pane.querySelectorAll("[data-emb-ch]").forEach((x) => x.classList.toggle("active", x.dataset.embCh === chan));
+    };
+    if (chan) useChan(chan);
+    const form = () => chan
+      ? { provider: chan, model: q("#emb-model").value.trim() }
+      : { base_url: q("#emb-base").value.trim(), api_key: q("#emb-key").value.trim(), model: q("#emb-model").value.trim() };
     // 换了地址，已存的那把 Key 不能跟着过去（后端也会拦）：星号清掉，让人看见要重填
-    q("#emb-base").addEventListener("input", () => { if (/^\*+$/.test(q("#emb-key").value)) { q("#emb-key").value = ""; q("#emb-key").placeholder = "API Key（本机接口可空）"; } });
+    q("#emb-base").addEventListener("input", () => { if (/^\*+$/.test(q("#emb-key").value)) { q("#emb-key").value = ""; q("#emb-key").placeholder = KEY_PH; } });
+    pane.querySelectorAll("[data-emb-ch]").forEach(c => c.onclick = () => {
+      useChan(c.dataset.embCh);
+      if (c.dataset.embModel) q("#emb-model").value = c.dataset.embModel;
+      pane.querySelectorAll("[data-emb-base]").forEach(x => x.classList.remove("active"));
+    });
     pane.querySelectorAll("[data-emb-base]").forEach(c => c.onclick = () => {
-      if (q("#emb-base").value.trim() !== c.dataset.embBase && /^\*+$/.test(q("#emb-key").value)) { q("#emb-key").value = ""; q("#emb-key").placeholder = "API Key（本机接口可空）"; }
+      useChan("");
+      if (q("#emb-base").value.trim() !== c.dataset.embBase && /^\*+$/.test(q("#emb-key").value)) { q("#emb-key").value = ""; q("#emb-key").placeholder = KEY_PH; }
       q("#emb-base").value = c.dataset.embBase; q("#emb-model").value = c.dataset.embModel;
       pane.querySelectorAll("[data-emb-base]").forEach(x => x.classList.toggle("active", x === c));
     });
     const check = (f) => {
+      if (f.provider) { if (!f.model) { setMsg(msg, "circle-x", "模型名要填", "err"); return false; } return true; }
       if (!f.base_url || !f.model) { setMsg(msg, "circle-x", "接口地址和模型名都要填", "err"); return false; }
       return true;
     };
@@ -3473,7 +3506,7 @@ async function renderMemoryPane(pane) {
     };
     q("#emb-save").onclick = () => { const f = form(); return check(f) ? save(f, "嵌入接口已保存，向量在后台补算") : undefined; };
     const clr = q("#emb-clear");
-    if (clr) clr.onclick = (e) => { e.preventDefault(); return save({ base_url: "", api_key: "", model: "" }, "已清空，改回从已配渠道自动找"); };
+    if (clr) clr.onclick = (e) => { e.preventDefault(); return save({ provider: "", base_url: "", api_key: "", model: "" }, "已清空，记忆改按关键词召回"); };
   }
   if (m.can_edit_manual) pane.querySelector("#mem-save").onclick = async () => {
     const resp = await fetch("/api/memory", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: pane.querySelector("#mem-text").value }) });

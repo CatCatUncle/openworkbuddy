@@ -10856,9 +10856,20 @@ async function testEmbedFailoverResilience() {
 
   // ②c 一次塞太多条：DashScope 的 text-embedding-v4 一次最多 10 条，memory 补向量一批 16 条，
   //     整批 400「batch size is invalid」→ 被当成渠道不通拉黑 → 明明 key 好好的却退到了 Ollama
+  //     现在嵌入渠道只认设置里选定的那条：只在模型列表里接了通义、没选嵌入模型，一条候选都不该有
+  //     （以前会顺手拿聊天渠道的 Key 去调写死的 text-embedding-v4，用户没点过头，额度和账本也对不上人）
   const { embedCandidates } = require(modPath("llm"))._internals;
-  const ds = embedCandidates({ models: [{ name: "通义", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", api_key: "sk-test-not-a-real-key" }] });
+  assert.deepStrictEqual(embedCandidates({ models: [{ name: "通义", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", api_key: "sk-test-not-a-real-key" }] }), [],
+    "没选嵌入模型，却从模型列表里借了一条渠道的 Key 去算向量");
+  const ds = embedCandidates({ embedding: { base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", api_key: "sk-test-not-a-real-key", model: "text-embedding-v4" } });
   assert.strictEqual(ds[0].batch, 10, "DashScope 渠道的单次条数上限不是 10");
+  // 点名一条已配的百炼渠道：渠道表里存的是原生 /api/v1，算向量得走兼容层，条数上限照样是 10
+  const dsp = embedCandidates({
+    providers: [{ id: "p-ds", name: "百炼", kind: "dashscope", base_url: "https://dashscope.aliyuncs.com/api/v1", api_key: "sk-test-not-a-real-key" }],
+    embedding: { provider: "p-ds", model: "text-embedding-v4" },
+  });
+  assert(dsp.length === 1 && /\/compatible-mode\/v1$/.test(dsp[0].base_url) && dsp[0].batch === 10 && dsp[0].api_key === "sk-test-not-a-real-key",
+    "点名百炼渠道时地址没改到兼容层、或条数上限 / Key 不对：" + JSON.stringify(dsp.map((c) => ({ ...c, api_key: c.api_key ? "(有)" : "" }))));
   const sizes = [];
   const srv2 = http.createServer((req, res) => {
     let body = "";
@@ -11477,11 +11488,17 @@ async function testOnboardingWizardApi() {
  * 老样子：自动找只认得通义/智谱/OpenAI/Ollama 这几家的地址。只接了 DeepSeek 或中转站的人，
  * 语义召回永远开不了；记忆面板还叫他去「设置 → 模型 配一条 embeddings 渠道」——那个地方根本不存在。
  * llm.js 其实早就认 config.embedding，只是没有任何一条路能把它写进去。
+ *
+ * 后来又收紧了一层：没选嵌入模型时不再从聊天 / 媒体渠道里借 Key 去调写死的嵌入型号——
+ * 用户没点过头的型号不该花他的钱，额度和账本也对不上人。没选就按关键词召回，功能照常。
+ * 这里用真 server 钉住：渠道都配着、没选嵌入模型，假上游一个嵌入请求也收不到；
+ * 以前靠借来的那条算过向量的，升上来要在升级提示里说一声去哪儿选回来。
  */
 async function testEmbeddingEndpointConfig() {
   const os = require("os");
   const http = require("http");
   const crypto = require("crypto");
+  const { spawnSync } = require("child_process");
 
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-emb-"));
   const token = "e2e" + crypto.randomBytes(12).toString("hex");
@@ -11504,7 +11521,7 @@ async function testEmbeddingEndpointConfig() {
     rq.on("end", () => {
       let j = {};
       try { j = JSON.parse(b); } catch {}
-      seen.push({ path: rq.url, auth: rq.headers.authorization || "", model: j.model, input: j.input });
+      seen.push({ path: rq.url, host: rq.headers["x-e2e-orig-host"] || "", auth: rq.headers.authorization || "", model: j.model, input: j.input });
       if (rq.url !== "/v1/embeddings") { rs.writeHead(404); return rs.end("not found"); }
       if (rq.headers.authorization === "Bearer bad") { rs.writeHead(401, { "Content-Type": "application/json" }); return rs.end('{"error":{"message":"Incorrect API key provided"}}'); }
       const input = Array.isArray(j.input) ? j.input : [j.input];
@@ -11514,8 +11531,55 @@ async function testEmbeddingEndpointConfig() {
   });
   await new Promise((r) => fake.listen(0, "127.0.0.1", r));
   const base = `http://127.0.0.1:${fake.address().port}/v1`;
+  const isEmb = (x) => /\/embeddings(\?|$)/.test(x.path);
 
-  const booted = bootRealServer({ OPENWORKBUDDY_HOME: home });
+  // 渠道都配着、Key 都填着，就是没选嵌入模型：
+  //   百炼走官方地址（以前会被认出来、拿它的 Key 去调 text-embedding-v4）、自建网关指到假上游、
+  //   DeepSeek 官方只聊天（不该出现在可选渠道里）；模型列表和视频那一栏也各带一把 Key
+  const cfg0 = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "config.example.json"), "utf8"));
+  cfg0.mcp_servers = [];
+  cfg0.providers = [
+    { id: "p-ds", name: "百炼", kind: "dashscope", base_url: "https://dashscope.aliyuncs.com/api/v1", api_key: "sk-test-e2e-ds" },
+    { id: "p-gw", name: "自建网关", kind: "custom", base_url: base, api_key: "sk-test-e2e-gw" },
+    { id: "p-dk", name: "深度求索", kind: "deepseek", base_url: "https://api.deepseek.com/v1", api_key: "sk-test-e2e-dk" },
+  ];
+  cfg0.models = [{ name: "通义", provider: "openai", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", api_key: "sk-test-e2e-ds", model: "qwen-plus" }];
+  cfg0.media = { ...(cfg0.media || {}), video: { base_url: "https://dashscope.aliyuncs.com/api/v1", api_key: "sk-test-e2e-video", model: "wan2.2-t2v-plus" } };
+  delete cfg0.embedding;
+  fs.writeFileSync(path.join(home, "config.json"), JSON.stringify(cfg0, null, 2));
+
+  // 以前靠借来的那条算过向量的机器：盘上有一条记忆 + 它的向量，设置里没选嵌入模型
+  const seed = spawnSync(process.execPath, ["-e", `
+    const mem = require(${JSON.stringify(modPath("memory"))});
+    mem.add({ text: "以前算过向量的一条旧记忆", user: "e2e" });
+    mem.setEmbedder(Object.assign(async (t) => t.map(() => [1, 0, 0]), { model: "text-embedding-v4" }));
+    mem.ensureVectors().then(() => { if (!mem.vectorStatus().have) process.exit(2); }, (e) => { console.error(e); process.exit(1); });
+  `], { env: { ...process.env, OPENWORKBUDDY_HOME: home, OPENWORKBUDDY_DATA_DIR: "" }, encoding: "utf8" });
+  assert.strictEqual(seed.status, 0, "前置条件没成立：旧向量没铺上去\n" + (seed.stderr || seed.stdout));
+
+  // 子进程里发往本机以外的 fetch 一律改投到假上游（原主机名放在头里）：
+  // 这样「拿官方渠道的 Key 去算向量」那种请求也数得到，而且这条测试绝不会真出网
+  const guard = path.join(home, "e2e-offline-fetch.js");
+  fs.writeFileSync(guard, [
+    "const fake = process.env.E2E_EMB_FAKE;",
+    "const real = globalThis.fetch;",
+    "globalThis.fetch = function (input, init) {",
+    "  let u; try { u = new URL(typeof input === 'string' ? input : (input && input.url) || String(input)); } catch { return real(input, init); }",
+    "  if (/^(127\\.0\\.0\\.1|localhost|\\[::1\\])$/.test(u.hostname)) return real(input, init);",
+    "  const opts = Object.assign({}, init || {});",
+    "  const h = new Headers(opts.headers || {});",
+    "  h.set('x-e2e-orig-host', u.host);",
+    "  opts.headers = h;",
+    "  return real(fake + u.pathname + u.search, opts);",
+    "};",
+  ].join("\n"));
+
+  const booted = bootRealServer({
+    OPENWORKBUDDY_HOME: home,
+    OPENWORKBUDDY_DATA_DIR: "",
+    E2E_EMB_FAKE: `http://127.0.0.1:${fake.address().port}`,
+    NODE_OPTIONS: ((process.env.NODE_OPTIONS || "") + " --require " + guard).trim(),
+  });
   const child = booted.child;
   const { up, port, why: bootWhy } = await booted.wait();
   const reqAs = (tk, method, p, body) => new Promise((resolve) => {
@@ -11538,11 +11602,32 @@ async function testEmbeddingEndpointConfig() {
   try {
     assert(up, "真 server.js 没起来，这条测试作废：" + bootWhy);
 
-    // 1. 干净的家目录：没有任何渠道，语义召回是关的（反向对照：后面翻成开的，只能是这一栏的功劳）
+    // 1. 渠道都配着、没选嵌入模型：语义召回是关的，而且谁的 Key 都不借
+    //    （反向对照：后面翻成开的，只能是设置里选了的功劳）
     let r = await req("GET", "/api/memory");
     assert.strictEqual(r.code, 200, r.body);
-    assert.strictEqual(r.json.vectors.enabled, false, "什么都没配，语义召回却显示开着：" + JSON.stringify(r.json.vectors));
-    assert(r.json.embedding && r.json.embedding.base_url === "" && r.json.embedding.has_key === false, "平台管理员拿不到嵌入接口那张表：" + JSON.stringify(r.json.embedding));
+    assert.strictEqual(r.json.vectors.enabled, false, "没选嵌入模型，语义召回却显示开着（借了谁的 Key？）：" + JSON.stringify(r.json.vectors));
+    assert(r.json.embedding && r.json.embedding.base_url === "" && r.json.embedding.has_key === false && r.json.embedding.provider === "", "平台管理员拿不到嵌入接口那张表：" + JSON.stringify(r.json.embedding));
+    // 能挑的就是渠道表里那几条（视频那一栏的老配置启动时会被收成一条渠道，也算），只聊天的不在里面
+    const chIds = (r.json.embedding.channels || []).map((c) => c.id);
+    const onDisk = ((cfgOnDisk() || {}).providers || []).map((p) => p.id);
+    assert(chIds.includes("p-ds") && chIds.includes("p-gw") && !chIds.includes("p-dk") && chIds.every((id) => onDisk.includes(id)),
+      "能挑的渠道不对（只聊天的 DeepSeek 官方不该在里面）：" + JSON.stringify(r.json.embedding.channels));
+    assert(!/sk-test-e2e/.test(r.body), "记忆页把渠道 Key 原文吐出去了");
+    for (const text of ["周会定在周三上午十点", "报销单走飞书审批"]) {
+      const add = await req("POST", "/api/memory/item", { text });
+      assert(add.json && add.json.ok, "加记忆没成：" + add.body);
+    }
+    for (let i = 0; i < 15; i++) await new Promise((ok) => setTimeout(ok, 100));
+    const borrowed = seen.filter((x) => isEmb(x) || /sk-test-e2e/.test(x.auth));
+    assert.strictEqual(borrowed.length, 0, "没选嵌入模型，假上游却收到了嵌入请求 / 渠道 Key：" + JSON.stringify(borrowed.map((x) => ({ path: x.path, host: x.host, model: x.model }))));
+    r = await req("GET", "/api/memory");
+    assert.strictEqual(r.json.vectors.enabled, false, "加了记忆之后语义召回自己开了");
+    assert.strictEqual(r.json.vectors.have, 1, "没选嵌入模型却又算了向量，或把以前算好的那条删了：" + JSON.stringify(r.json.vectors));
+    // 以前靠借来的那条在算的：升级提示里说一声改按关键词了、去哪儿选回来
+    r = await req("GET", "/api/migrations");
+    const embNote = ((r.json && r.json.notes) || []).find((n) => n.id === "embed-explicit-v1");
+    assert(embNote && /关键词/.test(embNote.note) && /设置 → 记忆/.test(embNote.note), "升级上来改按关键词召回了，却没在升级提示里说：" + r.body);
     r = await reqAs(memberToken, "GET", "/api/memory");
     assert.strictEqual(r.code, 200, r.body);
     assert.strictEqual(r.json.embedding, null, "普通成员也拿到了嵌入接口的表单数据，界面就会给他画一张一存就 403 的表");
@@ -11573,13 +11658,16 @@ async function testEmbeddingEndpointConfig() {
     const before = seen.length;
     r = await req("POST", "/api/memory/item", { text: "周报只要三段：进展、问题、下周计划" });
     assert(r.json && r.json.ok, "加记忆没成：" + r.body);
+    // 盘上那条旧向量会让 have 一上来就不是 0，所以等的是「这一条真的拿这一栏算了」
+    const viaThis = () => seen.slice(before).some((x) => x.auth === "Bearer k-emb" && JSON.stringify(x.input).includes("周报只要三段"));
+    for (let i = 0; i < 50 && !viaThis(); i++) await new Promise((ok) => setTimeout(ok, 100));
+    assert(viaThis(), "向量不是拿这一栏的地址和 Key 算的（或一直没算）");
     let have = 0;
-    for (let i = 0; i < 50 && !have; i++) {
+    for (let i = 0; i < 50 && have < 4; i++) {
       await new Promise((ok) => setTimeout(ok, 100));
       have = ((await req("GET", "/api/memory")).json.vectors || {}).have || 0;
     }
-    assert(have >= 1, "配好了嵌入接口，记下的那条却一直没算出向量");
-    assert(seen.slice(before).some((x) => x.auth === "Bearer k-emb" && JSON.stringify(x.input).includes("周报只要三段")), "向量不是拿这一栏的地址和 Key 算的");
+    assert(have >= 4, "配好了嵌入接口，记下的几条却没都算出向量：have=" + have);
 
     // 4. 八颗星 = 没改；可换了地址还沿用旧 Key 就是把这家的 Key 发给另一家
     r = await req("POST", "/api/settings", { embedding: { base_url: base, api_key: "********", model: "fake-embed-2" } });
@@ -11606,21 +11694,58 @@ async function testEmbeddingEndpointConfig() {
     assert.strictEqual(cfgOnDisk().embedding.model, "fake-embed-2", "被拒的保存改动了盘上那份");
 
     // 6. 普通成员：存和测都 403，上游一个请求也收不到
-    const n1 = seen.length;
+    //    只数探针和成员那把 Key：第 4 步换了型号，后台重算向量的请求什么时候到看机器快慢，数全部会平白红
+    const n1 = probes().length;
     r = await reqAs(memberToken, "POST", "/api/settings", { embedding: { base_url: base, api_key: "m-key", model: "fake-embed" } });
     assert.strictEqual(r.code, 403, "普通成员改得了整台服务器的嵌入接口：" + r.body);
     r = await reqAs(memberToken, "POST", "/api/embedding/test", { base_url: base, api_key: "********", model: "fake-embed" });
     assert.strictEqual(r.code, 403, "普通成员能拿服务器的 Key 去测：" + r.body);
-    assert.strictEqual(seen.length, n1, "被拒的请求还是打到了上游");
+    assert(probes().length === n1 && !seen.some((x) => x.auth === "Bearer m-key"), "被拒的请求还是打到了上游");
 
-    // 7. 清空：回到自动找（这台什么渠道都没有 → 语义召回关）
-    r = await req("POST", "/api/settings", { embedding: { base_url: "", api_key: "", model: "" } });
+    // 7. 清空：回到关键词召回（渠道都还配着，也不去借）
+    r = await req("POST", "/api/settings", { embedding: { provider: "", base_url: "", api_key: "", model: "" } });
     assert.strictEqual(r.code, 200, r.body);
     assert(!("embedding" in cfgOnDisk()), "清空了盘上还留着");
     r = await req("GET", "/api/memory");
-    assert.strictEqual(r.json.vectors.enabled, false, "清空后语义召回还显示开着");
+    assert.strictEqual(r.json.vectors.enabled, false, "清空后语义召回还显示开着（又去借渠道了？）");
 
-    console.log("✅ 嵌入接口能在设置里填：测一下真打上游(401 原样转述)·保存落盘+回读八颗星+语义召回翻开且真用它算向量·掩码不抹 Key、换地址须重填 Key(存/测都拦)·半截 400·成员 403 不碰上游·清空回自动");
+    // 8. 点名一条已配渠道：盘上只存「哪条渠道 + 哪个型号」，Key 用时从渠道表现取
+    r = await req("POST", "/api/settings", { embedding: { provider: "p-dk", model: "x" } });
+    assert(r.code === 400 && /算不了向量/.test(r.json.error), "只聊天的渠道也能选来算向量：" + r.body);
+    r = await req("POST", "/api/settings", { embedding: { provider: "p-nope", model: "x" } });
+    assert(r.code === 400 && /没有这条渠道/.test(r.json.error), "不存在的渠道也收了：" + r.body);
+    r = await req("POST", "/api/settings", { embedding: { provider: "p-gw", model: "" } });
+    assert(r.code === 400 && /模型名/.test(r.json.error), "选了渠道没填模型名也存了：" + r.body);
+    assert(!("embedding" in cfgOnDisk()), "被拒的保存在盘上留了半截");
+    const n2 = probes().length;
+    r = await reqAs(memberToken, "POST", "/api/embedding/test", { provider: "p-gw", model: "fake-embed" });
+    assert(r.code === 403 && probes().length === n2, "普通成员能拿渠道的 Key 去测：" + r.body);
+    r = await req("POST", "/api/embedding/test", { provider: "p-gw", model: "fake-embed" });
+    assert(r.json && r.json.ok === true && probes().at(-1).auth === "Bearer sk-test-e2e-gw", "测一下没走那条渠道的地址和 Key：" + r.body);
+    // 观测口子本身是通的：点名官方地址的百炼，请求确实落到假上游、带的是它的 Key（没出网）
+    r = await req("POST", "/api/embedding/test", { provider: "p-ds", model: "text-embedding-v4" });
+    const viaDs = probes().at(-1);
+    assert(r.json && r.json.ok === false && viaDs.host === "dashscope.aliyuncs.com" && viaDs.path === "/compatible-mode/v1/embeddings" && viaDs.auth === "Bearer sk-test-e2e-ds",
+      "改投假上游那层没兜住，第 1 步的「0 个请求」就不作数：" + JSON.stringify({ r: r.json, viaDs: { ...viaDs, auth: viaDs && viaDs.auth ? "(有)" : "" } }));
+    const before2 = seen.length;
+    r = await req("POST", "/api/settings", { embedding: { provider: "p-gw", model: "fake-embed" } });
+    assert.strictEqual(r.code, 200, r.body);
+    assert.deepStrictEqual(cfgOnDisk().embedding, { provider: "p-gw", model: "fake-embed" }, "点名渠道时盘上不该另存一份地址 / Key：" + JSON.stringify(Object.keys(cfgOnDisk().embedding || {})));
+    r = await req("GET", "/api/settings");
+    assert(r.json.embedding && r.json.embedding.provider === "p-gw" && r.json.embedding.model === "fake-embed" && r.json.embedding.base_url === "" && !r.json.embedding.has_key,
+      "设置回读不对：" + JSON.stringify(r.json.embedding));
+    assert(!r.body.includes("sk-test-e2e-gw"), "设置接口把渠道 Key 原文吐出去了");
+    r = await req("GET", "/api/memory");
+    assert(r.json.vectors.enabled === true && /自建网关/.test(r.json.vectors.source) && r.json.vectors.model === "fake-embed",
+      "选了渠道语义召回没开，或没说走的是哪一条：" + JSON.stringify(r.json.vectors));
+    const viaGw = () => seen.slice(before2).some((x) => isEmb(x) && x.auth === "Bearer sk-test-e2e-gw" && x.model === "fake-embed" && !/ping/.test(JSON.stringify(x.input)));
+    for (let i = 0; i < 50 && !viaGw(); i++) await new Promise((ok) => setTimeout(ok, 100));
+    assert(viaGw(), "选了渠道，记忆的向量却不是拿那条渠道的地址和 Key 算的");
+    r = await req("POST", "/api/settings", { embedding: { provider: "", base_url: "", api_key: "", model: "" } });
+    assert(r.code === 200 && !("embedding" in cfgOnDisk()), "点名渠道的那份清不掉：" + r.body);
+
+    console.log("✅ 嵌入接口能在设置里填：测一下真打上游(401 原样转述)·保存落盘+回读八颗星+语义召回翻开且真用它算向量·掩码不抹 Key、换地址须重填 Key(存/测都拦)·半截 400·成员 403 不碰上游·清空回关键词召回");
+    console.log("✅ 记忆向量只用设置里选定的嵌入模型：渠道和 Key 都配着、没选时假上游收到 0 个嵌入请求(官方地址也改投假上游数着)·旧向量不删·升级提示说清去哪儿选回来·点名已配渠道只存 id+型号、只聊天的/不存在的/没型号各 400·成员 403·向量真拿那条渠道算");
   } finally {
     child.kill("SIGKILL");
     try { fake.close(); } catch {}
