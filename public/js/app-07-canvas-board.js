@@ -9,6 +9,7 @@
 async function canvasLoadCanvasList() {
   const data = await fetch("/api/canvas/list").then((r) => r.json()).catch(() => ({}));
   canvasState.canvasList = Array.isArray(data.canvases) && data.canvases.length ? data.canvases : [{ name: "main", title: "主画布", nodes: 0 }];
+  canvasState.canvasTrash = Array.isArray(data.trash) ? data.trash : [];
   try { const saved = localStorage.getItem("openworkbuddy.canvas.name"); if (saved && canvasState.canvasList.some((item) => item.name === saved)) canvasState.canvasName = saved; } catch {}
   if (!canvasState.canvasList.some((item) => item.name === canvasState.canvasName)) canvasState.canvasName = canvasState.canvasList[0]?.name || "main";
 }
@@ -481,17 +482,118 @@ async function canvasBoardStyleLoad(node) {
 
 async function canvasDeleteBoard() {
   if (canvasState.canvasName === "main") return canvasToast("主画布不能删除。", "info");
-  if (!(await askConfirm({ title: `删掉画布「${canvasState.canvasName}」？`, hint: "节点和连线一并删除，素材文件保留在工作区。", ok: "删掉", danger: true }))) return;
+  if (!(await askConfirm({ title: `删掉画布「${canvasState.canvasName}」？`, hint: "画布挪进回收站，随时能放回来；素材文件不动。", ok: "删掉", danger: true }))) return;
   await canvasFlushRemoteWrite();   // 欠着的那一趟要么现在写给它自己，要么等会儿写到 main 上去
   const gone = canvasState.canvasName;
   const response = await fetch("/api/canvas/boards/" + encodeURIComponent(gone), { method: "DELETE" });
   // 404 = 服务器上本来就没有这张（别的标签页先删了）：要的结果已经是这样，照常收尾回 main，
   // 报「删除失败」的话人会以为它还在，再点一次还是失败
-  if (!response.ok && response.status !== 404) return canvasToast("删除画布失败", "circle-x", "err");
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok && response.status !== 404) return canvasToast(canvasT("删除画布失败：{why}", { why: data.error || response.status }), "circle-x", "err");
   try { localStorage.removeItem(canvasStorageKey(gone)); } catch {}   // 服务器那份删了，本机这份也得删
   canvasClearPendingConflict(canvasScope(gone));
   canvasState.canvasName = "main"; try { localStorage.setItem("openworkbuddy.canvas.name", "main"); } catch {}
-  renderCanvasPage();
+  await renderCanvasPage();
+  // 说清楚挪到哪了：下拉里能点回来，盘上也找得到这个文件。用横幅不用 toast——
+  // 空画布一打开就会弹「画布里还没有节点」，toast 会被它当场顶掉，路径人还没看见
+  const trashed = data.trashed;
+  if (trashed && trashed.id) canvasShowBar("trashed", { icon: "trash-2", text: canvasT("已挪进回收站：{path}", { path: trashed.path }), actions: [
+    { label: "恢复", run: (button) => { button.disabled = true; canvasRestoreTrash(trashed.id); } },
+    { label: "知道了", run: () => canvasHideBar("trashed") },
+  ] });
+}
+
+/** 从回收站放回一张画布。原名被新画布占了，服务端就换成 原名_2，两张都留着 */
+async function canvasRestoreTrash(id) {
+  let response = null, data = {};
+  try {
+    response = await fetch("/api/canvas/trash/restore", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) });
+    data = await response.json().catch(() => ({}));
+  } catch (error) { data = { error: error && error.message }; }
+  if (!response || !response.ok || !data.name) return canvasToast(canvasT("没放回来：{why}", { why: data.error || (response ? response.status : "") }), "circle-x", "err");
+  await canvasFlushRemoteWrite();
+  canvasState.canvasName = data.name; try { localStorage.setItem("openworkbuddy.canvas.name", data.name); } catch {}
+  await renderCanvasPage();
+  canvasToast(canvasT("画布「{name}」放回来了", { name: data.name }), "rotate-ccw");
+}
+
+/** 下拉里回收站那一行：画布名 + 什么时候删的 */
+function canvasTrashLabel(item) {
+  const at = new Date(Number(item && item.deletedAt) || 0);
+  const pad = (n) => String(n).padStart(2, "0");
+  const when = Number.isNaN(at.getTime()) || !at.getTime() ? "" : `${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${pad(at.getHours())}:${pad(at.getMinutes())}`;
+  return canvasT("{name}（{when} 删的）", { name: String(item && item.name || ""), when });
+}
+
+/**
+ * 画布顶上那几条横幅：Agent 删了一片给「撤销」、没存进项目给「重试保存」。
+ * 跟 toast 不一样：toast 两秒就没了，这几件事人不处理就一直摆着。按 key 各占一条，同 key 再来就换掉旧的
+ * @param {string} key
+ * @param {{ kind?: string, icon?: string, text?: string, actions?: { label: string, run: (button: HTMLButtonElement) => void }[] }} [o]
+ */
+function canvasShowBar(key, o = {}) {
+  const host = typeof document !== "undefined" ? document.getElementById("canvas-bars") : null;
+  if (!host) return null;
+  let bar = host.querySelector(`[data-canvas-bar="${key}"]`);
+  if (!bar) { bar = document.createElement("div"); bar.dataset.canvasBar = key; host.appendChild(bar); }
+  const kind = o.kind || "info", actions = o.actions || [];
+  bar.className = "canvas-bar is-" + kind;
+  bar.setAttribute("role", kind === "err" ? "alert" : "status");
+  bar.innerHTML = `${o.icon ? ic(o.icon) : ""}<span class="canvas-bar-text"></span>${actions.map((_, i) => `<button type="button" class="ui-btn ui-btn--xs ${i ? "ui-btn--ghost" : "ui-btn--outline"}" data-canvas-bar-act="${i}"></button>`).join("")}`;
+  bar.querySelector(".canvas-bar-text").textContent = o.text || "";
+  actions.forEach((action, i) => {
+    const button = bar.querySelector(`[data-canvas-bar-act="${i}"]`);
+    button.textContent = canvasT(action.label);
+    button.onclick = () => action.run(button);
+  });
+  host.hidden = false;
+  return bar;
+}
+
+function canvasHideBar(key) {
+  const host = typeof document !== "undefined" ? document.getElementById("canvas-bars") : null;
+  if (!host) return;
+  host.querySelector(`[data-canvas-bar="${key}"]`)?.remove();
+  if (!host.children.length) host.hidden = true;
+}
+
+/**
+ * Agent 清空画布、连着删一串节点之前，服务端存了一份快照（src/tools/canvas.js canvasSnapshotSave）。
+ * 这边看见节点少了就去问：上回看见这张画布之后有没有存过快照、跟现在比少了多少。
+ * 清空的少一个就挂，连删的少过 5 个才挂——Agent 删一两张是正常干活，回回挂一条「撤销」就成了噪音。
+ * 人自己在画布上删的不走这里：本机删的有 ⌘Z
+ */
+async function canvasOfferSnapshotUndo() {
+  const name = canvasState.canvasName, since = Number(canvasState.snapshotSince) || 0;
+  const data = await fetch("/api/canvas/snapshots?name=" + encodeURIComponent(name)).then((r) => r.json()).catch(() => ({}));
+  if (name !== canvasState.canvasName || !Array.isArray(data.snapshots)) return;
+  const snap = data.snapshots.find((item) => Number(item.at) > since && !canvasState.snapshotSeen.has(item.id)
+    && (Number(item.missing) > 5 || (item.why === "清空前" && Number(item.missing) > 0)));
+  if (!snap) return;
+  canvasState.snapshotSeen.add(snap.id);
+  const text = snap.why === "清空前" ? canvasT("Agent 清空了画布，{n} 个节点不见了。", { n: snap.missing }) : canvasT("Agent 刚删了 {n} 个节点。", { n: snap.missing });
+  canvasShowBar("snapshot", { kind: "warn", icon: "rotate-ccw", text, actions: [
+    { label: "撤销", run: (button) => canvasRestoreSnapshotFromBar(name, snap.id, button) },
+    { label: "知道了", run: () => canvasHideBar("snapshot") },
+  ] });
+}
+
+/** 把快照里有、现在没有的节点和连线放回去。只补不盖：Agent 删完又加的那几张不动 */
+async function canvasRestoreSnapshotFromBar(name, id, button) {
+  if (button) button.disabled = true;
+  await canvasFlushRemoteWrite();
+  let response = null, data = {};
+  try {
+    response = await fetch("/api/canvas/snapshots/restore", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, id }) });
+    data = await response.json().catch(() => ({}));
+  } catch (error) { data = { error: error && error.message }; }
+  if (!response || !response.ok || !data.state) {
+    if (button) button.disabled = false;
+    return canvasToast(canvasT("没撤销成：{why}", { why: data.error || (response ? response.status : "") }), "circle-x", "err");
+  }
+  canvasHideBar("snapshot");
+  if (name === canvasState.canvasName) canvasApplySnapshot(data.state, { fromRemote: true });
+  canvasToast(canvasT("放回了 {n} 个节点", { n: data.restored || 0 }), "rotate-ccw");
 }
 
 function canvasPersist() {
@@ -947,6 +1049,10 @@ function canvasStartRemoteSync() {
     const state = await canvasLoadRemote();
     // 拉的这一趟在路上时本机又改了一笔（已经挂上写），拉回来的这份就是旧的了，别铺
     if (canvasState.remoteWritePending || canvasState.remoteWriteArmed || canvasState.remoteConflict) return;
-    if (state && Number(state.updatedAt) > previous) canvasApplySnapshot(state, { fromRemote: true });
+    if (!(state && Number(state.updatedAt) > previous)) return;
+    const before = canvasState.graph.getElements().length;
+    canvasApplySnapshot(state, { fromRemote: true });
+    // 一下子少了节点：多半是 Agent 在清空、在连删。去看有没有它动手前存的快照，有就挂「撤销」
+    if (Array.isArray(state.nodes) && state.nodes.length < before) canvasOfferSnapshotUndo();
   }, 1800);
 }

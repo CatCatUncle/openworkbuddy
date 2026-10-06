@@ -986,6 +986,17 @@ html[data-theme="dark"] .ui-select {
 .canvas-page .canvas-find input { flex: 1; min-width: 0; height: 28px; padding: 0 4px; border: 0; outline: none; background: transparent; color: var(--owb-text); font: inherit; font-size: 13px; }
 .canvas-page .canvas-find-count { flex: none; color: var(--owb-text-3); font-size: 12px; white-space: nowrap; }
 .canvas-page .canvas-find-count.is-miss { color: var(--owb-err-text); }
+/* 画布顶上的横幅（Agent 删了一片给「撤销」、没存进项目给「重试保存」）：位置跟 ⌘F 搜索条一样，
+   搜索条开着就排在它下面。底色不透明——底下是一张满是卡片的画布，半透明的字压在卡片上读不清 */
+.canvas-page > .canvas-bars { position: absolute; z-index: 27; top: calc(84px + var(--cp-h, 0px)); left: 50%; display: flex; flex-direction: column; gap: 6px; width: min(560px, calc(100% - 20px)); transform: translateX(-50%); pointer-events: none; }
+.canvas-page > .canvas-bars[hidden] { display: none; }
+.canvas-page > .canvas-find:not([hidden]) ~ .canvas-bars { top: calc(130px + var(--cp-h, 0px)); }
+.canvas-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 7px 8px 7px 10px; border: 1px solid var(--owb-border); border-radius: var(--radius-md); background: var(--owb-bg); box-shadow: var(--shadow-menu); color: var(--owb-text); font-size: 12px; line-height: 1.5; pointer-events: auto; }
+.canvas-bar > .i { width: 14px; height: 14px; flex: none; }
+.canvas-bar-text { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; }
+.canvas-bar.is-warn { border-color: color-mix(in srgb, var(--warning) 40%, var(--owb-border)); background: color-mix(in srgb, var(--warning) 10%, var(--owb-bg)); }
+.canvas-bar.is-warn > .i { color: var(--warning); }
+.canvas-bar.is-err { border-color: color-mix(in srgb, var(--owb-err) 40%, var(--owb-border)); background: color-mix(in srgb, var(--owb-err) 9%, var(--owb-bg)); color: var(--danger-text); }
 /* 连播预览：跟看大图那层一个样子 */
 .canvas-playback { position: fixed; z-index: 1200; inset: 0; display: flex; align-items: center; justify-content: center; padding: 28px; background: rgba(8, 9, 12, .76); opacity: 0; transition: opacity .16s var(--owb-ease); }
 .canvas-playback.is-open { opacity: 1; }

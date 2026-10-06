@@ -665,6 +665,8 @@ async function canvasRestoreFromLocal(local) {
 
 function canvasRestoreOrSeed(remote = null) {
   const local = canvasLoadSaved();
+  // 这台机器上回看见这张画布是什么时候：Agent 在那之后清空、连删存下的快照，打开时挂「撤销」（见 canvasOfferSnapshotUndo）
+  canvasState.snapshotSince = Number(local && local.savedAt) || Date.now();
   // 拉到了盘上那份就先认它当 base（新建的画布是 updatedAt 0，照样算）：下面铺本机副本、铺起手卡之后
   // 那一趟存盘都照着它交，这中间别处要是先写了一笔，就撞 409 去合并，不再一把盖掉
   if (remote && Array.isArray(remote.nodes)) canvasState.remoteBase = { scope: canvasScope(), at: Number(remote.updatedAt) || 0, snapshot: remote };

@@ -2,7 +2,8 @@
 // Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 "use strict";
 /**
- * 画布存盘这一侧的安全网 —— 素材台账别把在用的标成「没人用」。
+ * 画布存盘这一侧的安全网 —— 素材台账别把在用的标成「没人用」；
+ * 删画布进回收站、Agent 清空和连删之前存快照、.bak 按时间也留。
  *
  *   node test/canvas-store.js
  *
@@ -123,6 +124,103 @@ async function main() {
     const front = keysOf(fs.readFileSync(path.join(ROOT, "public/js/app-07-canvas-compose.js"), "utf8"), "CANVAS_REF_KEYS");
     const missingKeys = front.filter((k) => !serverKeys.includes(k));
     ok(front.length > 5 && missingKeys.length === 0, "★前端认作文件的字段，服务端台账也认★ 少一个就有一类素材被标没人用", missingKeys);
+
+    console.log("\n【5】.bak 按时间也留：最近三代 + 每小时一份 + 每天一份，各自封顶");
+    const CAN = path.join(OWB, "canvases");
+    const bakFile = path.join(CAN, "备份测.json");
+    const ver = (tag) => JSON.stringify(board([node(tag, "note", { title: tag })]));
+    const t0 = new Date(2026, 0, 1, 0, 5, 0).getTime(), H = 3600e3, D = 24 * H;
+    // 30 个小时，每小时改两回：每个小时那份留的是这个小时头一回被盖掉的版本
+    for (let h = 0; h < 30; h++) {
+      fs.writeFileSync(bakFile, ver(`h${h}-头`)); store.canvasRotateBackups(bakFile, t0 + h * H);
+      fs.writeFileSync(bakFile, ver(`h${h}-尾`)); store.canvasRotateBackups(bakFile, t0 + h * H + 20 * 60e3);
+    }
+    const listOf = (tag) => fs.readdirSync(CAN).filter((n) => n.startsWith(`备份测.json.${tag}-`)).sort();
+    const idIn = (n) => { try { return JSON.parse(fs.readFileSync(path.join(CAN, n), "utf8")).nodes[0].id; } catch { return ""; } };
+    const hours = listOf("每小时");
+    ok(hours.length === store.CANVAS_BAK_HOURS, `每小时的封顶 ${store.CANVAS_BAK_HOURS} 份，最老的掉出去`, hours.length);
+    ok(hours.length > 0 && idIn(hours[hours.length - 1]) === "h29-头" && idIn(hours[0]) === "h6-头", "★留的是每个小时头一回被盖掉的那版★ 同一小时第二回不顶掉它", [hours[0], idIn(hours[0]), idIn(hours[hours.length - 1])]);
+    ok(fs.existsSync(bakFile + ".bak") && fs.existsSync(bakFile + ".bak.1") && fs.existsSync(bakFile + ".bak.2") && !fs.existsSync(bakFile + ".bak.3"), "按次数的三代照旧");
+    for (let d = 2; d < 20; d++) { fs.writeFileSync(bakFile, ver(`d${d}`)); store.canvasRotateBackups(bakFile, t0 + d * D); }
+    const days = listOf("每天");
+    ok(days.length === store.CANVAS_BAK_DAYS && days.length > 0 && idIn(days[days.length - 1]) === "d19" && idIn(days[0]) === "d6", `每天一份、封顶 ${store.CANVAS_BAK_DAYS} 份`, days.map(idIn));
+    ok(listOf("每小时").length === store.CANVAS_BAK_HOURS, "每小时的照样封顶，一张画布的备份不会越攒越多");
+    fs.writeFileSync(bakFile, "{ 写到一半"); store.canvasRotateBackups(bakFile, t0 + 40 * D);
+    ok(listOf("每天").every((n) => !n.includes(store.canvasStamp(t0 + 40 * D).slice(0, 10))), "反向对照：正本读不出来不留——拿残骸顶掉一份好的就亏了");
+    fs.unlinkSync(bakFile);
+
+    console.log("\n【6】删画布进回收站：挪过去、列得出来、拿得回来，原名被占了就叫 _2");
+    store.canvasWriteState(board([node("t1", "note", { title: "第3集的卡" }), node("t2", "image", { title: "回收站里的图", image: "回收站里的图.png" })]), "第3集");
+    put("回收站里的图.png");
+    store.canvasSetCurrentName("第3集");
+    r = await call("DELETE", "/api/canvas/boards/第3集");
+    const trashed = r.json && r.json.trashed;
+    ok(r.code === 200 && trashed && /^\.openworkbuddy\/canvas-trash\/第3集@\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d\.json$/.test(trashed.path), "删掉回 200，说清挪到了哪个路径", r.body.slice(0, 300));
+    ok(trashed && fs.existsSync(path.join(WS, trashed.path)) && !fs.existsSync(path.join(CAN, "第3集.json")), "★文件真在回收站里，画布目录里没了★ 以前是 unlink，点错一下就白干");
+    ok(!r.json.canvases.some((c) => c.name === "第3集"), "画布列表里不再有它");
+    ok(store.canvasCurrentName() === "main", "删的正是 Agent 认的当前画布：指回主画布，别接着往一张不在的画布上写", store.canvasCurrentName());
+    r = await call("GET", "/api/canvas/list");
+    const inTrash = (r.json.trash || []).find((t) => t.id === trashed.id);
+    ok(inTrash && inTrash.name === "第3集" && inTrash.nodes === 2 && inTrash.path === trashed.path && inTrash.deletedAt > 0, "画布列表接口带上回收站：名字、几个节点、路径、什么时候删的", r.json.trash);
+    r = await call("GET", "/api/canvas/assets?name=main");
+    m = by(r);
+    ok(m.get("回收站里的图.png") && m.get("回收站里的图.png").orphan === false && m.get("回收站里的图.png").usedBy.some((u) => /回收站里的画布 第3集/.test(u.title)),
+      "★回收站里的画布引用的素材不算「没人用」★ 它随时会被放回来，这时删了素材就是一屏「找不到」", m.get("回收站里的图.png"));
+    store.canvasWriteState(board([node("new1", "note", { title: "后来新建的第3集" })]), "第3集");
+    r = await call("POST", "/api/canvas/trash/restore", { id: trashed.id });
+    ok(r.code === 200 && r.json.name === "第3集_2", "原名被新画布占了：放回来叫 第3集_2", r.body.slice(0, 200));
+    ok(store.canvasReadState("第3集").nodes[0].id === "new1" && store.canvasReadState("第3集_2").nodes.map((n) => n.id).join() === "t1,t2", "★两张都在，谁也不盖谁★");
+    ok(!(r.json.trash || []).some((t) => t.id === trashed.id) && !fs.existsSync(path.join(WS, trashed.path)), "放回来之后回收站里就没它了");
+    r = await call("POST", "/api/canvas/trash/restore", { id: "../canvas.json" });
+    ok(r.code === 400 && fs.existsSync(path.join(OWB, "canvas.json")), "反向对照：回收站里没有的名字（../canvas.json）拿不动，主画布原地不动", r.body);
+    r = await call("DELETE", "/api/canvas/boards/main");
+    ok(r.code === 400 && fs.existsSync(path.join(OWB, "canvas.json")), "主画布照旧删不掉");
+    r = await call("DELETE", "/api/canvas/boards/第3集");
+    const second = r.json && r.json.trashed;
+    r = await call("DELETE", "/api/canvas/boards/第3集_2");
+    r = await call("GET", "/api/canvas/trash");
+    ok(second && r.json.trash.length === 2 && r.json.trash.every((t) => t.nodes > 0), "删两张就列两张", r.json.trash);
+
+    console.log("\n【7】Agent 清空画布：先存快照，用户一键放回去；放回去只补不盖");
+    const eight = Array.from({ length: 8 }, (_, i) => node("q" + i, "note", { title: "第" + i + "张" }));
+    store.canvasWriteState({ version: 2, nodes: eight, edges: [{ source: { id: "q0" }, target: { id: "q1" } }, { source: { id: "q1" }, target: { id: "q2" } }] }, "快照测");
+    let out = store.canvasManage({ operation: "clear", canvas_name: "快照测" });
+    ok(!out.isError && store.canvasReadState("快照测").nodes.length === 0, "清空照做", out.content);
+    ok(/8 个节点存了快照（\.openworkbuddy\/canvas-snapshots\/快照测\//.test(out.content) && /撤销/.test(out.content), "回给 Agent 的话里说存了快照、在哪、用户能撤销", out.content);
+    store.canvasManage({ operation: "add", canvas_name: "快照测", kind: "note", node_id: "agent-new", payload: { title: "Agent 清完新加的" } });
+    r = await call("GET", "/api/canvas/snapshots?name=快照测");
+    const snaps = (r.json && r.json.snapshots) || [];
+    ok(snaps.length === 1 && snaps[0].why === "清空前" && snaps[0].nodes === 8 && snaps[0].missing === 8 && snaps[0].at > 0, "快照列得出来：为什么存的、几个节点、现在少了几个", snaps);
+    r = await call("POST", "/api/canvas/snapshots/restore", { name: "快照测", id: snaps[0] && snaps[0].id });
+    const back = store.canvasReadState("快照测");
+    ok(r.code === 200 && r.json.restored === 8 && r.json.edges === 2 && back.nodes.length === 9 && back.edges.length === 2, "★八张和两条线都回来了★", { code: r.code, restored: r.json && r.json.restored, nodes: back.nodes.length, edges: back.edges.length });
+    ok(back.nodes.some((n) => n.id === "agent-new"), "★Agent 清完又加的那张还在★ 放回去只补、不拿快照整个盖回去");
+    ok(r.json.state && r.json.state.updatedAt === back.updatedAt && r.json.updatedAt === back.updatedAt, "回执带着放回去之后盘上那份，界面直接铺");
+    r = await call("POST", "/api/canvas/snapshots/restore", { name: "快照测", id: snaps[0] && snaps[0].id });
+    ok(r.code === 200 && r.json.restored === 0 && store.canvasReadState("快照测").nodes.length === 9, "再点一次：没缺的就什么都不加，不重复");
+    r = await call("GET", "/api/canvas/snapshots?name=../快照测");
+    ok(r.code === 400, "反向对照：画布名带 ../ 不收", r.body);
+    // 存不下快照就不清：拿一个同名文件占住快照目录的位置
+    store.canvasWriteState(board([node("z1", "note", { title: "留着" })]), "存不下");
+    fs.mkdirSync(path.join(OWB, "canvas-snapshots"), { recursive: true });
+    fs.writeFileSync(path.join(OWB, "canvas-snapshots", "存不下"), "占位");
+    out = store.canvasManage({ operation: "clear", canvas_name: "存不下" });
+    ok(out.isError && /没清空/.test(out.content) && store.canvasReadState("存不下").nodes.length === 1, "★快照存不下就不清★ 清了却没留底，用户那一下「撤销」就是空的", out.content);
+
+    console.log("\n【8】Agent 一口气删一串：头一下存快照，连着删的不再存");
+    store.canvasWriteState({ version: 2, nodes: Array.from({ length: 9 }, (_, i) => node("w" + i, "note", { title: "w" + i })), edges: [] }, "连删");
+    for (let i = 0; i < 7; i++) store.canvasManage({ operation: "delete", canvas_name: "连删", node_id: "w" + i });
+    r = await call("GET", "/api/canvas/snapshots?name=连删");
+    const ds = (r.json && r.json.snapshots) || [];
+    ok(ds.length === 1 && ds[0].why === "删节点前" && ds[0].nodes === 9 && ds[0].missing === 7, "★删了七张只存一份，里面是删之前的整张画布★ 每删一张存一份的话，最后一份就只剩两张", ds);
+    out = store.canvasManage({ operation: "delete", canvas_name: "连删", node_id: "不存在的" });
+    ok(out.isError && ((await call("GET", "/api/canvas/snapshots?name=连删")).json.snapshots.length === 1), "删一个不存在的节点：报找不到，不平白存快照");
+    const k0 = Date.now() + 10 * 60e3;
+    const st = store.canvasReadState("连删");
+    ok(store.canvasSnapshotBeforeDelete("连删", st, k0) !== null, "安静了 5 分钟以上再删：算新的一串，再存一份");
+    ok(store.canvasSnapshotBeforeDelete("连删", st, k0 + 60e3) === null, "一分钟后接着删：还是同一串，不存");
+    for (let i = 0; i < store.CANVAS_SNAP_KEEP + 5; i++) store.canvasSnapshotSave("连删", "删节点前", st, k0 + (i + 10) * 3600e3);
+    ok(fs.readdirSync(path.join(OWB, "canvas-snapshots", "连删")).length === store.CANVAS_SNAP_KEEP, `快照一张画布封顶 ${store.CANVAS_SNAP_KEEP} 份`);
   } finally {
     server.close();
   }

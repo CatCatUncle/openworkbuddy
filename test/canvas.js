@@ -272,6 +272,29 @@ const STUB3 = `
       const rows = items.map((it) => ({ tool: it.tool, model: "假模型", units: 1, unit: "张", unitPrice: 0.3, cost: 0.3, known: true }));
       return J({ ok: true, items: rows, total: +(rows.length * 0.3).toFixed(2), unknownCount: 0 });
     }
+    // 回收站和快照（routes/canvas.js 那几条）。__trash 有值时画布列表带上它、删画布回执带上挪去哪了；
+    // 放回来、撤销的请求记进 __bodies。__snaps 是 GET 快照列表回的，__snapState 是「撤销」之后盘上那份
+    if (s.includes("/api/canvas/trash/restore")) {
+      window.__bodies.push({ url: "/api/canvas/trash/restore", body });
+      const hit = (window.__trash || []).find((t) => t.id === (body && body.id));
+      if (!hit) return J({ ok: false, error: "回收站里没有这张画布" }, 400);
+      window.__trash = window.__trash.filter((t) => t !== hit);
+      window.__store[window.__active][hit.name] = { version: 2, updatedAt: Date.now(), edges: [], nodes: hit.state || [] };
+      return J({ ok: true, name: hit.name });
+    }
+    if (s.includes("/api/canvas/snapshots/restore")) {
+      window.__bodies.push({ url: "/api/canvas/snapshots/restore", body });
+      const st = { ...window.__snapState, updatedAt: Date.now() };
+      window.__store[window.__active][body.name] = st;
+      return J({ ok: true, restored: st.nodes.length, edges: 0, updatedAt: st.updatedAt, state: st });
+    }
+    if (s.includes("/api/canvas/snapshots")) return J({ snapshots: window.__snaps || [] });
+    if (s.includes("/api/canvas/list") && window.__trash) { const d = await (await inner.apply(this, arguments)).json(); return J({ ...d, trash: window.__trash }); }
+    if (s.includes("/api/canvas/boards/") && m === "DELETE" && window.__trash) {
+      await inner.apply(this, arguments);
+      const nm = decodeURIComponent(s.split("/api/canvas/boards/")[1] || ""), id = nm + "@2026-10-06T12-00-00.json";
+      return J({ ok: true, trashed: { id, name: nm, path: ".openworkbuddy/canvas-trash/" + id, deletedAt: Date.now() } });
+    }
     if (s.includes("/api/canvas/assets") && window.__assets) return J(window.__assets);
     // 留底的四条路由（server.js /api/drama/shot-history*）。snapshot / restore 回个样子，量的是画布碰没碰它们
     if (s.includes("/api/drama/shot-history")) {
@@ -3060,6 +3083,87 @@ app.whenReady().then(async () => {
   ok(断线.辛.记 && 断线.辛.记.state === "unknown" && 断线.辛.记.id === "job_reload_0001" && 断线.辛.本机 === null,
      "★刷新前发出去的那一单，打开画布挂回卡片上标「没收到结果」★ 卡已删的那笔直接划掉", 断线.辛);
   ok(断线.盘上记录 === null || 断线.盘上记录 === undefined, "收完之后存进项目的那份也没有残留的记录", 断线.盘上记录);
+
+  console.log("\n— 四十、Agent 清空 / 连删一片：画布顶上挂「撤销」；删掉的画布进回收站，下拉里点一下放回来 —");
+  const 回收 = await run(`
+    (async () => {
+      const 八张 = Array.from({ length: 8 }, (_, i) => ({ id: "k" + i, kind: "note", payload: { title: "第" + i + "张" }, position: { x: 40 + (i % 4) * 320, y: 40 + Math.floor(i / 4) * 240 }, size: { width: 280, height: 180 } }));
+      window.__snaps = []; window.__trash = null; window.__bodies = [];
+      ${摆画布([...Array.from({ length: 8 }, (_, i) => ({ id: "k" + i, kind: "note", payload: { title: "第" + i + "张" }, position: { x: 40 + (i % 4) * 320, y: 40 + Math.floor(i / 4) * 240 }, size: { width: 280, height: 180 } }))])}
+      const 条 = () => document.querySelector('[data-canvas-bar="snapshot"]');
+      const 条字 = () => (条() ? 条().textContent : "");
+      const 字 = () => ((document.querySelector("#owb-toast span") || {}).textContent) || "";
+      const 同步一圈 = async () => { canvasStartRemoteSync(); ${等(2100)} clearInterval(canvasState.remoteTimer); canvasState.remoteTimer = null; };
+      // ① Agent 删了两张（快照里少 2 个）：正常干活，不挂
+      window.__snaps = [{ id: "s-two", why: "删节点前", at: Date.now() + 500, nodes: 8, missing: 2 }];
+      window.__store.jia.main = { version: 2, updatedAt: Date.now() + 1000, edges: [], nodes: 八张.slice(2) };
+      await 同步一圈();
+      const 甲 = { 节点: canvasState.graph.getElements().length, 有条: !!条() };
+      // ② Agent 清空了：挂一条，说清少了几个
+      window.__snaps = [{ id: "s-clear", why: "清空前", at: Date.now() + 500, nodes: 8, missing: 8 }, ...window.__snaps];
+      window.__store.jia.main = { version: 1, updatedAt: Date.now() + 2000, edges: [], nodes: [] };
+      await 同步一圈();
+      const 按钮 = 条() ? [...条().querySelectorAll("button")].map((b) => b.textContent.trim()) : [];
+      const 乙 = { 节点: canvasState.graph.getElements().length, 字: 条字(), 按钮, 容器显示: !document.getElementById("canvas-bars").hidden };
+      // ③ 点「撤销」：照快照放回去，条收掉
+      window.__snapState = { version: 2, edges: [], nodes: 八张 };
+      window.__bodies = [];
+      if (条()) 条().querySelector("button").click();
+      ${等(400)}
+      const 丙 = { 发的: window.__bodies.filter((b) => b.url === "/api/canvas/snapshots/restore").map((b) => b.body), 节点: canvasState.graph.getElements().length, 有条: !!条(), 提示: 字() };
+      // ④ 「知道了」点过的那份，下次少节点也不再冒出来
+      window.__snaps = [{ id: "s-again", why: "清空前", at: Date.now() + 500, nodes: 8, missing: 8 }];
+      window.__store.jia.main = { version: 1, updatedAt: Date.now() + 3000, edges: [], nodes: [] };
+      await 同步一圈();
+      const 有过 = !!条();
+      if (条()) [...条().querySelectorAll("button")][1].click();
+      window.__store.jia.main = { version: 2, updatedAt: Date.now() + 4000, edges: [], nodes: 八张.slice(0, 1) };
+      await 同步一圈();
+      window.__store.jia.main = { version: 1, updatedAt: Date.now() + 5000, edges: [], nodes: [] };
+      await 同步一圈();
+      const 丁 = { 有过, 又冒: !!条() };
+      // ⑤ 删画布：确认框说的是「挪进回收站」，删完提示挪到哪了、带「恢复」
+      window.__store.jia["第3集"] = { version: 2, updatedAt: 1000, edges: [], nodes: 八张.slice(0, 2) };
+      window.__trash = [];
+      canvasState.canvasName = "第3集"; localStorage.setItem("openworkbuddy.canvas.name", "第3集");
+      await renderCanvasPage(); ${等(300)}
+      if (canvasState.remoteTimer) { clearInterval(canvasState.remoteTimer); canvasState.remoteTimer = null; }
+      let 问的 = null; const 原问 = window.askConfirm; window.askConfirm = async (o) => { 问的 = o; return true; };
+      await canvasDeleteBoard(); ${等(300)}
+      window.askConfirm = 原问;
+      if (canvasState.remoteTimer) { clearInterval(canvasState.remoteTimer); canvasState.remoteTimer = null; }
+      const 删条 = document.querySelector('[data-canvas-bar="trashed"]');
+      const 戊 = { 提示语: 问的 && 问的.hint, 现在: canvasState.canvasName, 提示: 删条 ? 删条.textContent : "", 钮: 删条 ? [...删条.querySelectorAll("button")].map((b) => b.textContent.trim()).join("|") : "" };
+      // ⑥ 回收站列在画布下拉里，选中就放回来、切过去
+      window.__trash = [{ id: "第3集@2026-10-06T12-00-00.json", name: "第3集", deletedAt: Date.now() - 60000, nodes: 2, path: ".openworkbuddy/canvas-trash/第3集@2026-10-06T12-00-00.json", state: 八张.slice(0, 2) }];
+      await renderCanvasPage(); ${等(300)}
+      if (canvasState.remoteTimer) { clearInterval(canvasState.remoteTimer); canvasState.remoteTimer = null; }
+      const 下拉 = document.querySelector("[data-canvas-board-select]");
+      const 组 = 下拉.querySelector("optgroup");
+      const 行 = 组 ? [...组.querySelectorAll("option")].map((o) => ({ v: o.value, t: o.textContent })) : [];
+      window.__bodies = [];
+      下拉.value = "__trash__:第3集@2026-10-06T12-00-00.json";
+      下拉.dispatchEvent(new Event("change"));
+      ${等(700)}
+      if (canvasState.remoteTimer) { clearInterval(canvasState.remoteTimer); canvasState.remoteTimer = null; }
+      const 己 = { 组: 组 ? 组.label : "", 行, 发的: window.__bodies.filter((b) => b.url === "/api/canvas/trash/restore").map((b) => b.body), 现在: canvasState.canvasName, 节点: canvasState.graph.getElements().length, 提示: 字() };
+      window.__trash = null; window.__snaps = [];
+      canvasState.canvasName = "main"; localStorage.setItem("openworkbuddy.canvas.name", "main");
+      return { 甲, 乙, 丙, 丁, 戊, 己 };
+    })()`);
+  ok(回收.甲.节点 === 6 && !回收.甲.有条, "反向对照：Agent 删两张是正常干活，不挂「撤销」", 回收.甲);
+  ok(回收.乙.节点 === 0 && /清空/.test(回收.乙.字) && /8/.test(回收.乙.字) && 回收.乙.按钮.join("|") === "撤销|知道了" && 回收.乙.容器显示,
+     "★Agent 清空了画布：顶上挂一条，说少了几个，给「撤销」「知道了」★", 回收.乙);
+  ok(回收.丙.发的.length === 1 && 回收.丙.发的[0].id === "s-clear" && 回收.丙.发的[0].name === "main" && 回收.丙.节点 === 8 && !回收.丙.有条 && /放回了 8 个/.test(回收.丙.提示),
+     "★点「撤销」：按那份快照放回去，八张都回来，条收掉★", 回收.丙);
+  ok(回收.丁.有过 && !回收.丁.又冒, "点过「知道了」的那份不再冒出来", 回收.丁);
+  ok(/回收站/.test(回收.戊.提示语 || "") && !/一并删除/.test(回收.戊.提示语 || "") && 回收.戊.现在 === "main"
+     && /\.openworkbuddy\/canvas-trash\/第3集@/.test(回收.戊.提示) && 回收.戊.钮 === "恢复|知道了",
+     "★删画布：确认框说挪进回收站，删完顶上挂一条写着挪到哪个路径，带「恢复」★ 不用 toast：空画布一打开的提示会把它顶掉", 回收.戊);
+  ok(回收.己.组 === "回收站" && 回收.己.行.length === 1 && 回收.己.行[0].v === "__trash__:第3集@2026-10-06T12-00-00.json" && /第3集.*删的/.test(回收.己.行[0].t),
+     "回收站列在画布下拉里：名字 + 什么时候删的", 回收.己.行);
+  ok(回收.己.发的.length === 1 && 回收.己.发的[0].id === "第3集@2026-10-06T12-00-00.json" && 回收.己.现在 === "第3集" && 回收.己.节点 === 2 && /放回来了/.test(回收.己.提示),
+     "★下拉里选回收站那一行：放回来并切过去，上面的卡都在★", 回收.己);
 
   srv.close();
   console.log(fail ? `\n有失败：${pass} 过 / ${fail} 挂` : `\n全部通过：${pass} 过 / 0 挂`);

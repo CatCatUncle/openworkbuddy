@@ -144,15 +144,183 @@ function canvasWriteState(value, name = canvasCurrentName(), { pristine = false 
  * 以前只留一代。可「刚才那一下把画布搞没了」之后，界面往往又自动存了一两回，
  * 那一代 .bak 早被空画布顶掉了。画布是用户一笔一笔摆出来的，没有回收站，出事就是白干。
  * 正本自己读不出来（0 字节 / 半截 JSON）时不轮转：把残骸挪进 .bak，等于拿它顶掉一份好的
+ *
+ * 光按次数留还不够：界面拖一下就存一次，编辑一两秒三代就冲光了，「上午那一版」早没了。
+ * 所以再按时间各留一份：每个小时头一回覆盖时，把被盖掉的那版存成 .每小时-<日期T小时>.bak，
+ * 每天头一回存成 .每天-<日期>.bak。各自封顶（24 小时、14 天），最老的掉出去，一张画布最多 41 份
  */
 const CANVAS_BAK_KEEP = 3;
-function canvasRotateBackups(file) {
+const CANVAS_BAK_HOURS = 24;
+const CANVAS_BAK_DAYS = 14;
+function canvasRotateBackups(file, now = Date.now()) {
   let text;
   try { text = fs.readFileSync(file, "utf8"); } catch { return; }   // 第一次写，没有旧版
   try { JSON.parse(text); } catch { return; }
   const gen = (i) => (i ? `${file}.bak.${i}` : `${file}.bak`);
   for (let i = CANVAS_BAK_KEEP - 1; i > 0; i--) { try { fs.renameSync(gen(i - 1), gen(i)); } catch {} }
   try { fs.writeFileSync(gen(0), text, "utf8"); } catch {}
+  const stamp = canvasStamp(now);
+  canvasKeepPeriodic(file, "每小时", stamp.slice(0, 13), text, CANVAS_BAK_HOURS);
+  canvasKeepPeriodic(file, "每天", stamp.slice(0, 10), text, CANVAS_BAK_DAYS);
+}
+/** 这个时段（slot）还没留过就留一份，然后把同一类里超出 keep 的最老几份删掉。时段写在文件名里，字典序就是时间序 */
+function canvasKeepPeriodic(file, tag, slot, text, keep) {
+  const dir = path.dirname(file), prefix = `${path.basename(file)}.${tag}-`, own = path.join(dir, `${prefix}${slot}.bak`);
+  if (fs.existsSync(own)) return;
+  try { fs.writeFileSync(own, text, "utf8"); } catch { return; }
+  let names = [];
+  try { names = fs.readdirSync(dir).filter((n) => n.startsWith(prefix) && n.endsWith(".bak")).sort(); } catch { return; }
+  for (const n of names.slice(0, Math.max(0, names.length - keep))) { try { fs.unlinkSync(path.join(dir, n)); } catch {} }
+}
+/** 本地时间的文件名时间戳：2026-10-06T14-03-22。人看得懂，按字典序排就是按时间排 */
+function canvasStamp(ms = Date.now()) {
+  const d = new Date(ms), p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
+}
+/** canvasStamp 的反面：认不出来给 0 */
+function canvasStampTime(text) {
+  const m = /(\d{4})-(\d\d)-(\d\d)T(\d\d)-(\d\d)-(\d\d)/.exec(String(text || ""));
+  return m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]).getTime() : 0;
+}
+
+/**
+ * 画布回收站：删画布不真删，整份挪进 .openworkbuddy/canvas-trash/，文件名是「画布名@删的时间.json」。
+ *
+ * 以前是 unlink：点错一下「删除当前」，那张画布上几十个镜头的提示词、连线、选好的版本全没了，
+ * 唯一的确认框里还写着「节点和连线一并删除」——人看了也只能点。回收站不自动清：一张画布几十 KB，
+ * 攒一年也不占地方，自动清掉的那一份偏偏可能就是要找的。
+ */
+function canvasTrashDir() { return path.join(ws(), ".openworkbuddy", "canvas-trash"); }
+const CANVAS_TRASH_RE = /@\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d(?:-\d+)?\.json$/;
+/** 把一张画布挪进回收站。返回 { id, name, file, deletedAt }；主画布不收 */
+function canvasTrashPut(name, now = Date.now()) {
+  const safe = canvasSafeName(name);
+  if (safe !== String(name)) throw new Error("画布名称不合法");
+  if (safe === "main") throw new Error("主画布不能删除");
+  const src = canvasStatePath(safe), dir = canvasTrashDir();
+  fs.mkdirSync(dir, { recursive: true });
+  const stamp = canvasStamp(now);
+  let id = `${safe}@${stamp}.json`;
+  for (let n = 2; fs.existsSync(path.join(dir, id)); n++) id = `${safe}@${stamp}-${n}.json`;
+  fs.renameSync(src, path.join(dir, id));
+  // 删的正是 Agent 认的「当前画布」：指回主画布，免得它接着往一张已经不在的画布上写
+  if (canvasCurrentName() === safe) canvasSetCurrentName("main");
+  return { id, name: safe, file: path.join(dir, id), deletedAt: now };
+}
+/** 回收站里有什么，新删的在前 */
+function canvasTrashList() {
+  const dir = canvasTrashDir();
+  let names = [];
+  try { names = fs.readdirSync(dir).filter((n) => CANVAS_TRASH_RE.test(n)); } catch { return []; }
+  return names.map((id) => {
+    let nodes = 0, broken = "";
+    try { nodes = canvasNormalizeState(JSON.parse(fs.readFileSync(path.join(dir, id), "utf8"))).nodes.length; } catch (e) { broken = e.message; }
+    return { id, name: id.slice(0, id.lastIndexOf("@")), deletedAt: canvasStampTime(id.slice(id.lastIndexOf("@") + 1)), nodes, path: `.openworkbuddy/canvas-trash/${id}`, ...(broken ? { broken } : {}) };
+  }).sort((a, b) => b.deletedAt - a.deletedAt || (a.id < b.id ? 1 : -1));
+}
+/** 读回收站里的一张（素材台账要看它引用了什么）。读不出来照样抛 */
+function canvasTrashRead(id) {
+  id = String(id || "");
+  if (!CANVAS_TRASH_RE.test(id) || id.includes("/") || id.includes("\\")) throw new Error("回收站里没有这张画布");
+  return canvasNormalizeState(JSON.parse(fs.readFileSync(path.join(canvasTrashDir(), id), "utf8")));
+}
+/**
+ * 从回收站拿回来。原名已经被一张新画布占了，就叫 原名_2、原名_3……——两张都在，谁也不盖谁。
+ * id 只认回收站里真有的那几个文件名，不拼路径。返回 { name, from }
+ */
+function canvasTrashRestore(id) {
+  id = String(id || "");
+  const dir = canvasTrashDir();
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch {}
+  if (!CANVAS_TRASH_RE.test(id) || !names.includes(id)) throw new Error("回收站里没有这张画布");
+  const base = id.slice(0, id.lastIndexOf("@"));
+  for (let n = 1; n < 1000; n++) {
+    const name = n === 1 ? base : `${base}_${n}`;
+    if (canvasSafeName(name) !== name || name === "main") continue;
+    const file = canvasStatePath(name);
+    if (fs.existsSync(file)) continue;
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.renameSync(path.join(dir, id), file);
+    return { name, from: id };
+  }
+  throw new Error("同名画布太多，换不出空着的名字");
+}
+
+/**
+ * 快照：Agent 清空画布、或者一口气删一串节点之前，把画布原样存一份，界面上一键放回去。
+ *
+ * 跟上面的 .bak 不是一回事：.bak 是「上一次写之前的样子」，Agent 删一个节点写一次盘，删六个就把三代 .bak 冲光了，
+ * 留下的全是删到一半的样子。快照只在「要开始删」的那一下存：清空前存一份；删节点时，安静了 5 分钟以后的头一下存一份，
+ * 接下来连着删的不再存——这一串删完，快照里就是删之前的整张画布。
+ * 放回去只「补」：快照里有、现在没有的节点和连线加回来，现在有的一个不动，Agent 删完又加的东西不会被抹掉。
+ */
+const CANVAS_SNAP_KEEP = 20;
+const CANVAS_DELETE_QUIET_MS = 5 * 60 * 1000;
+const canvasDeleteSeen = new Map();   // 画布文件 → 上一回 Agent 删节点的时间
+function canvasSnapDir(name) { return path.join(ws(), ".openworkbuddy", "canvas-snapshots", canvasSafeName(name)); }
+/** 存一份快照。空画布不存（没什么可放回去的）。返回 { id, path } 或 null */
+function canvasSnapshotSave(name, why, state, now = Date.now()) {
+  if (!state || !Array.isArray(state.nodes) || !state.nodes.length) return null;
+  const dir = canvasSnapDir(name), stamp = canvasStamp(now);
+  fs.mkdirSync(dir, { recursive: true });
+  let id = `${stamp}-${why}.json`;
+  for (let n = 2; fs.existsSync(path.join(dir, id)); n++) id = `${stamp}-${n}-${why}.json`;
+  fs.writeFileSync(path.join(dir, id), JSON.stringify({ name: canvasSafeName(name), why, at: now, state }), "utf8");
+  let names = [];
+  try { names = fs.readdirSync(dir).filter((n) => /\.json$/.test(n)).sort(); } catch {}
+  for (const n of names.slice(0, Math.max(0, names.length - CANVAS_SNAP_KEEP))) { try { fs.unlinkSync(path.join(dir, n)); } catch {} }
+  return { id, path: `.openworkbuddy/canvas-snapshots/${canvasSafeName(name)}/${id}` };
+}
+function canvasSnapshotRead(name, id) {
+  id = String(id || "");
+  const dir = canvasSnapDir(name);
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch {}
+  if (!/\.json$/.test(id) || !names.includes(id)) throw new Error("没有这份快照");
+  const data = JSON.parse(fs.readFileSync(path.join(dir, id), "utf8"));
+  return { ...data, state: canvasNormalizeState(data.state) };
+}
+/** 这张画布的快照，新的在前。missing：快照里有、现在画布上没有的节点数——放回去能补回几个 */
+function canvasSnapshotList(name) {
+  const dir = canvasSnapDir(name);
+  let names = [];
+  try { names = fs.readdirSync(dir).filter((n) => /\.json$/.test(n)).sort().reverse(); } catch { return []; }
+  let now = null;
+  try { now = new Set(canvasReadState(name).nodes.map((n) => n.id)); } catch {}
+  const out = [];
+  for (const id of names) {
+    try {
+      const snap = canvasSnapshotRead(name, id);
+      out.push({ id, why: String(snap.why || ""), at: Number(snap.at) || canvasStampTime(id), nodes: snap.state.nodes.length,
+        ...(now ? { missing: snap.state.nodes.filter((n) => !now.has(n.id)).length } : {}), path: `.openworkbuddy/canvas-snapshots/${canvasSafeName(name)}/${id}` });
+    } catch {}
+  }
+  return out;
+}
+/** 把快照里有、现在没有的节点和连线补回去。现在画布读不出来就不动它（canvasReadState 会抛）。返回 { nodes, edges, state } */
+function canvasSnapshotRestore(name, id) {
+  const snap = canvasSnapshotRead(name, id);
+  const state = canvasReadState(name);
+  const have = new Set(state.nodes.map((n) => n.id));
+  const back = snap.state.nodes.filter((n) => !have.has(n.id));
+  state.nodes.push(...back);
+  back.forEach((n) => have.add(n.id));
+  const edgeKey = (e) => `${e.source.id}\n${e.target.id}`;
+  const edges = new Set(state.edges.map(edgeKey));
+  const backEdges = snap.state.edges.filter((e) => have.has(e.source.id) && have.has(e.target.id) && !edges.has(edgeKey(e)));
+  state.edges.push(...backEdges);
+  // 清空过的画布是版本 1 的空壳：放回来的连线要按版本 2 存，不然界面会当成「老文件没存连线」
+  state.version = 2;
+  const saved = back.length || backEdges.length ? canvasWriteState(state, name) : state;
+  return { nodes: back.length, edges: backEdges.length, state: saved };
+}
+/** Agent 删节点前：安静了一阵之后的头一下存快照，连着删的不再存 */
+function canvasSnapshotBeforeDelete(name, state, now = Date.now()) {
+  const key = canvasStatePath(name), last = canvasDeleteSeen.get(key) || 0;
+  canvasDeleteSeen.set(key, now);
+  if (now - last < CANVAS_DELETE_QUIET_MS) return null;
+  try { return canvasSnapshotSave(name, "删节点前", state, now); } catch { return null; }
 }
 function canvasList() {
   const dir = path.join(ws(), ".openworkbuddy", "canvases"), out = [], add = (name, file) => {
@@ -240,7 +408,14 @@ function canvasManage(input = {}, ctx = {}) {
   // 重新建一遍节点，一存就把原文件盖了
   try { state = canvasReadState(canvasName); } catch (e) { return { content: e.message, isError: true }; }
   if (op === "get") return { content: JSON.stringify({ canvas_name: canvasName, version: state.version, updatedAt: state.updatedAt, nodes: state.nodes, edges: state.edges }), isError: false };
-  if (op === "clear") { state = canvasWriteState(canvasEmptyState(), canvasName); return { content: `画布 ${canvasName} 已清空（${state.updatedAt}）。`, isError: false }; }
+  if (op === "clear") {
+    // 先存快照再清：存不下来就不清——清掉了却没留底，用户那一下「撤销」就是空的
+    let snap = null;
+    try { snap = canvasSnapshotSave(canvasName, "清空前", state); } catch (e) { return { content: `清空前存快照没存成，所以没清空：${e.message}`, isError: true }; }
+    const before = state.nodes.length;
+    state = canvasWriteState(canvasEmptyState(), canvasName);
+    return { content: `画布 ${canvasName} 已清空（${state.updatedAt}）。` + (snap ? `清空前的 ${before} 个节点存了快照（${snap.path}），用户在画布上点「撤销」就能放回去。` : ""), isError: false };
+  }
   if (op === "add") {
     const kind = String(input.kind || ""); if (!CANVAS_KINDS.has(kind)) return { content: `不支持的画布节点类型：${kind}`, isError: true };
     const id = String(input.node_id || `agent_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`);
@@ -278,8 +453,11 @@ function canvasManage(input = {}, ctx = {}) {
     state = canvasWriteState(state, canvasName); return { content: `已连接 ${source} → ${target}。`, isError: false };
   }
   if (op === "delete") {
-    const id = String(input.node_id || ""), before = state.nodes.length; state.nodes = state.nodes.filter((node) => node.id !== id); state.edges = state.edges.filter((edge) => edge.source.id !== id && edge.target.id !== id);
-    if (state.nodes.length === before) return { content: `找不到节点：${id}`, isError: true };
+    const id = String(input.node_id || "");
+    if (!state.nodes.some((node) => node.id === id)) return { content: `找不到节点：${id}`, isError: true };
+    // 连着删一串的头一下先存快照（见 canvasSnapshotBeforeDelete），删多了用户能一键放回去
+    canvasSnapshotBeforeDelete(canvasName, state);
+    state.nodes = state.nodes.filter((node) => node.id !== id); state.edges = state.edges.filter((edge) => edge.source.id !== id && edge.target.id !== id);
     state = canvasWriteState(state, canvasName); return { content: `已删除节点 ${id} 及其连线。`, isError: false };
   }
   return { content: `不支持的画布操作：${op}`, isError: true };
@@ -287,7 +465,9 @@ function canvasManage(input = {}, ctx = {}) {
 
 module.exports = {
   bindWorkspace,
-  CANVAS_KINDS, CANVAS_EDGE_RELATIONS, CANVAS_MAX_NODES, CANVAS_MAX_EDGES, CANVAS_BAK_KEEP, canvasSafeName,
-  canvasCurrentName, canvasSetCurrentName, canvasNormalizeState, canvasBackup, canvasReadState, canvasWriteState,
-  canvasList, canvasManage, canvasRebasePaths
+  CANVAS_KINDS, CANVAS_EDGE_RELATIONS, CANVAS_MAX_NODES, CANVAS_MAX_EDGES, CANVAS_BAK_KEEP, CANVAS_BAK_HOURS, CANVAS_BAK_DAYS, canvasSafeName,
+  canvasCurrentName, canvasSetCurrentName, canvasNormalizeState, canvasBackup, canvasReadState, canvasWriteState, canvasRotateBackups,
+  canvasList, canvasManage, canvasRebasePaths, canvasStamp,
+  canvasTrashPut, canvasTrashList, canvasTrashRead, canvasTrashRestore,
+  CANVAS_SNAP_KEEP, canvasSnapshotSave, canvasSnapshotList, canvasSnapshotRestore, canvasSnapshotBeforeDelete
 };

@@ -70,6 +70,10 @@ let canvasState = {
   // 合成成片：composePlan 是「这次打算怎么拼」（算好了先给人看，不背着人跑），
   // composeJob 是「正在拼到哪了」。两个都是 null 就等于这条带子上只有一颗「合成成片」按钮
   composePlan: null, composeJob: null, composeTimer: null, composeSub: true, composeBgm: true,
+  // canvasTrash：删掉的画布挪进项目回收站的那几张（见 src/tools/canvas.js canvasTrashPut），画布下拉里列着，点一下放回来。
+  // snapshotSince：这台机器上回看见这张画布的时间，Agent 在那之后清空、连删存的快照才挂「撤销」；
+  // snapshotSeen：挂过的快照，点了「知道了」就别再冒出来
+  canvasTrash: [], snapshotSince: 0, snapshotSeen: new Set(),
   canvasName: "main", canvasList: [], taskSessionId: null, chatBusy: false, chatStopping: false, chatReferences: new Map(), history: [], historyIndex: -1, historyTimer: null, historyMute: false,
   workspaceProjects: [], workspaceLocked: false, workspaceName: "", workspaceDir: "",
   // 正在生成的节点 id。生一张图几十秒，这期间远端那份每 1.8 秒来一趟、整图重铺——
