@@ -323,9 +323,10 @@
       + `<div class="tc-views" role="tablist"><button type="button" role="tab" data-v="map">地图</button><button type="button" role="tab" data-v="timeline">时间线</button></div></div>`
       + `<div class="tc-tabs" role="tablist"${multi ? "" : " hidden"}>${it.days.map((d, i) => `<button type="button" role="tab" data-d="${i}">${esc(dayLabel(d, i))}</button>`).join("")}</div>`
       + `<div class="tc-list" hidden></div>`
-      + `<div class="tc-body"><div class="tc-map" tabindex="0" aria-label="行程地图，拖动平移，双击放大">`
+      + `<div class="tc-body"><div class="tc-map" tabindex="0" aria-label="行程地图，拖动平移，双击放大，按 0 回到全览">`
       + `<div class="tc-tiles"></div><svg class="tc-route" aria-hidden="true"></svg><div class="tc-pins"></div>`
-      + `<div class="tc-zoom"><button type="button" data-z="1" aria-label="放大" title="放大">+</button><button type="button" data-z="-1" aria-label="缩小" title="缩小">−</button></div>`
+      + `<div class="tc-zoom"><button type="button" data-z="1" aria-label="放大" title="放大">+</button><button type="button" data-z="-1" aria-label="缩小" title="缩小">−</button>`
+      + `<button type="button" class="tc-reset" aria-label="回到全览" title="回到全览"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button></div>`
       + `<div class="tc-attr"></div><div class="tc-msg" hidden></div></div>`
       + `<div class="tc-split" role="separator" aria-orientation="vertical" tabindex="0" aria-label="拖动调整地图和列表的宽窄">`
       + `<button type="button" class="tc-fold"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></button></div>`
@@ -646,6 +647,8 @@
       st.cy = latY(lat, nz) - py + H / 2;
       draw();
     }
+    // 点过地点、拖过、缩放过之后一键回到刚打开时那样：当天的地点全在框里，高亮清掉
+    function resetView() { fit(true); focusStop(-1, false); }
     function focusStop(i, pan) {
       st.active = i;
       panel.querySelectorAll(".tc-card").forEach((c) => c.classList.toggle("on", +c.dataset.i === i));
@@ -664,6 +667,7 @@
       if (t.dataset.v) setView(t.dataset.v, true);
       else if (t.dataset.d != null) setDay(+t.dataset.d);
       else if (t.dataset.z) zoomAt(+t.dataset.z);
+      else if (t.classList.contains("tc-reset")) resetView();
       else if (t.classList.contains("tc-setkey")) { if (canSetKey()) root.openModal("settings", "map"); }
       else if (t.classList.contains("tc-fold")) setFold(!lay.fold);
       else if (t.classList.contains("tc-found")) {
@@ -698,6 +702,7 @@
       }
       if (e.target === map && (e.key === "+" || e.key === "=")) zoomAt(1);
       if (e.target === map && e.key === "-") zoomAt(-1);
+      if (e.target === map && e.key === "0") resetView();
     });
     // 拖动：move/up 挂在 window 上——流式输出时整块卡片每 100ms 会被搬一次家，挂在元素上的指针捕获会丢
     let drag = null;

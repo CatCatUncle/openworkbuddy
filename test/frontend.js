@@ -6416,11 +6416,22 @@ const TRIP_CHECKS = `
 
   // 缩放、点卡片
   const st = TripCard._live.get(host.dataset.tcKey)[0]._state;
-  const zBefore = st.z;
+  const zBefore = st.z, view0 = [st.z, st.cx, st.cy];
   w.querySelector('.tc-zoom [data-z="1"]').click();
   ok("点「+」放大一级，瓦片换成新的一级", st.z === zBefore + 1 && [...w.querySelectorAll(".tc-tiles img")].every((i) => i.getAttribute("src").indexOf("/amap/" + st.z + "/") >= 0), st.z + " vs " + zBefore);
   cards[1].click();
   ok("点第 2 张卡片：卡片高亮、地图上第 2 颗钉子也高亮", cards[1].classList.contains("on") && pins[1].classList.contains("on") && !pins[0].classList.contains("on"));
+  const moved = st.z !== view0[0] || st.cx !== view0[1] || st.cy !== view0[2];
+  const reset = w.querySelector(".tc-zoom .tc-reset");
+  ok("放大、点过地点之后，右上角有颗「回到全览」", moved && !!reset && reset.getAttribute("aria-label") === "回到全览" && reset.getBoundingClientRect().height > 20);
+  reset.click();
+  ok("点「回到全览」：缩放和位置回到刚打开时那样，高亮清掉", st.z === view0[0] && Math.abs(st.cx - view0[1]) < 0.5 && Math.abs(st.cy - view0[2]) < 0.5
+    && !w.querySelector(".tc-card.on") && !w.querySelector(".tc-pin.on"), JSON.stringify([st.z, st.cx, st.cy]) + " vs " + JSON.stringify(view0));
+  const pinsIn = [...w.querySelectorAll(".tc-pin")].every((pn) => { const r = pn.getBoundingClientRect(), m = w.querySelector(".tc-map").getBoundingClientRect(); return r.left >= m.left && r.right <= m.right && r.top >= m.top && r.bottom <= m.bottom; });
+  ok("回到全览后当天找到的钉子全在地图框里", pinsIn);
+  w.querySelector('.tc-zoom [data-z="1"]').click();
+  w.querySelector(".tc-map").dispatchEvent(new KeyboardEvent("keydown", { key: "0", bubbles: true }));
+  ok("焦点在地图上按 0 也回到全览", st.z === view0[0]);
 
   // 「找到 5 个地点 ›」点开是清单
   w.querySelector(".tc-found").click();

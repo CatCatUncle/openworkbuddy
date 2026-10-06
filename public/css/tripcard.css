@@ -102,6 +102,8 @@ html[data-theme="dark"] .tc-tiles { filter: invert(1) hue-rotate(180deg) brightn
 .tc-w .tc-zoom button { width: 30px; height: 30px; font-size: 17px; line-height: 30px; color: var(--owb-text); }
 .tc-w .tc-zoom button + button { border-top: 1px solid var(--owb-border); }
 .tc-w .tc-zoom button:hover { background: var(--owb-bg-hover); }
+.tc-w .tc-zoom .tc-reset { display: flex; align-items: center; justify-content: center; }
+.tc-reset svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .tc-attr { position: absolute; right: 0; bottom: 0; padding: 1px 6px; border-top-left-radius: var(--radius-sm); background: color-mix(in srgb, var(--owb-card) 80%, transparent); color: var(--owb-text-3); font-size: 10px; pointer-events: none; }
 .tc-msg { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); max-width: 80%; padding: 8px 14px; border-radius: var(--radius-md); background: var(--owb-card); box-shadow: var(--owb-shadow-sm); color: var(--owb-text-2); font-size: 13px; text-align: center; }
 
