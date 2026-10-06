@@ -1555,6 +1555,7 @@
       // 安全页「沙箱安全 · 命令」里的系统沙箱
       "系统沙箱": "System sandbox",
       "默认：多人用时必须，一个人用自动": "Default: required with several accounts, else auto",
+      "默认：同自动": "Default: same as auto",
       "自动：立不起来照常跑": "Auto: run anyway if it can't start",
       "必须：立不起来就不跑": "Required: don't run if it can't start",
       "关闭：不隔离": "Off: no isolation",

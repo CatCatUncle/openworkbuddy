@@ -97,7 +97,7 @@ function renderSecurityPane(pane, s) {
       ${sbxOs ? `
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size: 14px;margin:12px 0 4px">
         <b>系统沙箱</b> <select id="sec-sbx" style="margin:0">${[
-          ["default", "默认：多人用时必须，一个人用自动"],
+          ["default", sbxOs === "win" ? "默认：同自动" : "默认：多人用时必须，一个人用自动"],
           ["auto", "自动：立不起来照常跑"],
           ["required", "必须：立不起来就不跑"],
           ["off", "关闭：不隔离"],

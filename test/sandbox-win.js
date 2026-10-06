@@ -207,6 +207,10 @@ async function wiring() {
   ok(ui.includes(winLimit), "Windows 做不到的两件事也写在开关旁边");
   const i18nSrc = src("public/js/i18n.js");
   ok([winDesc, winLimit].every((t) => i18nSrc.includes('"' + t + '": "')), "英文有译文");
+  // 没设过的档位：只有多人用的 Mac 升到「必须」，Windows 照自动走——下拉框里那句得跟代码说的是一回事
+  ok(/effectiveMode\(sec\.sandbox, security\.isMultiUser\(\) && process\.platform === "darwin"\)/.test(src("src/agent/tools.js"))
+    && ui.includes('sbxOs === "win" ? "默认：同自动" : "默认：多人用时必须，一个人用自动"') && i18nSrc.includes('"默认：同自动": "'),
+    "Windows 上「默认」那项写的是同自动，不写多人用时必须");
 
   // 打包：缺小助手当场红，另一个架构那份删掉，只给 Windows 包带
   const ebcSrc = src("electron-builder.config.js");
