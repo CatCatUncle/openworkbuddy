@@ -730,7 +730,7 @@ section("【4d】短剧合成：没配音的镜头用视频原声");
   const [r1, r2, r3] = p1.shots;
   ok(p1.ready && p1.mode === "copy", "三镜同规格：直拼", { ready: p1.ready, mode: p1.mode, blockers: p1.blockers });
   const a1 = stepOf(p1, "S1-01").argv.join(" ");
-  ok(r1.origAudio === true && /-map 0:v:0 -map 0:a:0/.test(a1) && /-af apad/.test(a1) && /-shortest/.test(a1) && !/anullsrc/.test(a1),
+  ok(r1.origAudio === true && /-map 0:v:0 -map 0:a:0/.test(a1) && /-af apad=whole_dur=[0-9.]+ /.test(a1) && /-shortest/.test(a1) && !/anullsrc/.test(a1),
      "★没配音、视频带音轨：map 视频自己的 0:a:0，apad 补齐、-shortest 让画面说了算，不垫静音★", a1);
   ok(/用视频原声/.test(stepOf(p1, "S1-01").label), "步骤名写「用视频原声」，不写「画面接配音」", stepOf(p1, "S1-01").label);
   const a2 = stepOf(p1, "S1-02").argv.join(" ");
@@ -755,8 +755,8 @@ section("【4d】短剧合成：没配音的镜头用视频原声");
   const p5 = plan([shot("S1-01", { video: "o.mp4" }), shot("S1-02", { video: "w.mp4" })], { "o.mp4": withSound(2, 1080, 1920), "w.mp4": V(2, 720, 1280) });
   const a5 = stepOf(p5, "S1-01").argv;
   const fc5 = a5[a5.indexOf("-filter_complex") + 1] || "";
-  ok(p5.mode === "reencode" && /\[0:a:0\]apad\[a\]/.test(fc5) && a5.join(" ").includes("-map [v] -map [a]") && a5.includes("-shortest") && !a5.join(" ").includes("anullsrc"),
-     "画幅不一样要重新编码：滤镜图里原声 [0:a:0]apad[a]，跟画面一起 map", { mode: p5.mode, fc5 });
+  ok(p5.mode === "reencode" && /\[0:a:0\]apad=whole_dur=2\[a\]/.test(fc5) && a5.join(" ").includes("-map [v] -map [a]") && a5.includes("-shortest") && !a5.join(" ").includes("anullsrc"),
+     "画幅不一样要重新编码：滤镜图里原声补到画面那么长就停（apad=whole_dur），跟画面一起 map；补成无限长，老 ffmpeg 收不住会写到盘满", { mode: p5.mode, fc5 });
   // 配乐压低那条提醒：原声也是「说话」，没有 sidechaincompress 时照样要说
   const p6 = plan([shot("S1-01", { video: "o.mp4" }), audioNode("bgm", { role: "配乐", title: "雨夜", url: "bgm.mp3" })], { "o.mp4": withSound(2, 1080, 1920), "bgm.mp3": A(30) }, { duck: false });
   ok(p6.blockers.some((b) => /sidechaincompress/.test(b.text)), "只有原声、没有配音、本机不能压低配乐：照样提醒配乐是固定音量", p6.blockers.map((b) => b.text));

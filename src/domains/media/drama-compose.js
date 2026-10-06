@@ -428,11 +428,13 @@ function composePlan(state, opts = {}) {
     const silent = ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"];
     let argv;
     if (r.origAudio) {
-      // 用视频自己的音轨。apad 把声音补到无限长、-shortest 让画面说了算：
-      // 原声比画面短，后半截补静音；比画面长，跟着画面一起收——每一段的声轨都和画面一样长，concat 才对得齐
+      // 用视频自己的音轨。apad 补静音、-shortest 让画面说了算：
+      // 原声比画面短，后半截补静音；比画面长，跟着画面一起收——每一段的声轨都和画面一样长，concat 才对得齐。
+      // 补到画面那么长就停（whole_dur），不补成无限长：6.x 的 ffmpeg 重新编码时 -shortest 收不住滤镜里无限长的 apad，会一直写到盘满
+      const apad = r.vdur ? `apad=whole_dur=${r.vdur}` : "apad";
       argv = mode === "copy"
-        ? ["-y", "-i", r.video, "-map", "0:v:0", "-map", "0:a:0", "-c:v", "copy", "-af", "apad", ...AUDIO_ARGS, "-shortest", "-movflags", "+faststart", clip]
-        : ["-y", "-i", r.video, "-filter_complex", `[0:v]${fitPadVf(target.w, target.h, r.pad, fps)}[v];[0:a:0]apad[a]`, "-map", "[v]", "-map", "[a]", ...X264_ARGS, ...AUDIO_ARGS, "-shortest", "-movflags", "+faststart", clip];
+        ? ["-y", "-i", r.video, "-map", "0:v:0", "-map", "0:a:0", "-c:v", "copy", "-af", apad, ...AUDIO_ARGS, "-shortest", "-movflags", "+faststart", clip]
+        : ["-y", "-i", r.video, "-filter_complex", `[0:v]${fitPadVf(target.w, target.h, r.pad, fps)}[v];[0:a:0]${apad}[a]`, "-map", "[v]", "-map", "[a]", ...X264_ARGS, ...AUDIO_ARGS, "-shortest", "-movflags", "+faststart", clip];
     } else if (mode === "copy") {
       argv = r.audio
         ? ["-y", "-i", r.video, "-i", r.audio, "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", ...AUDIO_ARGS, "-movflags", "+faststart", clip]
