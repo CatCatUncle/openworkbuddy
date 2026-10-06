@@ -447,6 +447,16 @@ async function cliRun(args, call, { stopAt, pty } = {}) {
       fresh(); answer = () => "deny";
       let r = await run("run_shell", { command: `cat ${SSH}` }, {});
       ok(cards.length === 1 && /黑名单/.test(cards[0].rule || "") && r.isError, "单机：命令碰了 ~/.ssh 弹卡问一声", { cards: cards.map((c) => c.rule), r: r.content });
+      // 工具层摆卡时得把「碰了黑名单」记在卡上：靠它，切成多人以后这张还挂着的卡谁也批不了
+      ok(cards[0].blacklist === true, "★工具层摆的黑名单卡带着黑名单记号★", cards[0]);
+      fresh(); answer = () => { security.setMultiUser(() => true); return "allow"; };
+      r = await run("run_shell", { command: `cat ${SSH}` }, {});
+      ok(cards.length === 1 && r.isError && /未获批准/.test(r.content), "★卡挂着时切成多人，再点允许 → 任务拿到拒绝★（走真工具，不是手搭的卡）", r.content);
+      security.setMultiUser(null);
+      fresh(); answer = () => "allow";
+      r = await run("run_shell", { command: "echo hi" }, { permission_mode: "ask" });
+      ok(cards.length === 1 && cards[0].blacklist === false && !r.isError, "反向对照：普通卡不带黑名单记号，照常批得了", { card: cards[0], r: r.content });
+      fresh(); answer = () => "deny";
 
       security.setMultiUser(() => true);
       fresh(); answer = () => "allow";
@@ -487,6 +497,11 @@ async function cliRun(args, call, { stopAt, pty } = {}) {
       const rr = security.resolveApproval(item.id, true, "once", "bob");
       ok(rr.ok, "反向对照：普通卡成员照样批得了", rr);
       eq(await pending, true, "  └ 任务拿到的是「允许」");
+      // 「几个人在用」由入口注册：没注册按一个人算、一路放行，所以漏了这行谁也不会报错——这里盯住两个入口
+      const CLI = fs.readFileSync(path.join(__dirname, "..", "cli.js"), "utf8");
+      ok(/\nsecurity\.setMultiUser\(\(\) => admin\.multiUser\(\)\);/.test(SERVER), "★网页服务注册了「几个人在用」★（漏了就按一个人算，黑名单卡又能自己批）");
+      ok(/\nsecurity\.setMultiUser\(\(\) => \{\s*try \{ return account\.userCount\(\) > 1; \} catch \{ return true; \}\s*\}\);/.test(CLI),
+        "★命令行也注册了★ 读账号库出错按多人算");
     } finally {
       security.setMultiUser(null);
       security.clearSessionAllow();
