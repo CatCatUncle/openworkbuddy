@@ -248,8 +248,18 @@ try {
     if (config.embedding && String(config.embedding.model || "").trim()) return false;
     try { return memory.vectorStatus().have > 0; } catch { return false; }
   })();
+  // 中转站以前把没登记型号的渠道当通用网关，这一版起只转登记过的。发过 Key、又有渠道停转或 Key 受影响才提示
+  const relayHit = (() => {
+    try {
+      const vk = require("./src/domains/account/vkeys");
+      const keys = vk.list();
+      if (!keys.length) return false;
+      const g = vk.relayAudit(config, keys);
+      return g.stopped.length > 0 || g.keys.length > 0;
+    } catch { return false; }
+  })();
   const notes = migrate.runMigrations(getWorkspaceDir(), dataPath("data", "migrations.json"), {
-    version: String(require("./package.json").version || ""), priorUse, embedOff,
+    version: String(require("./package.json").version || ""), priorUse, embedOff, relayHit,
   });
   for (const n of notes) console.log(`[升级整理] ${n.note}`);
   global.__wbMigrationNotes = notes;   // 界面上给用户看一眼：动过他的文件，得说
@@ -2316,6 +2326,9 @@ app.post("/api/settings", (req, res) => {
           api_key: /^\*+$/.test(key) ? prev.api_key || "" : key,
           // 接口格式：空 = 按渠道类型；认不出的值不落盘，免得一个拼错的字把整条渠道带去走最通用那种还不自知
           ...(mediaModels.isApiFormat(p.api) ? { api: p.api } : {}),
+          // 中转站「放行任意型号」只能在中转站页由平台超级管理员开关（admin.js 那条路由会记审计）。
+          // 这里只从旧值抄过来、不认表单里的：设置页的保存权限比那个开关宽，不能变成一条绕过去的路
+          ...(prev.relay_any_model === true ? { relay_any_model: true } : {}),
         };
       });
       auditKeyChanges(req, old, config.providers);

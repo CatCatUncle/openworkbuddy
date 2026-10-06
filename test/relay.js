@@ -1143,6 +1143,204 @@ console.log("\n【6】离职：停用账号关的是他本人的路，中转站�
   ok(/unpricedChat\(user, runLLM\)/.test(dramaSrc) && /unpricedWhy\) return res\.status\(402\)/.test(dramaSrc),
      "短剧草稿那条真调模型的路也接上了");
 
+  /* ============================================================
+     【11】中转站只转登记过的型号
+     ============================================================
+     以前渠道上一个型号都没登记，中转站就把它当「通用网关」：任何名字都拿管理员的上游 Key 转出去，
+     只挂了生图模型的渠道也算。「只能用我配的模型」在这条路上不成立。
+     这一段钉住：没登记的不转（上游一次都收不到）、放行要属主明着开、空型号 Key 只认登记过的。
+     ============================================================ */
+  console.log("\n【11】中转站只转登记过的型号：没登记的上游收不到、放行开关只归属主、空型号 Key 不跟着放开");
+  const hits11 = [];
+  const up11 = http.createServer((rq, rs) => {
+    let b = "";
+    rq.on("data", (c) => (b += c));
+    rq.on("end", () => {
+      let j = {}; try { j = JSON.parse(b); } catch {}
+      hits11.push({ url: rq.url, key: String(rq.headers.authorization || "").replace(/^Bearer\s+/i, ""), model: j.model });
+      rs.writeHead(200, { "content-type": "application/json" });
+      if (rq.url === "/v1/embeddings") {
+        return rs.end(JSON.stringify({ object: "list", data: [{ embedding: [0.1] }], model: j.model, usage: { prompt_tokens: 3, total_tokens: 3 } }));
+      }
+      rs.end(JSON.stringify({ id: "c1", object: "chat.completion", model: j.model,
+        choices: [{ index: 0, message: { role: "assistant", content: "好" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 3, completion_tokens: 1 } }));
+    });
+  });
+  up11.listen(0, "127.0.0.1");
+  await new Promise((r11) => up11.once("listening", r11));
+  const UP11 = `http://127.0.0.1:${up11.address().port}/v1`;
+  const cfg11 = {
+    providers: [
+      { id: "reg", name: "登记过的渠道", kind: "openai", base_url: UP11, api_key: "sk-test-reg" },
+      { id: "bare", name: "啥都没登记的", kind: "openai", base_url: UP11, api_key: "sk-test-bare" },
+      { id: "pic", name: "只挂了生图的", kind: "openai", base_url: UP11, api_key: "sk-test-pic" },
+    ],
+    models: [{ name: "主力", model: "gpt-4o-mini", channel: "reg" }],
+    media_models: [{ cap: "image", name: "画图", model: "dall-e-3", provider: "pic" }],
+    embedding: { provider: "bare", model: "bge-m3" },
+  };
+  const srv11 = express();
+  srv11.use(express.json());
+  srv11.use(relay.createRouter({
+    config: () => cfg11, orgSettings: () => ({ budget: { org_yuan: 0 } }), user: () => null, clientIp: () => "127.0.0.1",
+  }));
+  let saved11 = 0;
+  srv11.use(account.createRouter({}));
+  srv11.use(account.authGuard);
+  srv11.use(admin.tenantScope({ withWorkspace: tools.withWorkspace, withPolicy: tools.withPolicy, getWorkspaceDir: tools.getWorkspaceDir }));
+  srv11.use(admin.platformGuard);
+  srv11.use(admin.redactGuard);
+  srv11.use(admin.createAdminRouter({ readConfig: () => cfg11, saveConfig: () => { saved11++; }, orgUsage: () => ({ files: 0, bytes: 0 }) }));
+  const s11 = srv11.listen(0, "127.0.0.1");
+  await new Promise((r11) => s11.once("listening", r11));
+  const P11 = s11.address().port;
+  const req11 = (method, p, { key, cookie, body } = {}) => new Promise((resolve) => {
+    const payload = body === undefined ? null : Buffer.from(JSON.stringify(body));
+    const rq = http.request({ host: "127.0.0.1", port: P11, path: p, method, headers: {
+      ...(payload ? { "content-type": "application/json", "content-length": payload.length } : {}),
+      ...(key ? { authorization: "Bearer " + key } : {}), ...(cookie ? { cookie } : {}),
+    } }, (res) => {
+      let b = ""; res.on("data", (x) => (b += x));
+      res.on("end", () => { let j = null; try { j = JSON.parse(b); } catch {} resolve({ status: res.statusCode, json: j }); });
+    });
+    rq.on("error", () => resolve({ status: 0, json: null }));
+    rq.end(payload || undefined);
+  });
+  const chat11 = (key, model) => req11("POST", "/v1/chat/completions", { key, body: { model, messages: [{ role: "user", content: "hi" }] } });
+  const emptyK = vkeys.create({ name: "没写型号的", org: org.DEFAULT_ORG });
+  const starK = vkeys.create({ name: "写了星号的", org: org.DEFAULT_ORG, models: ["*"] });
+  const namedK = vkeys.create({ name: "点名新型号的", org: org.DEFAULT_ORG, models: ["brand-new-x"] });
+
+  let g11 = await chat11(emptyK.secret, "gpt-4o-mini");
+  ok(g11.status === 200 && hits11.length === 1 && hits11[0].key === "sk-test-reg",
+     "登记过的型号照常转，走的是登记它的那条渠道", { status: g11.status, hits: hits11 });
+
+  // ★原来的通用网关：渠道没登记型号就什么都转。现在没登记的一律 404，上游一次都收不到
+  hits11.length = 0;
+  g11 = await chat11(starK.secret, "brand-new-x");
+  const e11 = (g11.json && g11.json.error) || {};
+  ok(g11.status === 404 && e11.code === "model_not_found" && e11.type === "invalid_request_error",
+     "★没登记的型号不再当通用网关转出去★ 404 + OpenAI 那个错误形状（code = model_not_found）", g11.json);
+  ok(/brand-new-x/.test(e11.message || "") && /没登记/.test(e11.message || "") && /设置 → 模型/.test(e11.message || ""),
+     "错误说清是哪个型号没登记、去哪儿登记", e11.message);
+  eq(hits11.length, 0, "★假上游一次请求都没收到★（不是转出去被上游拒了，是根本没发）");
+  g11 = await chat11(emptyK.secret, "brand-new-x");
+  ok(g11.status === 404 && hits11.length === 0, "空型号的 Key 叫没登记的也一样 404、上游 0 次", { status: g11.status, hits: hits11.length });
+
+  // 只挂了媒体模型的渠道不替人转对话：它登记的 dall-e-3 是生图那一路的
+  g11 = await chat11(starK.secret, "dall-e-3");
+  ok(g11.status === 404 && hits11.length === 0, "★只挂了生图模型的渠道不转对话★ 拿生图型号名去叫对话：404，上游 0 次", { status: g11.status, hits: hits11 });
+  ok(!relay.pickChannels(cfg11, "dall-e-3").length && !relay.pickChannels(cfg11, "随便什么").length,
+     "选渠道那一步就挑不出它（不靠上游报错兜底）");
+
+  // 向量那一路认设置里选定的嵌入模型，但那条登记不顺带让对话也能叫
+  g11 = await req11("POST", "/v1/embeddings", { key: emptyK.secret, body: { model: "bge-m3", input: "你好" } });
+  ok(g11.status === 200 && hits11.length === 1 && hits11[0].key === "sk-test-bare" && hits11[0].url === "/v1/embeddings",
+     "嵌入模型登记在哪条渠道，向量就从哪条转", { status: g11.status, hits: hits11 });
+  hits11.length = 0;
+  g11 = await chat11(starK.secret, "bge-m3");
+  ok(g11.status === 404 && hits11.length === 0, "反向：嵌入模型的登记不算对话的登记", { status: g11.status, hits: hits11.length });
+
+  // ---- 后台：停了哪些、受影响的 Key、开关只归平台超级管理员 ----
+  let a11 = await req11("GET", "/api/admin/relay", { cookie: boss });
+  const gw11 = (a11.json || {}).gateway || {};
+  // bare 上登记了嵌入模型，向量那一路还在转，不算停转
+  eq(a11.status === 200 && (gw11.stopped || []).map((c) => [c.id, c.media_only]), [["pic", true]],
+     "中转站页列出停转的渠道（只挂了媒体模型的那条），登记过对话或向量的不在里头");
+  ok((gw11.keys || []).some((k) => k.id === emptyK.key.id && k.models.length === 0)
+     && (gw11.keys || []).some((k) => k.id === namedK.key.id && k.models.includes("brand-new-x")),
+     "受影响的 Key 也列出来：空型号的、点名的型号哪条渠道都转不了的", gw11.keys);
+  ok(((a11.json || {}).channels || []).every((c) => c.any_model === false), "放行开关默认全关");
+  const audit11 = vkeys.relayAudit({ providers: [
+    { id: "gw", name: "以前的通用网关", kind: "openai", base_url: "http://127.0.0.1:9/v1" },
+    { id: "cc", name: "Claude 原生", kind: "anthropic", base_url: "http://127.0.0.1:9" },
+  ] }, []);
+  eq(audit11.stopped, [{ id: "gw", name: "以前的通用网关", media_only: false }],
+     "一个型号都没登记的 OpenAI 兼容渠道算停转；本来就不走中转的原生协议渠道不算");
+
+  // 席位前面几段已经用满，把前面那个普通成员提成平台管理员（不是超级管理员）
+  r = await req11("POST", "/api/admin/members/xiaoyuan", { cookie: boss, body: { role: "admin" } });
+  ok(r.status === 200, "把一个成员提成平台管理员（不是超级管理员）", r.json);
+  const login11 = (who, pw) => new Promise((resolve) => {
+    const payload = Buffer.from(JSON.stringify({ username: who, password: pw }));
+    const rq = http.request({ host: "127.0.0.1", port: P11, path: "/api/auth/login", method: "POST",
+      headers: { "content-type": "application/json", "content-length": payload.length } }, (res) => {
+      res.resume(); res.on("end", () => resolve(String((res.headers["set-cookie"] || [""])[0]).split(";")[0]));
+    });
+    rq.end(payload);
+  });
+  const subCookie = await login11("xiaoyuan", memPwd);
+  ok(!!subCookie, "平台管理员登得进来");
+  const before11 = saved11;
+  ok((await req11("POST", "/api/admin/relay/channels/bare", { cookie: subCookie, body: { any_model: true } })).status === 403,
+     "平台管理员打不开「放行任意型号」——只有超级管理员能");
+  ok((await req11("POST", "/api/admin/relay/channels/bare", { cookie: auditor, body: { any_model: true } })).status === 403,
+     "审计员也打不开");
+  ok(cfg11.providers[1].relay_any_model === undefined && saved11 === before11, "被拒的那两趟一个字都没写进配置");
+  ok((await req11("POST", "/api/admin/relay/channels/bare", { cookie: boss, body: { any_model: "yes" } })).status === 400,
+     "开关只认 true / false，别的值不猜");
+  a11 = await req11("POST", "/api/admin/relay/channels/bare", { cookie: boss, body: { any_model: true } });
+  ok(a11.status === 200 && cfg11.providers[1].relay_any_model === true && saved11 === before11 + 1,
+     "超级管理员打开了，配置里真有这一格、也真存了盘", { status: a11.status, json: a11.json });
+  ok(org._internals.readAudit(org.DEFAULT_ORG).some((e) => e.action === "中转站放行任意型号" && e.actor === "hr-boss"),
+     "打开放行记进审计：谁、哪天、开的哪条渠道", org._internals.readAudit(org.DEFAULT_ORG).slice(0, 3));
+
+  // ★打开之后：写了型号的 Key 能走这条渠道叫没登记的；空型号 Key 不跟着放开
+  hits11.length = 0;
+  g11 = await chat11(starK.secret, "brand-new-x");
+  ok(g11.status === 200 && hits11.length === 1 && hits11[0].key === "sk-test-bare",
+     "★开关打开后放行★ 写了型号的 Key 叫没登记的型号，从打开的那条渠道转出去", { status: g11.status, hits: hits11 });
+  g11 = await chat11(namedK.secret, "brand-new-x");
+  ok(g11.status === 200, "点名了这个型号的 Key 也能用", g11.json);
+  hits11.length = 0;
+  g11 = await chat11(emptyK.secret, "brand-new-x");
+  ok(g11.status === 401 && /没写型号/.test(((g11.json || {}).error || {}).message || "") && hits11.length === 0,
+     "★空型号 Key 只能用登记过的★ 放行开关开着它也叫不动没登记的，上游 0 次", { status: g11.status, json: g11.json, hits: hits11.length });
+  g11 = await chat11(emptyK.secret, "gpt-4o-mini");
+  ok(g11.status === 200, "反向对照：同一把空型号 Key 叫登记过的照常", g11.status);
+  // 同一个型号，登记的渠道和放行的渠道都接得了：空型号 Key 只能落在登记的那条上（两条同级、权重随机，多叫几次）
+  hits11.length = 0;
+  for (let i = 0; i < 8; i++) await chat11(emptyK.secret, "gpt-4o-mini");
+  ok(hits11.length === 8 && hits11.every((h) => h.key === "sk-test-reg"),
+     "★空型号 Key 的流量不落到放行的渠道上★ 只走登记了这个型号的那条", hits11.map((h) => h.key));
+  ok(relay.pickChannels(cfg11, "gpt-4o-mini").length === 2
+     && relay.pickChannels(cfg11, "gpt-4o-mini", { registeredOnly: true }).map((c) => c.p.id).join() === "reg",
+     "挑渠道时放行的那条只给写了型号的 Key");
+  ok(!hits11.some((h) => h.key === "sk-test-pic"), "只挂了生图的那条渠道全程一次都没被拿去转对话", hits11);
+
+  a11 = await req11("GET", "/api/admin/relay", { cookie: boss });
+  ok((((a11.json || {}).channels || []).find((c) => c.id === "bare") || {}).any_model === true
+     && !((a11.json || {}).gateway.stopped || []).some((c) => c.id === "bare"),
+     "页面上这条渠道显示放行中，也不再算停转");
+
+  a11 = await req11("POST", "/api/admin/relay/channels/bare", { cookie: boss, body: { any_model: false } });
+  hits11.length = 0;
+  g11 = await chat11(starK.secret, "brand-new-x");
+  ok(a11.status === 200 && !("relay_any_model" in cfg11.providers[1]) && g11.status === 404 && hits11.length === 0,
+     "关掉之后又回到只转登记过的", { status: g11.status, hits: hits11.length });
+
+  // 渠道自己写了白名单的，只认白名单，放行开关在它身上不起作用
+  cfg11.providers[1].models = ["only-this"];
+  cfg11.providers[1].relay_any_model = true;
+  ok(!relay.pickChannels(cfg11, "brand-new-x").length && relay.pickChannels(cfg11, "only-this").length === 1,
+     "渠道白名单优先于放行开关");
+  delete cfg11.providers[1].models; delete cfg11.providers[1].relay_any_model;
+
+  // 设置页保存渠道时不认表单里的放行开关，只从旧值抄（设置页的权限比这个开关宽）
+  ok(SRC9.includes("...(prev.relay_any_model === true ? { relay_any_model: true } : {})")
+     && !/relay_any_model:\s*p\.relay_any_model|p\.relay_any_model\s*===/.test(SRC9),
+     "设置页保存渠道：放行开关只从旧值抄过来，不从提交的表单里拿");
+  ok(/relayHit/.test(SRC9), "启动时把「中转站有渠道 / Key 受影响」递给升级提示");
+  const migrate11 = require(mod("migrate"));
+  const ws11 = path.join(HOME, "ws11"); fs.mkdirSync(ws11, { recursive: true });
+  const notes11 = migrate11.runMigrations(ws11, path.join(HOME, "mig11.json"), { version: "9.9.9", priorUse: true, relayHit: true });
+  ok(notes11.some((n) => n.id === "relay-registered-only-v1" && /API 中转站/.test(n.note)), "升级上来、有受影响的：提示一次，告诉去哪儿看", notes11);
+  const quiet11 = migrate11.runMigrations(path.join(HOME, "ws11b"), path.join(HOME, "mig11b.json"), { version: "9.9.9", priorUse: true, relayHit: false });
+  ok(!quiet11.some((n) => n.id === "relay-registered-only-v1"), "反向对照：没受影响的不打扰", quiet11);
+
+  s11.close(); up11.close();
+
   try { fs.rmSync(HOME, { recursive: true, force: true }); } catch {}
   console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
   process.exit(fail ? 1 : 0);

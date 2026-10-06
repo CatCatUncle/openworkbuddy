@@ -740,10 +740,18 @@ function createAdminRouter(deps = {}) {
     // 有哪些渠道转得出去。relay.js 认的是 config.models[i].channel，
     // 所以「登记了型号但没挂渠道」的那些在中转站上根本转不出去——这一页要直说，
     // 不然业务方拿着 Key 调一个界面上明明看得见的型号，收到的是一句「没有可用渠道」。
+    // gateway：中转站只转登记过的型号之后，停掉的渠道和受影响的 Key（vkeys.relayAudit）。
+    // 升级上来的人第一眼要在这一页看见「哪条停了、为什么、怎么恢复」，不能等业务方来报 404
+    const gateway = vkeys.relayAudit(cfg, keys);
+    const stoppedIds = new Set(gateway.stopped.map((c) => c.id));
     const channels = (cfg.providers || []).map((pv) => ({
       id: pv.id, name: pv.name || pv.id, kind: pv.kind || "",
       models: (cfg.models || []).filter((m) => m && m.channel === pv.id).map((m) => String(m.model || m.name)).filter(Boolean),
       has_key: !!String(pv.api_key || "").trim(),
+      relayable: vkeys.relayable(pv),
+      whitelist: Array.isArray(pv.models) ? pv.models.map(String) : [],
+      any_model: pv.relay_any_model === true,
+      stopped: stoppedIds.has(pv.id),
     }));
     const orphans = (cfg.models || []).filter((m) => m && !m.channel).map((m) => String(m.model || m.name)).filter(Boolean);
 
@@ -752,7 +760,7 @@ function createAdminRouter(deps = {}) {
       keys: keyRows,
       // 这里**不捎带花名册**：「每个人单独的上限」那张表走 /api/admin/relay/members，一页 50 个。
       // 捎带的时候 3000 人的组织一次 631 KB，而那张表一屏看得见十几行
-      channels, orphans,
+      channels, orphans, gateway,
       month: mk,
       budget: { org_yuan: (st.budget || {}).org_yuan || 0, default_user_yuan: (st.budget || {}).default_user_yuan || 0, price_discount: pricing._internals.discountOf(st.price_discount) },
       levels: budget.status({ org: st, orgId }),
@@ -894,6 +902,25 @@ function createAdminRouter(deps = {}) {
     org.audit({ org: org.orgIdOf(req.user), actor: req.user.username, action: b.remove ? "删价目" : "改价目", target: model });
     const merged = pricing.tableFor({ config: cfg });
     return { ok: true, prices: Object.entries(merged.table).map(([m, r]) => ({ model: m, ...r, src: merged.from[m] })).sort((x, y) => x.model.localeCompare(y.model)) };
+  }));
+
+  /**
+   * 一条渠道要不要「放行任意型号」。打开后，这条渠道拿管理员的上游 Key 替写了型号的 Key
+   * 转任何名字，包括没登记的——「只能用我配的模型」在这条渠道上就不成立了。
+   * 所以只有平台超级管理员能开，默认关，开关和后果都写在中转站页上；每次开关都进审计。
+   * 设置页保存渠道时不认这一格（server.js 那边只从旧值抄过来），只有这条路改得动它。
+   */
+  router.post("/api/admin/relay/channels/:id", platformOwnerOnly, guarded((req) => {
+    const b = req.body || {};
+    if (typeof b.any_model !== "boolean") throw new Error("any_model 只能是 true 或 false");
+    const cfg = safeCall(deps.readConfig, null) || {};
+    const pv = (cfg.providers || []).find((x) => x && x.id === req.params.id);
+    if (!pv) throw new Error("没有这条渠道");
+    if (b.any_model) pv.relay_any_model = true;
+    else delete pv.relay_any_model;
+    safeCall(deps.saveConfig, undefined);
+    org.audit({ org: org.orgIdOf(req.user), actor: req.user.username, action: b.any_model ? "中转站放行任意型号" : "中转站只转已登记型号", target: pv.name || pv.id });
+    return { ok: true, id: pv.id, any_model: pv.relay_any_model === true };
   }));
 
   /**

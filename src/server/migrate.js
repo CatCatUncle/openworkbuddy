@@ -199,6 +199,16 @@ const MIGRATIONS = [
     run: (ctx) => (ctx.options && ctx.options.embedOff
       ? "记忆改用关键词召回，不再借用聊天渠道的 Key；去设置 → 记忆选个嵌入模型可恢复" : ""),
   },
+  {
+    id: "relay-registered-only-v1",
+    title: "中转站只转登记过的型号",
+    // 以前渠道没登记型号就当通用网关，什么名字都拿管理员的上游 Key 转出去；这一版起只转登记过的。
+    // 发过 Key、又有渠道因此停转或有 Key 受影响的（调用方算好给 relayHit），升上来后要说一声去哪儿看。
+    // 什么配置都不改：要不要放行、登记哪些型号，由属主自己决定
+    upgradeOnly: true,
+    run: (ctx) => (ctx.options && ctx.options.relayHit
+      ? "中转站不再转没登记的型号，有渠道或 Key 受影响；去后台 → API 中转站看怎么恢复" : ""),
+  },
 ];
 
 /**

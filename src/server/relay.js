@@ -40,7 +40,6 @@ const budget = require("../core/billing/budget");
 const vkeys = require("../domains/account/vkeys");
 const log = require("../platform/log");
 const { cleanKey } = require("../core/model/llm");
-const { protoOfChannel } = require("../core/model/media-models");
 
 /** 上游多久没有第一个字节就换下一条渠道。流式回答本身可以跑一小时，卡的是**握手** */
 const CONNECT_TIMEOUT_MS = 30000;
@@ -64,38 +63,26 @@ function worthRetry(status) {
 /**
  * 挑渠道：能跑这个型号的、启用着的，按 priority 从小到大，同级按权重随机。
  *
- * "能跑这个型号"三种写法，从严到松：
- *   ① 渠道自己写了 models 白名单（支持尾部 *）——最准，也最要手动维护
- *   ② config.models 里有条目挂在这条渠道上、且 model 字段对得上——大多数人的实际情况
- *   ③ 渠道什么都没写 —— 当成"什么都能跑"的自建网关（new-api / one-api / OpenRouter 就是这样）
+ * "能跑这个型号"只认登记过的（判法在 vkeys.channelServes）：
+ *   ① 渠道自己写了 models 白名单（支持尾部 *）
+ *   ② config.models 里有条目挂在这条渠道上、且 model 字段对得上；向量那一路再认设置里选定的嵌入模型
+ *   ③ 属主在中转站页给这条渠道打开了「放行任意型号」——这时 open = true
  *
- * 为什么③默认放行而不是默认拒绝：这个产品的绝大多数用户只有一条渠道，
- * 要求他先去登记型号清单才能用，等于给一个人的场景加一道企业流程。
- * 而登记了清单的人，得到的是真正的路由能力。
+ * 以前渠道什么都没写就当成「什么都能跑」的通用网关。那等于把管理员的上游 Key 借给任何一把
+ * 虚拟 Key 去叫任意型号，只挂了生图模型的渠道也一样，「只能用我配的模型」就落空了。
+ * 现在默认不转，转不了的型号在预扣之前就回 404（routeOf）。
+ *
+ * registeredOnly：没写型号的 Key 只走「登记过」的那几条，放行开关打开的渠道不算——
+ * 不然同一个型号登记在 A、B 又开了放行，空型号 Key 的流量照样会落到 B 的上游 Key 上。
  */
-function pickChannels(config, model) {
+function pickChannels(config, model, { cap = "chat", registeredOnly = false } = {}) {
   const providers = (config.providers || []).filter((p) => p && p.id);
-  const byChannel = new Map();
-  for (const m of config.models || []) {
-    if (!m || !m.channel) continue;
-    if (!byChannel.has(m.channel)) byChannel.set(m.channel, []);
-    byChannel.get(m.channel).push(String(m.model || m.name || ""));
-  }
-  const want = String(model || "").toLowerCase();
   const out = [];
   for (const p of providers) {
-    if (p.enabled === false) continue;
-    if (protoOfChannel(p) !== "openai") continue;         // 见文件头第 1 条：Claude / Gemini / Responses / Ollama 原生都不走这条
-    if (!String(p.base_url || "").trim()) continue;        // 没地址就不是一条能转发的渠道
-    let ok, why;
-    if (Array.isArray(p.models) && p.models.length) {
-      ok = vkeys._internals.modelAllowed(p.models, want); why = "白名单";
-    } else if (byChannel.has(p.id)) {
-      ok = byChannel.get(p.id).some((x) => String(x).toLowerCase() === want); why = "已登记的模型";
-    } else {
-      ok = true; why = "未登记型号，当作通用网关";
-    }
-    if (ok) out.push({ p, why, priority: num(p.priority, 100), weight: Math.max(1, num(p.weight, 1)) });
+    // 停用的、Claude / Gemini / Responses / Ollama 原生协议的（见文件头第 1 条）、没地址的都不是能转发的渠道
+    if (!vkeys.relayable(p)) continue;
+    const r = vkeys.channelServes(config, p, model, { cap });
+    if (r.ok && !(registeredOnly && r.open)) out.push({ p, why: r.why, open: r.open, priority: num(p.priority, 100), weight: Math.max(1, num(p.weight, 1)) });
   }
   out.sort((a, b) => a.priority - b.priority || b.weight - a.weight);
   // 同一优先级内按权重洗牌，让两条平级渠道真的分得开流量
@@ -114,15 +101,23 @@ function num(x, dflt) { const n = typeof x === "string" ? parseFloat(x) : x; ret
  * 有预算的 Key 得在发出去之前拦下（budget.reserve 里那道价目闸）。
  * 本机 / 内网的渠道在这儿自然是 0 元（pricing 按 provider.base_url 认）。
  */
-function reservePrice(price, config, usage) {
+function reservePrice(price, config, usage, route = {}) {
   let worst = null, most = -1;
-  for (const c of pickChannels(config, usage.model)) {
+  for (const c of pickChannels(config, usage.model, route)) {
     const o = { ...price, provider: c.p };
     const e = budget.estimate(usage, o);
     if (e.unknown) return o;
     if (e.yuan > most) { worst = o; most = e.yuan; }
   }
   return worst || price;
+}
+
+/**
+ * 型号没登记在任何一条能转发的渠道上。这句话是回给业务方的程序员的：他改不了我们的配置，
+ * 所以要说清是哪个型号、谁去哪儿登记，而不是一句「没有可用渠道」让他去查自己的代码。
+ */
+function notRegistered(model) {
+  return `${model} 没登记在中转站的渠道上，不会转发。请管理员在「设置 → 模型」把它加到一条渠道下。`;
 }
 
 /** 402 的错误码：没价目被拦的跟预算花完的分开，对面程序好分辨该找谁 */
@@ -178,11 +173,12 @@ function usageOf(json, model) {
  * /v1/embeddings：选渠道、重试、超时、model_map 那一整套逻辑两边逐字一样，
  * 差的只是 URL 尾巴。拄成两份的话，以后改重试策略必定只改得动其中一份。
  */
-async function forward({ config, model, body, headers, signal, path = "/chat/completions" }) {
-  const cands = pickChannels(config, model);
+async function forward({ config, model, body, headers, signal, path = "/chat/completions", cap = "chat", registeredOnly = false }) {
+  const cands = pickChannels(config, model, { cap, registeredOnly });
   if (!cands.length) {
-    const e = new Error(`没有渠道能跑 ${model}。去「设置 → 模型」加一条 OpenAI 兼容的渠道，或者在渠道上登记这个型号。`);
-    e.status = 503; throw e;
+    // 路由那边预扣之前已经判过一遍（routeOf），走到这儿说明配置在半路被改了。照样按「没登记」回
+    const e = new Error(notRegistered(model));
+    e.status = 404; e.type = "invalid_request_error"; e.code = "model_not_found"; throw e;
   }
   const tried = [];
   for (const c of cands.slice(0, MAX_TRIES)) {
@@ -236,7 +232,7 @@ async function forward({ config, model, body, headers, signal, path = "/chat/com
 }
 
 module.exports = {
-  forward, pickChannels, prepBody, usageOf, worthRetry,
+  forward, pickChannels, prepBody, usageOf, worthRetry, notRegistered,
   CONNECT_TIMEOUT_MS, TOTAL_TIMEOUT_MS, MAX_TRIES,
   _internals: { weightedShuffle, num },
 };
@@ -333,6 +329,39 @@ function createRouter(deps = {}) {
   }
 
   /**
+   * 这个型号能不能从中转站出去。放在鉴权之后、预扣之前：没登记的型号连额度都不该碰。
+   *
+   * 两道：
+   *   - 没有一条渠道肯接它 → 404 model_not_found。渠道要么白名单里有它、要么登记过它、
+   *     要么属主在中转站页面上明确打开了「放行任意型号」
+   *   - 型号留空的 Key 只认「登记过的」：只有放行开关那条路能接的型号，它叫不动。
+   *     放行任意型号是属主给**写了型号的 Key**开的口子，不该顺带让所有空型号 Key 也跟着放开
+   *
+   * 返回 false 时已经回过错误了。
+   */
+  function routeOf(res, k, cfg, model, cap) {
+    const cands = pickChannels(cfg, model, { cap });
+    if (!cands.length) {
+      log.warn("relay", "型号没登记，没转发", { key: k.id, name: k.name, model, cap });
+      fail(res, 404, notRegistered(model), "invalid_request_error", "model_not_found");
+      return false;
+    }
+    if (!vkeys.modelPermitted(k, model, () => cands.some((c) => !c.open))) {
+      log.warn("relay", "空型号 Key 叫了没登记的型号", { key: k.id, name: k.name, model, cap });
+      // 跟 Key 白名单拒绝（verify 的 reason）同一种回法：401 + 一句说清楚的话
+      fail(res, 401, `这把 Key 没写型号，只能用登记过的型号，${model} 没登记。请管理员登记它，或在 Key 的型号里写上它`,
+        "authentication_error", "invalid_api_key");
+      return false;
+    }
+    return true;
+  }
+
+  /** 选渠道的口径：哪一路，以及这把 Key 是不是只能走登记过的渠道（没写型号的） */
+  function routeOpts(k, cap) {
+    return { cap, registeredOnly: !(k && Array.isArray(k.models) && k.models.length) };
+  }
+
+  /**
    * 这把 Key 能看见哪些型号。没设白名单就把渠道上登记的都列出来。
    *
    * 媒体那几路的型号也列在这里，多一个 cap 字段说它是哪一路的。
@@ -348,6 +377,8 @@ function createRouter(deps = {}) {
     if (!ids.length) {
       ids = [...new Set((cfg.models || []).filter((m) => m && m.channel).map((m) => String(m.model || m.name)))];
       if (k.models.length) ids = ids.filter((m) => vkeys._internals.modelAllowed(k.models, m));
+      // 挂在停用渠道、或者 Claude 原生协议渠道上的登记，中转站转不了，不列
+      ids = ids.filter((m) => pickChannels(cfg, m).length);
     }
     // 一把一路文本都没开的 Key（比如只给生图的那把）不该在列表里看见对话型号。
     // 列出来的每一个 id 都是一句「你可以叫它」的承诺，而它叫过去只会拿到一个 401——
@@ -374,6 +405,7 @@ function createRouter(deps = {}) {
     if (!k) return;
 
     const cfg = getConfig();
+    if (!routeOf(res, k, cfg, model, "chat")) return;
     const orgSettings = getOrgSettings(k.org) || {};
     const user = getUser(k.user) || (k.user ? { username: k.user } : null);
     const price = { config: cfg, discount: orgSettings.price_discount };
@@ -386,7 +418,7 @@ function createRouter(deps = {}) {
     let hold;
     try {
       hold = budget.reserve({
-        org: orgSettings, orgId: k.org, user, vkey: k, price: reservePrice(price, cfg, usageEst), usage: usageEst,
+        org: orgSettings, orgId: k.org, user, vkey: k, price: reservePrice(price, cfg, usageEst, routeOpts(k, "chat")), usage: usageEst,
       });
     } catch (e) {
       if (e.status === 402) {
@@ -403,11 +435,11 @@ function createRouter(deps = {}) {
     const t0 = Date.now();
     let out = null;
     try {
-      out = await forward({ config: cfg, model, body, headers: req.headers, signal: ac.signal });
+      out = await forward({ config: cfg, model, body, headers: req.headers, signal: ac.signal, ...routeOpts(k, "chat") });
     } catch (e) {
       budget.release(hold);
       log.warn("relay", "转发失败", { key: k.id, model, status: e.status || 0, why: String(e.message).slice(0, 300) });
-      return fail(res, e.status || 502, e.message, "api_error");
+      return fail(res, e.status || 502, e.message, e.type || "api_error", e.code);
     }
 
     const done = (usage, extra) => {
@@ -840,6 +872,7 @@ function createRouter(deps = {}) {
     const k = auth(req, res, model, "embedding");
     if (!k) return;
     const cfg = getConfig();
+    if (!routeOf(res, k, cfg, model, "embedding")) return;
     const orgSettings = getOrgSettings(k.org) || {};
     const user = getUser(k.user) || (k.user ? { username: k.user } : null);
     const price = { config: cfg, discount: orgSettings.price_discount };
@@ -848,7 +881,7 @@ function createRouter(deps = {}) {
     let hold;
     try {
       hold = budget.reserve({
-        org: orgSettings, orgId: k.org, user, vkey: k, price: reservePrice(price, cfg, usageEst), usage: usageEst,
+        org: orgSettings, orgId: k.org, user, vkey: k, price: reservePrice(price, cfg, usageEst, routeOpts(k, "embedding")), usage: usageEst,
       });
     } catch (e) {
       if (e.status === 402) {
@@ -862,11 +895,11 @@ function createRouter(deps = {}) {
     const t0 = Date.now();
     let out;
     try {
-      out = await forward({ config: cfg, model, body, headers: req.headers, signal: ac.signal, path: "/embeddings" });
+      out = await forward({ config: cfg, model, body, headers: req.headers, signal: ac.signal, path: "/embeddings", ...routeOpts(k, "embedding") });
     } catch (e) {
       budget.release(hold);
       log.warn("relay", "转发失败", { key: k.id, cap: "embedding", model, status: e.status || 0, why: String(e.message).slice(0, 300) });
-      return fail(res, e.status || 502, e.message, "api_error");
+      return fail(res, e.status || 502, e.message, e.type || "api_error", e.code);
     }
     out.cleanup();
     const json = await out.res.json().catch(() => ({}));

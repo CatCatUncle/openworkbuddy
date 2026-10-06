@@ -31,6 +31,7 @@ const crypto = require("crypto");
 const path = require("path");
 const { dataPath } = require("../../platform/paths");
 const store = require("../../platform/store");
+const { protoOfChannel } = require("../../core/model/media-models");
 
 const DATA_DIR = process.env.OPENWORKBUDDY_DATA_DIR || dataPath("data");
 const FILE = path.join(DATA_DIR, "vkeys.json");
@@ -79,7 +80,9 @@ function create({ name, org, user, budget_yuan, expires_at, models, caps, ips, b
     user: String(user || "").slice(0, 60),
     budget_yuan: numOrZero(budget_yuan),
     expires_at: String(expires_at || "").slice(0, 10),   // YYYY-MM-DD，空 = 不过期
-    models: cleanList(models, 40),                        // 空 = 不限型号
+    // 空 = 只能叫渠道上登记过的型号（见下面 channelServes）。以前空 = 不限，
+    // 配上一条没登记型号的渠道就能拿管理员的上游 Key 叫任意型号——白名单留空不该等于全放
+    models: cleanList(models, 40),
     // 能用哪几路能力（chat/embedding/image/video/tts/asr/search）。空 = 全开。
     // 为什么跟型号白名单分开：一把发给外包做文案的 Key，该限的不是「哪个型号」
     // 而是「不准生视频」——视频是最贵的一路，而且型号名一个月一变，
@@ -157,6 +160,8 @@ function verify(raw, { ip = "", model = "", cap = "", now = new Date() } = {}) {
   const pub = publicOf(k);
   if (!k.enabled) return { key: pub, reason: "这把 Key 已经被停用了" };
   if (k.expires_at && localDay(now) > k.expires_at) return { key: pub, reason: `这把 Key 已于 ${k.expires_at} 到期` };
+  // 没写型号的 Key 在这儿不判：它只能叫渠道上登记过的型号，而那张登记表在配置里，
+  // 由中转站用 modelPermitted 接着判（relay.js 的 routeOf）
   if (k.models.length && model && !modelAllowed(k.models, model)) {
     return { key: pub, reason: `这把 Key 不能用 ${model}，只开了：${k.models.join("、")}` };
   }
@@ -178,6 +183,91 @@ function modelAllowed(list, model) {
     const s = String(p).toLowerCase();
     return s.endsWith("*") ? m.startsWith(s.slice(0, -1)) : m === s;
   });
+}
+
+/**
+ * 中转站转发得了的渠道：没停用、说 OpenAI 兼容的话、有地址。
+ * Anthropic / Gemini / Responses / Ollama 原生协议不走中转（relay.js 文件头第 1 条）。
+ */
+function relayable(p) {
+  return !!(p && p.id && p.enabled !== false && protoOfChannel(p) === "openai" && String(p.base_url || "").trim());
+}
+
+/**
+ * 一条渠道上「登记过」的型号。对话那一路认 config.models 里挂在它上面的条目，
+ * 和渠道 model_map 里写明的名字（管理员亲手写了「这个名字走这条渠道」）；
+ * 向量那一路再加上设置 → 记忆里点名这条渠道的嵌入模型。
+ * 媒体模型（生图 / 语音那几路）一概不算：只挂了生图的渠道，不等于它能替人转对话。
+ */
+function registeredOn(config, id, cap) {
+  const out = [];
+  for (const m of (config && config.models) || []) {
+    if (m && m.channel === id) out.push(String(m.model || m.name || ""));
+  }
+  const p = ((config && config.providers) || []).find((x) => x && x.id === id);
+  if (p && p.model_map && typeof p.model_map === "object") out.push(...Object.keys(p.model_map));
+  const e = config && config.embedding;
+  if (cap === "embedding" && e && e.provider === id && String(e.model || "").trim()) out.push(String(e.model).trim());
+  return out.filter(Boolean);
+}
+
+/**
+ * 这条渠道能不能替中转站转这个型号。返回 { ok, why, open }。
+ *
+ *   ① 渠道自己写了 models 白名单（支持尾部 *）：只认白名单，放行开关在这儿不起作用
+ *   ② 型号登记在这条渠道上（registeredOn）
+ *   ③ 都对不上：只有属主在中转站页给这条渠道打开了「放行任意型号」（relay_any_model）才转，open = true
+ *
+ * 以前③是默认放行——渠道没登记型号就当「通用网关」，任何型号都拿管理员这把上游 Key 转出去，
+ * 只挂了生图模型的渠道也算在内。「只能用我配的模型」在这条路上就不成立了。
+ * 现在默认不转；要转得属主明着打开，开关旁边写清后果。
+ */
+function channelServes(config, p, model, { cap = "chat" } = {}) {
+  const want = String(model || "").toLowerCase();
+  if (!p || !want) return { ok: false, why: "", open: false };
+  if (Array.isArray(p.models) && p.models.length) return { ok: modelAllowed(p.models, want), why: "白名单", open: false };
+  if (registeredOn(config, p.id, cap).some((x) => x.toLowerCase() === want)) return { ok: true, why: "已登记的模型", open: false };
+  if (p.relay_any_model === true) return { ok: true, why: "属主放行任意型号", open: true };
+  return { ok: false, why: "", open: false };
+}
+
+/**
+ * 这把 Key 能不能叫这个型号。写了型号白名单按白名单；没写的只能叫**登记过**的。
+ * 属主放行了任意型号的渠道是给明写了型号的 Key 用的，留空的 Key 不跟着变成全放——
+ * 留空是「没想好限什么」，不是「什么都给」。registered(model) 由中转站按渠道配置回答。
+ */
+function modelPermitted(k, model, registered) {
+  if (k && Array.isArray(k.models) && k.models.length) return modelAllowed(k.models, model);
+  return typeof registered === "function" && !!registered(model);
+}
+
+/**
+ * 中转站收紧之后，哪些渠道停了、哪些 Key 受影响。后台中转站页和升级提示都看它。
+ *   stopped：转发得了、却一个型号都没登记、也没打开放行的渠道——以前它是「通用网关」，现在什么都不转
+ *   keys：没写型号的 Key（只能用登记过的型号了），和点名的型号哪条渠道都转不了的 Key
+ * 只看在用、开着对话或向量那一路的 Key。
+ */
+function relayAudit(config, keys) {
+  const chans = ((config && config.providers) || []).filter(relayable);
+  const media = new Set(((config && config.media_models) || []).map((m) => m && m.provider).filter(Boolean));
+  const stopped = chans
+    .filter((p) => !(Array.isArray(p.models) && p.models.length) && p.relay_any_model !== true
+      && !registeredOn(config, p.id, "chat").length && !registeredOn(config, p.id, "embedding").length)
+    .map((p) => ({ id: p.id, name: String(p.name || p.id), media_only: media.has(p.id) }));
+  const anyOpen = chans.some((p) => p.relay_any_model === true);
+  const servable = (m) => chans.some((p) => channelServes(config, p, m).ok || channelServes(config, p, m, { cap: "embedding" }).ok);
+  const hit = [];
+  for (const k of keys || []) {
+    if (!k || k.enabled === false || !(capAllowed(k.caps, "chat") || capAllowed(k.caps, "embedding"))) continue;
+    const models = Array.isArray(k.models) ? k.models : [];
+    if (!models.length) {
+      if (stopped.length || anyOpen) hit.push({ id: k.id, name: k.name, models: [] });
+      continue;
+    }
+    const dead = models.filter((m) => !String(m).endsWith("*") && !servable(m));
+    if (dead.length) hit.push({ id: k.id, name: k.name, models: dead });
+  }
+  return { stopped, keys: hit };
 }
 
 /** IP 白名单：整个地址，或者 CIDR（192.168.1.0/24），或者前缀写法 10.1.* */
@@ -282,5 +372,6 @@ function ofUser(username) {
 module.exports = {
   create, list, verify, update, revoke, remove, touch, ofUser, publicOf,
   PREFIX, FILE, CAPS, CAP_CN, capAllowed,
+  relayable, registeredOn, channelServes, modelPermitted, relayAudit,
   _internals: { hash, genRaw, maskOf, modelAllowed, ipAllowed, inCidr, cleanList, cleanCaps, load, save },
 };
