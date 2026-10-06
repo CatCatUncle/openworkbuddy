@@ -6294,6 +6294,242 @@ const SVG_STREAM_CHECKS = `
 })()
 `;
 
+// ---- 行程卡：```itinerary 点活成地图 + 每天的地点卡片 + 时间线 ----
+// 真 tripcard.js + 真 renderMd / paintStream / sealStream + 真 renderedCopy + 真样式。
+// 查地点、查路换成页面里的假 fetch（服务端那一层在 test/trip-card.js 里另测）；底图和照片是 <img> 直接要的，
+// 由下面 winTRIP 起的一个本机小服务器给，往别处去的请求一律拦下记账——「页面自己不往外发请求」在网络层验。
+// 盯的是只有浏览器里才看得出来的事：流式时正文每 100ms 整段重画，卡片得是同一个元素一路搬过去
+// （不然地图一闪一闪、切到第二天又被打回第一天、每一帧都重新查路）；窄了要上下叠，不许横向拖。
+const TRIPCARD_SRC = fs.readFileSync(path.join(__dirname, "..", "public", "tripcard.js"), "utf8");
+const TRIPCARD_CSS = fs.readFileSync(path.join(__dirname, "..", "public", "css", "tripcard.css"), "utf8");
+const TRIP_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "\n" + TRIPCARD_CSS + "</style>"
+  // index.html 给 body 写的是 display:flex + overflow:hidden（侧栏和主区左右排），这里三块要上下排、能滚
+  + "<body style='margin:0;width:760px;display:block;height:auto;overflow:visible'><div class='a-text' id='t'></div><div class='a-text' id='ref'></div>"
+  + "<div class='a-text' id='narrow' style='width:420px'></div></body>";
+const TRIP_STUBS = `
+window.__geo = { calls: [] };
+(function () {
+  // 名字 → [经度, 纬度（GCJ-02）, 照片, 评分]；不在表里的就是地图上找不到
+  const PTS = { "翠湖公园": [102.703, 25.048, "https://aos-comment.amap.com/a.jpg", 4.7], "南强街": [102.711, 25.036, "https://aos-comment.amap.com/broken.jpg", 4.5],
+    "云南大学": [102.701, 25.057, "", null], "海埂大坝": [102.668, 24.958, "", 4.6], "西山龙门": [102.625, 24.958, "", null] };
+  window.fetch = async (url, init) => {
+    const body = init && init.body ? JSON.parse(init.body) : null;
+    window.__geo.calls.push({ url: String(url), body: body });
+    const res = (o, status) => ({ ok: (status || 200) < 400, status: status || 200, json: async () => o });
+    if (url === "/api/geo/config") return res({ provider: "auto", amap: true, keyFrom: "settings",
+      sources: { osm: { datum: "wgs84", maxZoom: 19, attr: "© OpenStreetMap 贡献者" }, amap: { datum: "gcj02", maxZoom: 18, attr: "© 高德地图" } } });
+    if (url === "/api/geo/places") return res({ provider: "amap", notes: [], items: body.items.map((x) => {
+      const p = PTS[x.name];
+      return p ? { ok: true, name: x.name, lng: p[0], lat: p[1], datum: "gcj02", addr: "五华区", kind: "", rating: p[3], photo: p[2], src: "amap" } : { ok: false };
+    }) });
+    if (url === "/api/geo/legs") return res({ notes: [], items: body.pairs.map((pr) => ({ mode: "walking", src: "amap", datum: "gcj02",
+      distance: 1180, duration: 900, line: [[pr.a.lng, pr.a.lat], [pr.b.lng, pr.b.lat]] })) });
+    return res({ error: "没有这个接口" }, 404);
+  };
+})();
+`;
+const TRIP_CHECKS = `
+(async () => {
+  const names = [], fails = [];
+  const ok = (name, cond, extra) => { if (cond) names.push(name); else fails.push("✗ " + name + (extra !== undefined ? " ｜ " + extra : "")); };
+  const BT = String.fromCharCode(96, 96, 96);
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  const until = async (fn, ms) => {
+    const t0 = performance.now();
+    while (performance.now() - t0 < (ms || 4000)) { if (fn()) return true; await new Promise((r) => setTimeout(r, 20)); }
+    return !!fn();
+  };
+  const calls = (u) => window.__geo.calls.filter((c) => c.url === u).length;
+  const txt = (root, sel) => { const n = root.querySelector(sel); return n ? n.textContent : ""; };
+  const TRIP = { title: "昆明两日", city: "昆明", days: [
+    { title: "老昆明慢逛", summary: "翠湖周边步行串起来", stops: [
+      { time: "上午", name: "翠湖公园", kind: "公园", note: "湖边散步" }, { time: "12:00", name: "南强街", note: "小锅米线" },
+      { time: "下午", name: "云南大学", note: "银杏大道" }, { time: "晚上", name: "不存在的地方", note: "找不到" }] },
+    { title: "滇池", stops: [{ time: "上午", name: "海埂大坝", note: "喂海鸥" }, { time: "下午", name: "西山龙门" }] }] };
+  const reply = "给你排好了：\\n\\n" + BT + "itinerary\\n" + JSON.stringify(TRIP, null, 1) + "\\n" + BT + "\\n\\n第一天走路就行，晚上记得带件外套。";
+  const ref = document.getElementById("ref");
+
+  // ---------- 一次渲染（回放历史就是这条路） ----------
+  ref.innerHTML = renderMd(reply);
+  await tick();
+  const host = ref.querySelector(".tc");
+  const w = host && host.querySelector(".tc-w");
+  ok("回答里的 itinerary 围栏点活成一张卡片，前后的话都在", !!w && host.classList.contains("tc-on")
+    && ref.textContent.indexOf("给你排好了") >= 0 && ref.textContent.indexOf("晚上记得带件外套") >= 0, ref.innerHTML.slice(0, 200));
+  ok("JSON 原文没漏到屏幕上", !ref.querySelector("pre") && ref.textContent.indexOf('"stops"') < 0);
+  const loaded = await until(() => w && /^找到 \\d+ 个地点 ›$/.test(txt(w, ".tc-found")));
+  ok("一进视口就查地点，两天都查完：「找到 5 个地点 ›」（6 站里有 1 站地图上没有）", loaded && txt(w, ".tc-found") === "找到 5 个地点 ›", txt(w, ".tc-found"));
+  ok("设置只问一次、地点每天问一次、两站之间的路每天问一次", calls("/api/geo/config") === 1 && calls("/api/geo/places") === 2 && calls("/api/geo/legs") === 2,
+    JSON.stringify(window.__geo.calls.map((c) => c.url)));
+  const legBody = window.__geo.calls.filter((c) => c.url === "/api/geo/legs")[0].body;
+  ok("找不到的那站不连线：第一天 4 站只问 2 段路", legBody.pairs.length === 2, legBody.pairs.length);
+  const placeBody = window.__geo.calls.filter((c) => c.url === "/api/geo/places")[0].body;
+  ok("查地点带上城市（每站没写就用整份行程的城市）", placeBody.items.every((x) => x.city === "昆明"), JSON.stringify(placeBody.items));
+
+  // 右边：第几天、主题、概述、按时段分好的地点卡片
+  const panel = w.querySelector(".tc-panel");
+  ok("右边一栏：第1天 / 老昆明慢逛 / 概述", txt(panel, ".tc-dl") === "第1天" && txt(panel, ".tc-dt") === "老昆明慢逛" && txt(panel, ".tc-ds") === "翠湖周边步行串起来");
+  const segs = [...panel.querySelectorAll(".tc-seg")].map((n) => n.textContent);
+  ok("按时段分组：上午 / 中午 / 下午 / 晚上（12:00 归中午）", segs.join("/") === "上午/中午/下午/晚上", segs.join("/"));
+  const cards = [...panel.querySelectorAll(".tc-card")];
+  const c0 = cards[0];
+  const imgOk = (i) => !!i && i.complete && i.naturalWidth > 0;
+  await until(() => imgOk(c0.querySelector(".tc-ph img")) && !cards[1].querySelector(".tc-ph img"));
+  ok("每站一张卡片：照片、序号、名字、时间 · 评分 · 类别、备注", cards.length === 4 && imgOk(c0.querySelector(".tc-ph img"))
+    && c0.querySelector(".tc-ph img").getAttribute("src") === "/api/geo/img?u=" + encodeURIComponent("https://aos-comment.amap.com/a.jpg")
+    && txt(c0, ".tc-no") === "1" && txt(c0, ".tc-nm") === "翠湖公园" && txt(c0, ".tc-meta") === "上午 · ★ 4.7 · 公园" && txt(c0, ".tc-note") === "湖边散步",
+    c0 && c0.innerHTML);
+  ok("照片走本机代理（/api/geo/img），页面不直连外部图床", ![...w.querySelectorAll("img")].some((i) => /^https?:/.test(i.getAttribute("src") || "")));
+  ok("照片取不到（图床回 404）：卡片上去掉那张图，序号还在，不留裂图", !cards[1].querySelector(".tc-ph img") && txt(cards[1], ".tc-no") === "2");
+  ok("地图上没找到的那站照样列着，说一句「地图上没找到这个地方」", txt(cards[3], ".tc-miss") === "地图上没找到这个地方" && !cards[3].querySelector(".tc-ph img"));
+  const legs = [...panel.querySelectorAll(".tc-leg")];
+  ok("两站之间：步行 · 1.2 公里 · 约 15 分钟，带「导航 ›」", legs.length === 3 && txt(legs[0], ".tc-legt") === "步行 · 1.2 公里 · 约 15 分钟"
+    && /^https:\\/\\/uri\\.amap\\.com\\/navigation\\?/.test(legs[0].querySelector("a").href) && !legs[2].querySelector("a"),
+    legs.map((l) => l.textContent).join(" | "));
+  ok("有一站没找到：不给整天路线（缺一站的路线是错的）", !panel.querySelector(".tc-open"));
+
+  // 左边：地图
+  const map = w.querySelector(".tc-map");
+  const pins = [...w.querySelectorAll(".tc-pin")];
+  await until(() => imgOk(pins[0] && pins[0].querySelector("img")) && pins[1] && !pins[1].querySelector("img"));
+  ok("地图上 3 颗钉子（没找到的那站没有），第一颗带照片", pins.length === 3 && imgOk(pins[0].querySelector("img")) && pins.every((p) => !p.hidden), pins.length);
+  const badge = (p) => Math.round(p.querySelector("span").getBoundingClientRect().width);
+  ok("钉子的照片取不到：退回只写编号的圆点（编号铺满整颗，不是挂在角上的小角标）", !pins[1].querySelector("img") && pins[1].textContent === "2"
+    && badge(pins[1]) === pins[1].clientWidth && badge(pins[0]) < pins[0].clientWidth, badge(pins[1]) + " / " + pins[1].clientWidth + " / 带图那颗角标 " + badge(pins[0]));
+  const mr = map.getBoundingClientRect();
+  const inside = pins.every((p) => { const r = p.getBoundingClientRect(); return r.left >= mr.left - 1 && r.right <= mr.right + 1 && r.top >= mr.top - 1 && r.bottom <= mr.bottom + 1; });
+  ok("缩放到刚好装下这一天的所有点（钉子全在地图框里）", inside, pins.map((p) => p.style.transform).join(" "));
+  const tiles = [...w.querySelectorAll(".tc-tiles img")];
+  ok("国内的点用高德底图，瓦片走本机代理", tiles.length > 0 && tiles.every((i) => /^\\/api\\/geo\\/tile\\/amap\\/\\d+\\/\\d+\\/\\d+\\.png$/.test(i.getAttribute("src"))), tiles.length && tiles[0].getAttribute("src"));
+  await until(() => tiles.every(imgOk));
+  ok("瓦片真取到了（铺满地图框的 " + tiles.length + " 张都画出来了）", tiles.every(imgOk));
+  ok("底图署名照写（© 高德地图）", txt(w, ".tc-attr") === "© 高德地图");
+  ok("路线画了 2 段", w.querySelectorAll(".tc-route polyline").length === 2);
+  const pr = panel.getBoundingClientRect();
+  ok("宽的时候地图在左、地点在右", pr.left >= mr.right - 1 && Math.abs(pr.top - mr.top) < 2, JSON.stringify([mr.left, mr.right, pr.left]));
+
+  // 缩放、点卡片
+  const st = TripCard._live.get(host.dataset.tcKey)[0]._state;
+  const zBefore = st.z;
+  w.querySelector('.tc-zoom [data-z="1"]').click();
+  ok("点「+」放大一级，瓦片换成新的一级", st.z === zBefore + 1 && [...w.querySelectorAll(".tc-tiles img")].every((i) => i.getAttribute("src").indexOf("/amap/" + st.z + "/") >= 0), st.z + " vs " + zBefore);
+  cards[1].click();
+  ok("点第 2 张卡片：卡片高亮、地图上第 2 颗钉子也高亮", cards[1].classList.contains("on") && pins[1].classList.contains("on") && !pins[0].classList.contains("on"));
+
+  // 「找到 5 个地点 ›」点开是清单
+  w.querySelector(".tc-found").click();
+  const list = w.querySelector(".tc-list");
+  ok("点「找到 5 个地点」展开清单：没找到的那站写着没找到、写明数据来源", !list.hidden && list.textContent.indexOf("没找到") >= 0
+    && list.textContent.indexOf("地点数据：高德地图") >= 0 && w.querySelector(".tc-found").getAttribute("aria-expanded") === "true", list.textContent);
+  w.querySelector(".tc-found").click();
+
+  // 切天
+  const placesBefore = calls("/api/geo/places");
+  w.querySelector('.tc-tabs [data-d="1"]').click();
+  await tick();
+  ok("点「第2天」：右边换成第二天，钉子换成 2 颗", txt(panel, ".tc-dt") === "滇池" && w.querySelectorAll(".tc-pin").length === 2
+    && w.querySelector('.tc-tabs [data-d="1"]').getAttribute("aria-selected") === "true");
+  ok("第二天已经顺手查好了，切过去不再问服务端", calls("/api/geo/places") === placesBefore);
+  const open = panel.querySelector(".tc-open");
+  ok("这天每站都找到了：给「打开路线 ↗」（高德，国内两站）", !!open && /^https:\\/\\/uri\\.amap\\.com\\/navigation\\?/.test(open.href) && open.target === "_blank", open && open.href);
+
+  // 时间线
+  w.querySelector('[data-v="timeline"]').click();
+  const tl = w.querySelector(".tc-tl");
+  const rows = [...tl.querySelectorAll(".tc-tlr")];
+  ok("切到时间线：地图收起，一行一站（时段 · 圆点 · 名字 + 备注）", w.querySelector(".tc-body").hidden && !tl.hidden && rows.length === 2
+    && txt(rows[0], ".tc-tls") === "上午" && txt(rows[0], ".tc-tlt b") === "海埂大坝" && txt(rows[0], ".tc-tlt span") === "喂海鸥" && !!rows[0].querySelector(".tc-tld"),
+    tl.innerHTML.slice(0, 200));
+  ok("时间线顶上写着第几天 · 主题", txt(tl, ".tc-tlh") === "第2天 · 滇池");
+  w.querySelector('[data-v="map"]').click();
+  ok("切回地图", !w.querySelector(".tc-body").hidden && tl.hidden);
+
+  // 复制回答：卡片换成按天排好的文字
+  const copied = renderedCopy([ref]);
+  ok("复制回答：卡片变成按天排的文字，不带地图上那些按钮", copied.plain.indexOf("第1天 · 老昆明慢逛") >= 0
+    && copied.plain.indexOf("上午 · 翠湖公园：湖边散步") >= 0 && copied.plain.indexOf("打开路线") < 0 && copied.plain.indexOf("找到 5 个地点") < 0 && copied.plain.indexOf("时间线") < 0 && copied.html.indexOf("tc-w") < 0,
+    copied.plain.slice(0, 200));
+  ok("复制不改屏幕上那张（复制的是克隆）", ref.querySelector(".tc-w") === w);
+
+  // ---------- 流式：正文每一帧整段重画 ----------
+  const el = document.getElementById("t");
+  el._raw = ""; el._split = null; el._sealed = false;
+  const fenceAt = reply.indexOf(BT + "itinerary");
+  const closeAt = reply.indexOf(BT, fenceAt + 3) + 3;
+  let sawPending = false, pendingN = "", firstW = null, swaps = 0, frames = 0, gone = 0, clicked = false;
+  const legsBefore = calls("/api/geo/legs");
+  for (let p = 6; ; p += 6) {
+    const cut = Math.min(reply.length, p);
+    el._raw = reply.slice(0, cut);
+    paintStream(el);
+    await tick();
+    frames++;
+    const pend = el.querySelector(".tc-pending");
+    if (pend) { sawPending = true; pendingN = txt(pend, ".tc-pn") || pendingN; }
+    if (cut > fenceAt + 15 && cut < closeAt && !el.querySelector(".tc")) gone++;
+    const cw = el.querySelector(".tc-w");
+    if (cw && !firstW) firstW = cw;
+    if (cw && firstW && cw !== firstW) swaps++;
+    if (!clicked && cut >= closeAt + 6 && firstW) { clicked = true; firstW.querySelector('.tc-tabs [data-d="1"]').click(); }
+    if (cut >= reply.length) break;
+  }
+  ok("围栏还没写完：先占一块「正在排行程…」，说已经写了几站", sawPending && /^已写 \\d+ 站$/.test(pendingN) && gone === 0, pendingN + " / 空着的帧 " + gone);
+  ok("围栏一收尾就点活成卡片", !!firstW && el.querySelector(".tc-w") === firstW);
+  const half = document.createElement("div");
+  half.innerHTML = renderMd(BT + "itinerary\\n" + JSON.stringify(TRIP) + "\\n" + BT.slice(0, 2), null, true);
+  ok("JSON 写完、收尾的反引号只写了两个：已经是卡片，不退回「正在排行程」", !!half.querySelector(".tc[data-tc]") && !half.querySelector(".tc-pending"), half.innerHTML.slice(0, 120));
+  ok("之后每一帧重画，卡片都是同一个元素搬过去（" + frames + " 帧，换过 " + swaps + " 次）", swaps === 0);
+  ok("中途切到第2天，后面的字再写进来也不会被打回第1天", clicked && firstW.querySelector('.tc-tabs [data-d="1"]').getAttribute("aria-selected") === "true"
+    && txt(firstW, ".tc-dt") === "滇池");
+  await until(() => calls("/api/geo/legs") >= legsBefore + 2);
+  await new Promise((r) => setTimeout(r, 150));
+  ok("重画不重查：整段流式下来只查了一份行程的路（" + (calls("/api/geo/legs") - legsBefore) + " 次）", calls("/api/geo/legs") - legsBefore === 2);
+  sealStream(el);
+  await tick();
+  ok("停笔合回一整块：还是那张卡片、还停在第2天", !el.querySelector(".md-live") && el.querySelector(".tc-w") === firstW
+    && firstW.querySelector('.tc-tabs [data-d="1"]').getAttribute("aria-selected") === "true");
+  const liveLeft = [...TripCard._live.values()].reduce((a, ws) => a + ws.length, 0);
+  ok("页面上两张卡片（一次渲染那张 + 流式那张），后台也只养着两份", liveLeft === 2, liveLeft);
+
+  // ---------- 解不开的、没写完的、脚本没加载的 ----------
+  ref.innerHTML = renderMd("看这个：\\n" + BT + "itinerary\\n{坏的 json\\n" + BT);
+  await tick();
+  ok("围栏写完了还解不开：照普通代码块原样显示（宁可贴原文，不吞内容）", !ref.querySelector(".tc") && /\\{坏的 json/.test(txt(ref, "pre code")));
+  ref.innerHTML = renderMd(BT + "itinerary\\n{\\"days\\":[{\\"stops\\":[{\\"name\\":\\"翠湖");
+  ok("回放历史时遇到没写完的围栏：显示原文，不挂一个永远转圈的「正在排行程」", !ref.querySelector(".tc-pending") && /翠湖/.test(txt(ref, "pre code")));
+  const saved = window.TripCard;
+  window.TripCard = undefined;
+  ref.innerHTML = renderMd(reply);
+  window.TripCard = saved;
+  ok("tripcard.js 没加载上：照普通代码块显示，正文照样能看", !ref.querySelector(".tc") && /翠湖公园/.test(txt(ref, "pre code")));
+
+  // ---------- 地点名里夹了 HTML ----------
+  const evil = { days: [{ title: "<img src=x onerror=window.__pwned=1>", stops: [{ name: "<img src=x onerror=window.__pwned=1>", note: "<b>粗</b>" }] }] };
+  ref.innerHTML = renderMd(BT + "itinerary\\n" + JSON.stringify(evil) + "\\n" + BT);
+  await tick();
+  await until(() => /^找到/.test(txt(ref, ".tc-found")));
+  await new Promise((r) => setTimeout(r, 100));
+  ok("地点名、备注里夹的 HTML 当文字显示，不当标签", !!ref.querySelector(".tc-w") && !ref.querySelector("img[onerror]")
+    && txt(ref, ".tc-nm") === "<img src=x onerror=window.__pwned=1>" && txt(ref, ".tc-note") === "<b>粗</b>"
+    && txt(ref, ".tc-dt") === "<img src=x onerror=window.__pwned=1>" && window.__pwned === undefined, ref.querySelector(".tc-panel") && ref.querySelector(".tc-panel").innerHTML.slice(0, 300));
+
+  // ---------- 窄 ----------
+  const narrow = document.getElementById("narrow");
+  narrow.innerHTML = renderMd(reply);
+  narrow.scrollIntoView();
+  await tick();
+  const nw = narrow.querySelector(".tc-w");
+  await until(() => nw && nw.querySelectorAll(".tc-pin").length > 0);
+  const nm = nw.querySelector(".tc-map").getBoundingClientRect(), np = nw.querySelector(".tc-panel").getBoundingClientRect();
+  ok("窄的时候（420px）地图在上、地点在下", np.top >= nm.bottom - 1 && Math.abs(np.left - nm.left) < 2, JSON.stringify([nm.bottom, np.top]));
+  ok("窄的时候不出横向滚动条", nw.scrollWidth <= nw.clientWidth + 1 && narrow.scrollWidth <= narrow.clientWidth + 1, nw.scrollWidth + " > " + nw.clientWidth);
+  const tabs = nw.querySelector(".tc-tabs");
+  ok("天数标签一行排不下就自己横着滑，不把卡片撑宽", tabs.scrollWidth <= tabs.clientWidth + 1 || getComputedStyle(tabs).overflowX !== "visible");
+
+  return { names, fails };
+})()
+`;
+
 const IMPANE_HTML ="<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style><body><div class='settings-pane' id='pane' style='width:720px'></div></body>";
 const IMPANE_STUBS = `
   ${IC_STUB}
@@ -15223,6 +15459,45 @@ app.whenReady().then(async () => {
         }
       } finally { if (!winSF.isDestroyed()) winSF.destroy(); }
     }
+
+    // 行程卡：页面、底图瓦片、地点照片都从这个本机小服务器拿；照片地址里带 broken 的回 404（看裂图收没收掉）。
+    // 窗口用自己的会话，往别处去的请求全拦下记账，跑完一个都不许有
+    const tripPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
+    const tripHits = { tile: 0, img: 0, out: [] };
+    const tripSrv = await new Promise((resolve) => {
+      const sv = require("http").createServer((req, res) => {
+        const u = new URL(req.url || "/", "http://127.0.0.1");
+        if (u.pathname === "/") { res.setHeader("Content-Type", "text/html; charset=utf-8"); return res.end(TRIP_HTML); }
+        const png = () => { res.setHeader("Content-Type", "image/png"); res.end(tripPng); };
+        if (/^\/api\/geo\/tile\/(amap|osm)\/\d+\/\d+\/\d+\.png$/.test(u.pathname)) { tripHits.tile++; return png(); }
+        if (u.pathname === "/api/geo/img") {
+          tripHits.img++;
+          if (/broken/.test(u.searchParams.get("u") || "")) { res.statusCode = 404; return res.end("nope"); }
+          return png();
+        }
+        res.statusCode = 404; res.end("nope");
+      });
+      sv.listen(0, "127.0.0.1", () => resolve(sv));
+    });
+    const tripBase = "http://127.0.0.1:" + tripSrv.address().port + "/";
+    const winTRIP = mkWin({ show: false, width: 760, height: 900, webPreferences: { offscreen: true, partition: "owb-test-trip-card" } });
+    winTRIP.webContents.session.webRequest.onBeforeRequest({ urls: ["http://*/*", "https://*/*", "ws://*/*", "wss://*/*"] }, (d, cb) => {
+      const mine = d.url.startsWith(tripBase);
+      if (!mine) tripHits.out.push(d.url);
+      cb({ cancel: !mine });
+    });
+    try {
+      await winTRIP.loadURL(tripBase);
+      const tr = await winTRIP.webContents.executeJavaScript(IC_BOOT + STREAM_STUBS + "\n" + TRIP_STUBS + "\n;" + TRIPCARD_SRC
+        + "\n" + STREAM_SRC + "\n" + srcBlock("function renderedCopy(") + "\n" + TRIP_CHECKS, true)
+        .catch((e) => { throw new Error("[行程卡] " + ((e && (e.stack || e.message)) || String(e))); });
+      if (tripHits.out.length) tr.fails.push("✗ 页面往本机以外发了请求：" + tripHits.out.slice(0, 5).join(" "));
+      else if (!tripHits.tile || !tripHits.img) tr.fails.push("✗ 瓦片 / 照片一张都没跟本机服务端要（" + JSON.stringify(tripHits) + "）：上面那几条「真取到了」量的不是这条路");
+      else tr.names.push("网络层：页面只跟本机服务端要东西（瓦片 " + tripHits.tile + " 次、照片 " + tripHits.img + " 次），往外的请求 0 个");
+      if (tr.fails.length) throw new Error("[行程卡]\n" + tr.fails.join("\n"));
+      for (const n of tr.names) console.log("  ✓ " + n);
+      console.log(`✅ 前端：行程卡（点活成地图+地点卡片+时间线·切天·流式重画不换元素不重查·停笔不丢状态·解不开照代码块·窄了上下叠）${tr.names.length} 项通过`);
+    } finally { if (!winTRIP.isDestroyed()) winTRIP.destroy(); tripSrv.close(); }
 
     const winEP = mkWin({ show: false, width: 520, height: 600, webPreferences: { offscreen: true } });
     try {
