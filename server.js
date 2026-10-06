@@ -279,6 +279,33 @@ function llmForSession(sess) {
     chat: () => Promise.reject(new Error(`该对话指定的模型「${name}」已不在模型列表里。点输入框右下角的模型按钮重新选一个，或选「跟随全局默认」。`)),
   };
 }
+/**
+ * 价目闸：头上设了预算的人，这一趟的对话模型查不到价就不开跑（见 budget.unpriced）。
+ * 拦下返回那句话，放行返回 ""。护的是预算本身：查不到价的那一趟记账是 0，
+ * 设了上限的人点名一个没登记价目的型号，花多少都扣不到预算上。
+ * 只管内置引擎——外部 CLI 引擎走它自己的登录和订阅，不经这本价目。
+ * 会话点名的模型已经不在列表里的（llmForSession 给的是报错桩），开跑时自有那句「已不在模型列表里」，这儿不抢着报。
+ * @param {any} user
+ * @param {{ provider?: string, model?: string }} runLLM
+ */
+function unpricedChat(user, runLLM) {
+  if (!user || !runLLM || !runLLM.model) return "";
+  if ((prefs.agentCfg(config).engine || "builtin") !== "builtin") return "";
+  if (!(Array.isArray(config.models) && config.models.some((m) => m && m.name === runLLM.provider))) return "";
+  try {
+    const o = org.getOrg(org.orgIdOf(user));
+    const s = org.settingsOf(o);
+    const hit = budget.unpriced({
+      org: s, orgId: o.id, user, usage: { model: runLLM.model },
+      price: { config, discount: s.price_discount, name: runLLM.provider },
+    });
+    return hit ? hit.message : "";
+  } catch (e) {
+    // 预算模块自己坏了不该拦住正事，跟钱闸同一个选择：放行，但喊一声
+    console.warn("[预算] 价目闸没能判（本次放行）：" + (e && e.message));
+    return "";
+  }
+}
 // 同一模型连续「整跑失败」计数（成功一次即清零）：连挂说明是模型/渠道本身的问题，光报错用户不知道该干嘛
 const modelFailStreak = new Map();
 
@@ -1455,7 +1482,7 @@ app.use(createComposeRouter({
   }),
 }));
 app.use(dramaRoutes.createDramaRouter({
-  getWorkspaceDir, outputFiles, safePath, account, org, budget, llm, llmForSession, addUsage, toolRunSubdir, toolRunSubdirReady,
+  getWorkspaceDir, outputFiles, safePath, account, org, budget, llm, llmForSession, unpricedChat, addUsage, toolRunSubdir, toolRunSubdirReady,
   canvasAssetNear: canvasRoutes.canvasAssetNear,
 }));
 app.use(libraryRoutes.createLibraryRouter({ libraryRootOf, rootedPath, rootOfResolved, getWorkspaceDir, safePathIn, thumbsDir: path.join(dataPath("data"), "thumbs"), busy: () => activeRuns.size > 0 }));
@@ -6975,6 +7002,11 @@ app.post("/api/chat", async (req, res) => {
     const row = cliLive.get(sessionId);
     if (row && row.live) return res.status(409).json({ error: "这条会话正在终端里跑。要补充说明可以在「工程」里插话，跑完再接着聊。" });
   }
+  // 价目闸放在归属检查之后：这条会话点了哪个模型，得先确认会话是你的才轮得到看
+  {
+    const why = unpricedChat(user, llmForSession(getSession(sessionId)));
+    if (why) return res.status(402).json({ error: why });
+  }
 
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache");
@@ -8178,6 +8210,11 @@ function accountedRuntime(baseRuntime, source) {
       // 调用方没指定时，IM 跟着助理页那个选择走（见 assistModelOf）
       const want = modelName || (source === "im" ? assistModelOf(owner) : "");
       const runLLM = want ? llmForSession({ model: want }) : llm;
+      // 价目闸：跟钱闸一样记在负责人头上，没价目的型号一个 cron 能刷出多少都扣不到预算
+      if (owner) {
+        const why = unpricedChat(owner, runLLM);
+        if (why) throw Object.assign(new Error(why), { budget: { unpriced: true } });
+      }
       // 「记谁的账」和「用谁的记忆、替谁审批」是两件事：钱记在管理员头上（他才是掏 API 费的人），
       // 身份则听调用方的。助理页那边是真有登录态的，成员发的消息不能顶着管理员的身份跑；
       // 飞书确实没有登录态，那才退回管理员。定时任务报了负责人的，钱和身份都归负责人（见上面 runner）。

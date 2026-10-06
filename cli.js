@@ -3165,7 +3165,8 @@ function splitFiles(text) {
         ? `项目规范 ${memos.map((m) => m.body === null ? `${m.rel}（超上限没带上）` : `${m.rel}（${m.chars} 字）`).join("、")}\n`
         : "项目规范 没有（/init 可以在工作目录生成一份 AGENTS.md）\n"));
       let costOf = null;
-      try { const pr = require("./src/core/billing/pricing"); costOf = (u) => pr.costOf(u, { local: !!u.local }); } catch {}
+      // 带上 config：本机模型 0 元认的是它挂的渠道地址（pricing.isPrivateBase），不再看型号名
+      try { const pr = require("./src/core/billing/pricing"); costOf = (u) => pr.costOf(u, { local: !!u.local, config }); } catch {}
       prog(dim(repl.sessionUsageText(sess.transcript, costOf) + "\n"));
       prog(dim(contextLine() + "\n"));
       if (pending.length) prog(dim(`还带着没发出去的文件：${pending.join("、")}\n`));

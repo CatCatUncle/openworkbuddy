@@ -1932,7 +1932,7 @@ PAGES.relay = {
       const SRC = { builtin: ["内置", "outline"], admin: ["手填", "secondary"], channel: ["渠道自带", "secondary"] };
       priceCard = cardT(
         headRow(
-          secT("价目表", `单位：元 / 百万 token。内置价为 ${esc(d.prices_as_of)} 公开报价（1 美元 = ${esc(d.usd_cny)} 元），手填优先。未登记的型号照转，记为「算不出钱」。`),
+          secT("价目表", `单位：元 / 百万 token。内置价为 ${esc(d.prices_as_of)} 公开报价（1 美元 = ${esc(d.usd_cny)} 元），手填优先；表里没有的型号走本机 / 内网渠道记 0 元。没价目的型号：设了预算的人用不了，其他人照转、记为「算不出钱」。`),
           RO ? "" : `<button class="ui-btn ui-btn--outline ui-btn--sm" id="rl-price-new">${ic("plus")}加一个型号</button>`
         ),
         table(
@@ -1959,7 +1959,7 @@ PAGES.relay = {
       unitCard = cardT(
         headRow(
           secT("按量计价：搜索 / 生图 / 生视频 / 语音",
-            `按张 / 秒 / 千字符 / 分钟 / 次计价，不按 token。内置价为 ${esc(d.prices_as_of)} 公开报价，手填优先。`),
+            `按张 / 秒 / 千字符 / 分钟 / 次计价，不按 token。内置价为 ${esc(d.prices_as_of)} 公开报价，手填优先。没单价的：设了预算的人用不了。`),
           RO ? "" : `<button class="ui-btn ui-btn--outline ui-btn--sm" id="rl-unit-new">${ic("plus")}加一个</button>`
         ),
         (d.unit_prices || []).map((g) => {
@@ -1983,7 +1983,8 @@ PAGES.relay = {
     /**
      * 催填单。这两行比上面两张价目表都重要：表里有什么是静态的，
      * 而这儿列的是「本月真调过、但查不到价」——每一条都是一笔真花了钱但记成 0 的账。
-     * 不拦人（拦了业务方比少算一笔账惨得多），但得天天挂在这儿。
+     * 这些账只会出自没设预算的人（设了预算的，没价目的型号在发出去之前就被拦了，见 budget.unpriced），
+     * 所以这张单子不拦人，但得天天挂在这儿：补上价，那些被拦的人也就能用了。
      */
     const nag = [];
     if ((d.prices_missing || []).length)

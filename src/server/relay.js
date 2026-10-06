@@ -108,6 +108,26 @@ function pickChannels(config, model) {
 
 function num(x, dflt) { const n = typeof x === "string" ? parseFloat(x) : x; return Number.isFinite(n) ? n : dflt; }
 
+/**
+ * 预扣按哪条渠道的价估。候选渠道可能有好几条（优先级 + 故障切换），真走哪条转发完才知道，
+ * 所以按最贵的那条估；有一条查不到价就按查不到算——切到它上面的那一趟记账是 0，
+ * 有预算的 Key 得在发出去之前拦下（budget.reserve 里那道价目闸）。
+ * 本机 / 内网的渠道在这儿自然是 0 元（pricing 按 provider.base_url 认）。
+ */
+function reservePrice(price, config, usage) {
+  let worst = null, most = -1;
+  for (const c of pickChannels(config, usage.model)) {
+    const o = { ...price, provider: c.p };
+    const e = budget.estimate(usage, o);
+    if (e.unknown) return o;
+    if (e.yuan > most) { worst = o; most = e.yuan; }
+  }
+  return worst || price;
+}
+
+/** 402 的错误码：没价目被拦的跟预算花完的分开，对面程序好分辨该找谁 */
+function quotaCode(e) { return (e && e.code) || "insufficient_quota"; }
+
 /** 按权重抽样排序：权重 3 的被排在前面的概率是权重 1 的三倍 */
 function weightedShuffle(list) {
   const pool = list.slice(), out = [];
@@ -362,16 +382,16 @@ function createRouter(deps = {}) {
     // 这个数只用来**预扣**，settle 的时候会被上游报上来的真数换掉，所以宁可估大。
     // 中文比这个比例更费 token，所以估大的方向天然是对的。
     const chars = JSON.stringify(body.messages || []).length;
+    const usageEst = { model, prompt: Math.ceil(chars / 4), max_tokens: body.max_tokens || body.max_completion_tokens || 0 };
     let hold;
     try {
       hold = budget.reserve({
-        org: orgSettings, orgId: k.org, user, vkey: k, price,
-        usage: { model, prompt: Math.ceil(chars / 4), max_tokens: body.max_tokens || body.max_completion_tokens || 0 },
+        org: orgSettings, orgId: k.org, user, vkey: k, price: reservePrice(price, cfg, usageEst), usage: usageEst,
       });
     } catch (e) {
       if (e.status === 402) {
         log.warn("relay", "额度拦下一次调用", { key: k.id, name: k.name, ...e.budget });
-        return fail(res, 402, e.message, "insufficient_quota", "insufficient_quota");
+        return fail(res, 402, e.message, quotaCode(e), quotaCode(e));
       }
       throw e;
     }
@@ -392,7 +412,8 @@ function createRouter(deps = {}) {
 
     const done = (usage, extra) => {
       out.cleanup();
-      const cost = pricing.costOf(usage, price);
+      // 按真走的那条渠道算：渠道自带的价、本机 / 内网渠道的 0 元都看它
+      const cost = pricing.costOf(usage, { ...price, provider: out.provider });
       budget.settle(hold, cost.yuan);
       vkeys.touch(k.id);
       try {
@@ -527,7 +548,7 @@ function createRouter(deps = {}) {
     } catch (e) {
       if (e.status === 402) {
         log.warn("relay", "额度拦下一次调用", { key: k.id, name: k.name, cap, ...e.budget });
-        fail(res, 402, e.message, "insufficient_quota", "insufficient_quota");
+        fail(res, 402, e.message, quotaCode(e), quotaCode(e));
         return null;
       }
       throw e;
@@ -823,16 +844,16 @@ function createRouter(deps = {}) {
     const user = getUser(k.user) || (k.user ? { username: k.user } : null);
     const price = { config: cfg, discount: orgSettings.price_discount };
     const chars = JSON.stringify(body.input || "").length;
+    const usageEst = { model, prompt: Math.ceil(chars / 4), max_tokens: 0 };
     let hold;
     try {
       hold = budget.reserve({
-        org: orgSettings, orgId: k.org, user, vkey: k, price,
-        usage: { model, prompt: Math.ceil(chars / 4), max_tokens: 0 },
+        org: orgSettings, orgId: k.org, user, vkey: k, price: reservePrice(price, cfg, usageEst), usage: usageEst,
       });
     } catch (e) {
       if (e.status === 402) {
         log.warn("relay", "额度拦下一次调用", { key: k.id, name: k.name, cap: "embedding", ...e.budget });
-        return fail(res, 402, e.message, "insufficient_quota", "insufficient_quota");
+        return fail(res, 402, e.message, quotaCode(e), quotaCode(e));
       }
       throw e;
     }
@@ -850,7 +871,7 @@ function createRouter(deps = {}) {
     out.cleanup();
     const json = await out.res.json().catch(() => ({}));
     const usage = usageOf(json, model);
-    const cost = pricing.costOf(usage, price);
+    const cost = pricing.costOf(usage, { ...price, provider: out.provider });
     budget.settle(hold, cost.yuan);
     vkeys.touch(k.id);
     try {

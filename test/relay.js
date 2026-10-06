@@ -138,6 +138,58 @@ console.log("\n【1】价目表：四层覆盖、认不出的不算 0 元、缓�
      "折扣填 0 不是「全免」，是填错了——按不打折算，宁可多收");
   eq(pricing.costOf({ model: "gpt-4o", prompt: 1e6 }, { discount: 1.5 }).yuan, full.yuan,
      "反向对照：填个大于 1 的数也不会变成加价");
+
+  // 首页向导给每家默认挑的那个型号，是最多人真在用的那一个。它查不到价的话，
+  // 设了预算的人一点开就被拦（见【3】），没设的人账上永远「算不出钱」。
+  // 新加一家云端服务商、或者换了默认型号，先去 pricing.js 按官网价补一行，这一条才会绿。
+  const chatModels = require(mod("chat-models"));
+  const cloud = chatModels.templates().filter((t) => !t.local);
+  ok(cloud.length >= 8, "向导里的云端服务商一家没漏地读到了", cloud.map((t) => t.kind));
+  const noPrice = cloud.filter((t) => {
+    const r = pricing.priceOf(t.model, { base_url: t.base_url || "https://api.example.com/v1" });
+    return !r || r.src === "local";
+  }).map((t) => `${t.kind}:${t.model}`);
+  eq(noPrice, [], "向导里每家云端默认型号都查得到价目（本机那家除外）");
+
+  // 「本机 = 0 元」认的是渠道地址，不是型号名：型号名谁都能起，地址才说明钱付给了谁
+  for (const [u, want] of [
+    ["http://127.0.0.1:11434/v1", true], ["http://localhost:8000", true], ["http://[::1]:8080/v1", true],
+    ["http://10.2.3.4/v1", true], ["http://172.20.0.5:4000", true], ["http://192.168.1.9:11434", true],
+    ["http://gpu-box.local:8000/v1", true], ["192.168.0.2:11434", true],
+    ["https://api.openai.com/v1", false], ["https://172.32.0.1/v1", false], ["http://11.0.0.1/v1", false],
+    ["https://localhost.example.com/v1", false], ["https://api.deepseek.com", false], ["", false],
+  ]) eq(pricing.isPrivateBase(u), want, `isPrivateBase(${JSON.stringify(u)}) = ${want}`);
+
+  const CLOUD = "https://api.some-cloud.com/v1", LAN = "http://192.168.1.20:11434/v1";
+  ok(pricing.priceOf("llama-3.1-8b-instruct", { base_url: CLOUD }) === null,
+     "云端渠道上叫 llama 的型号不再白送：查不到价就是查不到（以前按名字猜成本机、记 0 元）");
+  ok(pricing.costOf({ model: "qwen2.5-coder-32b", prompt: 1e6 }, { base_url: CLOUD }).unknown === true,
+     "云端渠道上叫 qwen-coder 的也一样，记「算不出钱」而不是 0 元");
+  const lan = pricing.costOf({ model: "qwen2.5-coder-32b", prompt: 1e6, completion: 1e6 }, { base_url: LAN });
+  ok(lan.unknown === false && lan.yuan === 0, "同一个型号挂在内网地址上：0 元、算得出", lan);
+  const gw = pricing.priceOf("gpt-4o", { base_url: "http://127.0.0.1:4000/v1" });
+  ok(gw && gw.src === "builtin", "反向对照：本机网关转发的 gpt-4o 照样按官方价收（表里认得的型号不因为地址变免费）", gw);
+
+  // 地址从哪来：后台调用只带「用的是哪条模型」的名字，按名字去 config 里找它的渠道地址
+  const cfg = {
+    providers: [{ id: "p-lan", name: "机房", base_url: LAN }],
+    models: [
+      { name: "机房 Qwen", model: "qwen2.5-coder-32b", channel: "p-lan" },
+      { name: "云上 Qwen", model: "qwen2.5-coder-32b", base_url: CLOUD },
+    ],
+  };
+  ok(pricing.costOf({ model: "qwen2.5-coder-32b", provider: "机房 Qwen", prompt: 1e6 }, { config: cfg }).unknown === false,
+     "按模型名找到它挂的渠道、渠道在内网：记 0 元");
+  ok(pricing.costOf({ model: "qwen2.5-coder-32b", provider: "云上 Qwen", prompt: 1e6 }, { config: cfg }).unknown === true,
+     "同一个型号 id 换一条挂在云端的：记「算不出钱」");
+  ok(pricing.priceOf("qwen2.5-coder-32b", { config: cfg }) === null,
+     "只有型号 id、而它既挂内网又挂云端：不往便宜的方向猜");
+
+  // 管理员手填的价永远优先——内网网关后面其实接的是付费厂商时，靠这一格补回来
+  const adminLan = pricing.priceOf("qwen2.5-coder-32b", { base_url: LAN, config: { prices: { "qwen2.5-coder-32b": { in: 3, out: 6 } } } });
+  ok(adminLan && adminLan.src === "admin" && adminLan.row.in === 3, "内网地址上的型号，管理员手填了价就按手填的收", adminLan);
+  const famLan = pricing.priceOf("qwen2.5-coder-32b", { base_url: LAN, config: { prices: { qwen: { in: 3, out: 6 } } } });
+  ok(famLan && famLan.src === "local", "反向对照：手填的只是一个前缀族（qwen），不把本机那条也连带收钱", famLan);
 }
 
 /* ============================================================
@@ -232,6 +284,44 @@ console.log("\n【3】额度闸门：预扣、并发、0 = 不限、算不出钱
   bill({ org: "unk-org2", model: "gpt-4o", cost: 0.25 });
   eq(budget.status({ org: { budget: { org_yuan: 1 } }, orgId: "unk-org2" })[0].spent, 0.25,
      "反向对照：算得出钱的那笔照常累进去（不是「一律不算」）");
+
+  // ③ 的第三半：头上有上限的人点名一个没价目的型号。放行的话 settle 进去是 0，
+  // 预算一分不动——等于给了一扇不计数的门。所以发出去之前就拦。
+  budget.invalidate();
+  const NEW = "某个刚上线的型号-v9";
+  const capped = { org: { budget: { org_yuan: 100 } }, orgId: "unpriced-org", usage: { model: NEW, prompt: 10, max_tokens: 10 } };
+  const ue = threw(() => budget.reserve(capped));
+  ok(ue && ue.status === 402 && ue.code === "model_unpriced", "有上限、型号没价目：发出去之前就拦，402 + model_unpriced", ue && { status: ue.status, code: ue.code });
+  ok(ue && ue.budget && ue.budget.unpriced === true && ue.budget.level === "org", "报得出是哪一档的上限管着它", ue && ue.budget);
+  ok(ue && ue.message.includes(NEW) && /价目/.test(ue.message) && /企业管理/.test(ue.message),
+     "错误里写着哪个型号、去哪补价目", ue && ue.message);
+  ok(budget.unpriced(capped) && budget.unpriced(capped).level === "org", "长任务入口问同一句，答案一样");
+
+  const keyOnly = { vkey: { id: "k-unpriced", budget_yuan: 5 }, orgId: "unpriced-org2", usage: { model: NEW } };
+  ok(budget.unpriced(keyOnly) && budget.unpriced(keyOnly).level === "key", "只有那把 Key 设了上限，也拦，拦在 Key 那一档");
+  const userOnly = { org: { budget: { default_user_yuan: 5 } }, user: { username: "u-unpriced" }, orgId: "unpriced-org3", usage: { model: NEW } };
+  ok(budget.unpriced(userOnly) && budget.unpriced(userOnly).level === "user", "只有个人月预算，也拦，拦在人那一档");
+
+  budget.invalidate();
+  let freeUnk = null;
+  const free = threw(() => { freeUnk = budget.reserve({ ...capped, org: { budget: { org_yuan: 0 } } }); });
+  ok(free === null && freeUnk && freeUnk.unknown === true,
+     "反向对照：一档上限都没设（单机、没开预算），照转，收条上记着「算不出钱」", free && free.message);
+  budget.release(freeUnk);
+  ok(budget.unpriced({ ...capped, org: {} }) === null, "反向对照：没上限时长任务入口那一句也放行");
+  ok(budget.unpriced({ ...capped, usage: { model: "gpt-4o" } }) === null, "反向对照：有上限、型号查得到价，不拦");
+
+  budget.invalidate();
+  let paid = null;
+  const priced = threw(() => {
+    paid = budget.reserve({ ...capped, price: { config: { prices: { [NEW]: { in: 1, out: 2 } } } } });
+  });
+  ok(priced === null && paid && paid.unknown === false && paid.est > 0,
+     "管理员在价目表里补上这一行，同一趟就放行、照价预扣", priced && priced.message);
+  budget.release(paid);
+
+  const ucap = threw(() => budget.reserve({ ...capped, usage: { cap: "image", model: "our-diffusion-v9", units: 1 } }));
+  ok(ucap && ucap.code === "model_unpriced" && /单价/.test(ucap.message), "按量那几路（生图这种）没单价，有上限时一样拦", ucap && ucap.message);
 }
 
 /* ============================================================
@@ -605,6 +695,24 @@ console.log("\n【6】离职：停用账号关的是他本人的路，中转站�
 
   g = await hit("/v1/chat/completions", { authorization: "Bearer " + svcKey.secret });
   ok(g.status === 404 || g.status === 405 || g.status === 400, "聊天那条只收 POST", g.status);
+
+  // 设了预算的 Key 点名一个挂在云端渠道、却没价目的型号：转发之前就 402，错误码跟「额度用完」分开。
+  // 渠道地址是 .invalid，拦不住的话也连不上任何真服务
+  config.models.push({ name: "新上的", model: "某个刚上线的型号-v9", channel: "ark" });
+  const budgetKey = vkeys.create({ name: "有预算的", org: org.DEFAULT_ORG, budget_yuan: 5 });
+  g = await new Promise((resolve) => {
+    const body = JSON.stringify({ model: "某个刚上线的型号-v9", messages: [{ role: "user", content: "hi" }] });
+    const rq = http.request({ host: "127.0.0.1", port: P2, path: "/v1/chat/completions", method: "POST",
+      headers: { authorization: "Bearer " + budgetKey.secret, "content-type": "application/json" } }, (res) => {
+      let b = ""; res.on("data", (x) => (b += x));
+      res.on("end", () => { let j = null; try { j = JSON.parse(b); } catch {} resolve({ status: res.statusCode, json: j }); });
+    });
+    rq.on("error", () => resolve({ status: 0, json: null }));
+    rq.end(body);
+  });
+  ok(g.status === 402 && ((g.json || {}).error || {}).code === "model_unpriced" && /价目/.test(g.json.error.message),
+     "★有预算的 Key 调没价目的型号★ 发出去之前 402，code 是 model_unpriced、说清去哪补价目", g.json);
+  config.models.pop();
 
   s2.close();
 
@@ -1007,6 +1115,33 @@ console.log("\n【6】离职：停用账号关的是他本人的路，中转站�
   ok(runTaskGate(null) === null, "反向对照：没到顶就不抛");
   ok(runTaskGate(() => { throw new Error("组织设置里塞了个怪值"); }) === null,
      "反向对照：判不出来的时候放行，而且**只**放行判不出来那一种——真拦下来的那一句得原样往上抛，不能被同一个 catch 吞掉");
+
+  // ---- ⑤ 价目闸：长任务入口没有 reserve 那一步，查不到价的对话模型在开跑前就得拦 ----
+  const upSrc = blockAround(SRC9, "function unpricedChat(user, runLLM) {", "function unpricedChat");
+  ok(!!upSrc, "server.js 里有 unpricedChat 这道价目闸");
+  const NEWM = "某个刚上线的型号-v9";
+  const upCfg = {
+    agent: { engine: "builtin" },
+    models: [
+      { name: "新上的", model: NEWM, base_url: "https://api.example.invalid/v1" },
+      { name: "机房", model: NEWM, base_url: "http://10.0.0.8:8000/v1" },
+    ],
+  };
+  const upRun = (orgYuan, runLLM, cfg) => new Function("config", "prefs", "org", "budget", upSrc + "\nreturn unpricedChat;")(
+    cfg || upCfg, { agentCfg: (c) => c.agent || {} },
+    { ...orgStub, settingsOf: () => ({ budget: { org_yuan: orgYuan } }) }, budget,
+  )({ username: "xiaoyuan" }, runLLM);
+  ok(/价目/.test(upRun(50, { provider: "新上的", model: NEWM })), "有组织预算、对话模型挂在云端且没价目：开跑前就拦，说清去哪补");
+  eq(upRun(0, { provider: "新上的", model: NEWM }), "", "反向对照：没设预算，同一个型号照常跑（记「算不出钱」）");
+  eq(upRun(50, { provider: "机房", model: NEWM }), "", "反向对照：同一个型号挂在内网渠道上，0 元、不拦");
+  eq(upRun(50, { provider: "已经删掉的", model: NEWM }), "", "会话点名的模型已不在列表里：让开跑时那句「已不在模型列表里」去说，这儿不抢着报");
+  eq(upRun(50, { provider: "新上的", model: NEWM }, { ...upCfg, agent: { engine: "claude-code" } }), "",
+     "外部 CLI 引擎走它自己的订阅，不经这本价目");
+  ok(SRC9.includes("unpricedChat(user, llmForSession(getSession(sessionId)))"), "/api/chat 开流之前问过这一句");
+  ok(/const why = unpricedChat\(owner, runLLM\);\s*if \(why\) throw/.test(SRC9), "定时任务 / IM 那条路上也问过，拦下是抛出来，不是静悄悄跑完");
+  const dramaSrc = fs.readFileSync(path.join(ROOT, "src/server/routes/drama.js"), "utf8");
+  ok(/unpricedChat\(user, runLLM\)/.test(dramaSrc) && /unpricedWhy\) return res\.status\(402\)/.test(dramaSrc),
+     "短剧草稿那条真调模型的路也接上了");
 
   try { fs.rmSync(HOME, { recursive: true, force: true }); } catch {}
   console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);

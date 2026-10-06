@@ -61,7 +61,8 @@ function monthKey(d) {
  * 注意只累 cost 这一格，不累 cost_unknown 的那些——它们的 cost 是 0，
  * 但那个 0 的意思是「不知道」。把「不知道」当成「不花钱」累进已用额度里，
  * 结果是没登记价目的模型可以无限用，而这恰恰是最需要盯住的那种模型（刚上的新型号）。
- * 所以它们单独计数，闸门放行但后台会催着去补价目。
+ * 所以它们单独计数，后台催着去补价目；头上设了上限的人，这种型号在 reserve / unpriced
+ * 那一步就拦下了，记进来的 unknown 只会出自没设上限的人。
  */
 function spentOf(scope, kind, id, mk) {
   const hit = spentCache.get(scope);
@@ -146,6 +147,14 @@ function reserve(ctx = {}) {
   const mk = monthKey();
   const est = estimate(ctx.usage || {}, ctx.price || {});
   const limits = limitsOf(ctx);
+  const bad = unpricedOf(ctx, limits, est);
+  if (bad) {
+    const e = new Error(bad.message);
+    e.status = 402;
+    e.code = "model_unpriced";
+    e.budget = { level: bad.level, unpriced: true, model: bad.model, cap: bad.cap };
+    throw e;
+  }
   const ids = { key: ctx.vkey && ctx.vkey.id, user: ctx.user && ctx.user.username, org: ctx.orgId || "default" };
   // 两份名单，别合成一份：
   //   held  = 真的占了额度的那几级（只有设了上限的才占）——拦人靠它
@@ -183,6 +192,38 @@ function reserve(ctx = {}) {
   const handle = { id, at: Date.now(), est: est.yuan, unknown: est.unknown, scopes: held, all };
   live.set(id, handle);
   return handle;
+}
+
+/**
+ * 头上有钱的上限、这一趟的型号却查不到价的，发出去之前就拦下。
+ * 返回 { level, model, cap, message }；查得到价、或者三级都没设上限，返回 null。
+ *
+ * 为什么非拦不可：查不到价的那一趟 settle 进去是 0，预算一分不动——
+ * 有上限的人只要点名一个没登记价目的型号，就等于拿到一扇不计数的门。
+ * 没设任何上限的人（单机、没开预算的公司）不受影响，照转、记 unknown、后台催补价。
+ *
+ * ctx 跟 reserve 同一个形状：{ org, user, vkey, price, usage }。
+ * usage 是 { model } 或 { cap, model }；只问能不能放行，不预扣、不记账。
+ * 长任务入口（agent 对话、定时任务）没有 reserve 那一步，就在入口单独问这一句。
+ */
+function unpriced(ctx = {}) {
+  return unpricedOf(ctx, limitsOf(ctx), estimate(ctx.usage || {}, ctx.price || {}));
+}
+
+function unpricedOf(ctx, limits, est) {
+  if (!est.unknown) return null;
+  // 跟 reserve 同一个口径：哪一级认不出是谁（没有 Key、没登录），那一级的上限就管不到这一趟
+  const ids = { key: ctx.vkey && ctx.vkey.id, user: ctx.user && ctx.user.username, org: ctx.orgId || "default" };
+  const level = LEVELS.find((lv) => limits[lv] > 0 && ids[lv]);
+  if (!level) return null;
+  const u = ctx.usage || {};
+  const model = String(u.model || "").trim();
+  const cap = String(u.cap || "").trim();
+  const meta = cap ? pricing.UNITS[cap] : null;
+  const message = meta
+    ? `${meta.cn}${model ? `「${model}」` : ""}还没有单价，先在「企业管理 → API 中转站 → 按量计价」补上。`
+    : `型号「${model || "（没写）"}」还没有价目，先在「企业管理 → API 中转站 → 价目表」补上。`;
+  return { level, model, cap, message };
 }
 
 // 拦下来的时候这句话是**唯一**的线索，所以三级各写各的：是自己的月额度用完了，
@@ -324,7 +365,7 @@ function record({ orgId = "default", user = "", vkey = "", yuan = 0 } = {}) {
 function invalidate() { spentCache.clear(); }
 
 module.exports = {
-  reserve, settle, release, status, exhausted, record, limitsOf, estimate, invalidate, sweep,
+  reserve, settle, release, status, exhausted, unpriced, record, limitsOf, estimate, invalidate, sweep,
   RESERVE_TTL_MS, LEVELS, LEVEL_TEXT,
   _internals: { spentCache, live, monthKey, spentOf, round6 },
 };

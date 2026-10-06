@@ -33,6 +33,7 @@ const store = require("../../platform/store");
 const usageStore = require("./usage-store");
 const pricing = require("./pricing");
 const budget = require("./budget");
+const mediaModels = require("../model/media-models");
 const { AsyncLocalStorage } = require("async_hooks");
 
 // OPENWORKBUDDY_DATA_DIR 与 account.js / org.js 同一个口子：跑测试时指到临时目录
@@ -253,6 +254,26 @@ function billable(cap) { return !!pricing.UNITS[cap]; }
 function priceKeyOf(cap, model, provider) { return String(model || provider || "").trim(); }
 
 /**
+ * 这一趟真正会跑哪个型号——价按它算，不按调用方嘴上说的算。
+ *
+ * 媒体那几路（生图 / 视频 / 配音 / 转写）不点名型号时跑的是默认那条；点的是「名称」时，
+ * 背后是那条配置的型号 id。拿空串或名称去查价，要么查不到（有上限的人被白拦），
+ * 要么查到一个跟真跑的不一样的价。所以跟工具里挑配置用同一个 pick，挑出来的那条说了算。
+ * 挑不出来（点了个不存在的名字）就原样拿着去查——工具那边随后会报「没有这个型号」。
+ * @returns {{ key: string, resolved: boolean }}
+ */
+function priceTarget(cap, model, provider, who) {
+  const key = priceKeyOf(cap, model, provider);
+  const cfg = who && who.price && who.price.config;
+  if (!cfg || !mediaModels.CAPS.includes(cap)) return { key, resolved: false };
+  try {
+    const hit = mediaModels.pick(mediaModels.resolve(cfg), cap, model);
+    if (hit && String(hit.model || "").trim()) return { key: String(hit.model).trim(), resolved: true };
+  } catch {}
+  return { key, resolved: false };
+}
+
+/**
  * 调用之前把两道闸一起问了。返回 { ok, why, hold }。
  *
  *   hold 是预扣句柄，调完必须交回来：成功走 record(cap, { …, hold })，
@@ -267,15 +288,18 @@ function gate(cap, { n = 1, model = "", units = 0, provider = "", actor } = {}) 
   if (!c.ok) return { ok: false, why: c.why, hold: null };
   if (!who || !who.budget || !billable(cap)) return { ok: true, hold: null };
   try {
+    const t = priceTarget(cap, model, provider, who);
     const hold = budget.reserve({
       ...who.budget,
-      usage: { cap, model: priceKeyOf(cap, model, provider), units: units || n },
+      usage: { cap, model: t.key, units: units || n },
       price: who.price || {},
     });
     return { ok: true, hold };
   } catch (e) {
     if (e && e.status === 402) {
       const meta = CAPS[cap] || { label: cap };
+      // 没价目被拦：budget 那句已经说了缺哪个型号、去哪儿补，跟预算设多少无关，不再接「预算由谁设」
+      if (e.code === "model_unpriced") return { ok: false, hold: null, why: e.message };
       return {
         ok: false, hold: null,
         // budget 那边的话已经把「上限多少、已用多少、这一趟要多少」说完了，
@@ -306,7 +330,8 @@ function undo(hold) { try { budget.release(hold); } catch {} }
 function record(cap, { n = 1, provider = "", model = "", meta = "", units = 0, hold, actor } = {}) {
   const who = actor || currentActor();
   const cnt = Math.max(1, Math.floor(+n) || 1);
-  const key = priceKeyOf(cap, model, provider);
+  const t = priceTarget(cap, model, provider, who);   // 跟 gate 同一个口径，预扣和结算查的是同一行价
+  const key = t.key;
   const u = +units > 0 ? +units : cnt;
 
   // 算钱。算不出来也要把 hold 结掉，否则那笔预扣占到被扫为止。
@@ -347,7 +372,8 @@ function record(cap, { n = 1, provider = "", model = "", meta = "", units = 0, h
       vkey: (who && who.budget && who.budget.vkey && who.budget.vkey.id) || "",
       source: (who && who.source) || "",
       provider: String(provider || "").slice(0, 40),
-      model: String(model || "").slice(0, 60),
+      // 没点名型号的那趟记真跑的那个：后台「还没价目」那张单子拿它让人补价，记个空串就永远补不上
+      model: String(t.resolved ? key : model || "").slice(0, 60),
       // 跟 account.js:chargeRun 那边一模一样的三格：
       // cost_unknown 必须单独记，因为「0 元」和「不知道多少钱」在账上是两回事；
       // price_key / discount 不记的话，上游调价之后翻旧账只能拿今天的价重算。
@@ -414,5 +440,5 @@ module.exports = {
   CAPS, CAP_KEYS, CAP_DEFAULT,
   quotaTable, normalizeCap, normalizeTable, suggested,
   withActor, currentActor, check, gate, undo, record, summary, billable,
-  _internals: { load, loadAll, save, used, localDay, localMonth, USAGE_FILE, USAGE_DIR, emptyDb, ledger, priceKeyOf },
+  _internals: { load, loadAll, save, used, localDay, localMonth, USAGE_FILE, USAGE_DIR, emptyDb, ledger, priceKeyOf, priceTarget },
 };

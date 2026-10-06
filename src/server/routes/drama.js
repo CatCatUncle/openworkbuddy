@@ -14,7 +14,7 @@ const shotHistory = require("../../domains/media/shot-history"); // 一镜一镜
 const store = require("../../platform/store");
 
 // 下面这几个由 createDramaRouter(deps) 填上
-let getWorkspaceDir, outputFiles, safePath, account, org, budget, llm, llmForSession, addUsage, toolRunSubdir, toolRunSubdirReady, canvasAssetNear;
+let getWorkspaceDir, outputFiles, safePath, account, org, budget, llm, llmForSession, unpricedChat, addUsage, toolRunSubdir, toolRunSubdirReady, canvasAssetNear;
 
 // 大小写敏感跟 server.js 一致：子路由器不继承外面那个 case sensitive routing 的设置
 const app = express.Router({ caseSensitive: true });
@@ -134,6 +134,9 @@ app.post("/api/drama/storyboard/draft", async (req, res) => {
   }
 
   const runLLM = body.model ? llmForSession({ model: body.model.trim() }) : llm;
+  // 价目闸（见 server.js unpricedChat）：设了预算的人，没价目的型号不调
+  const unpricedWhy = user && typeof unpricedChat === "function" ? unpricedChat(user, runLLM) : "";
+  if (unpricedWhy) return res.status(402).json({ error: unpricedWhy });
   const { system, prompt } = dramaPipeline.buildStoryboardPrompt({ script, style, aspect, shotSeconds, title: titleHint });
   // 请求断了就别再等模型（挂在 res 的 close 上：Node 新版里请求体一读完 req 就发 close）
   const ac = new AbortController();
@@ -480,11 +483,11 @@ app.post("/api/drama/shot-history/restore", (req, res) => {
 
 /**
  * deps：getWorkspaceDir / outputFiles / safePath 来自 tools.js；account / org / budget 是 server.js 手里那几份
- * （草稿接口真调模型，积分和预算两道闸跟 /api/chat 一样）；llm / llmForSession / addUsage / toolRunSubdir /
+ * （草稿接口真调模型，积分、预算、价目三道闸跟 /api/chat 一样）；llm / llmForSession / unpricedChat / addUsage / toolRunSubdir /
  * toolRunSubdirReady 是 server.js 的；canvasAssetNear 来自 src/server/routes/canvas.js。
  */
 function createDramaRouter(deps) {
-  ({ getWorkspaceDir, outputFiles, safePath, account, org, budget, llm, llmForSession, addUsage, toolRunSubdir, toolRunSubdirReady, canvasAssetNear } = deps);
+  ({ getWorkspaceDir, outputFiles, safePath, account, org, budget, llm, llmForSession, unpricedChat, addUsage, toolRunSubdir, toolRunSubdirReady, canvasAssetNear } = deps);
   return app;
 }
 

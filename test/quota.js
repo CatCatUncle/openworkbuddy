@@ -260,6 +260,54 @@ console.log("\n【9】老版本升上来：api-usage.json 里的账一笔不少�
   fs.rmSync(tmp2, { recursive: true, force: true });
 }
 
+console.log("\n【10】钱闸查价按真跑的那个型号；有预算的人碰上没单价的，发出去之前就拦");
+{
+  reset();
+  // 跟 admin.js 里挂到请求上的那个 actor 同一个形状：budget 是 limitsOf 的入参，price 带着整份 config
+  const config = {
+    providers: [{ id: "p-img", name: "某云", kind: "openai", base_url: "https://api.example.invalid/v1" }],
+    media_models: [
+      { id: "m1", cap: "image", name: "出图", model: "wanx2.1-t2i-turbo", provider: "p-img", default: true },
+      { id: "m2", cap: "image", name: "新出图", model: "某个刚上线的图像模型", provider: "p-img" },
+    ],
+    media: { image: { model: "wanx2.1-t2i-turbo" } },
+  };
+  const s = { budget: { org_yuan: 100 } };
+  const who = (settings) => ({
+    org: "o-price", user: "xm", quota: null,
+    budget: { orgId: "o-price", org: settings, user: { username: "xm" } },
+    price: { config },
+  });
+  const run = (a, model) => {
+    let g = null;
+    quota.withActor(a, () => { g = quota.gate("image", { model }); if (g.hold) quota.undo(g.hold); });
+    return g;
+  };
+
+  eq(quota._internals.priceTarget("image", "出图", "", who(s)), { key: "wanx2.1-t2i-turbo", resolved: true },
+    "点的是「名称」，查价拿的是那条背后的型号 id");
+  eq(quota._internals.priceTarget("image", "", "", who(s)).key, "wanx2.1-t2i-turbo",
+    "不点名，查价拿的是默认那条——不是拿空串去查");
+  eq(quota._internals.priceTarget("search", "", "jina", who(s)), { key: "jina", resolved: false },
+    "反向对照：搜索没有「型号」，照旧拿引擎名查");
+
+  const named = run(who(s), "出图");
+  ok(named.ok, "有预算、点名称、背后型号查得到单价：放行（以前拿名称去查价，查不到就被白拦）", named.why);
+  ok(run(who(s), "").ok, "有预算、不点名：按默认那条查价，放行");
+
+  const fresh = run(who(s), "新出图");
+  ok(!fresh.ok && /单价/.test(fresh.why || "") && /按量计价/.test(fresh.why || ""),
+    "有预算、背后型号没单价：发出去之前就拦，说清去哪补", fresh.why);
+  ok(!/预算由平台管理员/.test(fresh.why || ""), "这句不接「预算由谁设」——跟预算设多少无关，是缺价目", fresh.why);
+
+  ok(run(who({ budget: { org_yuan: 0 } }), "新出图").ok,
+    "反向对照：一档上限都没设，同一个没单价的型号照常放行（单机、没开预算的公司不受影响）");
+  const priced = who(s);
+  priced.price = { config: { ...config, unit_prices: { image: { "某个刚上线的图像模型": 0.2 } } } };
+  const after = run(priced, "新出图");
+  ok(after.ok, "管理员在「按量计价」里补上这一行，同一趟就放行", after.why);
+}
+
 function ok_silent(cond) { if (!cond) { fail++; console.log("  ✗ 关着闸门的时候居然拦了一次"); } }
 
 try { fs.rmSync(HOME, { recursive: true, force: true }); } catch {}
