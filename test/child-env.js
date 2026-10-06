@@ -320,6 +320,15 @@ const readIf = (f) => { try { return fs.readFileSync(f, "utf8"); } catch { retur
       "只有你一个账号：像 Key 的写进来也会给。", "有多个账号：像 Key 的写进来也不给。", "Key 请在 设置 → 模型 里配。"];
     ok(zh.every((s) => ui.includes(s)), "界面文案都在卡片上", zh.filter((s) => !ui.includes(s)));
     ok(zh.every((s) => i18n.includes(JSON.stringify(s) + ":")), "每句都有英文", zh.filter((s) => !i18n.includes(JSON.stringify(s) + ":")));
+
+    // 白名单不是黑名单：普通名字（WECHAT_APPID）也拿不到。技能说明和脚本报错得叫人两个都写上，并说清写在哪
+    const { buildChildEnv } = require(mod("child-env"));
+    const got = buildChildEnv({}, { base: { HOME: "/h", PATH: "/b", WECHAT_APPID: "a", WECHAT_SECRET: "s" }, allow: ["WECHAT_SECRET"], keys: true });
+    ok(!("WECHAT_APPID" in got), "只写 WECHAT_SECRET 时 WECHAT_APPID 照样拿不到（所以文档得叫人两个都写）", Object.keys(got));
+    const doc = read(path.join(ROOT, "skills", "wechat-article", "skill.md"));
+    const py = read(path.join(ROOT, "skills", "wechat-article", "scripts", "publish.py"));
+    ok(/两个名字都要写进 设置 → 安全 →「命令能看到的环境变量」/.test(doc), "公众号技能说明：两个变量名都要放行，写在 设置 → 安全");
+    ok(/两个名字都要加进/.test(py) && /设置 → 安全 →「命令能看到的环境变量」/.test(py), "公众号脚本找不到凭据时说清去哪儿放行");
   }
 
   console.log(`\n${pass} 通过，${fail} 失败`);
