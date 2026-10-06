@@ -49,6 +49,7 @@ const ROOT = path.join(__dirname, "..");
 const { src } = require("./lib/src");
 const security = require(mod("security"));
 const tools = require(mod("tools"));
+const netGuard = require(mod("net-guard"));
 const cliApprove = require(mod("cli-approve"));
 const { BRIDGE, havePty } = require("./lib/pty");
 
@@ -846,9 +847,12 @@ async function cliRun(args, call, { stopAt, pty } = {}) {
         r = await run("add_connector", W, {});
         ok(!r.isError && committed.includes("warny"), "  └ 点了允许才加", r.content);
         fresh(); answer = () => "deny";
+        // x.example 在 CI 上解析不出来（本机走代理的假 IP 能解析，所以本机一直是绿的），给它一个公网地址；别的名字照走系统 DNS
+        netGuard.setLookup(async (host) => host === "x.example" ? [{ address: "93.184.215.14", family: 4 }] : require("dns").promises.lookup(host, { all: true, verbatim: true }));
         r = await run("add_connector", { name: "calm", url: "https://x.example/mcp" }, {});
         ok(!r.isError && cards.length === 0 && committed.includes("calm"), "  └ 反向对照：体检没话说的远程连接器，auto 直接加", r.content);
       } finally {
+        netGuard.setLookup(null);
         tools.setConnectorHost(null);
       }
 
