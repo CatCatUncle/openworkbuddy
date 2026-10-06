@@ -181,7 +181,7 @@ const sec = (ms) => (ms / 1000).toFixed(2);
  * @param {{
  *   media: any, input: any, timeoutMs?: number, saveDir: string, wsRoot: string,
  *   resolveFile?: (rel: string) => string, stop?: AbortSignal,
- *   gate?: (call: { n: number, units: number, model?: string }) => { bad: any, hold: any },
+ *   gate?: (call: { n: number, units: number, model?: string, provider?: string }) => { bad: any, hold: any },
  *   onProgress?: (p: { stage: string, done?: number, total?: number, pct?: number, label: string }) => void,
  * }} ctx
  * @param {{ bins?: () => Promise<any>, probe?: Function, toPcm?: Function, concat?: Function, synth?: Function, now?: () => number }} [deps]
@@ -255,7 +255,8 @@ async function ttsSegments(ctx, deps = {}) {
   let hold = null;
   if (toBuy.length) {
     const chars = toBuy.reduce((n, p) => n + p.text.length, 0);
-    const g = (ctx.gate || defaultGate)({ n: toBuy.length, units: Math.max(0.001, chars / 1000), model: input.model });
+    // 价按上面挑好的那条配置的型号算：AI 没填 model 时跑的是默认那条，拿空串去估价会估成 0 或查不到
+    const g = (ctx.gate || defaultGate)({ n: toBuy.length, units: Math.max(0.001, chars / 1000), model: String(cfg.model || "").trim(), provider: cfg.provider || "" });
     if (g && g.bad) return g.bad;
     hold = g ? g.hold : null;
   }

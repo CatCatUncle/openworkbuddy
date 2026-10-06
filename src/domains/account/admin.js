@@ -610,6 +610,9 @@ function createAdminRouter(deps = {}) {
       video: !!at(cfg, "media.video.model") || !!at(cfg, "media.video.provider"),
       tts: !!at(cfg, "media.tts.model") || !!at(cfg, "media.tts.provider"),
       asr: !!at(cfg, "media.asr.model") || !!at(cfg, "media.asr.provider"),
+      // 看图可以单配一条，也可以主模型自己看（设置页里勾了「能看图」的那几条）
+      vision: !!at(cfg, "media.vision.model") || !!at(cfg, "media.vision.provider")
+        || (Array.isArray(cfg.models) && cfg.models.some((m) => m && Array.isArray(m.caps) && m.caps.includes("vision"))),
       fetch: true, // 抓网页不需要钥匙，永远是「已就绪」
     };
     return {
@@ -765,7 +768,7 @@ function createAdminRouter(deps = {}) {
         groups: { keys: byKey.size, users: byUser.size, models: byModel.size },
         // 单位跟着数一起发。前端自己推的话，以后改了哪一路的计量口径
         // （比如语音合成从千字符改成万字符），页面会静静地多显示十倍。
-        by_cap: done(byCap).map((c) => ({ ...c, unit: (pricing.UNITS[c.key] || {}).unit || "" })),
+        by_cap: done(byCap).map((c) => ({ ...c, unit: (pricing.UNITS[c.key] || quota.CAPS[c.key] || {}).unit || "" })),
       },
       caps: vkeys.CAPS.map((c) => ({ key: c, label: vkeys.CAP_CN[c] || c })),
       prefix: vkeys.PREFIX,
@@ -780,7 +783,8 @@ function createAdminRouter(deps = {}) {
       // 这条规矩唯一的出口：不催的话，那几笔就永远记成 0，而钱是真花了的。
       const cat = pricing.catalog({
         config: cfg,
-        seen: rows.filter((r) => !r.cap || r.cap === "chat" || r.cap === "embedding").map((r) => r.model),
+        // 看图按 token 记，查的是对话那张价目表；只催真没查到价的那几条（本机渠道 0 元不算缺）
+        seen: rows.filter((r) => !r.cap || r.cap === "chat" || r.cap === "embedding" || (r.cap === "vision" && r.cost_unknown)).map((r) => r.model),
         seen_units: rows.filter((r) => r.cap && pricing.UNITS[r.cap]).map((r) => ({ cap: r.cap, model: r.price_key || r.model })),
       });
       out.prices = cat.rows;

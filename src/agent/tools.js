@@ -3828,6 +3828,27 @@ function quotaGate(cap, call = {}) {
 }
 
 /**
+ * 生图 / 生视频 / 配音 / 转写发出去之前问额度。价按这一趟**真正会跑的那个型号**算：
+ * 跟里面发请求用同一个 mediaModels.pick 挑配置，AI 没填 model 就是默认那条的型号。
+ * 拿 AI 填的空串或名称去估价，要么查不到被白拦，要么估成 0——有上限的人就多了一扇不计钱的门。
+ *
+ * 点了个不存在的型号：pick 那句「现在能用的是：…」原样回去，不占额度、一个请求都不发。
+ * 这一路压根没配（缺地址或型号）：不问额度，里面会先说「去设置里配」，同样不发请求。
+ * units 可以是个函数，拿挑好的那条配置算量（视频秒数要按型号的默认时长和上限来夹）。
+ * @returns {{ bad: any, hold: any }}
+ */
+function mediaGate(cap, opts, input, units) {
+  let cfg;
+  try { cfg = mediaModels.pick((opts || {}).media, cap, (input || {}).model); }
+  catch (e) { return { bad: { content: e.message, isError: true }, hold: null }; }
+  if (!cfg || !String(cfg.base_url || "").trim() || !String(cfg.model || "").trim()) return { bad: null, hold: null };
+  return quotaGate(cap, {
+    model: String(cfg.model).trim(), provider: cfg.provider || "",
+    units: typeof units === "function" ? units(cfg) : units,
+  });
+}
+
+/**
  * 五路媒体工具（看图/生图/生视频/配音/转文字）统一穿过这里。
  *
  * quotaGate 管的是「这次花不花得起」，这里管的是「这条渠道现在还通不通」——
@@ -3837,14 +3858,15 @@ function quotaGate(cap, call = {}) {
  * 一个一个去记账，早晚漏掉一条，而漏掉的那条恰好就是撞得最凶的那条。放在派发这一层，
  * 无论里面从哪儿返回的，出口只有一个，记账必然完整。
  */
-async function viaMedia(cap, opts, input, run) {
+async function viaMedia(cap, opts, input, run, hold) {
   let cfg = null;
   // pick 抛错 = 用户点名了一个不存在的型号，那是 input 的事不是渠道的事：照常放行，
   // 让里面那句「现在能用的是：…」原样出去
   try { cfg = mediaModels.pick((opts || {}).media, cap, (input || {}).model); } catch { cfg = null; }
   if (cfg && cfg.base_url) {
+    // 下面三处在这儿就拦下、run 根本没跑：外面已经预扣的那笔要当场还回去，别占着预算等十五分钟后被扫
     const stop = mediaHealth.gate(cap, cfg, mediaModels.CAP_CN[cap]);
-    if (stop) return stop;
+    if (stop) { quota.undo(hold); return stop; }
     // 挂错家的型号，在发请求**之前**就拦下来。
     // 这不是为了省那一次网络往返，是为了让 agent 拿到一句它能照着做的话：上游回的原话是
     // 400 "not a valid model ID"，模型看了只会换个参数再来一遍，撞上十轮都不会想到
@@ -3858,6 +3880,7 @@ async function viaMedia(cap, opts, input, run) {
         `请用户去 设置 → 模型 → ${capCn}，把型号名改成这种写法。\n` +
         `这一步不用重试，也别换参数再试——换什么参数都一样。`, isError: true };
       mediaHealth.record(cap, cfg, res);
+      quota.undo(hold);
       return res;
     }
     const want = mediaModels.mismatch(cfg.kind || mediaModels.guessKind(cfg.base_url), cfg.model, cfg.base_url);
@@ -3868,6 +3891,7 @@ async function viaMedia(cap, opts, input, run) {
         `请用户去 设置 → 模型 → ${capCn}，把它改挂到${mediaModels.kindLabel(want)}的渠道（没有就先加一条），或者换一个这条渠道上有的型号。\n` +
         `这一步不用重试，也别换参数再试——换什么参数都一样。`, isError: true };
       mediaHealth.record(cap, cfg, res);
+      quota.undo(hold);
       return res;
     }
   }
@@ -4747,18 +4771,20 @@ async function executeToolCore(name, input, opts = {}) {
         return { content: r.text, isError: r.bad };
       }
       case "look_at_image":
-        return await withStop(opts, (stop) => viaMedia("vision", opts, input, () => lookAtImage(opts, input, timeoutMs, resolveFile, stop)));
+        // 看图的额度闸在里面问：要等挑完渠道（主模型自己看，还是单配的那条）才知道按谁的价
+        return await withStop(opts, (stop) => viaMedia("vision", opts, input, () => lookAtImage(opts, input, timeoutMs, resolveFile, stop,
+          { gate: (c) => quotaGate("vision", c) })));
       case "generate_image": {
-        const g = quotaGate("image", { model: input.model, units: unitsFor("image", input) });
+        const g = mediaGate("image", opts, input, unitsFor("image", input));
         if (g.bad) return g.bad;
         return await withStop(opts, (stop) => viaMedia("image", opts, input, () => withGenCache("generate_image", "image", opts, input, fileBase, resolveFile, g.hold,
-          () => generateImage(opts.media, input, timeoutMs, fileBase, resolveFile, stop))));
+          () => generateImage(opts.media, input, timeoutMs, fileBase, resolveFile, stop)), g.hold));
       }
       case "generate_video": {
-        const g = quotaGate("video", { model: input.model, units: unitsFor("video", input, null, opts.media) });
+        const g = mediaGate("video", opts, input, (cfg) => unitsFor("video", input, null, cfg));
         if (g.bad) return g.bad;
         return await withStop(opts, (stop) => viaMedia("video", opts, input, () => withGenCache("generate_video", "video", opts, input, fileBase, resolveFile, g.hold,
-          () => generateVideo(opts.media, input, { ...opts, saveDir: fileBase, resolveFile, signal: stop }))));
+          () => generateVideo(opts.media, input, { ...opts, saveDir: fileBase, resolveFile, signal: stop })), g.hold));
       }
       case "html_to_image":
         // 单张原样交给 media.htmlToImage；html_files[] 批量一张张串行截，每张报一次进度
@@ -4782,14 +4808,14 @@ async function executeToolCore(name, input, opts = {}) {
             gate: (c) => quotaGate("tts", c), onProgress: opts.onProgress,
           })));
         }
-        const g = quotaGate("tts", { model: input.model, units: unitsFor("tts", input) });
+        const g = mediaGate("tts", opts, input, unitsFor("tts", input));
         if (g.bad) return g.bad;
         return await withStop(opts, (stop) => viaMedia("tts", opts, input, () => withGenCache("text_to_speech", "tts", opts, input, fileBase, resolveFile, g.hold,
-          () => textToSpeech(opts.media, input, timeoutMs, fileBase, stop))));
+          () => textToSpeech(opts.media, input, timeoutMs, fileBase, stop)), g.hold));
       }
       case "transcribe_audio": {
         const mins = unitsFor("asr", input, resolveFile);
-        const g = quotaGate("asr", { model: input.model, units: mins });
+        const g = mediaGate("asr", opts, input, mins);
         if (g.bad) return g.bad;
         let r;
         try {

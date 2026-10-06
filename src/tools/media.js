@@ -343,6 +343,39 @@ function pickEye(v, main, named) {
 }
 
 /**
+ * 一张图大约折多少输入 token，看图发出去之前预扣用。长边已缩到 1568，
+ * 各家按像素折算下来一张整图在一千五上下，往多了取。结算按上游回的真实用量，不按它。
+ */
+const VISION_IMG_TOKENS = 1600;
+
+/** 看图的额度闸（次数 + 钱）。没登录的调用（单机、命令行）两道闸都直接放行，跟其它几路一样 */
+function defaultVisionGate(call) {
+  const g = quota.gate("vision", call);
+  return g.ok ? { bad: null, hold: g.hold } : { bad: { content: g.why, isError: true }, hold: null };
+}
+
+/**
+ * 从上游回包里取这一趟的 token 用量。两种格式字段名不一样；
+ * 一个都没有就回 null，让调用方按估算记——记成 0 等于这一趟白看，预算拦不住。
+ * @returns {{ prompt: number, cached: number, completion: number } | null}
+ */
+function visionUsage(j, anthropic) {
+  const u = (j && j.usage) || null;
+  if (!u || typeof u !== "object") return null;
+  if (anthropic) {
+    const cr = Math.max(0, +u.cache_read_input_tokens || 0);
+    const cw = Math.max(0, +u.cache_creation_input_tokens || 0);
+    const prompt = Math.max(0, +u.input_tokens || 0) + cr + cw;
+    const completion = Math.max(0, +u.output_tokens || 0);
+    return prompt || completion ? { prompt, cached: cr, completion } : null;
+  }
+  const prompt = Math.max(0, +u.prompt_tokens || 0);
+  const completion = Math.max(0, +u.completion_tokens || 0);
+  const cached = Math.max(0, +((u.prompt_tokens_details || {}).cached_tokens) || +u.prompt_cache_hit_tokens || 0);
+  return prompt || completion ? { prompt, cached: Math.min(cached, prompt), completion } : null;
+}
+
+/**
  * 带着一个问题去看一张图，返回文字答案。
  *
  * 为什么是「工具」而不是把图塞进对话历史：历史是每一步都要整份重发的，图又是 token 大户，
@@ -350,7 +383,7 @@ function pickEye(v, main, named) {
  * 会话是落盘的，于是那个会话就永久废了。走工具这条路，进历史的只有一段纯文本答案——
  * 便宜、能命中缓存、上下文紧张时还能被裁掉。
  */
-async function lookAtImage(opts, input, timeoutMs, resolveFile, stop) {
+async function lookAtImage(opts, input, timeoutMs, resolveFile, stop, meter) {
   const rel = String(input.path || "").trim();
   const q = String(input.question || "").trim();
   if (!rel) return { content: "缺少 path（要看哪张图，工作空间里的相对路径）", isError: true };
@@ -367,6 +400,36 @@ async function lookAtImage(opts, input, timeoutMs, resolveFile, stop) {
   const got = await readImageInput(rel, resolveFile, "图片");
   if (got.err) return { content: got.err, isError: true };
   const { b64, mime, note, abs: p } = got;
+
+  // 看图按 token 收钱，跟聊天一样：发出去之前先过额度闸（次数 + 钱闸预扣），看完按上游回的用量结算。
+  // 价按这一趟真正要去的那条渠道算——主模型自己看就是主模型的价——不按 AI 填的名字算。
+  // 闸放在读图之后：路径错了、图坏了这种一个请求都不发的，不该占一次额度。
+  const gateOf = (meter && meter.gate) || defaultVisionGate;
+  const guess = { prompt: VISION_IMG_TOKENS + Array.from(q).length * 2, max_tokens: 2000 };
+  /** @type {{ cfg: any, hold: any, calls: number, prompt: number, cached: number, completion: number } | null} */
+  let tab = null;
+  const open = (cfg) => {
+    const g = gateOf({ model: String(cfg.model || ""), provider: cfg.provider || "", base_url: cfg.base_url || "", tokens: guess });
+    if (g && g.bad) return g.bad;
+    tab = { cfg, hold: g ? g.hold : null, calls: 0, prompt: 0, cached: 0, completion: 0 };
+    return null;
+  };
+  // 一条渠道看完就结一次账：真发出去并回了正文的按用量记，一趟都没成的把预扣还回去
+  const close = () => {
+    const t = tab;
+    tab = null;
+    if (!t) return;
+    try {
+      if (t.calls > 0) {
+        quota.record("vision", {
+          n: 1, model: String(t.cfg.model || ""), provider: t.cfg.provider || "", base_url: t.cfg.base_url || "",
+          tokens: { prompt: t.prompt, cached: t.cached, completion: t.completion }, meta: rel, hold: t.hold,
+        });
+      } else quota.undo(t.hold);
+    } catch {}
+  };
+  const blocked = open(eye.cfg);
+  if (blocked) return blocked;
   const signal = anySignal(stop, AbortSignal.timeout(Math.max(timeoutMs || 0, 120000)));
 
   /** 拿某一条渠道去看一遍。两条渠道共用这一份，措辞和重试口径不会漂开 */
@@ -397,8 +460,10 @@ async function lookAtImage(opts, input, timeoutMs, resolveFile, stop) {
         return { fail: `视觉模型请求失败：${e.message}` };
       }
       const j = await r.json().catch(() => ({}));
-      if (stop && stop.aborted) throw stoppedError();
-      if (!r.ok) return { r, j, http: r.status };
+      if (!r.ok) {
+        if (stop && stop.aborted) throw stoppedError();
+        return { r, j, http: r.status };
+      }
       const ch = ((j.choices || [])[0] || {});
       const msg = ch.message || {};
       let text = anthropic
@@ -410,6 +475,18 @@ async function lookAtImage(opts, input, timeoutMs, resolveFile, stop) {
         ? (j.content || []).some((c) => c && (c.type === "thinking" || c.type === "redacted_thinking"))
         : !!String(msg.reasoning_content || msg.reasoning || "").trim();
       const capped = anthropic ? j.stop_reason === "max_tokens" : ch.finish_reason === "length";
+      // 回了 200 就是花了钱，先记上再管用户是不是点了停止
+      if (tab) {
+        tab.calls++;
+        const u = visionUsage(j, anthropic);
+        if (u) { tab.prompt += u.prompt; tab.cached += u.cached; tab.completion += u.completion; }
+        else {
+          // 上游没回用量：输入按图 + 问题估，输出顶到上限的按上限、没顶到的按回答字数，往多了记
+          tab.prompt += guess.prompt;
+          tab.completion += capped ? (+bodyObj.max_tokens || guess.max_tokens) : Math.max(1, Array.from(String(text || "")).length);
+        }
+      }
+      if (stop && stop.aborted) throw stoppedError();
       return { r, j, text: String(text || "").trim(), reasoned, capped };
     };
 
@@ -467,12 +544,16 @@ async function lookAtImage(opts, input, timeoutMs, resolveFile, stop) {
   try {
     const first = await look(eye.cfg, eye.tell, eye.backup, eye.fromMain);
     if (!first.refused) return first;
-    // 主模型当场说它看不了图（多半是 caps 那个勾勾错了）：单配的那条顶上，别让这张图白丢
+    // 主模型当场说它看不了图（多半是 caps 那个勾勾错了）：单配的那条顶上，别让这张图白丢。
+    // 换了渠道就换了价，主模型那一趟先结掉，单配的那条重新过一次闸
+    close();
+    const blocked2 = open(eye.backup);
+    if (blocked2) return blocked2;
     const why = first.http
       ? `\n（主模型 ${eye.cfg.model} 看图这一趟回了 HTTP ${first.http}，已改用单配的 ${eye.backup.model}）`
       : `\n（主模型 ${eye.cfg.model} 回了一句看不了图，已改用单配的 ${eye.backup.model}；想省这一次空跑，去 设置 → 模型 把它的「能看图」取消勾选）`;
     return await look(eye.backup, why, null, false);
-  } finally { signal.release(); }
+  } finally { close(); signal.release(); }
 }
 
 /**

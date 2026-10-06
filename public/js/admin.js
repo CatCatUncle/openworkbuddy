@@ -1626,7 +1626,8 @@ PAGES.apiquota = {
         ? `<div class="fd" style="margin-top:4px">用得最多：${c.top.map((t) => `${esc(t.user)} ${num(t.n)}`).join(" · ")}</div>`
         : "";
       const state = c.configured
-        ? badge(c.paid ? "已配置 · 按次计费" : "已就绪 · 不花钱", c.paid ? "secondary" : "outline")
+        // 看图按 token 收（一趟花多少看图多大、答多长），写「按次」会让人以为一次一个价
+        ? badge(c.paid ? (c.billing === "token" ? "已配置 · 按 token 计费" : "已配置 · 按次计费") : "已就绪 · 不花钱", c.paid ? "secondary" : "outline")
         : badge("还没配", "outline");
       return cardT(
         headRow(

@@ -63,6 +63,7 @@ const ledger = usageStore.make(USAGE_DIR, USAGE_FILE);
  *   why        为什么这一项值得单独限——写给管理员看的，不是写给我们自己的
  *   configured 这一路的 Key 配在 config 的哪儿（后台一键跳过去）
  *   suggest    「设个合理额度」按钮填进去的值。按「一个十人小团队正常用一个月」估
+ *   billing    "token" = 钱按 token 算（看图就是一次对话），查的是对话那张价目表；不写 = 按 UNITS 的单位算
  */
 const CAPS = {
   search: {
@@ -95,14 +96,20 @@ const CAPS = {
     config: "media.asr", icon: "mic",
     suggest: { org_daily: 100, org_monthly: 1500, user_daily: 20 },
   },
+  vision: {
+    key: "vision", label: "视觉模型看图", unit: "次", paid: true, order: 6, billing: "token",
+    why: "按 token 计费，一张截图就是上千 token。逐张核对一批图、或者循环里反复看同一张，开销会悄悄滚起来。",
+    config: "media.vision", icon: "eye",
+    suggest: { org_daily: 500, org_monthly: 8000, user_daily: 100 },
+  },
   decide: {
-    key: "decide", label: "判断模型", unit: "道", paid: true, order: 6,
+    key: "decide", label: "判断模型", unit: "道", paid: true, order: 7,
     why: "Jev 这类判断模型一道题两万分之一美金，贵不起来；但它快得可以放进循环里，一段脚本跑一夜能问出几十万道。限的是失控的量，不是钱。",
     config: "providers", icon: "scale",
     suggest: { org_daily: 5000, org_monthly: 80000, user_daily: 800 },
   },
   fetch: {
-    key: "fetch", label: "抓取网页", unit: "次", paid: false, order: 7,
+    key: "fetch", label: "抓取网页", unit: "次", paid: false, order: 8,
     why: "自己不花钱，但浏览器渲染很吃这台服务器的内存，而且抓太狠会让对方站点把整台机器的 IP 封掉。",
     config: "", icon: "globe",
     suggest: { org_daily: 2000, org_monthly: 40000, user_daily: 300 },
@@ -247,8 +254,23 @@ function check(cap, n = 1, actor) {
  * 同一个 reserve/settle，就同一个预算、同一张报表。
  */
 
-/** 这一路的计价单位（张/秒/千字符/分钟/次），没有就说明这一路不进钱账（比如抓网页） */
-function billable(cap) { return !!pricing.UNITS[cap]; }
+/** 按 token 算钱的那几路（看图）。它们没有「张 / 秒」这种单位，一趟花多少看上游回的 usage */
+function byTokens(cap) { return !!(CAPS[cap] && CAPS[cap].billing === "token"); }
+
+/**
+ * 这一路进不进钱账：有按量单位的（张/秒/千字符/分钟/次），或者按 token 算的。
+ * 两样都没有就不进（比如抓网页、判断模型）。
+ */
+function billable(cap) { return !!pricing.UNITS[cap] || byTokens(cap); }
+
+/**
+ * 查价要带的那份价目参数。按 token 算的那几路把这一趟的渠道地址也带上：
+ * 价目表里没有的型号，要靠地址判断是不是本机 / 内网（那种是确实 0 元，不是「不知道」）。
+ */
+function priceOpts(who, baseUrl) {
+  const p = (who && who.price) || {};
+  return baseUrl ? { ...p, base_url: String(baseUrl) } : p;
+}
 
 /** 拿什么去查价。搜索没有「型号」，它的价钱跟着引擎走，所以拿 provider 当型号 */
 function priceKeyOf(cap, model, provider) { return String(model || provider || "").trim(); }
@@ -260,12 +282,13 @@ function priceKeyOf(cap, model, provider) { return String(model || provider || "
  * 背后是那条配置的型号 id。拿空串或名称去查价，要么查不到（有上限的人被白拦），
  * 要么查到一个跟真跑的不一样的价。所以跟工具里挑配置用同一个 pick，挑出来的那条说了算。
  * 挑不出来（点了个不存在的名字）就原样拿着去查——工具那边随后会报「没有这个型号」。
+ * 看图不在这儿挑：它可能是主模型自己看，调用方手里已经是真要去的那条渠道，传进来的就是型号 id。
  * @returns {{ key: string, resolved: boolean }}
  */
 function priceTarget(cap, model, provider, who) {
   const key = priceKeyOf(cap, model, provider);
   const cfg = who && who.price && who.price.config;
-  if (!cfg || !mediaModels.CAPS.includes(cap)) return { key, resolved: false };
+  if (!cfg || !mediaModels.CAPS.includes(cap) || byTokens(cap)) return { key, resolved: false };
   try {
     const hit = mediaModels.pick(mediaModels.resolve(cfg), cap, model);
     if (hit && String(hit.model || "").trim()) return { key: String(hit.model).trim(), resolved: true };
@@ -282,17 +305,22 @@ function priceTarget(cap, model, provider, who) {
  *
  * 没进过 withActor 的调用（命令行、单机桌面版、定时任务）两道闸都不生效，跟以前一样。
  */
-function gate(cap, { n = 1, model = "", units = 0, provider = "", actor } = {}) {
+function gate(cap, { n = 1, model = "", units = 0, provider = "", base_url = "", tokens = null, actor } = {}) {
   const who = actor || currentActor();
   const c = check(cap, n, who);
   if (!c.ok) return { ok: false, why: c.why, hold: null };
   if (!who || !who.budget || !billable(cap)) return { ok: true, hold: null };
   try {
     const t = priceTarget(cap, model, provider, who);
+    // 按 token 算的那几路（看图）走对话那张价目表：tokens 是调用方往多了估的
+    // 「问题 + 图」输入量和回答上限。没价目的远端型号在这儿就被拦，跟聊天同一个规矩。
+    const tk = tokens || {};
     const hold = budget.reserve({
       ...who.budget,
-      usage: { cap, model: t.key, units: units || n },
-      price: who.price || {},
+      usage: byTokens(cap)
+        ? { model: t.key, prompt: Math.max(0, +tk.prompt || 0), max_tokens: Math.max(0, +tk.max_tokens || 0) }
+        : { cap, model: t.key, units: units || n },
+      price: byTokens(cap) ? priceOpts(who, base_url) : (who.price || {}),
     });
     return { ok: true, hold };
   } catch (e) {
@@ -327,17 +355,27 @@ function undo(hold) { try { budget.release(hold); } catch {} }
  *      budget.spentOf 只认这本；不写的话，进程一重启，生图生视频花的钱就从
  *      预算里凭空消失了——内存里那份缓存是从这本账重新累出来的。
  */
-function record(cap, { n = 1, provider = "", model = "", meta = "", units = 0, hold, actor } = {}) {
+function record(cap, { n = 1, provider = "", model = "", meta = "", units = 0, base_url = "", tokens = null, hold, actor } = {}) {
   const who = actor || currentActor();
   const cnt = Math.max(1, Math.floor(+n) || 1);
   const t = priceTarget(cap, model, provider, who);   // 跟 gate 同一个口径，预扣和结算查的是同一行价
   const key = t.key;
-  const u = +units > 0 ? +units : cnt;
+  const tk = byTokens(cap) ? {
+    prompt: Math.max(0, +((tokens || {}).prompt) || 0),
+    cached: Math.max(0, +((tokens || {}).cached) || 0),
+    completion: Math.max(0, +((tokens || {}).completion) || 0),
+  } : null;
+  // 按 token 算的那几路，units 就是次数（一趟看几张图），钱看 tk
+  const u = tk ? cnt : (+units > 0 ? +units : cnt);
 
   // 算钱。算不出来也要把 hold 结掉，否则那笔预扣占到被扫为止。
   let cost = null;
   if (billable(cap)) {
-    try { cost = pricing.costOfUnits({ cap, model: key, units: u }, (who && who.price) || {}); } catch {}
+    try {
+      cost = tk
+        ? pricing.costOf({ model: key, ...tk }, priceOpts(who, base_url))
+        : pricing.costOfUnits({ cap, model: key, units: u }, (who && who.price) || {});
+    } catch {}
   }
   try { if (cost || !(CAPS[cap] && CAPS[cap].paid === false)) require("./run-spend").note({ cap, model: key, yuan: cost ? cost.yuan : 0, unknown: !cost || !!cost.unknown }); } catch {} // 这一趟花了多少（飞书卡片那一行），没在 track 里就是空操作；付费但表里没单价的（判断模型）记成一项「单价未知」，不当没花；paid:false 的（抓网页）不算
   try { budget.settle(hold, cost && !cost.unknown ? cost.yuan : 0); } catch {}
@@ -365,7 +403,7 @@ function record(cap, { n = 1, provider = "", model = "", meta = "", units = 0, h
     usageStore.append({
       ts: new Date().toISOString(), day: localDay(),
       kind: "api",                                  // 跟聊天的 "run" 、充值的 "topup" 分开
-      cap, units: u, unit: pricing.UNITS[cap].unit,
+      cap, units: u, unit: (pricing.UNITS[cap] || CAPS[cap]).unit,
       user: (who && who.user) || "",
       org: (who && who.org) || "default",
       dept: (who && who.dept) || "",
@@ -381,7 +419,7 @@ function record(cap, { n = 1, provider = "", model = "", meta = "", units = 0, h
       cost_unknown: cost ? !!cost.unknown : true,
       price_key: cost && !cost.unknown ? cost.key : "",
       discount: cost ? cost.discount : 1,
-      credits: 0, prompt: 0, cached: 0, completion: 0, calls: cnt,
+      credits: 0, prompt: tk ? tk.prompt : 0, cached: tk ? tk.cached : 0, completion: tk ? tk.completion : 0, calls: cnt,
     });
   } catch (e) {
     console.warn("[预算] 金额流水没记上（不影响本次调用）：" + e.message);
@@ -439,6 +477,6 @@ function normalizeTable(patch) {
 module.exports = {
   CAPS, CAP_KEYS, CAP_DEFAULT,
   quotaTable, normalizeCap, normalizeTable, suggested,
-  withActor, currentActor, check, gate, undo, record, summary, billable,
+  withActor, currentActor, check, gate, undo, record, summary, billable, byTokens,
   _internals: { load, loadAll, save, used, localDay, localMonth, USAGE_FILE, USAGE_DIR, emptyDb, ledger, priceKeyOf, priceTarget },
 };
