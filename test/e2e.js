@@ -7154,7 +7154,7 @@ async function capturePrompts(mod) {
   };
   engines.BACKENDS.push(probe);
   try {
-    const cfg = { ...config, agent: { ...config.agent, engine: "e2e-probe" } };
+    const cfg = { ...config, agent: { ...config.agent, engine: "e2e-probe", engine_options: { "e2e-probe": { model: "m1" } } } };
     await mod.createAgentRuntime({ config: cfg, llm: fakeLLM, mcpManager: new McpManager(), experts: [] })
       .runTask({ history: [{ role: "user", content: "你是？" }], emit: () => {} });
   } finally {
@@ -12240,10 +12240,9 @@ function testOutputOwnership() {
 /**
  * 本机引擎借工具：MCP 一条路，命令行一条路，两条都得是真能用的。
  *
- * 为什么非得有第二条路：codex 0.146 接到非 OpenAI 模型上时（用户 config.toml 里
- * model_provider 指向别家），它把我们的服务器拉起来、initialize 和 tools/list 全答了，
- * 却一个 MCP 工具都不往模型手里挂。抓 RPC 日志验过。这不是本项目的 bug，也不是本项目
- * 能修的地方——所以同一份实现再开一个命令行入口，两个 CLI 都有 shell，这条路谁都拦不住。
+ * 为什么还留第二条路：MCP 万一没挂上（老版 CLI、别家模型），同一份实现再开一个命令行入口。
+ * 两个 CLI 现在都以 MCP 为主：MCP 服务器由 CLI 自己拉起，不在 codex 的命令沙箱里，
+ * 沙箱默认不联网、不让写数据目录时，生图、记忆这些照样用得了；命令行入口跑在沙箱里，只当后备。
  *
  * 这里全部起真子进程跑，不 mock：mock 只能证明我写的 if 分支对，证明不了模型敲那条命令能出图。
  */
@@ -12264,10 +12263,11 @@ async function testEngineToolBridge() {
     }
   };
 
-  // ① codex：命令行是主路（MCP 挂不上），但 mcpArgs 仍然给出去——万一哪天它修好了就自动生效
+  // ① codex：MCP 是主路（服务器在命令沙箱外跑），命令行入口留作后备、跑在沙箱里
   const cx = bridge.attach("codex", { home, baseDir: BASE, user: "e2e" });
   try {
-    assert.strictEqual(cx.shimIsPrimary, true, "codex 那边命令行必须是主路：MCP 在它上面挂不出工具");
+    assert.strictEqual(cx.shimIsPrimary, false, "codex 那边 MCP 是主路：命令行入口跑在沙箱里，断网、写不了数据目录");
+    assert.strictEqual(cx.shimSandboxed, true, "codex 的命令行入口在沙箱里，得告诉提示词");
     assert(cx.shim && fs.existsSync(cx.shim), "codex 没生成命令行入口脚本");
     assert(cx.runOpts.mcpArgs && cx.runOpts.mcpArgs.length, "codex 的 -c mcp_servers.* 参数没给");
     // codex exec 审批策略是 never，没放行的 MCP 工具调用一律被判拒绝
@@ -12279,9 +12279,10 @@ async function testEngineToolBridge() {
       "shim 目录没挂到 PATH 最前面，模型敲裸 owb 找不到东西：" + JSON.stringify(cx.runOpts.env));
     assert.strictEqual(cx.shimBin, "owb", "命令名变了，提示词和放行规则就对不上了");
     assert.strictEqual(cx.runOpts.shimBin, "owb", "shimBin 没传给引擎，放行规则就下不去");
-    // codex 的 workspace-write 只让写 cwd，remember / save_skill 要写数据目录（在 cwd 外）
-    assert(Array.isArray(cx.runOpts.writableRoots) && cx.runOpts.writableRoots.includes(home),
-      "没给 codex 开数据目录的写权限，记忆和技能会存不下：" + JSON.stringify(cx.runOpts.writableRoots));
+    // 数据目录不再开给 codex 的沙箱：remember / save_skill 走 MCP，在沙箱外执行
+    assert(!("writableRoots" in cx.runOpts), "又给 codex 开了数据目录的写权限，沙箱里的命令能改配置和账号：" + JSON.stringify(cx.runOpts.writableRoots));
+    assert(cx.runOpts.mcpArgs.includes("mcp_servers.openworkbuddy.tool_timeout_sec=900"),
+      "MCP 是主路后生视频这类长工具得放宽超时，不然 codex 半路判它超时：" + JSON.stringify(cx.runOpts.mcpArgs));
     assert.strictEqual(cx.lent.length, tb.LENDABLE.length, "借出的工具数对不上：" + cx.lent.length + " vs " + tb.LENDABLE.length);
 
     // 脚本得把环境变量烘进去。不烘的话就得让模型自己带 OPENWORKBUDDY_HOME=... 前缀，
@@ -12361,15 +12362,17 @@ async function testEngineToolBridge() {
   assert(fm, "agent.js 里找不到 bridgedLine —— 那模型就永远不知道自己有这些工具");
   const bridgedLine = new Function("return " + fm[0].replace("function bridgedLine", "function") + ";")();
   const shimPath = "/tmp/owb-shim-xyz/owb";
-  const cxLine = bridgedLine({ lent: tb.LENDABLE, shim: shimPath, shimBin: "owb", shimIsPrimary: true });
-  assert(/\bowb list\b/.test(cxLine), "codex 的提示词里没给出命令行入口，它就一个工具也用不上");
-  assert(cxLine.includes("generate_image"), "没点名生图工具");
-  assert(!/mcp__openworkbuddy__/.test(cxLine), "codex 上 MCP 工具根本挂不出来，还在提示词里报这些名字，模型会去找不存在的东西");
+  const cxLine = bridgedLine({ lent: tb.LENDABLE, shim: shimPath, shimBin: "owb", shimIsPrimary: false, shimSandboxed: true });
+  assert(/mcp__openworkbuddy__generate_image/.test(cxLine), "codex 的提示词里没点名 MCP 工具（MCP 现在是主路）");
+  assert(/\bowb list\b/.test(cxLine), "codex 这边没给后备的命令行入口");
+  assert(/命令沙箱里/.test(cxLine) && /数据目录/.test(cxLine) && /联不了网/.test(cxLine),
+    "没告诉 codex 命令行入口在沙箱里：它会拿 owb 去生图、存记忆，撞了断网再瞎猜原因");
   // 负向：提示词里绝不能出现 shim 的绝对路径 —— 带路径的命令会被判「需要审批」，
   // 非交互下没人点同意，模型三次都被拦，最后在交付里写「没能用上 OWB 的工具」。真跑出来过。
   assert(!cxLine.includes(shimPath), "提示词里给的是绝对路径，模型照着敲会被权限层拦下");
-  const ccLine = bridgedLine({ lent: tb.LENDABLE, shim: shimPath, shimBin: "owb", shimIsPrimary: false });
+  const ccLine = bridgedLine({ lent: tb.LENDABLE, shim: shimPath, shimBin: "owb", shimIsPrimary: false, shimSandboxed: false });
   assert(/mcp__openworkbuddy__generate_image/.test(ccLine), "claude 的提示词里没点名 MCP 工具");
+  assert(!/命令沙箱里/.test(ccLine), "claude 的命令行入口不在 codex 那种沙箱里，别照搬那句");
   assert(/\bowb list\b/.test(ccLine), "claude 这边没给兜底的命令行入口");
   assert(!ccLine.includes(shimPath), "提示词里给的是绝对路径，模型照着敲会被权限层拦下");
   // 这两条红线不许丢：模型宁可如实说失败，也不许反过来叫用户自己把图放进去
@@ -12394,7 +12397,7 @@ async function testEngineToolBridge() {
   fs.chmodSync(fake, 0o755);
   const cc2 = bridge.attach("claude-code", { home, baseDir: BASE, user: "e2e" });
   try {
-    await require(modPath("claude-code")).run({ prompt: "hi", cwd: home, bin: fake, ...cc2.runOpts });
+    await require(modPath("claude-code")).run({ prompt: "hi", cwd: home, bin: fake, model: "sonnet", ...cc2.runOpts });
     const argv = JSON.parse(fs.readFileSync(argvOut, "utf8"));
     const pairs = argv.map((a, i) => (a === "--allowed-tools" ? argv[i + 1] : null)).filter(Boolean);
     assert(pairs.includes("Bash(owb:*)"), "没给命令行入口下放行规则，模型敲了也是「需要审批」：" + JSON.stringify(pairs));
@@ -12477,7 +12480,7 @@ async function testEngineSecurityGuard() {
   fs.chmodSync(fakeClaude, 0o755);
 
   const ccArgv = async (opts) => {
-    await require(modPath("claude-code")).run({ prompt: "hi", cwd: home, bin: fakeClaude, shimBin: "owb", ...opts });
+    await require(modPath("claude-code")).run({ prompt: "hi", cwd: home, bin: fakeClaude, shimBin: "owb", model: "sonnet", ...opts });
     return JSON.parse(fs.readFileSync(argvOut, "utf8"));
   };
   const pairsOf = (argv, flag) => argv.map((a, i) => (a === flag ? argv[i + 1] : null)).filter(Boolean);
@@ -12519,7 +12522,7 @@ async function testEngineSecurityGuard() {
   fs.chmodSync(fakeCodex, 0o755);
 
   const cxArgv = async (opts) => {
-    await require(modPath("codex")).run({ prompt: "hi", cwd: home, bin: fakeCodex, ...opts });
+    await require(modPath("codex")).run({ prompt: "hi", cwd: home, bin: fakeCodex, model: "gpt-test", ...opts });
     return JSON.parse(fs.readFileSync(argvOut, "utf8"));
   };
   const sandboxOf = (argv) => {
@@ -12535,6 +12538,15 @@ async function testEngineSecurityGuard() {
   assert.strictEqual(sandboxOf(await cxArgv({ guard: G("plan"), sandbox: "danger-full-access" })), "danger-full-access",
     "engine_options 里手填的 sandbox 被档位翻译表盖掉了");
   assert.strictEqual(sandboxOf(await cxArgv({})), "workspace-write", "不传 guard 时 codex 的老行为变了");
+  // 沙箱里的命令默认不联网、可写目录不含数据根（engines/gate.js safeRoots）；属主打开 network 才联网
+  const csOf = (argv) => argv.map((a, i) => (a === "-c" ? argv[i + 1] : null)).filter(Boolean).map(String);
+  const dataRoot = require(modPath("paths")).dataPath();
+  const cDef = csOf(await cxArgv({ writableRoots: [dataRoot, path.join(dataRoot, "data", "x"), path.join(home, "ws")] }));
+  assert(!cDef.some((c) => c.startsWith("sandbox_workspace_write.network_access")), "★codex 沙箱默认又联网了★：" + JSON.stringify(cDef));
+  const wr = cDef.find((c) => c.startsWith("sandbox_workspace_write.writable_roots="));
+  assert(wr && JSON.stringify(JSON.parse(wr.slice(wr.indexOf("=") + 1))) === JSON.stringify([path.join(home, "ws")]),
+    "★可写目录里混进了数据根★ 沙箱里的命令能改配置和账号：" + wr);
+  assert(csOf(await cxArgv({ network: true })).includes("sandbox_workspace_write.network_access=true"), "属主打开联网后没下到命令行上");
 
   fs.rmSync(home, { recursive: true, force: true });
   console.log("✅ 安全档位真的传到了本机 CLI：只看不动→claude plan / codex read-only且连借出去的命令行入口都不放行 · 名单上说要问的命令（含删除保护）在这条没审批通道的路上直接禁 · 全自动不多拦一下 · 手填的 engine_options 仍然最大 · 收紧了会在运行页明说一句");
@@ -14878,7 +14890,7 @@ async function testEngineStoppedSurfacing() {
   };
   engines.BACKENDS.push(probe);
   const rt = createAgentRuntime({
-    config: { ...config, agent: { ...config.agent, engine: "e2e-stop" } },
+    config: { ...config, agent: { ...config.agent, engine: "e2e-stop", engine_options: { "e2e-stop": { model: "m1" } } } },
     llm: makeFakeLLM(), mcpManager: new McpManager(), experts: [],
   });
   const run = async (finalText, stopped) => {
@@ -14976,7 +14988,7 @@ async function testEngineContextParity() {
     memory.promptBlock = async (user, hint) => { memCalls.push({ user, hint }); return user === "e2e-u" ? MEM : ""; };
     evolve.promptBlock = () => EV;
     const mk = (persona) => createAgentRuntime({
-      config: { ...config, persona, agent: { ...config.agent, engine: "e2e-ctx" } },
+      config: { ...config, persona, agent: { ...config.agent, engine: "e2e-ctx", engine_options: { "e2e-ctx": { model: "m1" } } } },
       llm: makeFakeLLM(), mcpManager: new McpManager(), experts: [],
     });
     const longMsg = "把上周的周报改成深色主题" + "。".repeat(600);
@@ -15098,7 +15110,7 @@ async function testFeedbackAndUsage() {
     'process.stdout.write(JSON.stringify({ type: "result", subtype: "success", result: "ok", usage: { input_tokens: 1000, cache_creation_input_tokens: 200, cache_read_input_tokens: 30000, output_tokens: 50 } }) + String.fromCharCode(10));',
   ].join("\n"));
   fs.chmodSync(fake, 0o755);
-  const r1 = await require(modPath("claude-code")).run({ prompt: "hi", cwd: home, bin: fake });
+  const r1 = await require(modPath("claude-code")).run({ prompt: "hi", cwd: home, bin: fake, model: "sonnet" });
   assert.strictEqual(r1.usage.prompt, 31200, "claude-code 的 prompt 没把缓存读/缓存写加回来：" + JSON.stringify(r1.usage));
   assert.strictEqual(r1.usage.cached, 30000, "cached 没记：" + JSON.stringify(r1.usage));
   assert.strictEqual(r1.usage.completion, 50, "completion 不对：" + JSON.stringify(r1.usage));

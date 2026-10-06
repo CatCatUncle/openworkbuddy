@@ -32,6 +32,7 @@ const { runJsonl, probeVersion, probeOption, probeHelp } = require("./jsonl");
 const thinking = require("../core/model/thinking");
 const { resolveBin } = require("../platform/which");
 const { buildChildEnv } = require("../platform/child-env");
+const gate = require("./gate");
 
 const ID = "claude-code";
 
@@ -173,6 +174,12 @@ async function run({
   thinking: thinkingLevel, addDirs = [],
   onWrite = null,
 }) {
+  // 闸在上游已经核过；这里再挡一次，护的是绕过 agent 直接调 run() 的那些入口（测试连接、目标拆解）。
+  // 不传 --model 时 claude 会落到它自己设置里的默认型号，那不是属主选的，所以没钉就不跑
+  const bad = gate.modelArg(extraArgs, ID);
+  if (bad) throw new Error(`本机 Claude Code 的附加参数里有换型号的「${bad}」，型号只能在 ${gate.WHERE} 里选。`);
+  const pinned = String(model || "").trim();
+  if (!pinned) throw new Error(`先在 ${gate.WHERE} 里给本机 Claude Code 指定型号，再开跑。`);
   // 起进程也走同一套解析：detect 认出来的是绝对路径，run 却还 spawn 裸名字的话，
   // 双击启动的桌面版会「设置页显示已装、一跑就 ENOENT」
   const found = await resolveBin("claude", bin);
@@ -192,7 +199,7 @@ async function run({
   // （只有从 MCP 桥回流的那批才走那道闸），于是用户选了「只看不动」，切到本机引擎
   // 照样随便改文件——界面上那颗开关等于摆设。engine_options 里手填的仍然最大。
   args.push("--permission-mode", permissionMode || guard.claudeMode || "acceptEdits");
-  if (model) args.push("--model", model);
+  args.push("--model", pinned);
   if (systemPrompt) args.push("--append-system-prompt", systemPrompt);
   if (resumeId) args.push("--resume", resumeId);
   if (maxTurns > 0) args.push("--max-turns", String(maxTurns));

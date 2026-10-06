@@ -15,10 +15,16 @@
  *   turn.completed              → usage
  *   turn.failed                 → 抛异常（错误就是错误，不许当成"跑完了"）
  *
- * 两个默认值是拍过的，不是抄来的：
+ * 沙箱的默认值：
  *   · sandbox = workspace-write —— 它得往工作目录写 PPT、报告、图片，read-only 等于废了。
- *   · network_access = true    —— 关着网就查不了资料，本项目一半的活干不了。
- *     这两条都会在设置页写明白，用户可以自己收紧。
+ *     可写的只有工作目录：OpenWorkBuddy 的数据根（配置、账号、Key 都在那）不开放，护的是
+ *     「引擎里跑的命令改不动应用自己的设置」。
+ *   · 命令联网默认关 —— 查资料走 codex 自带的联网搜索，不靠沙箱里的命令出网；
+ *     借过去的 OpenWorkBuddy 工具走 MCP，在沙箱外执行，不受这条影响。
+ *     属主在 设置 → 底层引擎 里可以打开（engine_options.codex.network）。
+ *
+ * 型号必须由调用方给（开跑前那道闸已经按属主的设置核过，见 gate.js）：
+ * 不再拿 ~/.codex/config.toml 里的默认型号顶上，没给就报错。
  */
 
 const { runJsonl, probeVersion } = require("./jsonl");
@@ -30,6 +36,7 @@ const path = require("path");
 const { execFile } = require("../platform/win"); // 不直接用 child_process 的：Windows 上 .cmd 垫片起不来、还闪黑窗
 const { dataPath } = require("../platform/paths");
 const { buildChildEnv } = require("../platform/child-env");
+const gate = require("./gate");
 
 const ID = "codex";
 
@@ -139,7 +146,7 @@ function explainModel(model, available) {
   const which = model ? `「${model}」` : "当前设置的模型";
   const can = available && available.length ? `这个账号能用的是：${available.join(" / ")}。` : "";
   return `本机 Codex 不认${which}这个模型（ChatGPT 订阅账号只能用订阅里有的型号）。${can}` +
-    `在这里的「模型」栏改成其中一个或留空，或者把 ~/.codex/config.toml 里的 model 改掉。`;
+    `去 ${gate.WHERE} 的「模型」栏改成其中一个。`;
 }
 
 function openWorkBuddyCodexHome(env = process.env) {
@@ -157,8 +164,7 @@ function openWorkBuddyCodexHome(env = process.env) {
   // 没有 auth 时也让 Codex 在隔离目录里启动：它会给出正常的「请登录」错误，不会偷偷
   // 回落去加载一大堆全局插件。符号链接让 token 刷新仍写回用户自己的登录态。
   if (!fs.existsSync(linkedAuth) && fs.existsSync(auth)) fs.symlinkSync(auth, linkedAuth);
-  const defaults = configuredModels(env);
-  return { env: { ...env, CODEX_HOME: home }, defaultModel: defaults[0] || "" };
+  return { env: { ...env, CODEX_HOME: home } };
 }
 
 /** file_change 这条改了哪些文件（绝对路径）；别的 item 一个都不算 */
@@ -310,23 +316,28 @@ async function detect(opts) {
 
 async function run({
   prompt, cwd, emit = () => {}, deadline, stopSignal,
-  model, resumeId, bin, sandbox, network = true, guard = {}, mcpArgs = [], writableRoots = [], env, extraArgs = [],
+  model, allowedModels = [], resumeId, bin, sandbox, network = false, guard = {}, mcpArgs = [], writableRoots = [], env, extraArgs = [],
   thinking: thinkingLevel,
   systemPrompt = "",
   onWrite = null,
 }) {
+  // 闸在上游已经核过；这里再挡一次，护的是绕过 agent 直接调 run() 的那些入口（测试连接、目标拆解）
+  const bad = gate.modelArg(extraArgs, ID);
+  if (bad) throw new Error(`本机 Codex 的附加参数里有换型号的「${bad}」，型号只能在 ${gate.WHERE} 里选。`);
+  const pinned = String(model || "").trim();
+  if (!pinned) throw new Error(`先在 ${gate.WHERE} 里给本机 Codex 指定型号，再开跑。`);
   const found = await resolveBin("codex", bin);
   if (!found.bin) throw new Error(found.why + "。装一个（npm i -g @openai/codex），或在设置里填 codex 的绝对路径。");
   const exe = found.bin;
   const isolated = openWorkBuddyCodexHome({ ...process.env, ...(env || {}) });
-  let effectiveModel = model || isolated.defaultModel;
-  // 这个模型不是用户在本项目里挑的，而是从全局 Codex 配置里捡来的：账号不认它就别硬塞，
-  // 让 Codex 用自己的默认型号。用户在这里手填的照传——填错了就该听到一句明白的报错。
+  let effectiveModel = pinned;
   const available = await accountModels(exe, isolated.env);
-  if (!model && effectiveModel && available && !available.includes(effectiveModel)) effectiveModel = "";
   if (resumeId) {
+    // 续跑沿用会话原来的型号（理由见 recordedModel），但只在它仍是属主放行的型号时：
+    // 属主收紧了列表，进行中的任务也得换到放行的那个上，不能靠续跑留在旧型号
     const rec = recordedModel(isolated.env.CODEX_HOME, resumeId);
-    if (rec && (!available || available.includes(rec))) effectiveModel = rec;
+    const ok = new Set([pinned, ...(Array.isArray(allowedModels) ? allowedModels : [])]);
+    if (rec && ok.has(rec) && (!available || available.includes(rec))) effectiveModel = rec;
   }
   // 同 claude 那边：本机 CLI 冷启动那几秒界面本来全空，看着像发送没点上。
   // bin 一确认存在就先挂一枚「正在启动」的牌子占位，thread.started 一到原地换成带模型名的
@@ -342,11 +353,12 @@ async function run({
   // codex 自带的工具不经过本项目的安全中心，硬写死 workspace-write 的话，
   // 用户选的档位到这条路上就丢了。engine_options 里手填的 sandbox 仍然最大
   args.push("-c", `sandbox_mode="${sandbox || guard.codexSandbox || "workspace-write"}"`);
-  if (network) args.push("-c", "sandbox_workspace_write.network_access=true");
-  // workspace-write 默认只让写 cwd。本项目借出去的工具里，remember / save_skill 要写到
-  // 数据目录（在 cwd 外面），不开这个口子就是「工具调得动、东西存不下」，报错还特别难懂。
-  if (writableRoots.length) args.push("-c", `sandbox_workspace_write.writable_roots=${JSON.stringify(writableRoots)}`);
-  if (effectiveModel) args.push("-m", effectiveModel);
+  if (network === true) args.push("-c", "sandbox_workspace_write.network_access=true");
+  // workspace-write 默认只让写 cwd。额外的可写目录只收工作区里的：数据根、包着数据根的目录、
+  // 数据根下的 data/ 一律剔掉（remember / save_skill 走 MCP，在沙箱外执行，用不着这个口子）
+  const roots = gate.safeRoots(writableRoots, dataPath());
+  if (roots.length) args.push("-c", `sandbox_workspace_write.writable_roots=${JSON.stringify(roots)}`);
+  args.push("-m", effectiveModel);
   // 本项目自己的工具（生图/视频/技能/记忆）当成 MCP 服务器挂上去，
   // 否则切到本机 Codex 就等于把这些全丢了
   for (const a of mcpArgs) args.push(a);

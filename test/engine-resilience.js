@@ -13,6 +13,9 @@
  *      动过工具、报的是别的错、没有续跑 id、已经按了停止——这四种都不许重来
  *   ⑥ codex：本项目的说明（工作目录、产出放哪）走 developer_instructions 交过去；
  *      自带生图出的图留在它自己的目录里、界面看不到——模型没放进对话目录就替它放
+ *   ⑦ 开跑前的闸（engines/gate.js）：组织关了命令行就不起外部引擎、也不退回内置；
+ *      型号必须钉死或在属主放行的列表里；附加参数不许换型号/供应商；多人共用默认关、属主打开才放行；
+ *      codex 默认不联网、可写目录里没有数据根；多人共用时像 Key 的环境变量不往引擎里传
  *
  * 引擎全是本地假的，不出网。
  *   node test/engine-resilience.js
@@ -52,7 +55,7 @@ const line = (o) => `process.stdout.write(${JSON.stringify(JSON.stringify(o) + "
 async function partResultErrors() {
   console.log("\n— ① result 里报的错 —");
   const claude = require(mod("claude-code"));
-  const tryRun = async (bin) => { try { return { r: await claude.run({ prompt: "hi", cwd: home, bin }) }; } catch (e) { return { e }; } };
+  const tryRun = async (bin) => { try { return { r: await claude.run({ prompt: "hi", cwd: home, bin, model: "sonnet" }) }; } catch (e) { return { e }; } };
 
   {
     const bin = fakeBin("cc-nologin", line({ type: "result", subtype: "success", is_error: true, result: "Invalid API key · Please run /login" }) + "process.exitCode = 1;");
@@ -94,10 +97,10 @@ async function partWriteHints() {
     tool("Read", { file_path: "别的.md" }) +
     line({ type: "result", subtype: "success", is_error: false, result: "好了" }));
   const got = [];
-  const r = await claude.run({ prompt: "hi", cwd: home, bin, onWrite: (p) => got.push(p) });
+  const r = await claude.run({ prompt: "hi", cwd: home, bin, model: "sonnet", onWrite: (p) => got.push(p) });
   ok(r.finalText === "好了" && same(got, [path.join(home, "汇总.csv"), path.join(home, "任务_x", "报告.md")]),
     "claude：Write / Edit 点名的文件按工作目录解析成绝对路径报上来，Bash、Read 不算", got);
-  const none = await claude.run({ prompt: "hi", cwd: home, bin });
+  const none = await claude.run({ prompt: "hi", cwd: home, bin, model: "sonnet" });
   ok(none.finalText === "好了", "不传 onWrite 照常跑（不是每个调用方都要）");
   ok(same(codex.changedPaths({ type: "file_change", changes: [{ path: "a.md", kind: "add" }, { path: "/abs/b.md" }, {}] }, home), [path.join(home, "a.md"), "/abs/b.md"]),
     "codex：file_change 里改的文件按工作目录解析，缺路径的跳过");
@@ -145,7 +148,7 @@ process.stdin.on("data", (d) => { input += d; }).on("end", () => {
     let r = null, err = null;
     try {
       r = await codex.run({
-        prompt: "画一张深圳夜景", cwd, bin, resumeId, systemPrompt, extraArgs,
+        prompt: "画一张深圳夜景", cwd, bin, resumeId, systemPrompt, extraArgs, model: "gpt-test",
         env: { CODEX_HOME: srcHome, FAKE_LOG: logFile, FAKE_THREAD: thread, FAKE_MODE: mode },
         emit: (e) => evs.push(e), onWrite: (p) => wrote.push(p),
       });
@@ -324,7 +327,7 @@ async function partStaleResume() {
     async run(o) { calls.push({ prompt: o.prompt, resumeId: o.resumeId, systemPrompt: o.systemPrompt }); return script(o, calls.length); },
   };
   engines.BACKENDS.push(stub);
-  const rt = createAgentRuntime({ config: { agent: { engine: "t-stale", max_steps: 3 } }, llm, mcpManager: new McpManager(), experts: [] });
+  const rt = createAgentRuntime({ config: { agent: { engine: "t-stale", max_steps: 3, engine_options: { "t-stale": { model: "m1" } } } }, llm, mcpManager: new McpManager(), experts: [] });
   const history = () => [
     { role: "user", content: "先查一下 ALPHA" },
     { role: "assistant", text: "查完了" },
@@ -377,6 +380,216 @@ async function partStaleResume() {
   }
 }
 
+async function partGate() {
+  console.log("\n— ⑦ 开跑前的闸：命令行开关、型号钉死、附加参数、沙箱只写工作区 —");
+  const gate = require(mod("gate"));
+  const engines = require(mod("engines"));
+  const security = require(mod("security"));
+  const tools = require(mod("tools"));
+  const prefs = require(mod("prefs"));
+  const codex = require(mod("codex"));
+  const claude = require(mod("claude-code"));
+  const bridge = require(mod("bridge"));
+  const { callerEnv } = require(mod("jsonl"));
+  const { dataPath } = require(mod("paths"));
+  const { createAgentRuntime } = require(mod("agent"));
+  const { McpManager } = require(mod("mcp"));
+  const SHELL_OFF = "本组织关了命令行，外部引擎自带命令行，所以也不能用。";
+  const codeOf = (fn) => { try { fn(); return ""; } catch (e) { return e.engineGate ? e.code : "非闸错：" + e.message; } };
+  const cfg = (o) => ({ agent: { engine: "codex", engine_options: { codex: o } } });
+
+  // —— 纯判定：engines.admit 收原始 config ——
+  {
+    let msg = "";
+    try { engines.admit("codex", cfg({ model: "gpt-5", enabled: true }), { shellOff: true, multi: false }); } catch (e) { msg = e.message; }
+    ok(msg === SHELL_OFF, "★组织关了命令行★ 外部引擎直接拒绝，文案说清为什么", msg);
+    ok(codeOf(() => engines.admit("codex", cfg({}), { multi: false })) === "no_model", "★没钉型号就报错★ 不拿 CLI 自己配置里的默认型号顶上");
+    const r = engines.admit("codex", cfg({ model: "gpt-5" }), { multi: false });
+    ok(r.model === "gpt-5" && same(r.allowed, ["gpt-5"]) && r.opts.model === "gpt-5" && same(r.opts.allowedModels, ["gpt-5"]),
+      "反向对照：单机、钉了型号 → 放行，交给 run() 的就是钉的那个", r.opts);
+    ok(codeOf(() => engines.admit("codex", cfg({ model: "gpt-5" }), { multi: true })) === "engine_off", "★多人共用默认关★ 属主没打开就不能用");
+    ok(codeOf(() => engines.admit("codex", cfg({ model: "gpt-5", enabled: true }), { multi: true })) === "", "属主打开以后放行");
+    ok(codeOf(() => engines.admit("codex", cfg({ model: "gpt-5" }), { multi: false, model: "o3" })) === "model_not_allowed",
+      "★自己挑的型号不在放行列表★ 拒绝");
+    ok(codeOf(() => engines.admit("codex", cfg({ model: "gpt-5", models: ["o3"] }), { multi: false, model: "o3" })) === "",
+      "反向对照：在属主给的候选列表里 → 放行");
+    ok(codeOf(() => engines.admit("codex", cfg({ model: "gpt-5", extraArgs: ["-c", "model=o3"] }), { multi: false })) === "extra_model",
+      "★附加参数里换型号★ 开跑前就拦下");
+    ok(codeOf(() => engines.admit("claude-code", { agent: { engine_options: { "claude-code": { model: "sonnet" } } } }, { shellOff: true, multi: false })) === "shell_off",
+      "Claude Code 也一样受命令行开关管");
+  }
+  // —— 个人设置文件里塞属主才有的键：盖不上去 ——
+  {
+    const sneaky = { agent: { engine_options: { codex: { model: "o9", models: ["o9"], enabled: true, network: true, extraArgs: ["--yolo"], bin: "/bin/sh" } } } };
+    const owner = cfg({ model: "gpt-5", enabled: true });
+    prefs.withPrefs(sneaky, () => {
+      const eo = prefs.agentCfg(owner).engine_options.codex;
+      ok(eo.model === "o9" && same(eo.models, undefined) && eo.network === undefined && eo.extraArgs === undefined && eo.bin === undefined,
+        "★个人设置只叠 model / thinking★ models、network、extraArgs、bin 塞进去也不算数", eo);
+      ok(codeOf(() => engines.admit("codex", owner, { multi: true })) === "model_not_allowed", "  └ 所以自己往列表里加的 o9 照样不放行");
+    });
+    prefs.withPrefs(sneaky, () => {
+      ok(codeOf(() => engines.admit("codex", cfg({ model: "gpt-5" }), { multi: true })) === "engine_off", "  └ 自己写 enabled:true 也打不开属主没开的引擎");
+    });
+  }
+  // —— 附加参数：每一种换型号、换供应商的写法 ——
+  {
+    const cx = [
+      ["--model", "x"], ["--model=x"], ["-m", "x"], ["-mx"], ["--fallback-model", "x"],
+      ["-c", "model=x"], ["-c", 'model="x"'], ["-c", " model = x"], ["--config", "model=x"], ["--config=model_provider=y"],
+      ["-cprofile=z"], ["-c", "model_providers.evil.base_url=http://127.0.0.1:9"], ["-c", "profiles.p.model=x"],
+      ["--profile", "p"], ["--profile=p"], ["-p", "p"], ["--oss"], ["--local-provider", "ollama"],
+      ["--full-auto", "-c", "model=x"],
+    ];
+    const bad = cx.filter((a) => !gate.modelArg(a, "codex"));
+    ok(bad.length === 0, `★codex 附加参数换型号的 ${cx.length} 种写法全拦★（含 = 连写、-c 覆盖配置、换配置档 / 供应商）`, bad);
+    const cc = [["--model", "opus"], ["--model=opus"], ["-m", "opus"], ["--fallback-model", "haiku"], ["--settings", "{}"], ["--agents", "{}"]];
+    ok(cc.every((a) => gate.modelArg(a, "claude-code")), "claude 附加参数：--model / --fallback-model / --settings / --agents 全拦", cc.filter((a) => !gate.modelArg(a, "claude-code")));
+    const fine = [["-c", 'developer_instructions="x"'], ["--full-auto"], ["-c", "model_reasoning_effort=high"], ["-c", "sandbox_mode=read-only"], []];
+    ok(fine.every((a) => gate.modelArg(a, "codex") === ""), "反向对照：不换型号的参数照常放行（model_reasoning_effort 不是 model）", fine.filter((a) => gate.modelArg(a, "codex")));
+    ok(gate.modelArg(["--verbose", "--max-turns", "3"], "claude-code") === "", "反向对照：claude 的普通参数照常放行");
+    // 设置页保存：属主填附加参数时就拦，而且拦在改动任何配置之前（不留内存里改了一半的状态）
+    const srv = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+    const chk = srv.indexOf("engineGate.modelArg(v.extraArgs, id)");
+    const firstWrite = srv.indexOf("config.models = b.models;");
+    ok(chk > 0 && firstWrite > chk, "设置页保存附加参数也过同一个判定，而且在写配置之前", { chk, firstWrite });
+  }
+
+  // —— run() 自己也挡一道：绕过 agent 直接调的入口（试连、目标拆解）——
+  const srcHome = path.join(home, "codex-gate-src");
+  fs.mkdirSync(srcHome, { recursive: true });
+  const argvLog = path.join(home, "gate-argv.json");
+  const dump = `
+const a = process.argv.slice(2);
+if (a[0] === "debug" || a[0] === "--version") process.exit(1);
+require("fs").writeFileSync(process.env.FAKE_LOG, JSON.stringify(a));
+const out = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
+process.stdin.resume();
+process.stdin.on("end", () => {
+  out({ type: "thread.started", thread_id: "th-gate" });
+  out({ type: "item.completed", item: { id: "m1", type: "agent_message", text: "好" } });
+  out({ type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } });
+});
+`;
+  const cxBin = fakeBin("codex-gate", dump);
+  const ccBin = fakeBin("cc-gate", `
+const a = process.argv.slice(2);
+require("fs").writeFileSync(process.env.FAKE_LOG, JSON.stringify(a));
+process.stdout.write(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "好" }) + "\\n");
+`);
+  const cxRun = async (extra = {}) => {
+    fs.rmSync(argvLog, { force: true });
+    const cwd = path.join(home, "gate-ws");
+    fs.mkdirSync(cwd, { recursive: true });
+    let r = null, err = null;
+    try { r = await codex.run({ prompt: "hi", cwd, bin: cxBin, env: { CODEX_HOME: srcHome, FAKE_LOG: argvLog }, ...extra }); } catch (e) { err = e; }
+    const argv = fs.existsSync(argvLog) ? JSON.parse(fs.readFileSync(argvLog, "utf8")) : null;
+    return { r, err, argv };
+  };
+  const ccRun = async (extra = {}) => {
+    fs.rmSync(argvLog, { force: true });
+    let r = null, err = null;
+    try { r = await claude.run({ prompt: "hi", cwd: home, bin: ccBin, env: { FAKE_LOG: argvLog }, ...extra }); } catch (e) { err = e; }
+    const argv = fs.existsSync(argvLog) ? JSON.parse(fs.readFileSync(argvLog, "utf8")) : null;
+    return { r, err, argv };
+  };
+  {
+    const A = await cxRun({});
+    ok(A.err && /指定型号/.test(A.err.message) && A.argv === null, "★codex 没钉型号★ run() 报错、进程都没起", A.err ? A.err.message : A.argv);
+    const B = await ccRun({});
+    ok(B.err && /指定型号/.test(B.err.message) && B.argv === null, "★claude 没钉型号★ 同上", B.err ? B.err.message : B.argv);
+    const C = await cxRun({ model: "gpt-test", extraArgs: ["--model", "o3"] });
+    ok(C.err && /换型号/.test(C.err.message) && C.argv === null, "codex 附加参数带 --model：run() 拒绝", C.err ? C.err.message : C.argv);
+    const D = await ccRun({ model: "sonnet", extraArgs: ["--settings", "{}"] });
+    ok(D.err && /换型号/.test(D.err.message) && D.argv === null, "claude 附加参数带 --settings：run() 拒绝", D.err ? D.err.message : D.argv);
+    const E = await ccRun({ model: "sonnet" });
+    ok(!E.err && E.argv && E.argv[E.argv.indexOf("--model") + 1] === "sonnet", "反向对照：claude 钉了型号 → 带着 --model 起", E.err ? E.err.message : E.argv);
+  }
+  {
+    const root = dataPath();
+    const keep = path.join(root, "workspace", "项目甲");
+    const A = await cxRun({ model: "gpt-test", writableRoots: [root, path.join(root, "data"), path.join(root, "data", "users"), path.dirname(root), keep] });
+    ok(!A.err && A.argv, "codex 钉了型号：跑通", A.err && A.err.message);
+    const m = A.argv[A.argv.indexOf("-m") + 1];
+    ok(m === "gpt-test", "★-m 带的就是钉的那个★", A.argv);
+    ok(!A.argv.some((x) => /network_access\s*=\s*true/.test(x)), "★默认不联网★ argv 里没有 network_access=true", A.argv);
+    const wr = A.argv.find((x) => x.startsWith("sandbox_workspace_write.writable_roots="));
+    const roots = wr ? JSON.parse(wr.slice("sandbox_workspace_write.writable_roots=".length)) : [];
+    ok(same(roots, [keep]), "★可写目录只剩工作区里的★ 数据根、data/、包着数据根的上级目录全剔掉", roots);
+    const B = await cxRun({ model: "gpt-test", network: true });
+    ok(!B.err && B.argv.includes("sandbox_workspace_write.network_access=true"), "反向对照：属主在设置里打开联网 → 才带上", B.argv);
+    const C = await cxRun({ model: "gpt-test", network: "true" });
+    ok(!C.err && !C.argv.some((x) => /network_access/.test(x)), "只认布尔 true：字符串 \"true\" 不算打开", C.argv);
+    const D = await cxRun({ model: "gpt-test", writableRoots: [root] });
+    ok(!D.err && !D.argv.some((x) => /writable_roots/.test(x)), "剔完一个不剩：干脆不带 writable_roots", D.argv);
+  }
+  {
+    const att = bridge.attach("codex", { home: dataPath(), baseDir: "任务_闸", user: "gate" });
+    try {
+      ok(!("writableRoots" in att.runOpts), "★借工具时不再把数据根塞进 codex 的可写目录★", Object.keys(att.runOpts));
+      ok(att.runOpts.mcpArgs.includes("mcp_servers.openworkbuddy.tool_timeout_sec=900"), "MCP 工具给足 15 分钟（生图、出视频慢）", att.runOpts.mcpArgs.filter((x) => /timeout/.test(x)));
+      ok(att.shimIsPrimary === false && att.shimSandboxed === true, "codex 以 MCP 为主，命令行入口在沙箱里只当后备");
+    } finally { att.cleanup(); }
+  }
+
+  // —— 接进 runTask：组织关了命令行时不起引擎、也不退回内置 ——
+  const calls = [];
+  let llmCalls = 0;
+  const stub = {
+    id: "t-gate", label: "闸桩", bin: null, note: "", install: "", launchHeader: "", supportsResume: false, models: [],
+    async detect() { return { id: "t-gate", installed: true, path: "", version: "0" }; },
+    async run(o) { calls.push(o); return { finalText: "桩答的", usage: {}, stopped: null, sessionId: null }; },
+  };
+  const fakeLLM = { provider: "mock", model: "scripted", async chat() { llmCalls++; return { text: "内置答的", toolCalls: [], stopReason: "end" }; } };
+  engines.BACKENDS.push(stub);
+  const rtOf = (o) => createAgentRuntime({ config: { agent: { engine: "t-gate", max_steps: 3, engine_options: { "t-gate": o } } }, llm: fakeLLM, mcpManager: new McpManager(), experts: [] });
+  const go = async (rt) => {
+    calls.length = 0;
+    llmCalls = 0;
+    let r = null, err = null;
+    try { r = await rt.runTask({ history: [{ role: "user", content: "干活" }], emit: () => {} }); } catch (e) { err = e; }
+    return { r, err };
+  };
+  try {
+    {
+      const A = await tools.withPolicy({ allow_shell: false }, () => go(rtOf({ model: "m1" })));
+      ok(A.err && A.err.message === SHELL_OFF, "★allow_shell:false → 任务报错★ 文案原样交给用户", A.err ? A.err.message : A.r);
+      ok(calls.length === 0 && llmCalls === 0, "★引擎没起、也没悄悄退回内置引擎★", { engine: calls.length, builtin: llmCalls });
+      const B = await go(rtOf({ model: "m1" }));
+      ok(!B.err && calls.length === 1 && calls[0].model === "m1" && llmCalls === 0, "反向对照：组织没关命令行 → 照常交给引擎，带着钉的型号", B.err ? B.err.message : calls.map((c) => c.model));
+    }
+    {
+      const A = await go(rtOf({}));
+      ok(A.err && A.err.code === "no_model" && calls.length === 0 && llmCalls === 0, "没钉型号：任务报错，不退回内置", A.err ? A.err.message : A.r);
+      ok(/设置 → 底层引擎/.test(A.err.message), "  └ 报错说清去哪配", A.err.message);
+    }
+    security.setMultiUser(() => true);
+    {
+      const A = await go(rtOf({ model: "m1" }));
+      ok(A.err && A.err.code === "engine_off" && calls.length === 0 && llmCalls === 0, "★多人共用、属主没打开★ 任务报错，不退回内置", A.err ? A.err.message : A.r);
+      const B = await go(rtOf({ model: "m1", enabled: true }));
+      ok(!B.err && calls.length === 1, "反向对照：属主打开以后照常跑", B.err && B.err.message);
+      const C = await prefs.withPrefs({ agent: { engine_options: { "t-gate": { model: "偷换的" } } } }, () => go(rtOf({ model: "m1", enabled: true })));
+      ok(C.err && C.err.code === "model_not_allowed" && calls.length === 0, "★成员自己挑的型号不在放行列表★ 拒绝", C.err ? C.err.message : C.r);
+      const D = await prefs.withPrefs({ agent: { engine_options: { "t-gate": { model: "m2" } } } }, () => go(rtOf({ model: "m1", models: ["m2"], enabled: true })));
+      ok(!D.err && calls.length === 1 && calls[0].model === "m2", "反向对照：在列表里的型号放行，引擎拿到的就是它", D.err ? D.err.message : calls.map((c) => c.model));
+    }
+    // —— 环境变量：多人共用时像 Key 的一个都不往引擎里传 ——
+    {
+      const env = { OPENAI_API_KEY: "sk-test-xxxx", ANTHROPIC_AUTH_TOKEN: "sk-test-yyyy", CODEX_HOME: "/x", FAKE_LOG: "/y" };
+      const multi = callerEnv(env);
+      ok(!("OPENAI_API_KEY" in multi) && !("ANTHROPIC_AUTH_TOKEN" in multi), "★多人共用：像 Key 的变量剔掉★", Object.keys(multi));
+      ok(multi.CODEX_HOME === "/x" && multi.FAKE_LOG === "/y", "  └ 别的照传", multi);
+      security.setMultiUser(null);
+      const solo = callerEnv(env);
+      ok(solo.OPENAI_API_KEY === "sk-test-xxxx", "反向对照：单机桌面照传（用户自己的机器、自己的 Key）", Object.keys(solo));
+    }
+  } finally {
+    security.setMultiUser(null);
+    engines.BACKENDS.splice(engines.BACKENDS.indexOf(stub), 1);
+  }
+}
+
 (async () => {
   try {
     await partResultErrors();
@@ -385,6 +598,7 @@ async function partStaleResume() {
     await partKill();
     partTempDirs();
     await partStaleResume();
+    await partGate();
     console.log(`\n引擎韧性：${pass} 项全过`);
   } finally {
     fs.rmSync(home, { recursive: true, force: true });

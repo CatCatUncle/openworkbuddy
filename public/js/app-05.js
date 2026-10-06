@@ -2992,8 +2992,18 @@ async function renderEngineCard(box, force) {
   if (!d) { box.innerHTML = '<div class="eng-msg">检测失败：拿不到引擎列表</div>'; return; }
   const cur = d.current || "builtin";
   const all = [d.builtin, ...(d.engines || [])];
+  const ctx = { multi: !!d.multiUser, shellOff: !!d.shellOff };
   box.innerHTML = all.map((e) => {
     const on = cur === e.id, builtin = e.id === "builtin", ready = builtin || e.installed;
+    const g = e.gate || {};
+    // 开跑前那道闸的状态直接写在卡上：组织关了命令行 / 多人共用属主还没打开。别等用户切过去、跑一个任务才撞上报错
+    const gateNote = builtin ? ""
+      : ctx.shellOff ? '<div class="eng-i">本组织关了命令行，外部引擎自带命令行，所以也不能用。</div>'
+      : ctx.multi && !g.enabled ? `<div class="eng-i">${amPlatformOwner() ? "多人共用时默认关着，勾上下面这项才能用。" : "多人共用时默认关着，平台属主打开后才能用。"}</div>`
+      : "";
+    // 开关只画给平台属主，而且画在每张装了的卡上——画在「选中后的展开区」里的话，得先切过去才看得见它
+    const gateRow = !builtin && e.installed && ctx.multi && amPlatformOwner()
+      ? `<label class="eng-gate eng-row"><input type="checkbox" data-act="enable"${g.enabled ? " checked" : ""}> <span>在这台服务器上打开它（多人共用时默认关）</span></label>` : "";
     const v = engTested.get(e.id);
     // 从补全的 PATH / 登录 shell 里找到的，说一声——用户要是纳闷"我明明装了它怎么现在才看见"，这就是答案
     const howNote = !builtin && e.installed && e.how && e.how !== "PATH"
@@ -3009,9 +3019,11 @@ async function renderEngineCard(box, force) {
       <div class="eng-h"><span class="eng-dot">${on ? "●" : "○"}</span><b>${esc(e.label)}</b><span class="eng-bs">${engBadgeHtml(e, v)}</span></div>
       <div class="eng-n">${esc(e.note || "")}</div>
       ${howNote}
+      ${gateNote}
       ${!builtin && !e.installed ? `<div class="eng-i">${esc(e.error || "没找到")}<br>装法：<code>${esc(e.install || "")}</code></div>${engineBinRowHtml(e)}` : ""}
+      ${gateRow}
       ${tryRow}
-      ${builtin || !on ? "" : engineExtraHtml(e)}
+      ${builtin || !on ? "" : engineExtraHtml(e, ctx)}
     </div>`;
   }).join("") + '<div class="eng-row" style="margin-top:4px"><button class="btn-plain" id="ag-eng-rescan">重新检测本机</button><span class="eng-msg" id="ag-eng-msg"></span></div>';
 
@@ -3023,6 +3035,13 @@ async function renderEngineCard(box, force) {
     if (el.classList.contains("on")) bindEngineExtra(el, id, box);
     const tb = el.querySelector('[data-act="test"]');
     if (tb) tb.onclick = (ev) => { ev.stopPropagation(); testEngineConnect(el, id); };
+    const eb = el.querySelector('[data-act="enable"]');
+    if (eb) eb.onchange = async () => {
+      msg.textContent = "保存中…";
+      const ok = await saveSettings({ agent: { engine_options: { [id]: { enabled: eb.checked } } } }, null);
+      if (!ok) { eb.checked = !eb.checked; msg.textContent = lastSaveError || "保存失败"; return; }
+      return renderEngineCard(box);
+    };
     const bb = el.querySelector('[data-act="bin"]');
     if (bb) bb.onclick = async (ev) => {
       ev.stopPropagation();
@@ -3035,7 +3054,7 @@ async function renderEngineCard(box, force) {
     };
     el.onclick = async (ev) => {
       // 展开区的输入框、试一试那一行、测出来的结论、填路径那一行，点了都不算"切引擎"
-      if (ev.target.closest(".eng-x, .eng-try, .eng-r, .eng-bin")) return;
+      if (ev.target.closest(".eng-x, .eng-try, .eng-r, .eng-bin, .eng-gate")) return;
       if (el.classList.contains("on")) return;
       if (el.dataset.ready !== "1") {
         // 没找到的那条：点了不切。静默切到一个跑不起来的引擎，用户会以为在用本机订阅，
@@ -3074,30 +3093,41 @@ function engineBinRowHtml(e) {
 const ENGINE_THINK_LEVELS = [
   ["", "跟随全局思考模式"], ["auto", "跟随 CLI 默认"], ["off", "关闭思考"], ["low", "低"], ["medium", "中"], ["high", "高"],
 ];
-function engineExtraHtml(e) {
+function engineExtraHtml(e, ctx = {}) {
   const o = e.options || {};
+  const g = e.gate || {};
+  const owner = amPlatformOwner();
   const listId = "eng-models-" + e.id;
-  const models = Array.isArray(e.models) ? e.models : [];
-  const modelHint = e.modelSource === "codex_account"
-    ? "列的是你这个 Codex 账号能用的模型；留空用默认。"
+  const allowed = Array.isArray(g.allowed) ? g.allowed : [];
+  // 型号必须钉死（不再用 CLI 自己的默认型号）。成员只能在属主放行的那几个里挑，下拉也只列这几个
+  const models = owner ? (Array.isArray(e.models) ? e.models : []) : allowed;
+  const modelHint = !owner
+    ? (allowed.length ? "只能从属主放行的型号里选；留空跟属主钉的那个走。" : "属主还没放行型号，先找平台属主在这里填。")
+    : e.modelSource === "codex_account"
+    ? "列的是这个 Codex 账号能用的模型，选一个钉住。"
     : e.modelSource === "claude_local"
-    ? "别名（opus / sonnet…）永远指向最新一代，外加你 Claude Code 配置里用过的；留空用默认。"
+    ? "别名（opus / sonnet…）指向最新一代，外加你配置里用过的；选一个钉住。"
     : e.modelSource === "codex_config"
-    ? "只列 Codex 配置里有的模型；留空用默认，也可手填。"
+    ? "只列 Codex 配置里有的模型，也可手填；必须填一个。"
     : e.id === "codex"
-      ? "Codex 无模型目录可查。留空用默认，或手填模型名。"
-      : "留空 = 用 CLI 自己的默认模型；也可以直接输入它支持的模型名。";
+      ? "Codex 没有模型目录可查，手填一个模型名。"
+      : "填一个它支持的模型名，必须填。";
+  const placeholder = owner ? "必填" : (g.pinned || "从放行的型号里选");
   // 路径框只画给平台管理员：成员存的时候带上它（哪怕是空串）整单都会 403，连模型和思考档也存不下
   return `<div class="eng-x" onclick="event.stopPropagation()">
-    ${amPlatformOwner() ? `<label>可执行文件路径<span style="color:var(--owb-text-3)">（留空自动查找，找不到时再填绝对路径）</span>
+    ${owner ? `<label>可执行文件路径<span style="color:var(--owb-text-3)">（留空自动查找，找不到时再填绝对路径）</span>
       <input type="text" data-k="bin" placeholder="${esc(e.path || e.id)}" value="${esc(o.bin || "")}"></label>` : ""}
     <label>模型<span style="color:var(--owb-text-3)">（${esc(modelHint)}）</span>
-      <input type="text" data-k="model" list="${listId}" placeholder="默认" value="${esc(o.model || "")}" autocomplete="off">
+      <input type="text" data-k="model" list="${listId}" placeholder="${esc(placeholder)}" value="${esc(o.model || "")}" autocomplete="off">
       <datalist id="${listId}">${models.map((m) => `<option value="${esc(m)}">`).join("")}</datalist></label>
+    ${!owner && allowed.length ? `<div class="eng-c">放行的型号：${esc(allowed.join(" / "))}</div>` : ""}
+    ${owner && ctx.multi ? `<label>成员可选的型号<span style="color:var(--owb-text-3)">（逗号隔开；上面钉的那个总能选。成员只能在这些里挑）</span>
+      <input type="text" data-k="models" placeholder="不填 = 成员只能用上面钉的那个" value="${esc(allowed.filter((m) => m !== g.pinned).join(", "))}" autocomplete="off"></label>` : ""}
+    ${owner && e.id === "codex" ? `<label class="eng-chk"><input type="checkbox" data-k="network"${g.network ? " checked" : ""}> <span>引擎里的命令能联网</span><span style="color:var(--owb-text-3)">（默认关，只管它在沙箱里跑的命令）</span></label>` : ""}
     <label>${esc(e.thinkingLabel || "思考模式")}<span style="color:var(--owb-text-3)">（只对这个引擎生效；「跟随全局」= 用助理设置里的思考模式）</span>
       <select data-k="thinking">${ENGINE_THINK_LEVELS.map(([v, l]) => `<option value="${v}"${(o.thinking || "") === v ? " selected" : ""}>${l}</option>`).join("")}</select></label>
     <div class="eng-row">
-      <button class="btn-plain" data-act="save">${amPlatformOwner() ? "保存路径 / 模型 / 思考档" : "保存模型 / 思考档"}</button>
+      <button class="btn-plain" data-act="save">${owner ? "保存路径 / 模型 / 思考档" : "保存模型 / 思考档"}</button>
       <span class="eng-msg" data-role="xmsg"></span>
     </div>
     <div class="eng-c">跑起来是这条命令：${esc(e.launchHeader || "")}${e.version ? "　本机这一份：" + esc(e.version) : ""}</div>
@@ -3109,7 +3139,12 @@ function bindEngineExtra(card, id, box) {
   if (!x) return;
   const readOpts = () => {
     const o = {};
-    x.querySelectorAll("input[data-k],select[data-k]").forEach((i) => (o[i.dataset.k] = i.value.trim()));
+    x.querySelectorAll("input[data-k],select[data-k]").forEach((i) => {
+      const k = i.dataset.k;
+      o[k] = i.type === "checkbox" ? i.checked
+        : k === "models" ? i.value.split(/[,，\n]/).map((v) => v.trim()).filter(Boolean)
+        : i.value.trim();
+    });
     return o;
   };
   x.querySelector('[data-act="save"]').onclick = async () => {
@@ -3134,7 +3169,8 @@ async function testEngineConnect(card, id) {
   if (!btn || !out) return;
   const on = card.classList.contains("on");
   const opts = {};
-  card.querySelectorAll(".eng-x input[data-k]").forEach((i) => (opts[i.dataset.k] = i.value.trim()));
+  // 只带文字框（路径 / 型号）：勾选项和成员列表是存盘用的，试连不看它们
+  card.querySelectorAll('.eng-x input[data-k]:not([type="checkbox"])').forEach((i) => { if (i.dataset.k !== "models") opts[i.dataset.k] = i.value.trim(); });
   btn.disabled = true;
   const t0 = Date.now();
   const paint = () => { out.innerHTML = `<div class="eng-r">正在真连一次…已等 ${Math.round((Date.now() - t0) / 1000)} 秒（第一次会慢一点）</div>`; };

@@ -1350,6 +1350,59 @@ const ENG_CHECKS = `
   await wait(60);
   const optsA = ((JSON.parse(window.SAVES[0] || "{}").agent || {}).engine_options || {})["claude-code"] || {};
   ok("★反向对照★ 管理员存同一处：bin 跟着发（空串也发）", "bin" in optsA, window.SAVES);
+
+  // 外部引擎的闸（engines/gate.js）摆在卡上：多人共用默认关、只有属主看得到开关；组织关了命令行直接写明
+  const G0 = { enabled: false, pinned: "", allowed: [], network: false };
+  const renderGate = async (cur, extra, gates) => {
+    window.__P = Object.assign(PAY(cur), extra);
+    window.__P.engines.forEach((e) => { e.gate = (gates || {})[e.id] || G0; });
+    window.SAVES = []; await renderEngineCard(box);
+  };
+  const CX = { enabled: true, pinned: "gpt-5.4", allowed: ["gpt-5.4", "gpt-5.4-mini"], network: false };
+  const offNote = (id) => [...card(id).querySelectorAll(".eng-i")].some((n) => /默认关着/.test(n.textContent));
+  settingsCache.platform_owner = true;
+  await renderGate("codex", { multiUser: true }, { codex: CX });
+  ok("多人共用：属主在每张装了的卡上都看得到开关，没装的那张没有",
+    !!card("claude-code").querySelector('.eng-gate [data-act="enable"]') && !!card("codex").querySelector('.eng-gate [data-act="enable"]') && !card("gemini").querySelector(".eng-gate"));
+  ok("开着的勾上、没开的不勾并写明默认关着", card("codex").querySelector('[data-act="enable"]').checked
+    && !card("claude-code").querySelector('[data-act="enable"]').checked && offNote("claude-code") && !offNote("codex"));
+  card("claude-code").querySelector('[data-act="enable"]').click();
+  await wait(60);
+  ok("★勾上只存 enabled 这一格，不顺手切引擎★", window.SAVES[0] === JSON.stringify({ agent: { engine_options: { "claude-code": { enabled: true } } } })
+    && !window.SAVES.some((x) => x.includes('"engine":')), window.SAVES);
+  await renderGate("codex", { multiUser: true }, { codex: CX });
+  window.SAVE_FAIL = "只有平台管理员能改这一项";
+  const en = card("claude-code").querySelector('[data-act="enable"]');
+  en.click();
+  await wait(60);
+  window.SAVE_FAIL = "";
+  ok("存失败：勾退回去，原样说服务端那句", !en.checked && box.querySelector("#ag-eng-msg").textContent === "只有平台管理员能改这一项", box.querySelector("#ag-eng-msg").textContent);
+  const xo = card("codex").querySelector(".eng-x");
+  ok("属主：展开区有「成员可选的型号」（不含钉的那个）和「命令能联网」（默认不勾）",
+    xo.querySelector('input[data-k="models"]').value === "gpt-5.4-mini" && xo.querySelector('input[data-k="network"]').checked === false);
+  ok("属主：型号栏写明必填，不再说「留空用默认」", xo.querySelector('input[data-k="model"]').placeholder === "必填" && !/留空用默认/.test(xo.textContent));
+  xo.querySelector('input[data-k="model"]').value = "gpt-5.4";
+  xo.querySelector('input[data-k="models"]').value = "gpt-5.4-mini， o4, o4";
+  xo.querySelector('input[data-k="network"]').checked = true;
+  window.SAVES = [];
+  xo.querySelector('[data-act="save"]').click();
+  await wait(60);
+  const og = ((JSON.parse(window.SAVES[0] || "{}").agent || {}).engine_options || {}).codex || {};
+  ok("★属主存：成员列表按逗号拆成数组、联网存布尔★", og.model === "gpt-5.4" && JSON.stringify(og.models) === JSON.stringify(["gpt-5.4-mini", "o4", "o4"]) && og.network === true, window.SAVES);
+  await renderGate("codex", { multiUser: false }, { codex: CX });
+  ok("单机桌面：没有开关、不写默认关着；成员列表也不出（没有成员）",
+    box.querySelectorAll(".eng-gate").length === 0 && !offNote("claude-code") && !card("codex").querySelector('input[data-k="models"]'));
+  settingsCache.platform_owner = false;
+  await renderGate("codex", { multiUser: true }, { codex: CX });
+  const xs = card("codex").querySelector(".eng-x");
+  ok("★成员：看不到开关、成员列表、联网勾★", box.querySelectorAll('.eng-gate, [data-k="models"], [data-k="network"]').length === 0);
+  ok("成员：没开的那张说要等属主打开", [...card("claude-code").querySelectorAll(".eng-i")].some((n) => /平台属主打开后才能用/.test(n.textContent)));
+  ok("成员：型号下拉只列属主放行的，占位写属主钉的那个",
+    [...xs.querySelectorAll("datalist option")].map((o) => o.value).join() === "gpt-5.4,gpt-5.4-mini" && xs.querySelector('input[data-k="model"]').placeholder === "gpt-5.4");
+  settingsCache.platform_owner = true;
+  await renderGate("builtin", { multiUser: false, shellOff: true }, { codex: CX });
+  ok("组织关了命令行：两张外部引擎卡都写明不能用，内置那张不写",
+    /本组织关了命令行/.test(card("codex").textContent) && /本组织关了命令行/.test(card("claude-code").textContent) && !/本组织关了命令行/.test(card("builtin").textContent));
   window.fetch = fetch0;
 
   return names;
@@ -7033,7 +7086,7 @@ const ONB_STUBS = `
     templates: [{ kind: "ark", label: "火山方舟（豆包）", name: "火山方舟", base_url: "https://ark.cn-beijing.volces.com/api/v3", key_url: "", model: "doubao-seed-1-6-250615", local: false },
                 { kind: "ollama", label: "Ollama 本地", name: "Ollama本地", base_url: "http://localhost:11434/v1", key_url: "", model: "qwen3:14b", local: true }],
     engines: [{ id: "claude-code", label: "Claude Code", installed: false, version: "", install: "npm i -g @anthropic-ai/claude-code" },
-              { id: "codex", label: "Codex", installed: true, version: "0.42.0", install: "" }],
+              { id: "codex", label: "Codex", installed: true, version: "0.42.0", install: "", models: ["gpt-5.4", "gpt-5.4-mini"], model: "gpt-5.4" }],
     engine: "builtin", search: { provider: "", has_key: false }, media: { image: true, video: false, tts: false, vision: false }, im: { configured: 1 } };
   let ONB_POST_OK = true, ENGINE_TEST_OK = true, SEARCH_TEST_OK = true, DONE_OK = true, SETTINGS_OK = true;
   let LIC = { licensed: false, licensee: "" }, LIC_DOWN = false;
@@ -7238,12 +7291,18 @@ const ONB_CHECKS = `
   // ---- 走本机 CLI：先真连再切引擎 ----
   q("#onb-seg button[data-v=local]").click();
   ok("切到本机：云端表单藏起来、本机表单露出来", q("#onb-cloud").hidden && !q("#onb-local").hidden);
+  ok("本机 CLI 也要钉型号：型号栏预填已存的那个，候选来自这台 CLI", q("#onb-emdl").value === "gpt-5.4" && q("#onb-emdls").querySelectorAll("option").length === 2);
+  q("#onb-emdl").value = ""; POSTS.length = 0;
+  q("#onb-go").click(); await tick(); await tick();
+  ok("型号空着不让过：不发试连、不切引擎，说清要填型号", /模型/.test(q("#onb-err").textContent) && POSTS.length === 0, [q("#onb-err").textContent, POSTS]);
+  q("#onb-emdl").value = "gpt-5.4-mini";
   ENGINE_TEST_OK = false; POSTS.length = 0;
   q("#onb-go").click(); await tick(); await tick();
   ok("本机没登录：why+hint 都写出来，不切引擎", q("#onb-err").textContent.includes("没登录") && q("#onb-err").textContent.includes("codex login") && !POSTS.some(([k]) => k === "settings-raw"));
   ENGINE_TEST_OK = true; POSTS.length = 0;
   q("#onb-go").click(); await tick(); await tick(); await tick();
   ok("本机连上：先 /api/engines/test 再存 agent.engine，然后翻到第二步", POSTS[0][0] === "engine-test" && POSTS[0][1].id === "codex" && POSTS[1][0] === "settings-raw" && POSTS[1][1].agent.engine === "codex" && steps.querySelector(".onb-step.cur").textContent.includes("联网搜索"));
+  ok("试连和保存带的都是填的那个型号", POSTS[0][1].options.model === "gpt-5.4-mini" && POSTS[1][1].agent.engine_options.codex.model === "gpt-5.4-mini", POSTS);
   // 这个勾以前是直接往 innerHTML 里塞「✓」字符；现在走 ic("check")，所以钉的是画出来的那个图标
   const stepIcon = (i) => { const u = steps.querySelectorAll(".onb-step")[i].querySelector("use"); return u ? u.getAttribute("href") : "(这步没画图标)"; };
   ok("第一步在步骤条上打了勾（画出来的 check 图标，不是拿字符当图标）", steps.querySelectorAll(".onb-step")[0].classList.contains("done") && stepIcon(0) === "#i-check");

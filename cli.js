@@ -684,7 +684,9 @@ async function goalThink({ system, prompt, timeoutMs }) {
   const id = cfgEngine();
   const engMod = require("./src/engines");
   if (id !== "builtin" && engMod.get(id)) {
-    return await engMod.ask({ id, opts: ((config.agent || {}).engine_options || {})[id] || {}, system, prompt, timeoutMs });
+    // 跟开跑那条过同一道闸（型号要钉、附加参数不许换型号、多人共用要属主打开），不行就报错，不改问 API 模型
+    const pass = engMod.admit(id, config);
+    return await engMod.ask({ id, opts: pass.opts, system, prompt, timeoutMs });
   }
   const r = await llm.chat({ system, history: [{ role: "user", content: prompt }], tools: [], signal: AbortSignal.timeout(timeoutMs) });
   return r.text;

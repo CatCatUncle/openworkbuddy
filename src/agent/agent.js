@@ -2569,8 +2569,7 @@ function modePrompt(mode) {
     // 用裸命令名，不用绝对路径：路径写法会被 CLI 的权限层判成「需要审批」，
     // 非交互模式下没人能点同意。bridge 已经把脚本目录挂进子进程 PATH 了。
     const shim = bridged.shimBin || "";
-    // 两条路：MCP 工具（claude 那边好使）和命令行（谁都拦不住）。
-    // codex 接到非 OpenAI 模型上时一个 MCP 工具都不挂，所以那边把命令行摆在前面。
+    // 两条路：MCP 工具是主路（两个 CLI 都由它们自己拉起服务器，不在命令沙箱里），命令行是后备。
     const cliBlock = shim ? [
       bridged.shimIsPrimary
         ? "OpenWorkBuddy 把它自己的工具借给你了，用命令行调（这台 CLI 挂不上 MCP，命令行是唯一入口）："
@@ -2581,7 +2580,10 @@ function modePrompt(mode) {
       `例：${shim} generate_image '{"prompt":"雪山日出，写实摄影","filename":"fig_a.jpg"}'`,
       `例：${shim} gen_diagram '{"kind":"dot","source":"digraph{A->B}","filename":"flow.png"}'`,
       "退出码 0 是成功，1 是失败；失败时 stdout 里就是失败原因原文。",
-    ].join("\n") : "";
+      // codex 的命令沙箱只写工作区、默认不联网，owb 脚本跑在里面：要联网、要写数据目录的工具从这条路调不成
+      bridged.shimSandboxed &&
+        `${shim} 跑在你的命令沙箱里：写不了 OpenWorkBuddy 的数据目录（记忆、技能存不进去），沙箱没开网时也联不了网（生图、出视频调不成）。这几样用上面的 mcp__openworkbuddy__ 工具。`,
+    ].filter(Boolean).join("\n") : "";
     const mcpBlock = bridged.shimIsPrimary ? "" : [
       "另外：OpenWorkBuddy 已经把它自己的工具挂给你了，名字都以 mcp__openworkbuddy__ 开头，其中——",
       has("generate_image") && "  · mcp__openworkbuddy__generate_image  生图（用户在本项目里配好的图像模型，你直接调，图会落到工作目录）",
@@ -2609,7 +2611,7 @@ function modePrompt(mode) {
       (has("check_page") || has("html_to_image") || has("render_page")) &&
         "网页自测、截图、看渲染效果，一律用 " + ["check_page", "html_to_image", "render_page"].filter(has).join(" / ") +
         "，不要自己在命令行里起 Chrome / Playwright / Puppeteer 无头浏览器、也不要自己开调试端口连 CDP——沙箱里浏览器起不来（macOS 上报 Abort trap: 6），" +
-        "起得来的环境里它跑完也没人收，会一直挂在后台吃 CPU。这几个工具在沙箱外跑，用完即走。",
+        "起得来的环境里它跑完也没人收，会一直挂在后台吃 CPU。这几个工具走 mcp__openworkbuddy__ 调时在沙箱外跑，用完即走。",
       "工具挑最轻、最对口的那个，拿到结果就停：别为同一个问题反复截图、反复体检，也别拿到了再换个工具重拿一遍。",
       "调用失败了就把失败原因如实写进交付（比如「图像模型未配置」），那是用户能动手解决的信息；不要假装图已经有了。",
     ].filter(Boolean).join("\n");
@@ -2693,6 +2695,11 @@ function modePrompt(mode) {
       // 引擎是用户在设置里挑一次、两条线都照着跑的另一件事。绑在一起的话，切个标签能把别人配的模型换掉。
       const picked = engines.resolve(prefs.agentView(config)); // 引擎名写错会在这里抛错，不会静默退回内置
       if (picked.backend) {
+        // 开跑前过闸（engines/gate.js）：组织关了命令行、多人共用属主没打开、型号没钉或不在放行列表、
+        // 附加参数能换型号——当场报错，不退回内置引擎。收原始 config：属主那份不能被个人设置盖掉
+        const shellOff = !!(orgPolicy() && orgPolicy().allow_shell === false);
+        try { picked.opts = engines.admit(picked.backend.id, config, { shellOff }).opts; }
+        catch (e) { if (ownsTrace) tr.end({ error: (e && e.message) || String(e) }); throw e; }
         const sp = tr.span({
           name: `外部引擎 ${picked.backend.label || picked.backend.id}`,
           input: tracing._internals.messagesOf("", history),

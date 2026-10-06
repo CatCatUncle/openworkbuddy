@@ -2606,6 +2606,10 @@
   .eng-r code { font-family: var(--font-mono); }
   .eng-x .eng-c { margin-top: 0; }
   .eng-p { font-family: var(--font-mono); font-size: 11.5px; color: var(--owb-text-3); word-break: break-all; }
+  /* 勾选项：框和字排一行，不走 .eng-x label 那套上下叠 */
+  .eng-x label.eng-chk { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .eng-gate { margin-top: 8px; font-size: 12.5px; color: var(--owb-text-2); cursor: pointer; }
+  .eng-chk input, .eng-gate input { width: auto; height: auto; }
 
   /* 链接 hover 给个反馈 */
   .link:hover { text-decoration: underline; }

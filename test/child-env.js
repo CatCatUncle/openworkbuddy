@@ -279,7 +279,7 @@ const readIf = (f) => { try { return fs.readFileSync(f, "utf8"); } catch { retur
       fs.chmodSync(fake, 0o755);
       let err = "";
       try {
-        await codex.run({ prompt: "hi", cwd: WS, bin: fake, env: { ENGINE_EXTRA: "c1" }, deadline: Date.now() + 20000 });
+        await codex.run({ prompt: "hi", cwd: WS, bin: fake, model: "gpt-test", env: { ENGINE_EXTRA: "c1" }, deadline: Date.now() + 20000 });
       } catch (e) { err = String(e && e.message || e); }
       const d = parsePrintenv(readIf(dbg)), x = parsePrintenv(readIf(ex));
       ok(Object.keys(d).length > 0 && Object.keys(x).length > 0, "Codex：假 codex 的 debug models 和 exec 两条都真跑了", { err, d: Object.keys(d).length, x: Object.keys(x).length });

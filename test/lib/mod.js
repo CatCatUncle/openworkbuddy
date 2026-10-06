@@ -199,6 +199,7 @@ const TABLE = Object.freeze({
   "claude-code": "src/engines/claude-code.js",
   codex: "src/engines/codex.js",
   engines: "src/engines/index.js",
+  gate: "src/engines/gate.js",
   jsonl: "src/engines/jsonl.js",
   "tool-bridge": "src/engines/tool-bridge.js",
   which: "src/platform/which.js",

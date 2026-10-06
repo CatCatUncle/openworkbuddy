@@ -25,7 +25,7 @@ const { mergeBuiltinExperts } = require("./src/agent/experts-lib");
 const mcpCatalog = require("./src/core/ext/mcp-catalog");
 const { createLLM, createEmbedder, pingRequest, probeEmbedding } = require("./src/core/model/llm");
 const sessSearch = require("./src/core/memory/session-search");
-const { outputFiles, noteUserInput, moveUserInput, filesScope, safePath, safePathIn, workspaceKeyOf, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, setLibraryDir, withLibraryBase, libBase, notesFileOf, withWorkspace, enterWorkspace, withPolicy, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSafeName, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath } = require("./src/agent/tools");
+const { outputFiles, noteUserInput, moveUserInput, filesScope, safePath, safePathIn, workspaceKeyOf, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, setLibraryDir, withLibraryBase, libBase, notesFileOf, withWorkspace, enterWorkspace, withPolicy, orgPolicy, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSafeName, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath } = require("./src/agent/tools");
 const checkpoints = require("./src/agent/checkpoints"); // 这条对话改过的文件：列出来、整步退回去
 const worktree = require("./src/agent/worktree"); // 两条任务同时改一个仓库时，后来的那条进自己的 git worktree
 const canvasRoutes = require("./src/server/routes/canvas"); // 画布读写 + 短剧素材台账 + 制片进度
@@ -51,6 +51,7 @@ const org = require("./src/domains/account/org"); // 组织（租户）层：席
 const budget = require("./src/core/billing/budget"); // 钱闸：中转站发出去的 Key 和公司内部自己用，花的是同一笔预算
 const admin = require("./src/domains/account/admin"); // 企业管理后台的接口层 /api/admin/*
 const engines = require("./src/engines"); // 底层引擎：内置循环 / 本机 Claude Code / 本机 Codex
+const engineGate = require("./src/engines/gate"); // 外部引擎开跑前那道闸（型号、附加参数、命令行开关）
 const lanes = require("./src/core/config/lanes"); // 两条工作线：办公（桌面办公 agent）/ 工程（本机 openworkbuddy 命令行）
 const cliLive = require("./src/core/obs/cli-live"); // 终端里起的任务挂在盘上的那个目录，网页/手机靠它看见并插话
 const thinking = require("./src/core/model/thinking"); // 思考模式档位表（各家参数名都不一样，集中在那儿）
@@ -917,11 +918,19 @@ function addUsage(total, u) {
  * 这两步却偷偷走 API：没配 Key 的人于是永远拆不出标准也验不了收，目标卡卡在 0/N 不动，
  * 从用户那边看就是「Goal 模式没做」。同一份订阅已经付过钱了，问它就是了。
  */
+/** 这个请求所在的组织关了命令行（外部引擎自带命令行，跟着一起不能用） */
+function orgShellOff() {
+  const p = orgPolicy();
+  return !!p && p.allow_shell === false;
+}
+
 async function goalThink(sessLLM, { system, prompt, timeoutMs, total }) {
   const my = prefs.agentCfg(config); // 引擎是按账号存的，得看这一趟任务是谁发起的
   const id = my.engine || "builtin";
   if (id !== "builtin" && engines.get(id)) {
-    return await engines.ask({ id, opts: (my.engine_options || {})[id] || {}, system, prompt, timeoutMs });
+    // 跟开跑那条过同一道闸：组织关了命令行、属主没打开、型号没钉都直接报错，不悄悄改问 API 模型
+    const pass = engines.admit(id, config, { shellOff: orgShellOff() });
+    return await engines.ask({ id, opts: pass.opts, system, prompt, timeoutMs });
   }
   const r = await sessLLM.chat({
     system,
@@ -1922,6 +1931,17 @@ function setGlobalModel(name) {
   config.last_picked_model = name;
 }
 
+/** 属主给成员放行的型号：数组或逗号/换行分隔的一串都收，去空去重，最多 50 个 */
+function engineModelList(v) {
+  const raw = Array.isArray(v) ? v : String(v == null ? "" : v).split(/[,，\n]/);
+  const out = [];
+  for (const x of raw) {
+    const s = String(x == null ? "" : x).trim().slice(0, 120);
+    if (s && !out.includes(s)) out.push(s);
+  }
+  return out.slice(0, 50);
+}
+
 function ownPrefs(req) {
   return !(admin.isSoloDesktop() || ownsGlobalWorkspace(req && req.user));
 }
@@ -1933,6 +1953,10 @@ function savePersonalPrefs(user, personal) {
     if (personal.agent.engine !== undefined) {
       const id = String(personal.agent.engine || "builtin").trim() || "builtin";
       if (engines.get(id) === undefined) throw new Error("没有这个底层引擎：" + id);
+      // 多人共用时外部引擎要属主逐个打开；没打开的现在就说，别等开跑才报
+      if (id !== "builtin" && security.isMultiUser() && !engines.gateView(id, config).enabled) {
+        throw new Error(`多人共用时${engines.get(id).label || id}默认关着，平台属主在 设置 → 底层引擎 里打开后才能用。`);
+      }
       a.engine = id;
     }
     if (personal.agent.thinking !== undefined) {
@@ -1945,7 +1969,15 @@ function savePersonalPrefs(user, personal) {
       for (const [id, v] of Object.entries(personal.agent.engine_options)) {
         if (engines.get(id) === undefined) continue; // 前端可能带上已经不存在的引擎，忽略即可，不值得整单失败
         const cur = {};
-        if (v.model !== undefined) cur.model = String(v.model || "").trim();
+        if (v.model !== undefined) {
+          // 成员自己挑的型号必须落在属主放行的列表里；空串 = 跟属主钉的那个走
+          const m = String(v.model || "").trim();
+          const allowed = engines.gateView(id, config).allowed;
+          const name = engines.get(id).label || id;
+          if (m && !allowed.length) throw new Error(`属主还没给${name}放行型号，请平台属主在 设置 → 底层引擎 里填。`);
+          if (m && !allowed.includes(m)) throw new Error(`型号「${m}」不在属主给${name}放行的列表里，从列表里选一个。`);
+          cur.model = m;
+        }
         if (v.thinking !== undefined) {
           const lv = String(v.thinking || "").trim().toLowerCase();
           if (lv && !thinking.LEVELS.includes(lv)) throw new Error("没有这个思考模式档位：" + lv);
@@ -2016,6 +2048,11 @@ app.post("/api/settings", (req, res) => {
         error: `这些是整台服务器一份的设置，归平台管理员改：${Object.keys(b).join("、")}`,
         platform_only: true,
       });
+    }
+    // 能换型号的附加参数在动任何配置之前就拦：型号只认「模型」栏和放行列表（engines/gate.js）
+    for (const [id, v] of Object.entries((b.agent && b.agent.engine_options) || {})) {
+      const badArg = v && Array.isArray(v.extraArgs) ? engineGate.modelArg(v.extraArgs, id) : "";
+      if (badArg) throw new Error(`附加参数里有换型号的「${badArg}」，型号请在「模型」栏里填。`);
     }
     if (Array.isArray(b.models)) {
       const old = new Map((config.models || []).map((m) => [m.name, m]));
@@ -2101,6 +2138,9 @@ app.post("/api/settings", (req, res) => {
           if (!v || typeof v !== "object") continue;
           const cur = (config.agent.engine_options[id] = config.agent.engine_options[id] || {});
           for (const k of ["model", "bin", "permissionMode", "sandbox"]) if (v[k] !== undefined) cur[k] = String(v[k] || "").trim();
+          // 多人共用时这个引擎开不开、成员能挑哪几个型号：只有属主写得进来（这一段只有属主走得到）
+          if (v.enabled !== undefined) cur.enabled = !!v.enabled;
+          if (v.models !== undefined) cur.models = engineModelList(v.models);
           if (v.thinking !== undefined) {
             const lv = String(v.thinking || "").trim().toLowerCase();
             if (lv && !thinking.LEVELS.includes(lv)) throw new Error("没有这个思考模式档位：" + lv);
@@ -2639,7 +2679,9 @@ app.get("/api/onboarding", async (req, res) => {
     // 「自己填地址」那一项的接口格式下拉：跟设置里渠道卡用的同一份
     api_formats: mediaModels.API_FORMATS.map((f) => ({ id: f.id, label: f.label })),
     any_key: models.some((m) => m.has_key && !m.local),
-    engines: found.map((e) => ({ id: e.id, label: e.label, installed: e.installed, version: e.version, install: e.install || "", note: e.note || "" })),
+    // models / model：向导里给本机 CLI 钉型号用（候选 + 已存的那个），型号不填不让过
+    engines: found.map((e) => ({ id: e.id, label: e.label, installed: e.installed, version: e.version, install: e.install || "", note: e.note || "",
+      models: Array.isArray(e.models) ? e.models.slice(0, 50) : [], model: String(((e.options || {}).model) || "") })),
     engine: engineId,
     // 「配好了」不等于「有 Key」：自定义那家认的是地址，不要鉴权的自建接口本来就没有 Key
     search: { provider: sp, has_key: searchProviderReady(sc, sp, searchProviderKey(sc, sp)) },
@@ -2954,7 +2996,9 @@ app.get("/api/engines", async (req, res) => {
     // 跟启动时那份合并（体检、run_shell 都用这一份）。读不成它自己会留日志，照旧按手里那份 PATH 检测；别的系统直接返回
     if (req.query.force === "1") await require("./src/platform/which").refreshWinPath();
     const found = await engines.detectAll(myAgent.engine_options || {}, { force: req.query.force === "1" });
-    res.json({ current: myAgent.engine || "builtin", builtin: engines.BUILTIN, engines: found });
+    // 闸的状态一并给前端：多人共用时开没开、放行哪些型号、命令能不能联网。只读属主那份，成员改不了
+    const withGate = found.map((e) => ({ ...e, gate: engines.gateView(e.id, config) }));
+    res.json({ current: myAgent.engine || "builtin", builtin: engines.BUILTIN, engines: withGate, multiUser: security.isMultiUser(), shellOff: orgShellOff() });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -3163,14 +3207,23 @@ app.post("/api/engines/test", async (req, res) => {
   if (!id || id === "builtin") return res.status(400).json({ error: "内置引擎不用测，它走的是你配的 API Key" });
   try {
     // 用户可能刚在输入框里改了路径/模型还没保存，先用他正在填的那份测
-    const saved = (prefs.agentCfg(config).engine_options || {})[id] || {};
     const patch = (req.body && req.body.options) || {};
-    const opts = { ...saved };
+    const member = ownPrefs(req);
+    const typed = patch.model !== undefined ? String(patch.model || "").trim() : undefined;
+    // 试连也过闸：成员试的型号得在放行列表里、引擎得已打开；属主试连可以先于打开和保存，
+    // 但命令行开关、附加参数、要有型号这几条照查——试连本身就是真跑一句话
+    let pass;
+    try {
+      pass = engines.admit(id, config, { shellOff: orgShellOff(), ...(typed ? { model: typed } : {}), trial: !member });
+    } catch (e) {
+      if (!e || !e.engineGate) throw e;
+      return res.json({ ok: false, ms: 0, engine: id, path: "", version: "", reply: "", model: "", why: e.message, hint: "" });
+    }
+    const opts = { ...pass.opts };
     // bin 是「起哪个可执行文件」——在多人服务器上等于任意命令执行。只有平台管理员能指定，
     // 其他人一律用已保存的那份（他们本来也改不了它）
-    const fields = ownPrefs(req) ? ["model"] : ["bin", "model"];
-    for (const k of fields) if (patch[k] !== undefined) opts[k] = String(patch[k] || "").trim();
-    for (const k of Object.keys(opts)) if (!opts[k]) delete opts[k];
+    if (!member && patch.bin !== undefined) opts.bin = String(patch.bin || "").trim();
+    for (const k of Object.keys(opts)) if (opts[k] === "" || opts[k] == null) delete opts[k];
     res.json(await engines.testConnect(id, opts));
   } catch (e) {
     res.status(500).json({ error: e.message });

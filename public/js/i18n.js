@@ -2350,10 +2350,27 @@
       "已开启，但地址不是 http(s):// 开头，不会发送。": "On, but the address isn't http(s)://, so nothing is sent.",
       "已开启，但 Key 没填全，不会发送。": "On, but keys are incomplete, so nothing is sent.",
       "已开启，重启后还没跑过任务，暂无记录。": "On; no tasks since restart, nothing sent yet.",
-      "列的是你这个 Codex 账号能用的模型；留空用默认。": "Models your Codex account can use; blank = default.",
-      "别名（opus / sonnet…）永远指向最新一代，外加你 Claude Code 配置里用过的；留空用默认。": "Aliases (opus / sonnet…) always track the latest, plus models from your Claude Code settings; blank = default.",
-      "只列 Codex 配置里有的模型；留空用默认，也可手填。": "Lists models from your Codex config; blank = default, or type one.",
-      "Codex 无模型目录可查。留空用默认，或手填模型名。": "Codex has no model list. Blank = default, or type a model name.",
+      // 外部引擎的型号要钉死（engines/gate.js），这几句提示不再说「留空用默认」
+      "列的是这个 Codex 账号能用的模型，选一个钉住。": "Models this Codex account can use. Pin one.",
+      "别名（opus / sonnet…）指向最新一代，外加你配置里用过的；选一个钉住。": "Aliases (opus / sonnet…) track the latest, plus models from your settings. Pin one.",
+      "只列 Codex 配置里有的模型，也可手填；必须填一个。": "Models from your Codex config, or type one. Required.",
+      "Codex 没有模型目录可查，手填一个模型名。": "Codex has no model list. Type a model name.",
+      "填一个它支持的模型名，必须填。": "Type a model it supports. Required.",
+      "只能从属主放行的型号里选；留空跟属主钉的那个走。": "Pick from the owner's allowed models; blank = the owner's pinned one.",
+      "属主还没放行型号，先找平台属主在这里填。": "The owner hasn't allowed any models yet. Ask the platform owner to set them here.",
+      "从放行的型号里选": "Pick an allowed model",
+      "成员可选的型号": "Models members may pick",
+      "（逗号隔开；上面钉的那个总能选。成员只能在这些里挑）": "(comma-separated; the pinned one above is always allowed. Members can only pick from these)",
+      "不填 = 成员只能用上面钉的那个": "Blank = members can only use the pinned one",
+      "引擎里的命令能联网": "Commands in the engine can reach the network",
+      "（默认关，只管它在沙箱里跑的命令）": "(off by default; only affects commands it runs in its sandbox)",
+      "本组织关了命令行，外部引擎自带命令行，所以也不能用。": "Your organization turned off the command line. External engines come with one, so they're off too.",
+      "多人共用时默认关着，勾上下面这项才能用。": "Off by default on shared servers. Tick the box below to turn it on.",
+      "多人共用时默认关着，平台属主打开后才能用。": "Off by default on shared servers. Usable once the platform owner turns it on.",
+      "在这台服务器上打开它（多人共用时默认关）": "Turn it on for this server (off by default when shared)",
+      "保存模型 / 思考档": "Save model / thinking level",
+      "必填，选一个或手填": "Required. Pick one or type it",
+      "先填用哪个模型，本机 CLI 也要钉死型号": "Pick a model first. The local CLI needs a pinned model too",
       "（留空自动查找，找不到时再填绝对路径）": "(blank = auto-detect; set an absolute path only if not found)",
       "身份和偏好全服务器共用，由平台管理员设置。你个人的要求在对话里说，或写进「记忆」。": "Identity and preferences are server-wide and set by the admin. Tell it your own preferences in chat or in Memory.",
       "名字会同步到界面标题、侧栏和系统提示词。": "The name appears in the title, sidebar and system prompt.",
@@ -2695,6 +2712,18 @@
     PATTERNS.en.push([new RegExp("^" + q + "「(.+?)」(.*)$"), en + ' "$1"$2']);
     PATTERNS.en.push([new RegExp("^" + q + "( .*)?$"), en + "$1"]);
   }
+  // 外部引擎开跑前那道闸（engines/gate.js、server.js）的话：引擎名和型号夹在中间。引擎名（本机 Codex…）再查一次词典
+  const engName = (s) => { const k = String(s).trim(); return Object.prototype.hasOwnProperty.call(DICT.en, k) ? DICT.en[k] : k; };
+  PATTERNS.en.push(
+    [/^放行的型号：(.+)$/, "Allowed models: $1"],
+    [/^多人共用时(.+?)默认关着，平台属主在 设置 → 底层引擎 里打开后才能用。$/, (m) => `${engName(m[1])} is off by default on shared servers. The platform owner can turn it on in Settings → Engine.`],
+    [/^(.+?)的附加参数里有换型号的「(.+)」，型号只能在 设置 → 底层引擎 里选。$/, (m) => `${engName(m[1])}'s extra arguments switch the model (“${m[2]}”). Pick the model in Settings → Engine.`],
+    [/^先在 设置 → 底层引擎 里给(.+?)指定型号，再开跑。$/, (m) => `Pin a model for ${engName(m[1])} in Settings → Engine first.`],
+    [/^型号「(.+?)」不在属主给(.+?)放行的列表里，去 设置 → 底层引擎 换一个。$/, (m) => `Model “${m[1]}” isn't on the owner's list for ${engName(m[2])}. Pick another in Settings → Engine.`],
+    [/^型号「(.+?)」不在属主给(.+?)放行的列表里，从列表里选一个。$/, (m) => `Model “${m[1]}” isn't on the owner's list for ${engName(m[2])}. Pick one from the list.`],
+    [/^属主还没给(.+?)放行型号，请平台属主在 设置 → 底层引擎 里填。$/, (m) => `The owner hasn't allowed any models for ${engName(m[1])} yet. Ask the platform owner to set them in Settings → Engine.`],
+    [/^附加参数里有换型号的「(.+)」，型号请在「模型」栏里填。$/, "The extra arguments switch the model (“$1”). Put the model in the Model field."],
+  );
   // 长工具跑着时的进度（app-01.js 的 PROG_STAGE）：「渲染 432/900」「编码 40%」。
   // 折叠条那行是光秃秃的一句，卡上那格前头带「· 」；渲染 / 配音 / 截图 光秃秃那句上面的动词表已经翻了，
   // 带点的那种和另外六个词在这补。英文取跟动词表同一口径的动词原形，两处说同一个词
