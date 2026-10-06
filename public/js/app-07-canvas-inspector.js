@@ -420,7 +420,8 @@ function canvasRenderInspector(focus = true) {
         else if (target === "character-reference") next.reference = name;
         else { next.path = name; next.url = name; }
         node.set("canvasPayload", next); canvasState.selected = node.id; canvasRefreshNode(node); canvasPersist(); canvasRenderInspector(false); canvasLoadLibrary();
-        canvasToast(`${file.name} 已上传到工作区。`, "circle-check");
+        // 工作区里已有同名的：服务端另存成 名字_2，卡上挂的是新名字，说一声
+        canvasToast(name !== file.name ? canvasT("工作区里已有同名文件，这一份存成了 {n}，原来那份没动。", { n: name }) : `${file.name} 已上传到工作区。`, "circle-check");
       } catch (error) { canvasToast(`文件上传失败：${String(error.message || error).slice(0, 140)}`, "circle-x", "err"); }
     };
     choose?.addEventListener("click", () => input?.click()); input?.addEventListener("change", () => { const file = input.files?.[0]; if (file) handle(file); input.value = ""; });

@@ -190,6 +190,7 @@ const TABLE = Object.freeze({
   "timeline-subs": "src/util/timeline-subs.js",
   "web-demo-plan": "src/util/web-demo-plan.js",
   "web-demo-recorder": "src/domains/media/web-demo-recorder.js",
+  "upload-name": "src/util/upload-name.js",
   winname: "src/util/winname.js",
   "ws-browse": "src/domains/library/ws-browse.js",
   // engines

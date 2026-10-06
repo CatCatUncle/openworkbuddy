@@ -73,6 +73,7 @@ const pricing = require("./src/core/billing/pricing"); // 按量价目：批量�
 const tracing = require("./src/core/obs/trace"); // 执行追踪（Langfuse），默认关；跟 agent.js 共用同一个追踪器
 const genCache = require("./src/domains/media/gen-cache"); // 生成结果缓存：同一格重跑别再烧第二次钱
 const toolJobs = require("./src/domains/media/tool-jobs"); // 直调生成的收单台账：同一个 clientJobId 只真跑一次
+const uploadName = require("./src/util/upload-name"); // 上传同名不覆盖：挑 名字_2、名字_3
 const memory = require("./src/core/memory/memory");
 const notify = require("./src/core/obs/notify");
 const log = require("./src/platform/log");
@@ -5564,19 +5565,22 @@ app.post("/api/upload", (req, res) => {
     // 光看 sess.dir 的话，换过根以后拿旧根下的名字在新根里建出一个没人认的同名文件夹，附件就丢在那儿了
     const perChat = !!sess && perChatHere();
     const own = perChat ? sessDirOf(sess) : null;
-    const rel = own ? path.join(own, base) : base;
-    const p = safePath(rel);
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, Buffer.from(data_b64, "base64"));
+    // 先拿原名过一遍 safePath（落点在不在工作目录里），再在同一个目录里挑一个盘上没有的名字写：
+    // 同名的已经在了就叫 名字_2、名字_3，不覆盖（见 src/util/upload-name.js）。挑出来的名字只多了个
+    // 后缀，跟原名在同一个目录里，不用再判一次
+    const dir = path.dirname(safePath(own ? path.join(own, base) : base));
+    const saved = uploadName.writeUploadFresh(dir, base, Buffer.from(data_b64, "base64"));
+    const rel = own ? path.join(own, saved) : saved;
     // 记一笔「这份是用户传的」。不记的话，正在跑的那趟任务下一次对账就会把它当成自己的产出
     // 摆进「本回合产出」——用户粘张图想追问，图当场出现在上一轮的成果里（见 tools.js userInputs）
     noteUserInput(rel);
     if (perChat && !own) {
-      sess.pending_uploads = (sess.pending_uploads || []).filter((n) => n !== base).concat(base);
+      sess.pending_uploads = (sess.pending_uploads || []).filter((n) => n !== saved).concat(saved);
     }
     // 连相对路径一起回：前端那枚 chip 要按这个路径把文件打开给用户看。
     // 只回 name 的话，落进会话成果文件夹的文件在工作目录根上根本找不到。
-    res.json({ ok: true, name: base, path: rel });
+    // 改了名就把原名也带上：前端得把 chip 和输入框里那枚【图片 N：…】一起改过来，不然模型照着原名去读，读到的是旧的那份
+    res.json({ ok: true, name: saved, path: rel, ...(saved !== base ? { renamedFrom: base } : {}) });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }

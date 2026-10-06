@@ -2477,6 +2477,7 @@
       "上一单{a}上游收过单（任务号 {t}），结果没收回来": "Last {a} job: the provider took it (task {t}) but the result never came back",
       "上一单{a}没收完（服务重启过），没有重发": "Last {a} job didn't finish (service restarted). Not resent",
       "上一单{a}没收到结果，没有重发": "Last {a} job: no result came back. Not resent",
+      "工作区里已有同名文件，这一份存成了 {n}，原来那份没动。": "A file with that name is already in the workspace. Saved this one as {n}; the original is untouched.",
       "{n} 格的上一单还没收到结果，先在卡片上点「看结果」。": "{n} card(s) have a job with no result yet. Click \"Check result\" on the card first.",
       // 历史版本按产物分组的小标题（首帧、配音在上面「制片进度」那段已有）
       "视频": "Video",
@@ -2490,6 +2491,8 @@
       [/^已退回这步之前，(\d+) 个文件恢复了$/, "Rewound to before this step, $1 file(s) restored"],
       [/^撤销了回退，(\d+) 个文件回到改完的样子$/, "Rewind undone, $1 file(s) back to their edited state"],
       [/^第 (\d+) 步$/, "Step $1"],
+      // 上传同名不覆盖：服务端另存成 名字_2（app-02 renameAttach）
+      [/^工作目录里已经有 (.+?)，这一份存成了 (.+?)，原来那份没动$/, "$1 is already in the workspace. Saved this one as $2; the original is untouched"],
       [/^计划 (\d+) 步$/, "Plan · $1 steps"],
       // 注意力：倒计时、侧栏那颗点的提示、后台会话来题时那条能点的提示
       [/^(\d+:\d\d) 后自动拒绝$/, "Auto-deny in $1"],

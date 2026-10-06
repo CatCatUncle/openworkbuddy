@@ -176,7 +176,7 @@ function canvasBindViewport(page) {
         const name = await canvasUploadWorkspaceFile(file);
         const def = CANVAS_NODE_DEFS[kind];
         const node = canvasAddNode(kind, { title: file.name, path: name, url: name, role: "拖入素材", tags: "" }, { x: Math.max(20, point.x + index * 26 - (def.width || 320) / 2), y: Math.max(20, point.y + index * 26 - (def.height || 220) / 2) });
-        if (node) canvasToast(`${file.name} 已添加到画布。`, "plus");
+        if (node) canvasToast(name !== file.name ? canvasT("工作区里已有同名文件，这一份存成了 {n}，原来那份没动。", { n: name }) : `${file.name} 已添加到画布。`, "plus");
       } catch (error) { canvasToast(`上传失败：${String(error.message || error).slice(0, 140)}`, "circle-x", "err"); }
     }
     canvasLoadLibrary();
