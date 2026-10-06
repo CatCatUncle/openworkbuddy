@@ -11,6 +11,8 @@
  *   ③ 借给引擎的 MCP 配置、工具入口是临时目录（里面有 key）：进程直接 exit 也得删掉
  *   ④ 续跑 id 失效（记录过期、换了机器）：一个工具还没动过就摊平历史重开一根，新 id 记回去；
  *      动过工具、报的是别的错、没有续跑 id、已经按了停止——这四种都不许重来
+ *   ⑥ codex：本项目的说明（工作目录、产出放哪）走 developer_instructions 交过去；
+ *      自带生图出的图留在它自己的目录里、界面看不到——模型没放进对话目录就替它放
  *
  * 引擎全是本地假的，不出网。
  *   node test/engine-resilience.js
@@ -100,6 +102,114 @@ async function partWriteHints() {
   ok(same(codex.changedPaths({ type: "file_change", changes: [{ path: "a.md", kind: "add" }, { path: "/abs/b.md" }, {}] }, home), [path.join(home, "a.md"), "/abs/b.md"]),
     "codex：file_change 里改的文件按工作目录解析，缺路径的跳过");
   ok(same(codex.changedPaths({ type: "command_execution", command: "touch c.md" }, home), []), "codex：跑命令这种不算点名写");
+}
+
+async function partCodexImages() {
+  console.log("\n— ⑥ codex：说明交过去，自带生图出的图放进对话目录 —");
+  const codex = require(mod("codex"));
+  const NOTE = JSON.parse(codex.instructionsPlan("", null, "darwin").args[1].replace(/^developer_instructions=/, ""));
+  const decoded = (argv) => { const a = argv.find((x) => x.startsWith("developer_instructions=")); return a ? JSON.parse(a.slice("developer_instructions=".length)) : null; };
+
+  // 假 codex：记下参数和 stdin，按 FAKE_MODE 出图 / 自己把图复制进工作目录 / 报失败
+  const bin = fakeBin("codex-img", `
+const fs = require("fs"), path = require("path");
+const a = process.argv.slice(2);
+if (a[0] === "debug") process.exit(1);
+let input = "";
+process.stdin.on("data", (d) => { input += d; }).on("end", () => {
+  fs.writeFileSync(process.env.FAKE_LOG, JSON.stringify({ argv: a, stdin: input }));
+  const tid = process.env.FAKE_THREAD, mode = process.env.FAKE_MODE || "";
+  const out = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
+  out({ type: "thread.started", thread_id: tid });
+  out({ type: "turn.started" });
+  const dir = path.join(process.env.CODEX_HOME, "generated_images", tid);
+  const n = /gen2/.test(mode) ? 2 : /gen/.test(mode) ? 1 : 0;
+  for (let i = 1; i <= n; i++) {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "exec-" + i + ".png"), "PNG-" + tid + "-" + i);
+  }
+  if (/copied/.test(mode)) fs.copyFileSync(path.join(dir, "exec-1.png"), path.join(process.cwd(), "夜景.png"));
+  out({ type: "item.completed", item: { id: "m1", type: "agent_message", text: "图好了" } });
+  if (/fail/.test(mode)) { out({ type: "turn.failed", error: { message: "上游断了" } }); process.exit(1); }
+  out({ type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } });
+});
+`);
+  const srcHome = path.join(home, "codex-src"); // 没有 auth.json：不去碰用户真的 ~/.codex
+  fs.mkdirSync(srcHome, { recursive: true });
+  const logFile = path.join(home, "codex-img.json");
+  let seq = 0;
+  const go = async ({ mode = "", thread, resumeId = null, systemPrompt = "", extraArgs = [] }) => {
+    const cwd = path.join(home, "对话-" + (++seq));
+    fs.mkdirSync(cwd, { recursive: true });
+    const wrote = [], evs = [];
+    let r = null, err = null;
+    try {
+      r = await codex.run({
+        prompt: "画一张深圳夜景", cwd, bin, resumeId, systemPrompt, extraArgs,
+        env: { CODEX_HOME: srcHome, FAKE_LOG: logFile, FAKE_THREAD: thread, FAKE_MODE: mode },
+        emit: (e) => evs.push(e), onWrite: (p) => wrote.push(p),
+      });
+    } catch (e) { err = e; }
+    const log = JSON.parse(fs.readFileSync(logFile, "utf8"));
+    const imgs = fs.readdirSync(cwd).filter((n) => /^codex-image-\d{4}-\d{6}(_\d+)?\.png$/.test(n)).sort();
+    const status = evs.filter((e) => e.type === "status").map((e) => e.text).join("\n");
+    return { cwd, r, err, log, imgs, wrote, status };
+  };
+  const genDir = (tid) => path.join(process.env.OPENWORKBUDDY_HOME, "data", "runtime", "codex", "generated_images", tid);
+
+  {
+    const sp = "工作目录是 /x/任务_1，产出文件都写在这里。\n引号\"、反斜杠\\、制表\t都原样";
+    const A = await go({ mode: "gen", thread: "th-a", systemPrompt: sp, extraArgs: ["-c", 'developer_instructions="用户自己填的"'] });
+    ok(!A.err && A.r.finalText === "图好了", "跑通", A.err && A.err.message);
+    ok(decoded(A.log.argv) === sp + "\n\n" + NOTE, "★系统提示交给 codex 了★ 以前这条路压根没接，codex 不知道产出放哪", A.log.argv);
+    const mine = A.log.argv.findIndex((x) => x.startsWith("developer_instructions="));
+    ok(mine >= 0 && mine < A.log.argv.indexOf('developer_instructions="用户自己填的"'), "排在设置里手填的参数前面（后出现的覆盖前面的，手填的为准）", A.log.argv);
+    ok(A.log.stdin === "画一张深圳夜景", "走参数时提示词原样，不重复拼说明", A.log.stdin);
+    ok(A.imgs.length === 1 && fs.readFileSync(path.join(A.cwd, A.imgs[0]), "utf8") === "PNG-th-a-1",
+      "★模型没放进对话目录 → 替它放★ 用户这才在成果栏里看得到、点得开预览", A.imgs);
+    ok(same(A.wrote, [path.join(A.cwd, A.imgs[0])]), "放进去的图按写文件报上去（产出卡靠这个认主）", A.wrote);
+    ok(/已放进对话目录/.test(A.status) && A.status.includes(A.imgs[0]), "界面上说一声放到哪了", A.status);
+  }
+  {
+    const B = await go({ mode: "gen copied", thread: "th-b" });
+    ok(!B.err && B.imgs.length === 0 && B.wrote.length === 0 && fs.existsSync(path.join(B.cwd, "夜景.png")),
+      "★模型自己复制过 → 不再放一份★ 反向对照：不然对话目录里一张图两份", fs.readdirSync(B.cwd));
+    ok(!/已放进对话目录/.test(B.status), "这时也不多嘴", B.status);
+  }
+  {
+    const C = await go({ mode: "gen2", thread: "th-c" });
+    const got = C.imgs.map((n) => fs.readFileSync(path.join(C.cwd, n), "utf8")).sort();
+    ok(same(got, ["PNG-th-c-1", "PNG-th-c-2"]) && C.wrote.length === 2, "一趟出了两张：两张都放、不互相覆盖", C.imgs);
+  }
+  {
+    // 续跑的线程：上一轮的旧图还在线程目录里；另一条对话的线程刚出了图
+    fs.mkdirSync(genDir("th-d"), { recursive: true });
+    const old = path.join(genDir("th-d"), "exec-old.png");
+    fs.writeFileSync(old, "PNG-old");
+    const t = new Date(Date.now() - 3600e3);
+    fs.utimesSync(old, t, t);
+    fs.mkdirSync(genDir("th-other"), { recursive: true });
+    fs.writeFileSync(path.join(genDir("th-other"), "exec-9.png"), "PNG-other");
+    const D = await go({ thread: "th-d", resumeId: "th-d", systemPrompt: "说明" });
+    ok(!D.err && D.imgs.length === 0 && D.wrote.length === 0, "★上一轮的旧图、别的对话线程的图都不捡★", fs.readdirSync(D.cwd));
+    ok(D.log.argv.includes("resume") && decoded(D.log.argv) === "说明\n\n" + NOTE, "续跑也带说明（-c 两条路都收）", D.log.argv);
+  }
+  {
+    const E = await go({ mode: "gen fail", thread: "th-e" });
+    ok(E.err && /上游断了/.test(E.err.message), "这一轮失败照常报错", E.err && E.err.message);
+    ok(E.imgs.length === 1 && E.wrote.length === 1, "★失败了出过的图也放进来★ 订阅额度已经花掉了", E.imgs);
+  }
+
+  // 说明怎么交：参数 / 拼进提示词
+  const W = codex.instructionsPlan("说明", null, "win32");
+  ok(W.args.length === 0 && W.prefix === "说明\n\n" + NOTE + "\n\n---\n\n", "Windows（.cmd 垫片过 cmd.exe）：拼在提示词前面", W);
+  ok(codex.instructionsPlan("说明", "th-1", "win32").prefix === "", "Windows 续跑：线程里已经有了，不再拼");
+  const zh = codex.instructionsPlan("汉".repeat(40000), null, "linux");
+  ok(zh.args.length === 0 && zh.prefix.startsWith("汉"), "★按字节算长度★ 四万个汉字 12 万字节，Linux 单个参数放不下，改拼进提示词", zh.args.length);
+  ok(codex.instructionsPlan("a".repeat(40000), null, "linux").args.length === 2, "反向对照：同样字数的英文 4 万字节，照走参数");
+  const del = codex.instructionsPlan("a\u007fb\ud800c", null, "darwin").args[1];
+  ok(!del.includes("\u007f") && del.includes("\\u007f") && JSON.parse(del.split("=").slice(1).join("=")).startsWith("a\u007fb�c"),
+    "DEL 转义成 TOML 认的写法、孤立代理项抹平（不然 TOML 解析失败，整串原样露给模型）", del.slice(0, 60));
 }
 
 async function partKill() {
@@ -271,6 +381,7 @@ async function partStaleResume() {
   try {
     await partResultErrors();
     await partWriteHints();
+    await partCodexImages();
     await partKill();
     partTempDirs();
     await partStaleResume();

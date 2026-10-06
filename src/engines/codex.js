@@ -165,6 +165,106 @@ function changedPaths(item, cwd) {
   return (item.changes || []).filter((c) => c && typeof c.path === "string" && c.path).map((c) => path.resolve(cwd, c.path));
 }
 
+/**
+ * codex 自带生图（image_gen）把图留在 $CODEX_HOME/generated_images/<线程 id>/ 下，
+ * 自己的规矩是「只是预览就留在那、在它自己的界面里内嵌显示」。可本项目的界面显示不了那种内嵌图，
+ * 用户只看得到工作目录里的文件——真实会话里就是：模型说「已显示在上方」，用户什么也没看到，
+ * 来回问了四轮、烧了二十多万 token，最后模型才把图复制进对话目录。
+ * 所以这两件事要先跟它说清楚；生图走它自带的（订阅里的，不花 API 额度），这是切到本机 Codex 的本意。
+ */
+const IMAGE_NOTE =
+  "生图默认用你自带的 image_gen（走用户的 ChatGPT 订阅，不花 API 额度）；只有用户点名要用 OpenWorkBuddy 里配的图像模型时才调 generate_image。\n" +
+  "image_gen 出的图默认存在 $CODEX_HOME/generated_images 下，OpenWorkBuddy 的界面看不到那里，也显示不了你的内嵌预览。" +
+  "所以用户要的每一张图都算交付物：生成后复制到当前工作目录，起一个看得懂的文件名，回复里报相对路径；" +
+  "不要贴 generated_images 下的路径，也不要说「已显示在上方」。";
+
+/**
+ * 本项目给引擎的那段说明（工作目录、产出放哪、记忆、项目规范、借过去的工具）怎么交给 codex。
+ *
+ * 走 developer_instructions：模型那边是一条 developer 消息，分量比夹在用户话里重。
+ * 以前这条路压根没接 systemPrompt——上游拼好的整段说明到这里就丢了，codex 不知道产出该放哪，
+ * 借过去的工具入口也没人告诉它。
+ *
+ * -c 的值按 TOML 解析，解析失败就把整串原样当字面量（引号、反斜杠全露给模型）。
+ * JSON 的转义 TOML 基本串都认，只有 DEL 得手动转，孤立的代理项先抹平。
+ * 命令行有长度上限：Windows 上 codex 是 npm 的 .cmd 垫片，整行过 cmd.exe，带引号的长参数也不可靠；
+ * Linux 单个参数 128KB（按字节算，一个汉字三个字节）。这两种改成拼在提示词前面——只在开新线程时拼，续跑的线程里已经有了。
+ */
+const INSTRUCTIONS_ARG_MAX = 100000;
+function instructionsPlan(systemPrompt, resumeId, platform = process.platform) {
+  const s = [String(systemPrompt || "").trim(), IMAGE_NOTE].filter(Boolean).join("\n\n");
+  const toml = JSON.stringify(s.toWellFormed()).replace(/\u007f/g, "\\u007f");
+  if (platform !== "win32" && Buffer.byteLength(toml) <= INSTRUCTIONS_ARG_MAX) return { args: ["-c", `developer_instructions=${toml}`], prefix: "" };
+  return { args: [], prefix: resumeId ? "" : s + "\n\n---\n\n" };
+}
+
+const IMAGE_EXT = /\.(png|jpe?g|webp|gif)$/i;
+
+/** dir 下（最多三层，跳过点开头的目录和 node_modules）这一趟写过、大小对得上的文件 */
+function recentFilesBySize(dir, sizes, since, depth = 3, out = [], budget = { left: 3000 }) {
+  let ents = [];
+  try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return out; }
+  for (const e of ents) {
+    if (--budget.left < 0) break;
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) {
+      if (depth > 1 && !e.name.startsWith(".") && e.name !== "node_modules") recentFilesBySize(p, sizes, since, depth - 1, out, budget);
+    } else if (e.isFile()) {
+      try { const st = fs.statSync(p); if (sizes.has(st.size) && st.mtimeMs >= since) out.push(p); } catch {}
+    }
+  }
+  return out;
+}
+
+/**
+ * 兜底：这一趟 codex 自带生图出了图、模型却一张都没放进工作目录时，替它放进去，按写文件报上去，
+ * 产出栏和预览就跟别的产物一样。
+ *
+ * 只看本线程自己的目录、只认这一趟开跑之后出的：几条对话同时用 codex 时不会互相捡图，
+ * 续跑的线程里上一轮的旧图也不会再捡一遍。
+ * 模型已经自己复制过任意一张（工作目录里有这一趟写的、内容一模一样的文件），就当它挑过了，
+ * 剩下的是弃稿，不动。克隆复制（APFS 上不占额外空间），不覆盖已有文件。
+ */
+function pickupImages({ codexHome, threadId, cwd, since }) {
+  if (!codexHome || !threadId || !cwd) return [];
+  const dir = path.join(codexHome, "generated_images", path.basename(String(threadId)));
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch { return []; }
+  const fresh = [];
+  for (const n of names.filter((x) => IMAGE_EXT.test(x)).sort()) {
+    const src = path.join(dir, n);
+    try { const st = fs.statSync(src); if (st.isFile() && st.size > 0 && st.mtimeMs >= since) fresh.push({ src, n, size: st.size, mtime: st.mtimeMs }); } catch {}
+  }
+  if (!fresh.length) return [];
+  // 文件系统的时间精度有粗有细，留一秒余量，别把模型刚复制过去的那张漏掉
+  const placed = recentFilesBySize(cwd, new Set(fresh.map((f) => f.size)), since - 1000);
+  for (const f of fresh) {
+    let buf = null;
+    try { buf = fs.readFileSync(f.src); } catch { continue; }
+    for (const p of placed) {
+      try { if (fs.statSync(p).size === f.size && fs.readFileSync(p).equals(buf)) return []; } catch {}
+    }
+  }
+  const out = [];
+  for (const f of fresh) {
+    const ext = path.extname(f.n).toLowerCase();
+    const t = new Date(f.mtime), two = (n) => String(n).padStart(2, "0");
+    const stem = `codex-image-${two(t.getMonth() + 1)}${two(t.getDate())}-${two(t.getHours())}${two(t.getMinutes())}${two(t.getSeconds())}`;
+    for (let i = 1; i < 100; i++) {
+      const dest = path.join(cwd, i === 1 ? stem + ext : `${stem}_${i}${ext}`);
+      try {
+        fs.copyFileSync(f.src, dest, fs.constants.COPYFILE_EXCL | fs.constants.COPYFILE_FICLONE);
+        out.push(dest);
+        break;
+      } catch (e) {
+        if (e && e.code === "EEXIST") continue;
+        break; // 复制不了（磁盘满、没权限）就算了：图还在 codex 那边，不能因为兜底把整个任务弄挂
+      }
+    }
+  }
+  return out;
+}
+
 /** 把 Codex 的 item 归成 (工具名, 目的说明)；认不出的原样带过去，不假装认识 */
 function toolOf(item) {
   switch (item.type) {
@@ -210,6 +310,7 @@ async function run({
   prompt, cwd, emit = () => {}, deadline, stopSignal,
   model, resumeId, bin, sandbox, network = true, guard = {}, mcpArgs = [], writableRoots = [], env, extraArgs = [],
   thinking: thinkingLevel,
+  systemPrompt = "",
   onWrite = null,
 }) {
   const found = await resolveBin("codex", bin);
@@ -250,6 +351,9 @@ async function run({
   // 思考模式：跟 app 设置页那个下拉框同一个档位（codex 这边是 model_reasoning_effort，
   // 关掉就是 none）。auto 不发，配置文件里怎么写就怎么来
   for (const a of thinking.planForEngine(ID, thinkingLevel).args) args.push(a);
+  // 排在 extraArgs 前面：用户在设置里自己填了 developer_instructions 的，以他的为准
+  const instr = instructionsPlan(systemPrompt, resumeId);
+  for (const a of instr.args) args.push(a);
   for (const a of extraArgs) args.push(a);
   args.push("-"); // 提示词从 stdin 读，和 claude 那条保持一致
 
@@ -331,8 +435,14 @@ async function run({
     }
   };
 
-  const r = await runJsonl({ bin: exe, args, cwd, env: isolated.env, stdin: prompt, onLine, deadline, stopSignal });
+  const r = await runJsonl({ bin: exe, args, cwd, env: isolated.env, stdin: instr.prefix + prompt, onLine, deadline, stopSignal });
   usage.elapsed_ms = Date.now() - startedAt;
+  // 停了、超时了、报错了也捡：出了的图是真出了，订阅额度已经用掉了。onWrite 报上去，收尾那次扫描就认得是这条对话的
+  const picked = pickupImages({ codexHome: isolated.env.CODEX_HOME, threadId: sessionId, cwd, since: startedAt });
+  if (picked.length) {
+    if (onWrite) for (const p of picked) { try { onWrite(p); } catch {} }
+    emit({ type: "status", text: `Codex 生成的图已放进对话目录：${picked.map((p) => path.basename(p)).join("、")}`, depth: 0 });
+  }
 
   if (r.killed === "stopped") return { finalText, usage, stopped: "已手动停止", sessionId };
   if (r.killed === "deadline") return { finalText, usage, stopped: "已达最大运行时间", sessionId };
@@ -345,7 +455,7 @@ async function run({
 }
 
 module.exports = {
-  changedPaths,
+  changedPaths, instructionsPlan, pickupImages,
   id: ID,
   label: "本机 Codex",
   bin: "codex",
