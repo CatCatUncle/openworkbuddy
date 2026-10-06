@@ -979,6 +979,8 @@ async function canvasLoadRemote() {
   if (!body || !Array.isArray(body.nodes)) return null;
   canvasState.remoteSnapshot = body;
   if (body.lost) canvasReportLost(body.lost);
+  // Agent 交的待生成清单跟着这一趟一起来（没有就是收掉了）：摆到顶上等人点
+  if (typeof canvasNoteProposal === "function") canvasNoteProposal(body.proposal || null);
   return body;
 }
 

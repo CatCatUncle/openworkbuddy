@@ -11,7 +11,7 @@
 function canvasRunInternal(node) {
   const kind = node && String(node.get("canvasKind") || "note"), p = canvasPayload(node);
   const text = kind === "shot"
-    ? `请处理这个短剧镜头：${p.id || p.title || "新镜头"}\n景别：${p.shot_size || "未指定"}\n时长：${p.duration || "4"} 秒\n镜头提示词：${canvasIsPlaceholderPrompt(p.prompt) ? "" : p.prompt}\n对白/旁白：${canvasIsPlaceholderPrompt(p.line) ? "" : p.line}\n读取连线时必须按用途区分人物身份、场景空间、构图、动作与连续性；需要时直接调用 generate_image / generate_video，并用 canvas_manage 更新当前镜头节点的 first_frame 或 video。`
+    ? `请处理这个短剧镜头：${p.id || p.title || "新镜头"}\n景别：${p.shot_size || "未指定"}\n时长：${p.duration || "4"} 秒\n镜头提示词：${canvasIsPlaceholderPrompt(p.prompt) ? "" : p.prompt}\n对白/旁白：${canvasIsPlaceholderPrompt(p.line) ? "" : p.line}\n读取连线时必须按用途区分人物身份、场景空间、构图、动作与连续性；要出首帧或视频时，先用 canvas_manage 把提示词和型号写进这个镜头节点，再用 propose 交待生成清单，等我在画布上点「开跑」。`
     : kind === "script" ? `请使用 /short-drama 把下面剧本拆成角色、场景和可执行镜头，并用 canvas_manage 写入当前项目画布，生成可审核的创作计划：\n${p.text || ""}`
       : kind === "timeline" ? "请检查这部短剧的镜头顺序、配音和字幕有没有问题，指出哪一镜该调。拼成片不用你敲 ffmpeg：画布「最终剪辑」节点上的「合成成片」按钮会按分镜顺序逐镜合轨、拼接、垫配乐、烧字幕，跑的就是 short-drama 那套命令。"
         : kind === "agent" ? `请执行这个本项目 Agent 任务，并把计划、产物和需要我确认的地方写回当前画布：\n角色：${p.role || "导演 Agent"}\n任务：${p.task || ""}\n审批规则：${p.approval || "先给方案，等我确认"}`
@@ -584,7 +584,7 @@ async function canvasChatRun() {
   if (requestedModel) await fetch(`/api/session/${encodeURIComponent(sessionId)}/model`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: requestedModel }) }).catch(() => {});
   const referenceContext = canvasReferenceContext(references);
   const mode = document.querySelector("[data-canvas-chat-mode]")?.value || "craft";
-  const directive = "你正在控制当前 OpenWorkBuddy 项目的 AI 短剧无限画布。只操作当前项目和当前画布，不连接其他本地项目。先用 canvas_manage 的 get 读取现有画布，再按用户要求 add/update/connect/delete 节点；connect 时必须为真实创作依赖填写 relation（character/background/composition/motion/style/prop/continuity/first_frame/last_frame/audio/reference），不能只画装饰箭头。需要生图、生视频或配音时直接调用对应工具，并把真实产物路径写回当前画布。" + referenceContext + "\n用户指令：" + userText;
+  const directive = "你正在控制当前 OpenWorkBuddy 项目的 AI 短剧无限画布。只操作当前项目和当前画布，不连接其他本地项目。先用 canvas_manage 的 get 读取现有画布，再按用户要求 add/update/connect/delete 节点；connect 时必须为真实创作依赖填写 relation（character/background/composition/motion/style/prop/continuity/first_frame/last_frame/audio/reference），不能只画装饰箭头。生图、生视频、配音都花钱，不要直接调用 generate_image / generate_video / text_to_speech：先把提示词和型号写进节点，再用 canvas_manage 的 propose 交一份待生成清单（节点 + 类型），回复里说清每项用什么型号；画布会摆出清单和报价，我点「开跑」才生成。" + referenceContext + "\n用户指令：" + userText;
   let answer = "", assistant = null, sawDone = false, followed = false;
   const turn = canvasTurnStart(sessionId, directive, mode, userText);
   const write = (value) => {

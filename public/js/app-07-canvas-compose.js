@@ -394,13 +394,14 @@ async function canvasRunPending(kind) {
  * 并发是个小池子：limit 个 worker 共用一个游标，谁空了谁取下一个，按镜头顺序发出去。
  */
 async function canvasRunQueue(kind, queue, noSpeaker = [], heldNote = "") {
+  // 返回开没开跑：确认框上点了「先不了」、或者另一批正在跑，都是 false（Agent 清单的横幅凭它决定收不收）
   // 确认框开着的时候再点一次，不能叠出第二个确认、更不能绕过确认直接开跑
-  if (canvasState.batch || canvasState.confirming) return;
+  if (canvasState.batch || canvasState.confirming) return false;
   if (typeof canvasConfirmBatch === "function") {
     canvasState.confirming = true;
     let go = false;
     try { go = await canvasConfirmBatch(kind, queue); } finally { canvasState.confirming = false; }
-    if (!go || canvasState.batch) return;
+    if (!go || canvasState.batch) return false;
   }
   canvasState.batch = { kind, total: queue.length, at: 0, label: "", stop: false };
   canvasRenderProgress();
@@ -445,6 +446,7 @@ async function canvasRunQueue(kind, queue, noSpeaker = [], heldNote = "") {
     await canvasLoadProgress();
     canvasLoadLibrary();
   }
+  return true;
 }
 
 /** 只重跑上一趟没成的那几个。点按钮时已经被删掉的就不管了，全删光了要说一声，不能点了没反应 */
@@ -457,6 +459,115 @@ async function canvasRetryFailed(kind, ids, where) {
   const nodes = (ids || []).map((id) => canvasState.graph?.getCell?.(id)).filter(Boolean);
   if (!nodes.length) { canvasToast("失败的节点都已不在画布上。", "triangle-alert", "err"); return; }
   await canvasRunQueue(kind, nodes);
+}
+
+/**
+ * Agent 交上来的待生成清单（canvas_manage propose，服务端随 GET /api/canvas 一起给）。
+ *
+ * 画布任务里的 Agent 不自己开枪花钱（s_canvas_ 会话里生成工具一律拦下，见 src/tools/canvas.js CANVAS_QUOTE_FIRST）。
+ * 它把提示词和型号写进节点、交一份「哪几个节点、生什么」的清单，这里摆成顶上一条：几张图几段视频、什么型号、大概多少钱。
+ * 型号和价钱按节点上此刻写的现算（canvasEstimateItem / canvasDramaModel，跟真跑那一枪同一个口径），不照抄 Agent 说的。
+ * 点「开跑」才按类走 canvasRunQueue：那条路自己还有一道带报价的扣费确认、并发上限、任务号台账；
+ * 点「不要」就作废，一个生成请求都不发。
+ */
+function canvasNoteProposal(proposal) {
+  const scope = canvasScope(), cur = canvasState.proposal;
+  const fresh = proposal && proposal.id && Array.isArray(proposal.items) && proposal.items.length ? proposal : null;
+  // 换了画布、服务端那份没了（点过了、别的标签页点过了）、Agent 又交了一份新的：旧横幅先收
+  if (cur && (cur.scope !== scope || !fresh || cur.id !== String(fresh.id))) { canvasState.proposal = null; canvasHideBar("proposal"); }
+  if (!fresh || canvasState.proposal) return;
+  if (canvasState.proposalGone instanceof Set && canvasState.proposalGone.has(String(fresh.id))) return;
+  if (typeof document === "undefined" || !document.getElementById("canvas-bars")) return;   // 画布页还没搭好：下一圈同步再摆
+  canvasState.proposal = { id: String(fresh.id), scope, name: canvasState.canvasName,
+    items: fresh.items.map((it) => ({ node_id: String((it && it.node_id) || ""), kind: String((it && it.kind) || "") })) };
+  canvasRenderProposal(canvasState.proposal);
+}
+
+/** 清单里还对得上号的那几项：先认画布上的节点，图还没铺好就拿刚读到的盘上那份顶一下（只拿来写横幅、估价） */
+function canvasProposalRows(p) {
+  const disk = (canvasState.remoteSnapshot && Array.isArray(canvasState.remoteSnapshot.nodes)) ? canvasState.remoteSnapshot.nodes : [];
+  return p.items.map((it) => {
+    let node = canvasState.graph?.getCell?.(it.node_id) || null;
+    if (!node) {
+      const raw = disk.find((n) => n && n.id === it.node_id);
+      if (raw) node = { id: raw.id, get: (k) => (k === "canvasPayload" ? raw.payload || {} : k === "canvasKind" ? raw.kind : undefined) };
+    }
+    return node && ["image", "video", "audio"].includes(it.kind) ? { node, kind: it.kind } : null;
+  }).filter(Boolean);
+}
+
+async function canvasRenderProposal(p) {
+  const rows = canvasProposalRows(p);
+  if (!rows.length) { canvasHideBar("proposal"); return; }
+  const list = ["image", "video", "audio"].map((kind) => {
+    const mine = rows.filter((r) => r.kind === kind);
+    if (!mine.length) return "";
+    const count = canvasT(kind === "image" ? "{n} 张图" : kind === "video" ? "{n} 段视频" : "{n} 条配音", { n: mine.length });
+    if (kind === "audio") return count;   // 配音按角色音色走，不按型号选
+    const models = [...new Set(mine.map((r) => (typeof canvasDramaModel === "function" ? canvasDramaModel(canvasPayload(r.node), kind, canvasKind(r.node)) : "") || canvasT("默认型号")))];
+    return canvasT("{count}（{models}）", { count, models: models.join(" / ") });
+  }).filter(Boolean).join(canvasT("、"));
+  const show = (price) => {
+    if (canvasState.proposal !== p) return;   // 估价那会儿横幅已经点掉、换掉了
+    canvasShowBar("proposal", { kind: "warn", icon: "sparkles", text: canvasT("Agent 列了待生成清单：{list}。{price}", { list, price }), actions: [
+      { label: "开跑", run: (button) => { button.disabled = true; canvasRunProposal(p); } },
+      { label: "不要", run: () => canvasDropProposal(p) },
+    ] });
+  };
+  show(canvasT("正在估价…"));
+  const { est, error } = await canvasEstimate(rows.map((r) => canvasEstimateItem(r.node, r.kind)));
+  const known = est ? est.items.filter((x) => x && x.known).length : 0;
+  const unknown = est ? (Number.isFinite(Number(est.unknownCount)) ? Number(est.unknownCount) : est.items.length - known) : 0;
+  // 估不出来照样摆、照样能点：跟一键补齐的确认框一个规矩，不猜数，原话照抄
+  show(!est ? canvasT("没拿到报价：{n}", { n: error })
+    : !known ? canvasT("价格未知，点「开跑」才扣费。")
+      : unknown > 0 ? canvasT("预计 {m}，另有 {n} 条价格未知。", { m: canvasFormatYuan(est.total), n: unknown })
+        : canvasT("预计 {m}，点「开跑」才扣费。", { m: canvasFormatYuan(est.total) }));
+}
+
+/** 「不要」，或者开跑之后：这台机器先记下点过了，再请服务端收掉那一份（带清单号，Agent 新交的不受牵连） */
+function canvasDropProposal(p) {
+  if (!(canvasState.proposalGone instanceof Set)) canvasState.proposalGone = new Set();
+  canvasState.proposalGone.add(p.id);
+  if (canvasState.proposal === p) canvasHideBar("proposal");
+  fetch("/api/canvas/proposal/dismiss", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: p.name, id: p.id }) }).catch(() => {});
+}
+
+/**
+ * 「开跑」：按图 → 视频 → 配音的顺序一类一批（视频要用刚出的首帧），每批照常过 canvasRunQueue 的扣费确认。
+ * 第一批就点了「先不了」就把横幅摆回去，清单不作废；开了任何一批就收掉（没跑的那几类在一键补齐里还能补）
+ */
+async function canvasRunProposal(p) {
+  if (canvasState.proposal !== p) return;
+  if (canvasState.batch || canvasState.confirming) {
+    canvasToast("还有一批在跑，跑完再点开跑。", "triangle-alert", "err");
+    canvasRenderProposal(p);
+    return;
+  }
+  const groups = ["image", "video", "audio"].map((kind) => ({ kind, nodes: p.items.filter((it) => it.kind === kind)
+    .map((it) => canvasState.graph?.getCell?.(it.node_id)).filter(Boolean) })).filter((g) => g.nodes.length);
+  if (!groups.length) { canvasToast("清单里的节点都已不在画布上。", "triangle-alert", "err"); canvasDropProposal(p); return; }
+  // 上一单还没收回来的格子不排进来（跟一键补齐一个规矩）：那一单可能已经在上游扣过费，再排就是买两次
+  const waitingOf = (g) => g.nodes.filter((n) => typeof canvasPendingJob === "function" && canvasPendingJob(canvasPayload(n), g.kind));
+  const waitingAll = groups.flatMap(waitingOf);
+  if (waitingAll.length && groups.every((g) => waitingOf(g).length === g.nodes.length)) {
+    canvasToast(canvasT("{n} 格的上一单还没收到结果，先在卡片上点「看结果」。", { n: waitingAll.length }), "triangle-alert", "err");
+    canvasProgressFocus(waitingAll.map((n) => n.id));
+    canvasRenderProposal(p);   // 横幅留着、按钮恢复：看完结果还能再点
+    return;
+  }
+  canvasHideBar("proposal");
+  let started = false;
+  for (const g of groups) {
+    if (canvasScope() !== p.scope) break;   // 跑前一批的工夫换了画布：后面几批不在这张图上开枪
+    const waiting = waitingOf(g), queue = g.nodes.filter((n) => !waiting.includes(n));
+    if (!queue.length) continue;
+    // 哪一批的确认框上点了「先不了」就整张清单停在那儿，不接着问下一类
+    if (!(await canvasRunQueue(g.kind, queue, [], waiting.length ? `，${waiting.length} 个上一单没收到结果，没排进来` : ""))) break;
+    started = true;
+  }
+  if (started) canvasDropProposal(p);
+  else if (canvasState.proposal === p && canvasScope() === p.scope) canvasRenderProposal(p);
 }
 
 /**

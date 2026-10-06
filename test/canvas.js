@@ -295,6 +295,15 @@ const STUB3 = `
       return J({ ok: true, restored: st.nodes.length, edges: 0, updatedAt: st.updatedAt, state: st });
     }
     if (s.includes("/api/canvas/snapshots")) return J({ snapshots: window.__snaps || [] });
+    // Agent 待生成清单的「不要」/ 开跑后收掉（routes/canvas.js /api/canvas/proposal/dismiss）：按清单号收，
+    // 号对不上的不动（Agent 刚交的新一份不受牵连）
+    if (s.includes("/api/canvas/proposal/dismiss")) {
+      window.__bodies.push({ url: "/api/canvas/proposal/dismiss", body });
+      const board = window.__store[window.__active][(body && body.name) || "main"];
+      const dropped = !!(board && board.proposal && board.proposal.id === (body && body.id));
+      if (dropped) delete board.proposal;
+      return J({ ok: true, dropped });
+    }
     if (s.includes("/api/canvas/list") && window.__trash) { const d = await (await inner.apply(this, arguments)).json(); return J({ ...d, trash: window.__trash }); }
     if (s.includes("/api/canvas/boards/") && m === "DELETE" && window.__trash) {
       await inner.apply(this, arguments);
@@ -3268,6 +3277,74 @@ app.whenReady().then(async () => {
   ok(!存盘.辛.条 && 存盘.辛.节点 === 0 && 存盘.辛.写了 === 0 && 存盘.辛.盘 === 0,
      "★本机都存上了、Agent 后来清空了画布：铺空的，不拿本机那份写回去★ 以前盘上空就铺本机的，清空当场被顶回去", 存盘.辛);
   ok(!存盘.壬.条, "反向对照：老副本没记过指纹，分不出来就不问，照老规矩", 存盘.壬);
+
+  console.log("\n— 四十二、画布 Agent 先报价：交上来的是清单，顶上摆型号和报价，点「开跑」才生成，点「不要」一枪不发 —");
+  const 清单 = await run(`
+    (async () => {
+      ${摆画布([
+        { id: "q1", kind: "shot", payload: { id: "q1", title: "q1", prompt: "一号镜头", model: "假图模型-甲" }, position: { x: 40, y: 40 }, size: { width: 300, height: 220 } },
+        { id: "q2", kind: "shot", payload: { id: "q2", title: "q2", prompt: "二号镜头" }, position: { x: 40, y: 300 }, size: { width: 300, height: 220 } },
+        { id: "q3", kind: "shot", payload: { id: "q3", title: "q3", prompt: "三号镜头", first_frame: "outputs/q3.png", model: "假视频模型" }, position: { x: 400, y: 40 }, size: { width: 300, height: 220 } },
+        { id: "q9", kind: "shot", payload: { id: "q9", title: "q9", prompt: "九号镜头不在清单里" }, position: { x: 400, y: 300 }, size: { width: 300, height: 220 } },
+      ])}
+      const 条 = () => document.querySelector('[data-canvas-bar="proposal"]');
+      const 条况 = () => 条() ? { 字: 条().querySelector(".canvas-bar-text").textContent, 钮: [...条().querySelectorAll("button")].map((b) => b.textContent.trim()).join("|"), 可点: [...条().querySelectorAll("button")].every((b) => !b.disabled) } : null;
+      const 点 = (label) => { const b = 条() && [...条().querySelectorAll("button")].find((x) => x.textContent.trim() === label); if (b) b.click(); return !!b; };
+      const 收的 = () => window.__bodies.filter((b) => b.url === "/api/canvas/proposal/dismiss").map((b) => b.body);
+      let 问了 = 0, 答 = true; const 原问 = window.askConfirm;
+      window.askConfirm = async () => { 问了 += 1; return 答; };
+      window.__runs = []; window.__bodies = []; window.__estimates = []; window.__estimate = null; window.__failRun = null; window.__runDelay = 0;
+      // ① Agent 交了一份：两张图（一张指定型号、一张跟默认）、一段视频。清单里点名的节点不存在的那一项不算
+      window.__store.jia.main.proposal = { id: "p_test1", at: Date.now(), items: [
+        { node_id: "q1", kind: "image" }, { node_id: "q2", kind: "image" }, { node_id: "q3", kind: "video" }, { node_id: "没有这个", kind: "image" }] };
+      await canvasLoadRemote(); ${等(300)}
+      const 甲 = { 条: 条况(), 发了: window.__runs.length, 问了, 报价: (window.__estimates.at(-1) || []).map((x) => x.tool + ":" + ((x.input && x.input.model) || "")) };
+      // ② 点「开跑」，确认框上点「先不了」：一枪不发，横幅摆回来，清单不收
+      答 = false;
+      点("开跑"); ${等(400)}
+      const 乙 = { 问了, 发了: window.__runs.length, 条: 条况(), 收: 收的() };
+      // ③ 再点「开跑」、这回确认：先图后视频各问一次，只跑清单里那三条，跑完收掉清单
+      答 = true; 问了 = 0;
+      点("开跑"); ${等(900)}
+      const 丙一 = { 问了, 发了: [...window.__runs].sort(), 条: !!条(), 收: 收的(), 盘上还有: !!window.__store.jia.main.proposal };
+      await canvasLoadRemote(); ${等(200)}
+      const 丙 = { ...丙一, 再拉一圈: !!条() };
+      // ④ Agent 又交了一份，点「不要」：一枪不发，收掉；服务端没收成（还在盘上）也不再冒出来
+      window.__runs = []; window.__bodies = []; 问了 = 0;
+      window.__store.jia.main.proposal = { id: "p_test2", at: Date.now(), items: [{ node_id: "q9", kind: "image" }] };
+      await canvasLoadRemote(); ${等(300)}
+      const 丁有 = 条况();
+      点("不要"); ${等(200)}
+      const 丁收 = 收的();
+      window.__store.jia.main.proposal = { id: "p_test2", at: Date.now(), items: [{ node_id: "q9", kind: "image" }] };
+      await canvasLoadRemote(); ${等(200)}
+      const 丁 = { 有: 丁有, 收: 丁收, 又冒: !!条(), 发了: window.__runs.length, 问了: 问了 };
+      // ⑤ 估价接口出错：照抄原话，横幅照样摆、照样能点；服务端那份没了（别的标签页点过了）横幅就收
+      window.__estimate = () => ({ ok: false, error: "估价服务没开" });
+      window.__store.jia.main.proposal = { id: "p_test3", at: Date.now(), items: [{ node_id: "q9", kind: "image" }] };
+      await canvasLoadRemote(); ${等(300)}
+      const 戊有 = 条况();
+      delete window.__store.jia.main.proposal;
+      await canvasLoadRemote(); ${等(200)}
+      const 戊 = { 有: 戊有, 收后: !!条(), 发了: window.__runs.length };
+      window.__estimate = null; window.askConfirm = 原问;
+      return { 甲, 乙, 丙, 丁, 戊 };
+    })()`);
+  ok(清单.甲.条 && /^Agent 列了待生成清单：2 张图（假图模型-甲 \/ 默认型号）、1 段视频（假视频模型）。预计 ¥0\.90，点「开跑」才扣费。$/.test(清单.甲.条.字)
+     && 清单.甲.条.钮 === "开跑|不要" && 清单.甲.发了 === 0 && 清单.甲.问了 === 0,
+     "★Agent 交清单：顶上摆几张图几段视频、各用什么型号、预计多少钱，给「开跑」「不要」；这时一枪没发、也没弹扣费框★", 清单.甲);
+  ok(JSON.stringify(清单.甲.报价) === JSON.stringify(["generate_image:假图模型-甲", "generate_image:", "generate_video:假视频模型"]),
+     "报价按节点上写的型号现算（跟真跑那一枪同一个口径），画布上找不到的那项不算钱", 清单.甲.报价);
+  ok(清单.乙.问了 === 1 && 清单.乙.发了 === 0 && 清单.乙.条 && 清单.乙.条.可点 && 清单.乙.收.length === 0,
+     "★点「开跑」还要过扣费确认；点「先不了」一枪不发，横幅摆回来、按钮能再点，清单不作废★", 清单.乙);
+  ok(清单.丙.问了 === 2 && JSON.stringify(清单.丙.发了) === JSON.stringify(["一号镜头", "三号镜头", "二号镜头"].sort())
+     && !清单.丙.条 && 清单.丙.收.length === 1 && 清单.丙.收[0].id === "p_test1" && 清单.丙.收[0].name === "main" && !清单.丙.盘上还有 && !清单.丙.再拉一圈,
+     "★确认后只跑清单里那三条（先图后视频各确认一次），不在清单里的九号镜头不动；跑完清单收掉，再拉一圈也不回来★", 清单.丙);
+  ok(清单.丁.有 && /1 张图（默认型号）/.test(清单.丁.有.字) && 清单.丁.收.length === 1 && 清单.丁.收[0].id === "p_test2"
+     && !清单.丁.又冒 && 清单.丁.发了 === 0 && 清单.丁.问了 === 0,
+     "★点「不要」：一个生成请求都不发、不弹扣费框，请服务端收掉；服务端没收成也不再冒出来★", 清单.丁);
+  ok(清单.戊.有 && 清单.戊.有.字 === "Agent 列了待生成清单：1 张图（默认型号）。没拿到报价：估价服务没开" && 清单.戊.有.钮 === "开跑|不要" && !清单.戊.收后 && 清单.戊.发了 === 0,
+     "估价接口出错照抄原话、横幅照样能点；服务端那份没了（别处点过）横幅就收", 清单.戊);
 
   srv.close();
   console.log(fail ? `\n有失败：${pass} 过 / ${fail} 挂` : `\n全部通过：${pass} 过 / 0 挂`);

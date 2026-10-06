@@ -76,6 +76,9 @@ let canvasState = {
   // snapshotSince：这台机器上回看见这张画布的时间，Agent 在那之后清空、连删存的快照才挂「撤销」；
   // snapshotSeen：挂过的快照，点了「知道了」就别再冒出来
   canvasTrash: [], snapshotSince: 0, snapshotSeen: new Set(),
+  // proposal：Agent 交上来、正摆在顶上等人点「开跑」/「不要」的那份清单（见 canvasNoteProposal）；
+  // proposalGone：这台机器上点过的清单号，服务端那份还没收掉之前同步一圈也别再冒出来
+  proposal: null, proposalGone: new Set(),
   canvasName: "main", canvasList: [], taskSessionId: null, chatBusy: false, chatStopping: false, chatReferences: new Map(), history: [], historyIndex: -1, historyTimer: null, historyMute: false,
   workspaceProjects: [], workspaceLocked: false, workspaceName: "", workspaceDir: "",
   // 正在生成的节点 id。生一张图几十秒，这期间远端那份每 1.8 秒来一趟、整图重铺——
