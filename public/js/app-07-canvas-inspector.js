@@ -357,11 +357,11 @@ function canvasRenderInspector(focus = true) {
   const defaultTarget = allNodes[0], defaultRelation = defaultTarget ? canvasDefaultRelation(node, defaultTarget) : "input";
   // 每颗「生成」旁边挂一个预估价（异步填，见 canvasFillPrices）：点之前就知道这一下大概多少钱
   const price = (k) => `<small class="canvas-price" data-canvas-price="${k}"></small>`;
-  const generateActions = kind === "shot" ? `<button class="ui-btn ui-btn--sm ui-btn--brand" data-inspect-generate="image">${ic("image")}生成首帧</button>${price("image")}<button class="ui-btn ui-btn--sm ui-btn--outline" data-inspect-generate="video" ${p.first_frame ? "" : "disabled"}>${ic("video")}生成视频</button>${p.first_frame ? price("video") : ""}` : ["image", "video", "audio"].includes(kind) ? `<button class="ui-btn ui-btn--sm ui-btn--brand" data-inspect-generate="${kind}">${ic(kind === "audio" ? "volume-2" : kind)}${kind === "audio" ? "生成配音" : `生成${def.label}`}</button>${price(kind)}` : "";
+  const generateActions = kind === "shot" ? `<button class="ui-btn ui-btn--sm ui-btn--brand" data-inspect-generate="image">${ic("image")}生成首帧</button>${price("image")}<button class="ui-btn ui-btn--sm ui-btn--outline" data-inspect-generate="video" ${p.first_frame ? "" : "disabled"}>${ic("video")}生成视频</button>${p.first_frame ? price("video") : ""}<button class="ui-btn ui-btn--sm ui-btn--outline" data-inspect-generate="audio">${ic("volume-2")}生成配音</button>${price("audio")}` : ["image", "video", "audio"].includes(kind) ? `<button class="ui-btn ui-btn--sm ui-btn--brand" data-inspect-generate="${kind}">${ic(kind === "audio" ? "volume-2" : kind)}${kind === "audio" ? "生成配音" : `生成${def.label}`}</button>${price(kind)}` : "";
   // 「换一版」：同参数默认沿用上次的产物不花钱，真要一张不一样的走这里——版本号 +1、带 no_cache，照价扣费。
   // 只在已经有产物的时候出现：还没生过的，点「生成」就是新的一版
   const rerolls = kind === "shot"
-    ? [p.first_frame ? ["image", "换一版首帧"] : null, p.video ? ["video", "换一版视频"] : null].filter(Boolean)
+    ? [p.first_frame ? ["image", "换一版首帧"] : null, p.video ? ["video", "换一版视频"] : null, p.audio ? ["audio", "换一版配音"] : null].filter(Boolean)
     : ["image", "video", "audio"].includes(kind) && (p.path || p.url) ? [[kind, "换一版"]] : [];
   const rerollRow = rerolls.length ? `<div class="canvas-reroll-row">${rerolls.map(([k, label]) => `<button class="ui-btn ui-btn--sm ui-btn--outline" data-inspect-reroll="${k}">${ic("refresh-cw")}${label}</button>`).join("")}<small>会重新扣费</small></div>` : "";
   // 重画之前他的光标在哪个框里、停在第几个字，重画完放回去。整块 innerHTML 一换，
@@ -402,8 +402,10 @@ function canvasRenderInspector(focus = true) {
   box.querySelector("[data-inspect-delete]")?.addEventListener("click", () => canvasDeleteSelection(node, true));
   // 「已连接」里每条后面那颗 ×：断开这一条，能撤（见 canvasDisconnect）
   box.querySelectorAll("[data-canvas-disconnect]").forEach((button) => button.addEventListener("click", () => canvasDisconnect(canvasState.graph.getCell(button.dataset.canvasDisconnect))));
-  box.querySelectorAll("[data-inspect-generate]").forEach((button) => button.addEventListener("click", () => canvasGenerate(node, button.dataset.inspectGenerate)));
-  box.querySelectorAll("[data-inspect-reroll]").forEach((button) => button.addEventListener("click", () => canvasReroll(node, button.dataset.inspectReroll)));
+  // 镜头上的两颗配音按钮先报价、等人点头（canvasVoiceGenerate）；其余照旧点了就生成，价写在按钮旁边
+  const voiceOf = (k) => kind === "shot" && k === "audio";
+  box.querySelectorAll("[data-inspect-generate]").forEach((button) => button.addEventListener("click", () => (voiceOf(button.dataset.inspectGenerate) ? canvasVoiceGenerate(node, false) : canvasGenerate(node, button.dataset.inspectGenerate))));
+  box.querySelectorAll("[data-inspect-reroll]").forEach((button) => button.addEventListener("click", () => (voiceOf(button.dataset.inspectReroll) ? canvasVoiceGenerate(node, true) : canvasReroll(node, button.dataset.inspectReroll))));
   canvasFillPrices(box, node).catch(() => {});
   canvasBindHistory(box.querySelector("[data-canvas-history]"), node);
   box.querySelector("[data-inspect-agent]")?.addEventListener("click", () => canvasRunInternal(node)); if (focus) box.querySelector("[data-inspect-key]")?.focus();

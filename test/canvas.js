@@ -3686,6 +3686,102 @@ app.whenReady().then(async () => {
   ok(JSON.stringify(排.回不去.顺序) === JSON.stringify(["S2-02", "S1-01", "S1-02", "S2-01"]) && /没写回分镜表/.test(排.回不去.提示) && /（分镜表里没有镜头 S2-02）/.test(排.回不去.提示),
      "分镜表退回来：画布上照样排好，提示照原话说没写回去", 排.回不去.提示);
 
+  console.log("\n— 四十九、镜头检查器「生成配音」「换一版配音」：先报价、等点头；换一版带 no_cache、版本号 +1 —");
+  const 配 = await run(`
+    (async () => {
+      ${摆画布([号镜头("vo1", "S1-01", "雨夜街口", 40, { line: "今晚的雨下得真大" }), 号镜头("vo2", "S1-02", "空巷", 300)])}
+      window.__bodies = []; window.__runs = []; window.__failRun = null; window.__echoName = true; window.__estimate = null; window.__estimates = [];
+      canvasState.versionTaken = new Map(); canvasState.assetsCheckedAt = 0;
+      const 替身 = window.askConfirm; window.askConfirm = window.__realAskConfirm;
+      try {
+        const 卡 = (id) => canvasState.graph.getCell(id);
+        const 字 = () => ((document.querySelector("#owb-toast span") || {}).textContent) || "";
+        const 框 = document.getElementById("canvas-inspector");
+        const 发的 = () => window.__bodies.filter((b) => b.url === "/api/tool/run").map((b) => ({ 工具: b.body.tool, 字: b.body.input.text, 名: b.body.input.filename, 有no_cache: "no_cache" in b.body.input, no_cache: b.body.input.no_cache }));
+        const 等框 = async () => { const t = Date.now() + 4000; while (Date.now() < t && !document.querySelector(".ask-mask .ask-box")) ${等(30)} return document.querySelector(".ask-mask .ask-box"); };
+        const 读框 = (box) => box ? { 标题: (box.querySelector(".ask-t") || {}).textContent || "", 取消: (box.querySelector(".ask-no") || {}).textContent || "", 确定: (box.querySelector(".ask-ok") || {}).textContent || "" } : null;
+        const 等跑完 = async () => { const t = Date.now() + 4000; ${等(50)} while (Date.now() < t && (canvasState.busy.has("vo1:audio") || canvasState.inflight.has("vo1"))) ${等(50)} };
+        const 选 = async (id) => { canvasState.inspectorOpen = true; canvasSetSelection(new Set([id]), id); ${等(50)} };
+        const 按钮 = (sel) => 框.querySelector(sel);
+        const 读检查器 = () => ({ 配音: !!按钮('[data-inspect-generate="audio"]'), 配音字: (按钮('[data-inspect-generate="audio"]') || {}).textContent || "",
+          换配音: !!按钮('[data-inspect-reroll="audio"]'), 换配音字: (按钮('[data-inspect-reroll="audio"]') || {}).textContent || "",
+          价: ((按钮('[data-canvas-price="audio"]') || {}).textContent) || "" });
+
+        // ① 检查器：镜头上有「生成配音」，价挂在旁边；还没配过音就没有「换一版配音」
+        await 选("vo1");
+        const 到点 = Date.now() + 3000;
+        while (Date.now() < 到点 && !((按钮('[data-canvas-price="audio"]') || {}).textContent)) ${等(50)}
+        const 起 = 读检查器();
+
+        // ② 点「生成配音」：先弹报价框，框开着一枪不发；点「先不了」也一枪不发
+        window.__estimates = [];
+        按钮('[data-inspect-generate="audio"]').click();
+        let box = await 等框();
+        const 第一框 = 读框(box), 框开着发了 = 发的().length, 报价问的 = window.__estimates.slice(-1)[0] || [];
+        if (box) box.querySelector(".ask-no").click();
+        await 等跑完(); ${等(150)}
+        const 取消后 = { 发了: 发的().length, 配音: (卡("vo1").get("canvasPayload") || {}).audio || "", 框还在: !!document.querySelector(".ask-mask") };
+
+        // ③ 再点，这回「开始生成」：发 text_to_speech，文件名 v1，不带 no_cache；卡上记下配音
+        按钮('[data-inspect-generate="audio"]').click();
+        box = await 等框();
+        if (box) box.querySelector(".ask-ok").click();
+        await 等跑完();
+        const 生成后 = { 发的: 发的(), 配音: (卡("vo1").get("canvasPayload") || {}).audio || "", 检查器: 读检查器() };
+
+        // ④ 「换一版配音」：一样先报价；点了带 no_cache:true、文件名 v2
+        window.__bodies = []; window.__estimates = [];
+        按钮('[data-inspect-reroll="audio"]').click();
+        box = await 等框();
+        const 换框 = 读框(box), 换框开着发了 = 发的().length;
+        if (box) box.querySelector(".ask-ok").click();
+        await 等跑完();
+        const 换后 = { 发的: 发的(), 配音: (卡("vo1").get("canvasPayload") || {}).audio || "" };
+
+        // ⑤ 参数没变再点「生成配音」：沿用现在这一版，不问价、不弹框、不发
+        window.__bodies = []; window.__estimates = [];
+        按钮('[data-inspect-generate="audio"]').click();
+        ${等(400)}
+        const 沿用 = { 发了: 发的().length, 问价: window.__estimates.length, 框: !!document.querySelector(".ask-mask"), 提示: 字(), 配音: (卡("vo1").get("canvasPayload") || {}).audio || "" };
+
+        // ⑥ 换一版也能「先不了」
+        按钮('[data-inspect-reroll="audio"]').click();
+        box = await 等框();
+        if (box) box.querySelector(".ask-no").click();
+        await 等跑完(); ${等(150)}
+        const 换取消 = { 发了: 发的().length, 配音: (卡("vo1").get("canvasPayload") || {}).audio || "" };
+
+        // ⑦ 没写台词的镜头（新镜头卡上那句是模板占位）：拦下来说清楚，不问价、不弹框
+        await 选("vo2");
+        window.__estimates = [];
+        按钮('[data-inspect-generate="audio"]').click();
+        ${等(400)}
+        const 没台词 = { 发了: 发的().length, 问价: window.__estimates.length, 框: !!document.querySelector(".ask-mask"), 提示: 字() };
+        window.__echoName = false;
+        await canvasFlushRemoteWrite(); ${等(200)}
+        return { 起, 第一框, 框开着发了, 报价问的, 取消后, 生成后, 换框, 换框开着发了, 换后, 沿用, 换取消, 没台词 };
+      } finally { window.askConfirm = 替身; }
+    })()`);
+  ok(配.起.配音 && 配.起.配音字.trim() === "生成配音" && 配.起.价 === "约 ¥0.30" && !配.起.换配音,
+     "★镜头检查器里有「生成配音」，旁边挂着预估价★；还没配过音就不摆「换一版配音」", 配.起);
+  ok(配.第一框 && 配.第一框.标题 === "将生成 1 条配音，预计 ¥0.30，确认后开始扣费" && 配.第一框.确定 === "开始生成" && 配.第一框.取消 === "先不了",
+     "★点「生成配音」先弹报价框：几条、多少钱、点了才扣费★", 配.第一框);
+  ok(配.框开着发了 === 0 && JSON.stringify(配.报价问的) === JSON.stringify([{ tool: "text_to_speech", input: { text: "今晚的雨下得真大" } }]),
+     "报价问的是这一句台词的配音（按字算），框开着的时候一枪没发", { 发了: 配.框开着发了, 报价问的: 配.报价问的 });
+  ok(配.取消后.发了 === 0 && !配.取消后.配音 && !配.取消后.框还在, "★点「先不了」：/api/tool/run 一个请求都没收到，卡上没多出配音★", 配.取消后);
+  ok(配.生成后.发的.length === 1 && 配.生成后.发的[0].工具 === "text_to_speech" && 配.生成后.发的[0].字 === "今晚的雨下得真大"
+     && 配.生成后.发的[0].名 === "配音_S1-01_v1.mp3" && !配.生成后.发的[0].有no_cache && 配.生成后.配音 === "短剧/main/配音_S1-01_v1.mp3",
+     "★点「开始生成」：发一条 text_to_speech，文件名 v1、不带 no_cache，卡上记下配音★", 配.生成后);
+  ok(配.生成后.检查器.换配音 && 配.生成后.检查器.换配音字.trim() === "换一版配音", "配过音之后检查器里多出「换一版配音」", 配.生成后.检查器);
+  ok(配.换框 && 配.换框.标题 === "将生成 1 条配音，预计 ¥0.30，确认后开始扣费" && 配.换框开着发了 === 0, "★「换一版配音」也先报价、等点头★ 它一定会重新扣费", 配.换框);
+  ok(配.换后.发的.length === 1 && 配.换后.发的[0].no_cache === true && 配.换后.发的[0].名 === "配音_S1-01_v2.mp3" && 配.换后.配音 === "短剧/main/配音_S1-01_v2.mp3",
+     "★换一版：请求体带 no_cache:true，文件名 v1 → v2，卡片换上新的★ 跟首帧、视频的换一版同一个规矩", 配.换后);
+  ok(配.沿用.发了 === 0 && 配.沿用.问价 === 0 && !配.沿用.框 && /没扣费/.test(配.沿用.提示) && 配.沿用.配音 === "短剧/main/配音_S1-01_v2.mp3",
+     "★参数没变再点「生成配音」：沿用这一版，不弹「确认后开始扣费」★ 不花钱的事不该让人确认扣费", 配.沿用);
+  ok(配.换取消.发了 === 0 && 配.换取消.配音 === "短剧/main/配音_S1-01_v2.mp3", "反向对照：换一版点「先不了」，一枪不发、卡上还是 v2", 配.换取消);
+  ok(配.没台词.发了 === 0 && 配.没台词.问价 === 0 && !配.没台词.框 && /先写台词|请先填写对白/.test(配.没台词.提示),
+     "★没写台词的镜头点「生成配音」：直接说先写台词，不先拿一个价让人点★", 配.没台词);
+
   srv.close();
   console.log(fail ? `\n有失败：${pass} 过 / ${fail} 挂` : `\n全部通过：${pass} 过 / 0 挂`);
   app.exit(fail ? 1 : 0);

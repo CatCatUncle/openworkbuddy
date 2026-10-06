@@ -849,6 +849,9 @@ async function canvasGenerate(node, kind) {
   // 「换一版」是从 canvasReroll 进来的：它先在 reroll 里记一笔再调这里。签名不能加参数（测试按
   // 「canvasGenerate(node, kind)」切源码），所以走这个旁路。先取走再判忙：忙着的时候点了也不该留到下一次
   const fresh = canvasState.reroll instanceof Set ? canvasState.reroll.delete(key) : false;
+  // 「先报价」那一趟也走旁路（canvasVoiceGenerate）：拦得下的照常拦、不花钱的照常做（沿用现成那一版），
+  // 走到真要开枪那一步就停下、不占版本号，交回 needConfirm，让那边先报价、等人点头
+  const priceFirst = canvasState.priceFirst instanceof Set ? canvasState.priceFirst.delete(key) : false;
   // 「看结果」收回来的那一单也走这个旁路（canvasCollectJob）：结果和当时发出去的参数都在里面，
   // 这一趟不开枪，只把它放上画布——跟当场生成回来走同一条路，记录、回写、提示都一样
   const collected = canvasState.collect instanceof Map && canvasState.collect.has(key) ? canvasState.collect.get(key) : null;
@@ -978,6 +981,7 @@ async function canvasGenerate(node, kind) {
       // 走下面同一条路——记生成记录、换结果卡、回写分镜表，跟真生成回来一模一样
       result = { ok: true, path: reuse.same, cached: true, reusedVersion: true };
     } else {
+      if (priceFirst) return { ok: false, needConfirm: true };
       if (!castKind) input.filename = canvasOutputFilename(p, kind, nodeKind, canvasNextVersion(p, kind, node, board));
       // 「换一版」：版本号照常 +1，再带上 no_cache，服务端就不会拿缓存顶——这一枪是人明确要花的。
       // 定妆照 / 场景图已经有一张却没被上面认作同参数：那个文件可能已被别的参数覆盖过，
@@ -1332,4 +1336,34 @@ function canvasReroll(node, kind) {
   if (!(canvasState.reroll instanceof Set)) canvasState.reroll = new Set();
   canvasState.reroll.add(`${node.id}:${kind}`);
   return canvasGenerate(node, kind);
+}
+
+/**
+ * 镜头检查器上的「生成配音」「换一版配音」：单独一镜也先报价、等人点头再开枪，跟一键补齐同一道确认（canvasConfirmBatch）。
+ * 先让 canvasGenerate 走一趟「先报价」（priceFirst 旁路）：没台词、还是占位文字、不知道用谁的嗓子、
+ * 上一单没收回来，照常拦下来说清楚；参数没变、沿用现成那一版的照常沿用——不花钱的事不弹「确认后开始扣费」。
+ * 只有真要花钱的那一下才报价、弹框，点「先不了」一个请求都不发。
+ * 「换一版」走 canvasReroll：版本号 +1、带 no_cache，照价扣费
+ * @param {any} node 镜头节点
+ * @param {boolean} [again] true = 换一版
+ * @returns {Promise<{ok: boolean, error?: string, cancelled?: boolean, needConfirm?: boolean, reused?: boolean}>}
+ */
+async function canvasVoiceGenerate(node, again) {
+  // 确认框开着的时候再点：不叠第二个框，更不绕过它
+  if (!node || canvasState.confirming) return { ok: false, error: "正在确认" };
+  const key = `${node.id}:audio`;
+  const fire = (n) => (again ? canvasReroll(n, "audio") : canvasGenerate(n, "audio"));
+  if (!(canvasState.priceFirst instanceof Set)) canvasState.priceFirst = new Set();
+  canvasState.priceFirst.add(key);
+  let first;
+  try { first = await fire(node); } finally { canvasState.priceFirst.delete(key); }
+  if (!first || !first.needConfirm) return first || { ok: false, error: "没有生成" };
+  canvasState.confirming = true;
+  let yes = false;
+  try { yes = await canvasConfirmBatch("audio", [node]); } finally { canvasState.confirming = false; }
+  if (!yes) return { ok: false, cancelled: true };
+  // 框开着的这会儿节点可能被删了、整张图被远端重铺了：按 id 重新取，取不到就不开枪——钱花了也没地方放
+  const live = canvasState.graph ? canvasState.graph.getCell(node.id) : node;
+  if (!live) { canvasToast("这一镜已经不在画布上，没有生成。", "triangle-alert", "err"); return { ok: false, error: "节点已不在画布上" }; }
+  return fire(live);
 }

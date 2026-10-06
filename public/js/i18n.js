@@ -2473,6 +2473,8 @@
       "换一版": "New version",
       "换一版首帧": "New first frame",
       "换一版视频": "New video",
+      "换一版配音": "New voiceover",
+      "这一镜已经不在画布上，没有生成。": "This shot is no longer on the canvas. Nothing was generated.",
       "会重新扣费": "Charges again",
       "参数没变，沿用现在这一版，没扣费。要新的点「换一版」，会重新扣费。": "Same settings, so the current version was kept. No charge. For a new one click \"New version\" (charges again).",
       "参数跟 {n} 一样，已换回这一版，没扣费": "Same settings as {n}, switched back to it. No charge",
