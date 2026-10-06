@@ -1540,6 +1540,71 @@ app.whenReady().then(async () => {
   ok(右键.键 && 右键.键.删后 === false && 右键.键.按钮 === "撤销" && 右键.键.撤后 === true,
      "Delete 键那条路同样挂「撤销」，点了就回来", 右键.键);
 
+  // 提示上的「撤销」只认它说的那一步：提示留 8 秒，这期间拖一张卡不弹提示、按钮还在。
+  // 以前按钮挂的就是 canvasUndo，点下去退掉的是那一下拖，删掉的卡没回来
+  const 认步 = await run(`
+    (async () => {
+      ${摆画布([
+        { id: "u1", kind: "note", payload: { title: "要删的" }, position: { x: 40, y: 40 }, size: { width: 280, height: 180 } },
+        { id: "u2", kind: "note", payload: { title: "删完又拖的" }, position: { x: 400, y: 40 }, size: { width: 280, height: 180 } },
+        { id: "u3", kind: "note", payload: { title: "外来改的" }, position: { x: 760, y: 40 }, size: { width: 280, height: 180 } }])}
+      const 钮 = () => document.querySelector("#owb-toast .owb-toast-act");
+      const 字 = () => ((document.querySelector("#owb-toast span") || {}).textContent) || "";
+      const 在 = (id) => !!canvasState.graph.getCell(id);
+      const x = (id) => canvasState.graph.getCell(id).position().x;
+
+      // 甲：删 u1 → 拖 u2（不弹提示，按钮还在）→ 点「撤销」
+      canvasHistoryReset(canvasSnapshot());
+      canvasDeleteSelection(canvasState.graph.getCell("u1"), true);
+      const 甲钮 = 钮();
+      canvasState.graph.getCell("u2").position(520, 40);
+      await new Promise((r) => setTimeout(r, 400));   // 过了 260ms 防抖，拖的那一下记成一步
+      const 甲还在 = 钮() === 甲钮 && !!甲钮;
+      if (甲钮) 甲钮.click();
+      await new Promise((r) => setTimeout(r, 100));
+      const 甲 = { 还在: 甲还在, u1: 在("u1"), u2x: x("u2"), 提示: 字(), 栈: canvasState.history.length, 位: canvasState.historyIndex };
+
+      // 乙（对照）：删完马上点，卡回来
+      canvasHistoryReset(canvasSnapshot());
+      canvasDeleteSelection(canvasState.graph.getCell("u2"), true);
+      const 乙钮 = 钮(); if (乙钮) 乙钮.click();
+      await new Promise((r) => setTimeout(r, 100));
+      const 乙 = { u2: 在("u2"), 提示: 字() };
+
+      // 丙：删完先按 ⌘Z 退了一格，再点提示上的「撤销」——不能再往前退一格
+      canvasHistoryReset(canvasSnapshot());
+      canvasState.graph.getCell("u3").position(800, 40);
+      canvasHistoryFlush();
+      canvasDeleteSelection(canvasState.graph.getCell("u2"), true);
+      const 丙钮 = 钮();
+      canvasUndo();
+      const 丙退后 = { u2: 在("u2"), u3x: x("u3") };
+      if (丙钮) 丙钮.click();
+      await new Promise((r) => setTimeout(r, 100));
+      const 丙 = { 退后: 丙退后, u3x: x("u3"), 提示: 字() };
+
+      // 丁：删完远端改了另一张卡（rebase 把栈里每一格换成新对象），删的那一步还在栈顶，照常撤得回来
+      canvasHistoryReset(canvasSnapshot());
+      canvasDeleteSelection(canvasState.graph.getCell("u2"), true);
+      const 丁钮 = 钮();
+      const 来前 = canvasSnapshot();
+      canvasState.historyMute = true;
+      try { canvasState.graph.getCell("u3").set("canvasPayload", { ...canvasState.graph.getCell("u3").get("canvasPayload"), title: "另一台机器改的" }); } finally { canvasState.historyMute = false; }
+      canvasHistoryRebase(来前, canvasSnapshot());
+      if (丁钮) 丁钮.click();
+      await new Promise((r) => setTimeout(r, 100));
+      const 丁 = { u2: 在("u2"), u3: (canvasState.graph.getCell("u3").get("canvasPayload") || {}).title };
+      return { 甲, 乙, 丙, 丁 };
+    })()`);
+  ok(认步.甲.还在 && !认步.甲.u1 && 认步.甲.u2x === 520 && /又改过了，没撤/.test(认步.甲.提示) && 认步.甲.位 === 认步.甲.栈 - 1,
+     "★删完又拖了一张卡，再点提示上的「撤销」：不去退那一下拖，原地说一声这之后改过、按 ⌘Z 一步步退★ 以前退掉的是拖，删的没回来", 认步.甲);
+  ok(认步.乙.u2 && 认步.乙.提示 === "已撤销上一步操作。",
+     "反向对照：删完马上点「撤销」，卡回来", 认步.乙);
+  ok(认步.丙.退后.u2 && 认步.丙.u3x === 800 && /又改过了，没撤/.test(认步.丙.提示),
+     "★已经按 ⌘Z 退过一格，提示上的「撤销」不再多退一格★（不然把删之前那一下挪也退掉了）", 认步.丙);
+  ok(认步.丁.u2 && 认步.丁.u3 === "另一台机器改的",
+     "远端改了别的卡（栈里每一格都换了新对象）：删的那一步还在栈顶，照常撤得回来，外来那一笔不跟着退", 认步.丁);
+
 
   // ———— 下面几节是「写回不串、改了能回」那一轮（2.2）：版本号、撞号、409 合并、历史版本、撤销回表 ————
   // 节点 id 和镜头号分开写：镜头号决定文件名，节点 id 只是画布上的身份

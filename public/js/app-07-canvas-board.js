@@ -973,7 +973,7 @@ function canvasDisconnect(link) {
   link.remove();
   canvasPersist();
   canvasRenderInspector(false);
-  canvasToast("连线已断开。", "scissors", undefined, { label: "撤销", run: canvasUndo });
+  canvasToast("连线已断开。", "scissors", undefined, canvasUndoAction());
   return true;
 }
 

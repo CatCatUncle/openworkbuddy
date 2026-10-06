@@ -225,7 +225,7 @@ function canvasBindViewport(page) {
       const ids = new Set(canvasState.selectedIds), gone = (canvasState.graph?.getElements?.() || []).filter((node) => ids.has(node.id));
       gone.forEach((node) => node.remove());
       canvasState.selectedAll = false; canvasState.selectedIds = new Set(); canvasState.selected = null; canvasRenderInspector(); canvasPersist();
-      if (gone.length) canvasToast("节点已删除。", "trash-2", undefined, { label: "撤销", run: canvasUndo });
+      if (gone.length) canvasToast("节点已删除。", "trash-2", undefined, typeof canvasUndoAction === "function" ? canvasUndoAction() : { label: "撤销", run: canvasUndo });
     }
   };
   canvasState.keyUpHandler = (evt) => { if (evt.code === "Space") canvasState.spacePanning = false; };

@@ -2421,6 +2421,7 @@
       "撤销": "Undo",
       "节点已删除。": "Node(s) deleted.",
       "连线已断开。": "Edge disconnected.",
+      "这之后画布又改过了，没撤。要退回去按 {key} 一步步退": "The canvas changed since, so nothing was undone. Press {key} to step back",
       "断开这条线": "Disconnect this edge",
       "重试失败的 {n} 条": "Retry {n} failed",
       "失败的节点都已不在画布上。": "None of the failed nodes are on the canvas anymore.",

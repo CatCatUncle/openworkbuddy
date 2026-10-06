@@ -82,7 +82,7 @@ let canvasState = {
   // proposal：Agent 交上来、正摆在顶上等人点「开跑」/「不要」的那份清单（见 canvasNoteProposal）；
   // proposalGone：这台机器上点过的清单号，服务端那份还没收掉之前同步一圈也别再冒出来
   proposal: null, proposalGone: new Set(),
-  canvasName: "main", canvasList: [], taskSessionId: null, chatBusy: false, chatStopping: false, chatReferences: new Map(), history: [], historyIndex: -1, historyTimer: null, historyMute: false,
+  canvasName: "main", canvasList: [], taskSessionId: null, chatBusy: false, chatStopping: false, chatReferences: new Map(), history: [], historyIndex: -1, historyTimer: null, historyMute: false, historySeq: 0,
   workspaceProjects: [], workspaceLocked: false, workspaceName: "", workspaceDir: "",
   // 正在生成的节点 id。生一张图几十秒，这期间远端那份每 1.8 秒来一趟、整图重铺——
   // 铺的时候这几个节点留本机这份，不然刚写上的结果被一份旧快照盖回去（见 canvasApplySnapshot）

@@ -217,7 +217,7 @@ function canvasTimelineMove(nodeId, to) {
   canvasPersist();
   canvasHistoryFlush();   // 这一挪单独记一步：连按三下 Alt+→ 是三步，⌘Z 一下退一格
   canvasRenderTimeline();
-  canvasToast(canvasT("{id} 挪到第 {n} 镜", { id: shots[from].id, n: at + 1 }), "arrow-right", undefined, { label: "撤销", run: canvasUndo });
+  canvasToast(canvasT("{id} 挪到第 {n} 镜", { id: shots[from].id, n: at + 1 }), "arrow-right", undefined, canvasUndoAction());
   canvasBoardOrderSync(list).then((why) => { if (why) canvasToast(why, "triangle-alert", "err"); });
   return true;
 }

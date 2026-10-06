@@ -206,7 +206,7 @@ function canvasDeleteSelection(fallbackNode, onlyThis = false) {
   canvasState.selectedIds = new Set([...canvasState.selectedIds].filter((id) => !gone.has(id)));
   if (gone.has(canvasState.selected)) canvasState.selected = [...canvasState.selectedIds][0] || null;
   canvasState.selectedAll = false; canvasRenderInspector(); canvasPersist();
-  canvasToast("节点已删除。", "trash-2", undefined, { label: "撤销", run: canvasUndo });
+  canvasToast("节点已删除。", "trash-2", undefined, canvasUndoAction());
 }
 function canvasOpenContextMenu(clientX, clientY, node = null) {
   document.getElementById("canvas-context-menu")?.remove();
@@ -383,6 +383,7 @@ function canvasHistoryCommit(snapshot) {
   canvasState.history.push(JSON.parse(JSON.stringify(snapshot)));
   if (canvasState.history.length > 60) canvasState.history.shift();
   canvasState.historyIndex = canvasState.history.length - 1;
+  canvasState.historySeq = (canvasState.historySeq || 0) + 1;   // 记了新的一步：之前挂出去的「撤销」按钮作废（见 canvasUndoAction）
 }
 function canvasHistorySchedule(snapshot) {
   if (canvasState.historyMute) return;
@@ -392,6 +393,7 @@ function canvasHistorySchedule(snapshot) {
 function canvasHistoryReset(snapshot) {
   if (canvasState.historyTimer) clearTimeout(canvasState.historyTimer);
   canvasState.historyTimer = null; canvasState.history = snapshot ? [JSON.parse(JSON.stringify(snapshot))] : []; canvasState.historyIndex = snapshot ? 0 : -1;
+  canvasState.historySeq = (canvasState.historySeq || 0) + 1;
 }
 function canvasHistoryFlush() {
   if (canvasState.historyTimer) clearTimeout(canvasState.historyTimer);
@@ -496,6 +498,28 @@ function canvasRedo() {
   try { canvasApplySnapshot(target); } finally { canvasState.historyMute = false; }
   canvasToast("已恢复下一步操作。", "rotate-ccw");
   canvasHistoryWriteback(before, canvasSnapshot());
+}
+/**
+ * 提示上那颗「撤销」：只撤提示说的那一步。
+ *
+ * 以前挂的是 canvasUndo 本身——提示留 8 秒，这期间又拖了一张卡、改了一句台词（这些不弹提示、按钮还在），
+ * 再点「撤销」退掉的是那一下拖，删掉的卡没回来；接着点还会一格格往回退，退掉更早的事。
+ * 现在挂提示时先把这一步记进撤销栈，记下它在栈顶的「步号」（historySeq，每记一步 +1，换画布 / 重开也 +1）。
+ * 点的时候栈顶还是它（步号没变、也没被 ⌘Z 退过）才撤；不是就原地说一声，⌘Z 照常一步步退。
+ * 不拿栈里那一格对象比：远端改动一来，canvasHistoryRebase 把每一格都换成新对象
+ */
+function canvasUndoAction() {
+  canvasHistoryFlush();
+  const mark = canvasState.historySeq || 0;
+  return { label: "撤销", run: () => {
+    canvasHistoryFlush();
+    const top = canvasState.history.length - 1;
+    if ((canvasState.historySeq || 0) !== mark || canvasState.historyIndex !== top || top <= 0) {
+      const key = typeof accelDisplay === "function" ? accelDisplay("Mod+Z") : "⌘Z";
+      return canvasToast(canvasT("这之后画布又改过了，没撤。要退回去按 {key} 一步步退", { key }), "rotate-ccw");
+    }
+    canvasUndo();
+  } };
 }
 /**
  * 撤销 / 重做之后，分镜表那边也跟着退。
