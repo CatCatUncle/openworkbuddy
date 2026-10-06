@@ -115,6 +115,8 @@ const TABLE = Object.freeze({
   migrate: "src/server/migrate.js",
   modes: "src/core/config/modes.js",
   "motion-clock": "src/util/motion-clock.js",
+  "net-addr": "src/util/net-addr.js",
+  "net-guard": "src/core/safety/net-guard.js",
   notify: "src/core/obs/notify.js",
   org: "src/domains/account/org.js",
   paths: "src/platform/paths.js",

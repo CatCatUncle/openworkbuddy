@@ -12,6 +12,8 @@ const { DATA_DIR, dataPath, appPath } = require("../platform/paths");
 const { spawn, spawnSync } = require("child_process");
 const { outDecoder } = require("../util/out-decode");
 const security = require("../core/safety/security");
+const netGuard = require("../core/safety/net-guard"); // 联网工具的地址闸：本机/内网默认拦、OWB 自己的端口永远拦、发请求钉住判过的 IP
+const netAddr = require("../util/net-addr");
 const memory = require("../core/memory/memory");
 const mediaModels = require("../core/model/media-models"); // 图/视频/语音/视觉的多模型选择（同一把 Key 配多个型号）
 const cdp = require("../platform/render/cdp"); // 可选的本机 Chrome CDP：不捆绑浏览器、不连接远程地址
@@ -2265,6 +2267,33 @@ function bgOwner(opts) {
   return String((a && typeof a === "object" ? a.id || a.name : a) || "");
 }
 
+/**
+ * 这个人自己 background 起的、还在跑的命令正在监听的端口。
+ * AI 起个开发服务器、再拿浏览器打开看效果，是写网页的日常，不该被「本机地址默认拦」挡住。
+ * 放它不多开口子：能起后台命令就本来能跑命令；组织关了命令行就起不了，这里永远是空的。
+ * 只按进程组认（后台命令自成一组）；Windows、没有 lsof 就当没有，照常拦。
+ */
+function bgListenPorts(opts) {
+  const who = bgOwner(opts);
+  const pgids = process.platform === "win32" ? [] : CT.bgList()
+    .filter((j) => j.owner === who && j.exit === undefined && j.child && j.child.pid > 0)
+    .map((j) => j.child.pid);
+  if (!pgids.length) return Promise.resolve(new Set());
+  const bin = fs.existsSync("/usr/sbin/lsof") ? "/usr/sbin/lsof" : "lsof";
+  return new Promise((resolve) => {
+    require("child_process").execFile(bin, ["-nP", "-a", "-iTCP", "-sTCP:LISTEN", "-g", pgids.join(","), "-Fn"], { timeout: 3000 }, (_e, out) => {
+      const ports = new Set();
+      for (const line of String(out || "").split("\n")) {
+        const m = /^n.*:(\d+)$/.exec(line);
+        if (m) ports.add(Number(m[1]));
+      }
+      resolve(ports);
+    });
+  });
+}
+/** 联网工具过地址闸时带上的：这一趟任务的后台命令端口（要拦本机地址时才去查） */
+const netOpts = (opts) => ({ bgPorts: () => bgListenPorts(opts) });
+
 function startBackground(cmd, cwd, opts, keep = false) {
   ensureDirs();
   const r = CT.bgStart({
@@ -3251,16 +3280,21 @@ function decodeBody(buf, ct) {
 
 /**
  * @param {string} url
- * @param {{render?: "auto"|"force"|"off"|boolean, waitMs?: number, saveDir?: string}} [opts]
+ * @param {{render?: "auto"|"force"|"off"|boolean, waitMs?: number, saveDir?: string, guard?: {sec: any, bgPorts?: Function}}} [opts]
  *   render 收 "auto"/"force"/"off"；老调用方传的 true/false 也认（false = off）。
+ *   guard：AI 工具这条路必带。带了就走 net-guard：连判过的 IP、每一跳重判；渲染窗口也按同一份规则拦本机/内网。
  */
-async function fetchUrl(url, { render, saveDir, waitMs } = {}) {
+async function fetchUrl(url, { render, saveDir, waitMs, guard } = {}) {
   // 归一化放在这儿而不是 executeTool 里：内部调用方（测试、以后可能的别的入口）也得到同一套语义
   const mode = render === false || render === "off" ? "off" : render === "force" ? "force" : "auto";
   let resp;
   try {
-    resp = await fetch(url, { redirect: "follow", headers: browserHeaders(url), signal: AbortSignal.timeout(30000) });
+    const signal = AbortSignal.timeout(30000);
+    resp = guard
+      ? await netGuard.guardedFetch(url, { sec: guard.sec, bgPorts: guard.bgPorts, headers: browserHeaders(url), signal })
+      : await fetch(url, { redirect: "follow", headers: browserHeaders(url), signal });
   } catch (e) {
+    if (e && e.code === "NET_BLOCKED") throw new Error(`网络访问被安全中心拦截：${e.message}`);
     throw new Error(`抓取失败：${e.name === "TimeoutError" ? "30 秒还没响应（站点太慢或需要代理）" : e.message}`);
   }
   const ct = resp.headers.get("content-type") || "";
@@ -3299,7 +3333,9 @@ async function fetchUrl(url, { render, saveDir, waitMs } = {}) {
   // force 是模型明说了"这页的正文得靠 JS"，那就不再看像不像空壳，直接渲染。
   const forced = mode === "force";
   if (forced || (mode !== "off" && looksEmptyPage(text, resp.status))) {
-    const rendered = await renderPage(url, waitMs ? { waitMs: clampWait(waitMs) } : {}).catch((e) => ({ error: e.message }));
+    // 渲染窗口里页面自己跳转、加载子资源，按同一份规则拦本机/内网（那边没有 DNS 结果，只认字面地址）
+    const block = guard ? { ...netGuard.renderRule(guard.sec), bg: guard.bgPorts ? [...(await guard.bgPorts().catch(() => new Set()))] : [] } : null;
+    const rendered = await renderPage(url, { ...(waitMs ? { waitMs: clampWait(waitMs) } : {}), block }).catch((e) => ({ error: e.message }));
     // auto 那档要比长短：渲染没渲出东西时，原样返回静态正文比返回一段更短的壳有用。
     // force 不比——模型要的就是渲染后的那一份，哪怕它比静态 HTML 短（静态里那些长度
     // 往往正是导航和推荐位，恰恰是它想绕开的东西）
@@ -3389,11 +3425,11 @@ function tagsToText(html) {
  * 应用本体跑在 Electron 主进程里，等于随身带了个 Chrome——不装 puppeteer 也能读动态页面。
  * CLI 模式下没有 Electron，如实抛错让上层换路子，不要假装读到了。
  */
-async function renderPage(url, { waitMs = 2500, maxWaitMs = 12000 } = {}) {
+async function renderPage(url, { waitMs = 2500, maxWaitMs = 12000, block = null } = {}) {
   // 服务端在独立服务进程里：窗口归主进程开，超时按「最长等多久 + 开窗/关窗余量」算
   const bridge = require("../platform/electron-bridge");
   if (bridge.isRemote()) {
-    return bridge.call("page.render", { url, waitMs, maxWaitMs, ua: BROWSER_UA }, { timeoutMs: maxWaitMs + waitMs + 30000 });
+    return bridge.call("page.render", { url, waitMs, maxWaitMs, ua: BROWSER_UA, block }, { timeoutMs: maxWaitMs + waitMs + 30000 });
   }
   let electron;
   try {
@@ -3404,7 +3440,7 @@ async function renderPage(url, { waitMs = 2500, maxWaitMs = 12000 } = {}) {
   if (!electron || !electron.BrowserWindow || !electron.app || !electron.app.isReady()) {
     throw new Error("内置浏览器不可用（命令行模式）");
   }
-  return readRendered(electron, url, { waitMs, maxWaitMs, ua: BROWSER_UA });
+  return readRendered(electron, url, { waitMs, maxWaitMs, ua: BROWSER_UA, block });
 }
 
 function stripTags(s) {
@@ -4390,6 +4426,18 @@ async function executeToolCore(name, input, opts = {}) {
         if (action === "navigate" && !/^https?:\/\//i.test(String(input.url || ""))) {
           return { content: "navigate 只接受 http/https URL。", isError: true };
         }
+        // 打开网页跟 fetch_url 过同两道闸：组织的网络名单、安全中心（域名名单 + 本机/内网地址 + OWB 自己的端口）。
+        // 这个浏览器常常是用户自己那个、带着登录态，打开本机的管理页比 fetch_url 还危险
+        if (action === "navigate") {
+          const org = hostAllowed(null, input.url);
+          if (!org.ok) return netBlocked(input.url, org.why);
+          const g = await netGuard.checkUrl(sec, input.url, netOpts(opts));
+          if (!g.allowed) {
+            security.audit("网络拦截", String(input.url), "拦截");
+            return { content: `网络访问被安全中心拦截：${g.reason}`, isError: true };
+          }
+          security.audit("网络访问", `Chrome 打开：${input.url}`, "放行");
+        }
         // owner：几个对话同时开浏览器时各用各的标签页（cdp.js OWNED）
         const r = await cdp.run({ ...input, owner: opts.sessionId || "" });
         if (action === "screenshot") {
@@ -4411,12 +4459,30 @@ async function executeToolCore(name, input, opts = {}) {
         const blocked = await passGate(security.checkWrite(sec, outRel), "写录屏", outRel, { force: true });
         if (blocked) return blocked;
         // 打开的地址、页面每次换页（含自己跳的）都过组织名单 + 安全中心，跟 fetch_url 同一道闸。
-        // 换页是落地之后才查（请求已经发出去了），查到就整条不交片；图片、fetch 这类子资源不查，跟 fetch_url 渲染模式一样
+        // 换页是落地之后才查（请求已经发出去了），查到就整条不交片；图片、fetch 这类子资源不查，跟 fetch_url 渲染模式一样。
+        // 地址闸要查 DNS（异步），录制器那边换页回调是同步的：goto 点名的地址开录前先查好记下，
+        // 录的时候换到没查过的，域名名单照查，地址只按字面判（本机、内网 IP、localhost）
+        const bgPorts = await bgListenPorts(opts).catch(() => new Set());
+        const href = (u) => { try { return new URL(String(u)).href; } catch { return String(u); } };
+        const nav = new Map();
+        for (const st of Array.isArray(input.steps) ? input.steps : []) {
+          const u = st && typeof st.goto === "string" ? st.goto.trim() : st && st.goto && typeof st.goto.url === "string" ? st.goto.url.trim() : "";
+          if (!/^https?:\/\//i.test(u) || nav.has(href(u))) continue;
+          nav.set(href(u), await netGuard.checkUrl(sec, u, { bgPorts: async () => bgPorts }));
+        }
+        const navRule = { ...netGuard.renderRule(sec), bg: [...bgPorts], selfIps: netGuard.selfIps() };
         const checkNav = (u) => {
           const org = hostAllowed(null, u);
           if (!org.ok) { security.audit("网络拦截", u, "拦截"); return { ok: false, why: org.why }; }
-          const g = security.checkUrl(sec, u);
-          if (!g.allowed) { security.audit("网络拦截", u, "拦截"); return { ok: false, why: `安全中心拦下了：${g.reason}（设置 → 安全中心 → 网络安全）` }; }
+          let g = nav.get(href(u));
+          if (!g) {
+            const dom = security.checkUrl(sec, u);
+            const lit = dom.allowed ? netAddr.judgeLiteralUrl(u, navRule) : null;
+            g = !dom.allowed ? { allowed: false, reason: `${dom.reason}（${netGuard.WHERE}）` }
+              : lit ? { allowed: false, reason: lit.own ? "页面跳到了 OpenWorkBuddy 自己的服务端口" : `页面跳到了${lit.label}地址，没放行（${netGuard.WHERE}）` }
+                : { allowed: true };
+          }
+          if (!g.allowed) { security.audit("网络拦截", u, "拦截"); return { ok: false, why: `安全中心拦下了：${g.reason}` }; }
           security.audit("网络访问", `录屏打开：${u}`, "放行");
           return { ok: true };
         };
@@ -4576,12 +4642,12 @@ async function executeToolCore(name, input, opts = {}) {
         // 组织的网络名单、安全中心的黑白名单。审计只记洗过的地址：地址里常拼着 key
         if (entry.url) {
           const orgNet = hostAllowed(null, entry.url);
-          const g = orgNet.ok ? security.checkUrl(sec, entry.url) : { allowed: false, reason: "" };
+          const g = orgNet.ok ? await netGuard.checkUrl(sec, entry.url, netOpts(opts)) : { allowed: false, reason: "" };
           if (!g.allowed) {
             security.audit("网络拦截", `加连接器 ${entry.name}：${where}`, "拦截");
             return {
               content: orgNet.ok
-                ? `连接器没加，安全中心拦下了：${g.reason}（设置 → 安全中心 → 网络安全）`
+                ? `连接器没加，安全中心拦下了：${mcpLib.scrubText(String(g.reason || ""), input)}`
                 : `连接器没加：${orgNet.why}。要放行找组织管理员改「企业设置 → 网络设置」。`,
               isError: true,
             };
@@ -4757,15 +4823,16 @@ async function executeToolCore(name, input, opts = {}) {
         if (!orgNet.ok) return netBlocked(input.url, orgNet.why);
         const fg = quotaGate("fetch");
         if (fg.bad) return fg.bad;
-        const gate = security.checkUrl(sec, input.url);
+        const gate = await netGuard.checkUrl(sec, input.url, netOpts(opts));
         if (!gate.allowed) {
           security.audit("网络拦截", input.url, "拦截");
-          return { content: `网络访问被安全中心拦截：${gate.reason}（设置 → 安全中心 → 网络安全）`, isError: true };
+          return { content: `网络访问被安全中心拦截：${gate.reason}`, isError: true };
         }
         // 老名字的语义就是"必须渲染"；新参数里 render 只认三个值，其余（含老的布尔 false）交给 fetchUrl 归一化
         const mode = name === "render_page" ? "force" : input.render;
         security.audit("网络访问", `${mode === "force" ? "浏览器渲染" : "网络访问"}已执行：${input.url}`, "放行");
-        const page = await fetchUrl(input.url, { render: mode, waitMs: input.wait_ms, saveDir: fileBase });
+        // guard：真发请求时连的是上面判过的那几个 IP，跳转每一跳重判（进门判一次、发请求时再解析一遍，DNS 可以换答案）
+        const page = await fetchUrl(input.url, { render: mode, waitMs: input.wait_ms, saveDir: fileBase, guard: { sec, ...netOpts(opts) } });
         quota.record("fetch", { provider: mode === "force" ? "render" : "http", meta: String(input.url).slice(0, 120) });
         return { content: page, isError: false };
       }

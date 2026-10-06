@@ -135,6 +135,8 @@ function createShellBridge({ electron, getWin, pet, registerShortcuts, relaunch,
     "page.check": async (a) => require("../platform/render/web-window").probePage(electron, String(a && a.file)),
     "page.render": async (a) => require("../platform/render/web-window").readRendered(electron, String(a && a.url), {
       waitMs: a && a.waitMs, maxWaitMs: a && a.maxWaitMs, ua: (a && a.ua) || "",
+      // 本机/内网拦截规则（纯数据）：服务进程那边按安全中心算好带过来
+      block: a && a.block && typeof a.block === "object" ? a.block : null,
     }),
     "shot.html": async (a) => {
       const o = (a && a.opts) || {};

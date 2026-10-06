@@ -55,6 +55,8 @@ const lanes = require("./src/core/config/lanes"); // 两条工作线：办公（
 const cliLive = require("./src/core/obs/cli-live"); // 终端里起的任务挂在盘上的那个目录，网页/手机靠它看见并插话
 const thinking = require("./src/core/model/thinking"); // 思考模式档位表（各家参数名都不一样，集中在那儿）
 const security = require("./src/core/safety/security");
+const netGuard = require("./src/core/safety/net-guard"); // AI 联网工具的地址闸：绑上端口后把自己登记进去，AI 一律打不到
+const netAddr = require("./src/util/net-addr");
 const childEnv = require("./src/platform/child-env"); // AI 起的子进程只拿最小环境变量；属主清单和「几个账号」从这里注册进去
 const toolward = require("./src/core/safety/toolward");
 const sweep = require("./src/agent/sweep");
@@ -2294,6 +2296,8 @@ app.post("/api/settings", (req, res) => {
       if (b.security.toolward_bin !== undefined) sec.toolward_bin = String(b.security.toolward_bin || "").trim().slice(0, 500);
       // 子进程额外放行的环境变量名。只收合法变量名、最多 50 条；像 Key 的照收，给不给由账号数在起子进程时判
       if (Array.isArray(b.security.env_passthrough)) sec.env_passthrough = childEnv.cleanNames(b.security.env_passthrough);
+      // 本机/内网放行清单：只收 host:端口（端口可写 *），写成网址的剥成 host:端口，主机写 * 的不收，最多 50 条
+      if (Array.isArray(b.security.url_allow_local)) sec.url_allow_local = netAddr.cleanAllow(b.security.url_allow_local);
     }
     if (b.langfuse && typeof b.langfuse === "object") {
       const cur = config.langfuse || (config.langfuse = { enabled: false, host: "https://cloud.langfuse.com", public_key: "", secret_key: "" });
@@ -8440,6 +8444,8 @@ async function main() {
   const got = await listenWithFallback(app, host, port);
   if (!got) return; // 不由这个进程提供服务了，为什么在 listenWithFallback 里已经交代过
   const { server, bound } = got;
+  // 这个口上挂着全部接口和中转站：AI 的联网工具能打到它，就能绕过模型白名单和企业限额，加白也不放
+  netGuard.registerOwnPort(bound, "主服务");
   if (host !== "127.0.0.1" && host !== "localhost") {
     console.warn(`▲ 正在监听 ${host}:${bound}（非本机）。请确认前面有反向代理 + HTTPS，且已经注册了管理员账号——否则任何人都能拿到这台机器的 shell。`);
   }

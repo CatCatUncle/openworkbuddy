@@ -613,9 +613,10 @@ async function login(username, password) {
   t = await tools.withPolicy(bl, () => tools.executeTool("render_page", { url: "https://evil.com/x" }));
   ok(t.isError === true && /黑名单/.test(t.content), "render_page 也拦（两个抓网页的入口都得管）", t.content);
   // 反向对照：不在黑名单里的地址，至少不该是「组织网络设置」把它拦的
-  // （本机这个测试服务器可能被安全中心的私网规则拦，那是另一道闸，报错文案不一样）
+  // （本机这个测试服务器归安全中心的本机/内网规则拦，那是另一道闸，报错文案不一样）
   t = await tools.withPolicy(bl, () => tools.executeTool("fetch_url", { url: `http://127.0.0.1:${server.address().port}/api/files` }));
   ok(!/本组织的网络设置/.test(String(t.content)), "反向对照：没上黑名单的地址不会被组织这道闸拦", String(t.content).slice(0, 80));
+  ok(t.isError === true && /本机地址/.test(String(t.content)), "fetch_url 打本机的 OWB 服务：安全中心拦下，没加白不放", String(t.content).slice(0, 120));
 
   // ---- 17.4 登录有效期：读的时候算，不是发的时候算 ----
   // 这条的意义全在这里：人走了、电脑丢了，管理员把有效期改短，**已经发出去的** cookie 得当场作废

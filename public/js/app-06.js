@@ -87,6 +87,9 @@ function renderSecurityPane(pane, s) {
         ${listCol("白名单（非空=只允许这些）", "sec-uwl", joinLines(sec.url_whitelist), 3)}
         ${listCol("黑名单（拦截）", "sec-ubl", joinLines(sec.url_blacklist), 3)}
       </div>
+      <div class="d" style="margin-top:8px">AI 默认不能访问本机和内网地址。要放行，每行写一个 host:端口（端口可写 *）。</div>
+      <div class="d">OpenWorkBuddy 自己的端口写了也不放。</div>
+      ${listCol("本机/内网放行", "sec-ulocal", joinLines(sec.url_allow_local), 3)}
     </div>
     <div class="card-item">
       <div class="t">${ic("settings")} 内置运行时</div>
@@ -141,6 +144,7 @@ function renderSecurityPane(pane, s) {
       cmd_ask: linesOf("#sec-cak"),
       url_whitelist: linesOf("#sec-uwl"),
       url_blacklist: linesOf("#sec-ubl"),
+      url_allow_local: linesOf("#sec-ulocal"),
       runtime_node: pane.querySelector("#sec-node").checked,
       runtime_python: pane.querySelector("#sec-py").checked,
       env_passthrough: linesOf("#sec-envpass"),

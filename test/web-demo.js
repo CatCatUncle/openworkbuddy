@@ -1321,8 +1321,11 @@ section(17, "工具定义 + 录制器源码闸门（浏览器只能是隔离的�
   ok(new RegExp(`require\\(${recSpec}\\)\\.TOOL_DEF`).test(tsrc), "TOOL_DEFS 里登记了");
   const i = tsrc.indexOf("case \"record_web_demo\"");
   ok(i > 0, "executeTool 里有这个 case");
-  const body = tsrc.slice(i, i + 1500);
+  // 截到下一个 case：地址闸（net-guard 预查 goto）加进来以后，这一段比原来的 1500 字长
+  const next = tsrc.indexOf("\n      case \"", i + 10);
+  const body = tsrc.slice(i, next > i ? next : i + 4000);
   ok(/checkWrite/.test(body) && /checkUrl/.test(body) && /withStop/.test(body), "  └ 先过写权限、网址闸门，停止按钮接上了");
+  ok(/netGuard\.checkUrl/.test(body) && /judgeLiteralUrl/.test(body), "  └ 地址闸：goto 点名的先解析判过，录的时候换页按字面拦本机/内网");
 });
 
 // ═════════════════════════════════════════ 【18】接线：executeTool 真走到录制器 ═════════════════════════════════════════
@@ -1401,6 +1404,19 @@ section(18, "接线：executeTool → 录制器（写权限闸、网址闸、停
     const st = await call({ steps, out_dir: "demo/d4" }, { signal: ac.signal });
     ok(st.r.isError && st.r.stopped === true && /用户已停止任务/.test(st.r.content), "停止：按停止回话", JSON.stringify(st.r));
     eq(B.calls, n0, "  └ 浏览器没开");
+
+    // 本机地址：安全网关开着、属主没加白就拒，开浏览器之前；加了白照录。OWB 自己的端口关了网关也拒
+    const loc = await call({ steps, out_dir: "demo/d5" }, { security: { gateway: true } });
+    ok(loc.r.isError && /第 1 步（goto）：安全中心拦下了/.test(loc.r.content) && /127\.0\.0\.1:3000 是本机地址/.test(loc.r.content) && /沙箱安全 · 网络/.test(loc.r.content),
+      "本机地址没加白：拒，说清去哪儿放行", loc.r.content);
+    eq(B.calls, n0, "  └ 浏览器没开");
+    const okd = await call({ steps, out_dir: "demo/d6" }, { security: { gateway: true, url_allow_local: ["localhost:3000"] } });
+    ok(!okd.r.isError && B.calls === n0 + 1, "  └ 反向对照：属主加白 localhost:3000 就录", okd.r.content);
+    const own = await call({ steps: [{ goto: "http://localhost:3800/" }], out_dir: "demo/d7" });
+    ok(own.r.isError && /自己的服务端口/.test(own.r.content) && B.calls === n0 + 1, "OWB 自己的端口：关了安全网关也拒", own.r.content);
+    const nav = (seen.at(-1) || {}).checkNav;
+    ok(typeof nav === "function" && !nav("http://[::1]:3800/settings").ok && !nav("http://2130706433:3800/").ok && nav("http://127.0.0.1:3000/").ok,
+      "录的时候页面自己跳到 OWB 端口（换个写法也算）：拦；跳回加白的口照放");
   } finally {
     REC.runTool = orig;
     await dt.close();

@@ -322,6 +322,8 @@ require("./src/platform/child-env").setPolicy(() => {
 security.setMultiUser(() => {
   try { return account.userCount() > 1; } catch { return true; }
 });
+// 桌面版 / 网页服务多半正开着：它的端口按同一套规则算出来登记进地址闸，AI 的联网工具在命令行里也打不到
+require("./src/core/safety/net-guard").registerOwnPort(require("./src/platform/paths").resolvePort(process.env, config), "主服务");
 
 // ---------- --perm：这一趟放多少权 ----------
 // 网页那边四档是点得到的（设置里一个下拉），命令行原来只能改 config.json —— 而 config.json 是

@@ -80,9 +80,12 @@ security.watchApprovals((ev) => {
   if (a) setImmediate(() => security.resolveApproval(ev.entry.id, a === "allow", "once"));
 });
 const WS = fs.mkdtempSync(path.join(os.tmpdir(), "owb-permgate-ws-"));
-// 跟网页服务、命令行一样先补齐默认策略再交给工具：只给半截对象的话 gateway 是 undefined，测的就不是真实路径了
+// 跟网页服务、命令行一样先补齐默认策略再交给工具：只给半截对象的话 gateway 是 undefined，测的就不是真实路径了。
+// 假 MCP 服务都开在 127.0.0.1 的随机端口：本机地址默认不让 AI 连（net-guard），这里照属主在安全页加白的样子放行，
+// 「不加白就拦」那一条在 ⑧ 段开头单独验
+const LOCAL_OK = ["127.0.0.1:*"];
 const run = (name, input, sec) => tools.withWorkspace(WS, () =>
-  tools.executeTool(name, input, { security: security.getSecurity({ security: { approval_timeout_s: 5, ...sec } }), timeoutMs: 20000 }));
+  tools.executeTool(name, input, { security: security.getSecurity({ security: { approval_timeout_s: 5, url_allow_local: LOCAL_OK, ...sec } }), timeoutMs: 20000 }));
 const fresh = () => { cards.length = 0; security.clearSessionAllow(); };
 const wsFile = (n) => path.join(WS, n);
 const SKILLS = path.join(HOME, "skills");
@@ -703,8 +706,18 @@ async function cliRun(args, call, { stopAt, pty } = {}) {
       fs.writeFileSync(CFG, JSON.stringify({ mcp_servers: [] }));
       const HTTP_IN = { name: "fake", url: srv.url, headers: { Authorization: "Bearer " + SENT } };
 
+      // 本机地址：属主没在安全页加白，就不连、不弹卡、不存，回话指到放行的地方
       fresh(); answer = () => "allow";
-      let r = await run("add_connector", HTTP_IN, { permission_mode: "plan" });
+      let r = await run("add_connector", HTTP_IN, { permission_mode: "full", url_allow_local: [] });
+      ok(r.isError && cards.length === 0 && !conn("fake") && /本机地址/.test(r.content) && /安全 → 沙箱安全 · 网络/.test(r.content) && r.content.includes(new URL(srv.url).host),
+        "★本机地址没加白：不加、不弹卡，回话写明去哪儿放行、加哪一行★", r.content);
+      ok(!srv.seen.length, "  └ 一次都没去连", srv.seen.length);
+      ok(!leak(r.content), "  └ 回话里没有 Key");
+      r = await run("add_connector", HTTP_IN, { permission_mode: "plan", url_allow_local: [new URL(srv.url).host] });
+      ok(r.isError && !/本机地址/.test(r.content), "  └ 反向对照：按 host:端口 加白就过了地址闸（接着由档位管）", r.content);
+
+      fresh(); answer = () => "allow";
+      r = await run("add_connector", HTTP_IN, { permission_mode: "plan" });
       ok(r.isError && cards.length === 0 && !conn("fake"), "★plan：不加、不弹卡★", r.content);
 
       fresh(); answer = () => "deny";
@@ -956,7 +969,7 @@ async function cliRun(args, call, { stopAt, pty } = {}) {
         },
       };
       try {
-        const rt = agentMod.createAgentRuntime({ config: { agent: { max_steps: 5 } }, llm, mcpManager: mgr2, experts: [] });
+        const rt = agentMod.createAgentRuntime({ config: { agent: { max_steps: 5 }, security: { ...security.DEFAULTS, url_allow_local: LOCAL_OK } }, llm, mcpManager: mgr2, experts: [] });
         await tools.withWorkspace(WS, () => rt.runTask({ history: [{ role: "user", content: "接一下这个 MCP 再用它查一下" }], emit: (e) => events.push(e) }));
       } finally {
         tools.setConnectorHost(null);
@@ -1061,6 +1074,7 @@ async function cliRun(args, call, { stopAt, pty } = {}) {
       cfg.mcp_servers = [];
       cfg.pet = { enabled: false };
       cfg.agent = { ...(cfg.agent || {}), max_steps: 6, llm_retries: 0 };
+      cfg.security = { ...(cfg.security || {}), url_allow_local: LOCAL_OK }; // 假 MCP 在本机随机端口上，照属主加白放行
       // PORT=0 已经在环境变量里了；config 里再钉一个不是 3800 的口，万一哪条路没吃到环境变量也撞不上用户那台
       cfg.server = { ...(cfg.server || {}), port: 41000 + Math.floor(Math.random() * 20000) };
       if (mut) mut(cfg);
