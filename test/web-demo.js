@@ -613,8 +613,10 @@ section(10, "真 Chrome：马赛克自检、泄漏扫描、假光标、找元素
       const t = await cdp.newPage(br.port);
       const c = await cdp.connect(t.webSocketDebuggerUrl, { idleMs: 0 });
       clients.push(c);
-      await c.call("Page.enable", {}, 10000);
-      await c.call("Runtime.enable", {}, 10000);
+      // 这一段量的是打码对不对，不是快不快。CI 的 macOS 机器上冷起的 Chrome 头一个新页回 Page.enable
+      // 超过过 10 秒（2026-10-07），整段因此红——给到 30 秒，产品里那条路自己是 15 秒
+      await c.call("Page.enable", {}, 30000);
+      await c.call("Runtime.enable", {}, 30000);
       await c.call("Emulation.setDeviceMetricsOverride", { width: 1280, height: 720, deviceScaleFactor: 1, mobile: false }, 10000);
       return c;
     };
