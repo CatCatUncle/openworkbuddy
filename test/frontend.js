@@ -6330,8 +6330,10 @@ window.__geo = { calls: [] };
       return p ? { ok: true, name: p[4] || x.name, lng: p[0], lat: p[1], datum: "gcj02", addr: "五华区", kind: "", rating: p[3], photo: p[2],
         photoSrc: p[2] ? (window.__noKey ? "wikimedia" : "amap") : "", src: src, ...(src === "amap" ? BIZ[x.name] : {}) } : { ok: false, tried: window.__noKey ? ["osm"] : ["amap", "osm"] };
     }) });
-    if (url === "/api/geo/legs") return res({ notes: [], items: body.pairs.map((pr) => ({ mode: "walking", src: "amap", datum: "gcj02",
-      distance: 1180, duration: 900, line: [[pr.a.lng, pr.a.lat], [pr.b.lng, pr.b.lat]] })) });
+    // window.__legDown = "原话"：高德这一次查路报了错，服务端先回一条直线（failed + 原话）
+    if (url === "/api/geo/legs") return res({ notes: [], items: body.pairs.map((pr) => (window.__legDown
+      ? { mode: "line", src: "line", datum: "gcj02", distance: 1180, duration: null, line: [[pr.a.lng, pr.a.lat], [pr.b.lng, pr.b.lat]], failed: true, error: window.__legDown }
+      : { mode: "walking", src: "amap", datum: "gcj02", distance: 1180, duration: 900, line: [[pr.a.lng, pr.a.lat], [pr.b.lng, pr.b.lat]] })) });
     return res({ error: "没有这个接口" }, 404);
   };
 })();
@@ -6578,6 +6580,33 @@ const TRIP_CHECKS = `
   ok("Esc 先收二维码，焦点回到「发到手机」，菜单还开着", !w.querySelector(".tc-qrbox") && !navm.hidden && document.activeElement === navm.querySelector(".tc-qr") && escUp === 1);
   document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
   ok("再按 Esc 收菜单，焦点回到「导航 ▾」", navm.hidden && document.activeElement === leg0.querySelector(".tc-navb") && escUp === 1, escUp);
+  // 开着菜单又点了地图（焦点在地图上）：Esc 照样收菜单，不能漏到全局去叫停任务
+  leg0.querySelector(".tc-navb").click();
+  map.focus();
+  map.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  ok("菜单开着、焦点在地图上按 Esc：菜单收起，这下 Esc 不往上传", navm.hidden && leg0.querySelector(".tc-navb").getAttribute("aria-expanded") === "false" && escUp === 1, escUp);
+  map.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  ok("  什么都收完了再按：照常往上传", escUp === 2, escUp);
+  // 点一下（按下、抬起、click 一整套，不算拖）
+  const tapAt = (target, x, y) => {
+    target.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, button: 0, buttons: 1, clientX: x, clientY: y, pointerId: 31, isPrimary: true }));
+    window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, button: 0, buttons: 0, clientX: x, clientY: y, pointerId: 31, isPrimary: true }));
+    target.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1, clientX: x, clientY: y }));
+  };
+  leg0.querySelector(".tc-navb").click();
+  tapAt(map, mapR().left + 5, mapR().top + 5);
+  ok("菜单开着、点地图空白处：菜单收起", navm.hidden);
+  leg0.querySelector(".tc-navb").click();
+  panel.querySelector('.tc-card[data-i="0"]').click();
+  ok("菜单开着、点列表里别的地方：菜单收起", navm.hidden);
+  leg0.querySelector(".tc-navb").click();
+  tapAt(document.body, 2, 2);
+  ok("菜单开着、点卡片外面：菜单也收起", navm.hidden);
+  leg0.querySelector(".tc-navb").click();
+  const leg1b = panel.querySelector('.tc-leg[data-leg="1"] .tc-navb');
+  if (leg1b) leg1b.click();
+  ok("菜单开着、点另一段的「导航 ▾」：换成那一段的菜单（同时只开一个）", navm.hidden && !!leg1b && !panel.querySelector('.tc-leg[data-leg="1"] .tc-navm').hidden);
+  if (leg1b) leg1b.click();
   // 小卡里的「发到手机」
   pinAt(0).click();
   await tick();
@@ -6727,6 +6756,44 @@ const TRIP_CHECKS = `
   ok("点「再查一次」：只重查没查成的那一站，找到的、确实没找到的不再问", again.length === 1 && again[0].body.items.length === 1 && again[0].body.items[0].name === "翠湖公园",
     JSON.stringify(again.map((c) => c.body)));
   ok("查成了：那站换成正常的卡片，「找到 2 个地点」", txt(fcards()[0], ".tc-src") === "来源：高德地图 · 照片 高德地图" && txt(fw, ".tc-found") === "找到 2 个地点 ›", txt(fw, ".tc-found"));
+
+  // 一站都没查成、人切到了时间线：地图那边的原话和「再查一次」时间线上也得有（城市换个写法，才会真去问）
+  window.__geoDown = { "海埂大坝": "高德 回了 HTTP 500：服务繁忙", "西山龙门": "高德 回了 HTTP 500：服务繁忙" };
+  const tlTrip = { title: "时间线上没查成", city: "云南昆明", days: [{ title: "滇池", stops: [{ name: "海埂大坝" }, { name: "西山龙门" }] }] };
+  ref.innerHTML = renderMd(BT + "itinerary\\n" + JSON.stringify(tlTrip) + "\\n" + BT);
+  await tick();
+  const tw = ref.querySelector(".tc-w");
+  await until(() => tw && /^找到/.test(txt(tw, ".tc-found")));
+  await tick();
+  tw.querySelector('[data-v="timeline"]').click();
+  const ttl = tw.querySelector(".tc-tl");
+  ok("一站都没查成、切到时间线：顶上照原话说，也给「再查一次」", !ttl.hidden && txt(ttl, ".tc-tlmsg") === "没查成：高德 回了 HTTP 500：服务繁忙 再查一次"
+    && !!ttl.querySelector(".tc-tlmsg .tc-retry"), ttl.innerHTML.slice(0, 200));
+  delete window.__geoDown;
+  const placesT0 = calls("/api/geo/places");
+  ttl.querySelector(".tc-retry").click();
+  await until(() => calls("/api/geo/places") > placesT0 && /^找到 2/.test(txt(tw, ".tc-found")) && !ttl.querySelector(".tc-tlmsg"));
+  ok("在时间线上点「再查一次」：查成了，顶上那句收掉，人还在时间线上", /^找到 2/.test(txt(tw, ".tc-found")) && !ttl.querySelector(".tc-tlmsg") && !ttl.hidden
+    && ttl.querySelectorAll(".tc-tlr.go").length === 2, txt(tw, ".tc-found") + " ｜ " + ttl.innerHTML.slice(0, 200));
+
+  // 两站之间的路这一次没查成：先画直线，照原话说，「再查一次」只重查这一段（两站早查过了，不再问）
+  window.__legDown = "高德 回了 HTTP 500：服务繁忙";
+  const legTrip = { title: "路没查成", city: "昆明", days: [{ title: "一天", stops: [{ name: "翠湖公园" }, { name: "南强街" }] }] };
+  const placesL0 = calls("/api/geo/places"), legsL0 = calls("/api/geo/legs");
+  ref.innerHTML = renderMd(BT + "itinerary\\n" + JSON.stringify(legTrip) + "\\n" + BT);
+  await tick();
+  const lgw = ref.querySelector(".tc-w");
+  await until(() => lgw && calls("/api/geo/legs") > legsL0 && !!lgw.querySelector('.tc-leg[data-leg="0"] .tc-legt'));
+  await tick();
+  const legRow = () => lgw.querySelector('.tc-leg[data-leg="0"]');
+  ok("路没查成：先画直线，照原话说，给「再查一次」；导航照样能用", txt(legRow(), ".tc-legt") === "直线 · 1.2 公里 · 路线没查成：高德 回了 HTTP 500：服务繁忙 · 再查一次"
+    && !!legRow().querySelector(".tc-legt .tc-retry") && !!legRow().querySelector(".tc-navb") && calls("/api/geo/places") === placesL0, txt(legRow(), ".tc-legt"));
+  delete window.__legDown;
+  legRow().querySelector(".tc-retry").click();
+  await until(() => calls("/api/geo/legs") > legsL0 + 1 && txt(legRow(), ".tc-legt") === "步行 · 1.2 公里 · 约 15 分钟");
+  const legAgain = window.__geo.calls.filter((c) => c.url === "/api/geo/legs").slice(legsL0 + 1);
+  ok("点它：只重查这一段路，地点不再问；查成了换成步行", legAgain.length === 1 && legAgain[0].body.pairs.length === 1 && calls("/api/geo/places") === placesL0
+    && txt(legRow(), ".tc-legt") === "步行 · 1.2 公里 · 约 15 分钟" && !lgw.querySelector(".tc-retry"), JSON.stringify(legAgain.map((c) => c.body)) + " ｜ " + txt(legRow(), ".tc-legt"));
 
   // ---------- 右边列表：收起、拖宽窄、拖高矮 ----------
   localStorage.removeItem("owb.tripcard.layout");

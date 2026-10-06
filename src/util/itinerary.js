@@ -34,6 +34,7 @@ function str(v, n) {
 /**
  * 已经收过一遍的数据里带着的 more。卡片把收好的 JSON 存在 data-tc 里，点活、复制时再收一遍——
  * 那时候多出来的已经截掉了，不接着记，第二遍就忘了少过几站。
+ * 只认我们自己收过的那份（normalize 的 own）：模型在围栏里自己写个 "more"，不能让卡片说「后面还有几站没列出」。
  * @param {unknown} v
  */
 const moreOf = (v) => (typeof v === "number" && Number.isInteger(v) && v > 0 && v < 1e4 ? v : 0);
@@ -62,8 +63,8 @@ function normStop(s) {
   };
 }
 
-/** @param {any} d @returns {Day | null} */
-function normDay(d) {
+/** @param {any} d @param {boolean} [own] @returns {Day | null} */
+function normDay(d, own) {
   if (Array.isArray(d)) d = { stops: d };
   if (!d || typeof d !== "object") return null;
   const raw = d.stops || d.items || d.places || d.spots || d.schedule || [];
@@ -77,25 +78,27 @@ function normDay(d) {
     summary: str(d.summary || d.desc || d.description || d.note, LIMIT.summary),
     stops: /** @type {Stop[]} */ (stops),
   };
-  const more = all.length - stops.length + moreOf(d.more);
+  const more = all.length - stops.length + (own ? moreOf(d.more) : 0);
   if (more) day.more = more;
   return day;
 }
 
 /**
  * 模型给的东西收成一个形状。认不出来返回 null，调用方原样当代码块显示。
- * @param {any} obj @returns {Itinerary | null}
+ * @param {any} obj
+ * @param {boolean} [own] obj 是我们自己收过的那份（data-tc 里存的）：里面的 more 是真截掉过的，接着记
+ * @returns {Itinerary | null}
  */
-function normalize(obj) {
+function normalize(obj, own) {
   if (Array.isArray(obj)) obj = { days: obj };
   if (!obj || typeof obj !== "object") return null;
   const raw = obj.days || obj.itinerary || obj.plan || [];
-  const all = (Array.isArray(raw) ? raw : []).map(normDay).filter(Boolean);
+  const all = (Array.isArray(raw) ? raw : []).map((d) => normDay(d, own)).filter(Boolean);
   const days = all.slice(0, LIMIT.days);
   if (!days.length) return null;
   /** @type {Itinerary} */
   const it = { title: str(obj.title || obj.name, LIMIT.title), city: str(obj.city || obj.destination, LIMIT.city), days: /** @type {Day[]} */ (days) };
-  const more = all.length - days.length + moreOf(obj.more);
+  const more = all.length - days.length + (own ? moreOf(obj.more) : 0);
   if (more) it.more = more;
   return it;
 }
@@ -256,16 +259,24 @@ function toMarkdown(it) {
 /** 收了尾的围栏，和正文末尾没收尾的那一段（模型忘了写收尾的三个反引号） */
 const FENCE_RE = /```itinerary[^\S\n]*\n([\s\S]*?)(?:```|$)/gi;
 
+/** 解不开的那段前面加的那句话，和认出「已经加过了」用的尾巴 */
+const BAD_TAIL = "，下面是原文：\n\n";
+const BAD_HEAD_RE = /行程卡没画成：[^\n]*，下面是原文：\n\n$/;
+
 /**
  * 正文里所有 ```itinerary 围栏换成文字版。解不出来的先说一句哪儿不对，再原样贴原文——宁可贴原文，不吞内容。
+ * 同一段正文过两遍也只说一次：IM 先在 prepareFigures 里换一遍，切段（chunks）时又换一遍，
+ * 解不开的那段原文还留着围栏，第二遍不认得就会再加一句「行程卡没画成」。
  * @param {string} md
  */
 function fencesToMarkdown(md) {
   const s = String(md || "");
   if (!/```itinerary/i.test(s)) return s;
-  return s.replace(FENCE_RE, (all, body) => {
+  return s.replace(FENCE_RE, (all, body, at) => {
     const it = parse(body);
-    return it ? toMarkdown(it) : `行程卡没画成：${whyBad(body)}，下面是原文：\n\n${all}`;
+    if (it) return toMarkdown(it);
+    if (BAD_HEAD_RE.test(s.slice(Math.max(0, at - 200), at))) return all;
+    return `行程卡没画成：${whyBad(body)}${BAD_TAIL}${all}`;
   });
 }
 

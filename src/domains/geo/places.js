@@ -42,6 +42,8 @@ const GAPS = { amap: 350, nominatim: 1100, wikidata: 250 };
 /** 每月默认上限：比高德给个人认证开发者的免费额度（搜索 5000、路线 15 万）各留一点，给「测一下」和别处用同一把 Key 的 */
 const SEARCH_CAP = 4500;
 const ROUTE_CAP = 140000;
+/** 老设置页「每天上限」那一栏的默认值：没动过也会被写进配置 */
+const OLD_DAILY_DEFAULT = 2000;
 const TTL_HIT = 30 * 864e5;
 const TTL_MISS = 3 * 864e5;
 /** 补照片出错（多半是 Wikidata 连不上）：记一小会儿，这段时间里每张卡片不再挨个等它超时 */
@@ -82,13 +84,15 @@ const capOf = (v) => {
  *
  * 每月上限 caps.search / caps.route。老配置只有 amap_daily_cap（每天一个数，搜索和路线合着算）：
  * 新的没填时按 31 天折成每月，再不超过新的默认值——不会比他原来允许的多打；填过 0（不用高德）的还是 0。
- * 设置页存一次就写成新的两项，老的那项随之删掉。
+ * 老设置页每存一次都把那一栏写进去，没动过的就是它的默认 2000：这个数当没填，按新的默认值算——
+ * 不然路线被折成 6.2 万，平白砍掉一大半。设置页存一次就写成新的两项，老的那项随之删掉。
  * @param {any} config
  */
 function settingsOf(config) {
   const m = (config && typeof config.map === "object" && config.map) || {};
   const provider = ["auto", "amap", "osm"].includes(m.provider) ? m.provider : "auto";
-  const old = capOf(m.amap_daily_cap);
+  const daily = capOf(m.amap_daily_cap);
+  const old = daily === OLD_DAILY_DEFAULT ? NaN : daily;
   const pick = (/** @type {unknown} */ v, /** @type {number} */ def) => {
     const n = capOf(v);
     if (Number.isFinite(n)) return n;
@@ -159,6 +163,8 @@ function cached(k) {
 }
 /** @param {string} k @param {any} r @param {boolean} [err] 出错了记的空结果：只留 TTL_ERR */
 function remember(k, r, err) { cache.map.delete(k); cache.map.set(k, err ? { t: Date.now(), r, e: true } : { t: Date.now(), r }); saver.request(); }
+/** 刚 cached(k) 拿到的那条是不是出错记的（空结果长得跟「没有」一样，得看这个标） @param {string} k */
+const wasErr = (k) => { const v = cache.map.get(k); return !!(v && v.e); };
 
 /** 这个月的高德次数（搜索 / 路线各算各的）还够不够；够就记一次 @param {"search"|"route"} kind @param {number} cap */
 function spendAmap(kind, cap) {
@@ -224,31 +230,57 @@ const KEY_DEAD = new Set(["10001", "10003", "10009", "10044"]);
  * @typedef {{ key: string, caps: { search: number, route: number }, probe?: boolean }} AmapSt probe：设置页「测一下」，不受上限和停用挡
  */
 /**
+ * 这把 Key 今天还没回过话的时候，一次只放一个请求出去，同一批的别的站等它回来：
+ * Key 不对的话，一张卡片十几站、外加几段路，只打一次高德、只记一次用量、只记一行日志，不是每站各撞一次。
+ * 高德回了话（通了，或者只是这一次的毛病）就记下这把 Key 今天能用，往后照常并发；连不上不算数，等着的各自去打。
+ * @type {{ key: string, day: string, wait: Promise<void> | null }}
+ */
+let vet = { key: "", day: "", wait: null };
+/** @param {AmapSt} st */
+const vetted = (st) => vet.key === st.key && vet.day === today();
+
+/**
  * 打一次高德。没打成的三种：今天停了（off: "stop"）、这个月到数了（off: "cap"）、高德报错（普通 Error，
  * 是 Key 级的毛病就顺手把今天停了，也标 off: "stop"）。off 的那些不算「没查成」：再查一次也一样，前端改走别家。
  * @param {URL} u @param {AmapSt} st @param {"search"|"route"} kind
  */
 async function amapGet(u, st, kind) {
-  if (!st.probe) {
-    const stop = stopMsg();
-    if (stop) throw Object.assign(new Error(stop), { off: "stop" });
-    if (!spendAmap(kind, st.caps[kind])) throw Object.assign(new Error(CAP_HIT[kind]), { off: "cap" });
-  } else spendAmap(kind, Infinity);
-  u.searchParams.set("key", st.key);
-  const j = await gated("amap", () => getJson(u.toString(), { name: NAMES.amap }));
-  if (String(j && j.status) !== "1") {
-    const code = s(j && j.infocode);
-    const msg = `高德：${s(j && j.info) || "没给原因"}${code ? `（${code}）` : ""}`;
-    if (KEY_DEAD.has(code) && !st.probe) {
-      loadCache();
-      cache.stop = { day: today(), msg };
-      saver.request();
-      log.warn("geo", "高德 Key 用不了，今天先不打高德", { err: msg });
-      throw Object.assign(new Error(msg), { off: "stop" });
-    }
-    throw new Error(msg);
+  let release = /** @type {null | (() => void)} */ (null);
+  if (!st.probe && !vetted(st)) {
+    if (vet.wait) await vet.wait;
+    else vet.wait = new Promise((r) => { release = () => { vet.wait = null; r(); }; });
   }
-  return j;
+  try {
+    const j = await gated("amap", async () => {
+      // 轮到了再看停没停、够不够：排队那会儿，前面那个可能刚让高德说了 Key 不行
+      if (!st.probe) {
+        const stop = stopMsg();
+        if (stop) throw Object.assign(new Error(stop), { off: "stop" });
+        if (!spendAmap(kind, st.caps[kind])) throw Object.assign(new Error(CAP_HIT[kind]), { off: "cap" });
+      } else spendAmap(kind, Infinity);
+      u.searchParams.set("key", st.key);
+      return getJson(u.toString(), { name: NAMES.amap });
+    });
+    const code = String(j && j.status) === "1" ? "" : s(j && j.infocode);
+    if (!st.probe && !KEY_DEAD.has(code)) vet = { key: st.key, day: today(), wait: vet.wait };
+    if (String(j && j.status) !== "1") {
+      const msg = `高德：${s(j && j.info) || "没给原因"}${code ? `（${code}）` : ""}`;
+      if (KEY_DEAD.has(code) && !st.probe) {
+        // 同一时刻已经在路上的几个会一起撞回来：停一次、记一行就够
+        if (!stopMsg()) {
+          cache.stop = { day: today(), msg };
+          saver.request();
+          log.warn("geo", "高德 Key 用不了，今天先不打高德", { err: msg });
+        }
+        if (vet.key === st.key) vet = { key: "", day: "", wait: vet.wait };
+        throw Object.assign(new Error(msg), { off: "stop" });
+      }
+      throw new Error(msg);
+    }
+    return j;
+  } finally {
+    if (release) release();
+  }
 }
 
 /** @param {string} loc "lng,lat" @returns {[number, number] | null} */
@@ -434,18 +466,24 @@ async function photoFor(name, city, qid, at) {
         remember(k, "", true);
         return "";   // 刚连不上，这一趟不再按名字去撞同一台机器
       }
-    }
+    } else if (!hit && wasErr(k)) return "";   // 十分钟内刚连不上过：同上，这几分钟里也不去撞
     if (hit) return hit;
   }
   return photoByName(name, city, at);
 }
 
-/** 照片的答案盘上有没有：有就是那张（可能是 ""，意思是没有），还没问过回 undefined。不打网络 @param {string} name @param {string} city @param {string} qid */
+/**
+ * 照片的答案盘上有没有：有就是那张（可能是 ""，意思是没有），还没问过回 undefined。不打网络。
+ * 按条目号刚连不上过的跟 photoFor 一样当「没有」：不然标上 photoPending，前端过来要，又白等一次。
+ * @param {string} name @param {string} city @param {string} qid
+ */
 function photoCached(name, city, qid) {
   if (/^Q\d{1,12}$/.test(qid)) {
-    const q = cached(`q|${qid}`);
+    const k = `q|${qid}`;
+    const q = cached(k);
     if (q === undefined) return undefined;
     if (q) return q;
+    if (wasErr(k)) return "";
   }
   return cached(`w|${city}|${name}`);
 }
@@ -587,6 +625,8 @@ async function amapRoute(st, a, b, mode) {
 }
 
 /**
+ * 每一段回一条路：高德查到的（walking / driving），或者一条直线（mode: "line"）。
+ * 直线是因为高德这一次报了错（不是停用、不是到数）的，带上 failed 和原话：前端先画直线，「再查一次」时只重查这几段。
  * @param {any} config
  * @param {Array<{ a: any, b: any }>} pairs
  */
@@ -611,7 +651,11 @@ async function legs(config, pairs) {
       catch (e) {
         const err = /** @type {any} */ (e);
         r = null;
-        if (err.off === "stop") off = err.message; else notes.add(err.message);
+        if (err.off === "stop") off = err.message;
+        else {
+          notes.add(err.message);
+          if (!err.off) return { ...line, failed: true, error: err.message };
+        }
       }
     }
     return r || line;
@@ -642,7 +686,7 @@ async function test(config, key) {
 function _testing(o = {}) {
   if (o.bases) bases = { ...BASES, ...o.bases };
   if (o.gaps) gaps = { ...GAPS, ...o.gaps };
-  if (o.reset) { cache.loaded = false; cache.map.clear(); cache.month = ""; cache.used = { search: 0, route: 0 }; cache.stop = null; }
+  if (o.reset) { cache.loaded = false; cache.map.clear(); cache.month = ""; cache.used = { search: 0, route: 0 }; cache.stop = null; vet = { key: "", day: "", wait: null }; }
   return { flush: () => saver.flush(), cacheFile: cacheFile() };
 }
 

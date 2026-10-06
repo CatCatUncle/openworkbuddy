@@ -39,12 +39,13 @@
       addr: str(s.address || s.addr, LIMIT.addr),
     };
   }
-  // 截掉了几站 / 几天记在 more 上；data-tc 里存的是截过的，再收一遍时接着记，不然第二遍就忘了
+  // 截掉了几站 / 几天记在 more 上；data-tc 里存的是截过的，再收一遍时接着记，不然第二遍就忘了。
+  // 只认自己收过的那份（normalize 的 own）：模型在围栏里自己写个 "more"，不能让卡片说后面还有几站
   const moreOf = (v) => (typeof v === "number" && Number.isInteger(v) && v > 0 && v < 1e4 ? v : 0);
   const moreText = (unit, n) => (unit === "天"
     ? `只显示前 ${LIMIT.days} 天，后面 ${n} 天没列出`
     : `这天只显示前 ${LIMIT.stops} 站，后面 ${n} 站没列出`);
-  function normDay(d) {
+  function normDay(d, own) {
     if (Array.isArray(d)) d = { stops: d };
     if (!d || typeof d !== "object") return null;
     const raw = d.stops || d.items || d.places || d.spots || d.schedule || [];
@@ -57,19 +58,20 @@
       summary: str(d.summary || d.desc || d.description || d.note, LIMIT.summary),
       stops,
     };
-    const more = all.length - stops.length + moreOf(d.more);
+    const more = all.length - stops.length + (own ? moreOf(d.more) : 0);
     if (more) day.more = more;
     return day;
   }
-  function normalize(obj) {
+  // own：obj 是自己收过、存在 data-tc 里的那份
+  function normalize(obj, own) {
     if (Array.isArray(obj)) obj = { days: obj };
     if (!obj || typeof obj !== "object") return null;
     const raw = obj.days || obj.itinerary || obj.plan || [];
-    const all = (Array.isArray(raw) ? raw : []).map(normDay).filter(Boolean);
+    const all = (Array.isArray(raw) ? raw : []).map((d) => normDay(d, own)).filter(Boolean);
     const days = all.slice(0, LIMIT.days);
     if (!days.length) return null;
     const it = { title: str(obj.title || obj.name, LIMIT.title), city: str(obj.city || obj.destination, LIMIT.city), days };
-    const more = all.length - days.length + moreOf(obj.more);
+    const more = all.length - days.length + (own ? moreOf(obj.more) : 0);
     if (more) it.more = more;
     return it;
   }
@@ -350,7 +352,7 @@
       return `<pre><code>${esc(c ? c.textContent : "")}</code></pre>`;
     }
     let it = null;
-    try { it = normalize(JSON.parse(host.dataset.tc || "")); } catch (e) { /* 下面退回原文字 */ }
+    try { it = normalize(JSON.parse(host.dataset.tc || ""), true); } catch (e) { /* 下面退回原文字 */ }
     return it ? staticHtml(it) : esc(host.textContent || "");
   }
 
@@ -589,13 +591,15 @@
     /**
      * 两站之间那一行：路程用时 +「导航 ▾」。点开是四种走法（各自一条链接，新窗口打开）和「发到手机」。
      * 菜单就地展开在这一行底下，不浮在列表上——列表自己会滚，浮层会被它切掉。
+     * 高德这一次报错、先画了直线的（failed）：原话写在后面，给「再查一次」。
      */
     function legHtml(d, i) {
       const leg = st.legs[d][i];
       const a = stopPlace(d, i), b = stopPlace(d, i + 1);
       if (!leg || !a || !b) return `<div class="tc-leg"><span class="tc-legline"></span></div>`;
       const open = st.nav === i, qr = open && !!st.qr && st.qr.at === "leg" && st.qr.i === i, def = legMode(leg);
-      return `<div class="tc-leg" data-leg="${i}"><span class="tc-legline"></span><span class="tc-legt">${esc(legBits(leg))}</span>`
+      const bad = leg.failed ? ` · 路线没查成：${esc(leg.error || "")} · <button type="button" class="tc-retry">再查一次</button>` : "";
+      return `<div class="tc-leg" data-leg="${i}"><span class="tc-legline"></span><span class="tc-legt">${esc(legBits(leg))}${bad}</span>`
         + `<button type="button" class="tc-navb" aria-expanded="${open}" title="选走法，在地图应用里导航">导航 ▾</button>`
         + `<div class="tc-navm"${open ? "" : " hidden"}>`
         + NAV_MODES.map(([m, t]) => `<a href="${esc(legUrl(d, i, m))}" target="_blank" rel="noopener"${m === def ? ' class="on"' : ""}>${t} ↗</a>`).join("")
@@ -631,9 +635,8 @@
     function renderTimeline() {
       const day = it.days[st.day];
       let last = null;
-      // 这天一个地点都没找到、自动切到时间线的：地图中央那句话也写在这儿，不然切过来就看不见了
-      const none = dayNone(st.day);
-      tl.innerHTML = (none ? `<div class="tc-tlmsg">${esc(none)}</div>` : "")
+      const top = tlMsg(st.day);
+      tl.innerHTML = (top ? `<div class="tc-tlmsg">${top}</div>` : "")
         + (day.title ? `<div class="tc-tlh">${esc(dayLabel(day, st.day))} · ${esc(day.title)}</div>` : "")
         + day.stops.map((s, i) => {
           const lab = s.time || segmentOf(s.time);
@@ -645,6 +648,18 @@
             + `<div class="tc-tlt"><b>${esc(s.name)}</b>${s.note ? `<span>${esc(s.note)}</span>` : ""}</div></div>`;
         }).join("")
         + (day.more ? `<div class="tc-more">${esc(moreText("站", day.more))}</div>` : "");
+    }
+    /**
+     * 时间线顶上那句（HTML）。地图那边说过的，切到时间线也得看得见：
+     * 有站没查成的，原话 +「再查一次」（地图那边每站各有一个）；一个都没找到的，说问了谁。
+     */
+    function tlMsg(d) {
+      const errs = (st.why[d] || []).filter((w) => w && w.error);
+      if (errs.length) {
+        const head = (st.places[d] || []).some(Boolean) ? `${errs.length} 站没查成` : "没查成";
+        return `${head}：${esc(errs[0].error)} <button type="button" class="tc-retry">再查一次</button>`;
+      }
+      return esc(dayNone(d));
     }
     /** 这一天查完了、一个都没找到、也没有哪站是没查成的：说问了谁。别的情况回 "" */
     function dayNone(d) {
@@ -730,7 +745,8 @@
         fillPhotos(d);   // 照片另外要，不让钉子陪着等
         const ps = st.places[d];
         const pairs = [];
-        for (let i = 0; i + 1 < ps.length; i++) if (ps[i] && ps[i + 1] && !st.legs[d][i]) pairs.push(i);
+        // 没查过的段，和上回高德报错先画了直线的段（failed）；查到的、本来就只画直线的不再问
+        for (let i = 0; i + 1 < ps.length; i++) if (ps[i] && ps[i + 1] && (!st.legs[d][i] || st.legs[d][i].failed)) pairs.push(i);
         if (pairs.length) {
           try {
             const pt = (p) => ({ lng: p.lng, lat: p.lat, datum: p.datum });
@@ -763,7 +779,7 @@
       st.loading[d] = run;
       return run;
     }
-    /** 没查成的那几站再问一次（找到的、确实没找到的不再问，不白花次数） */
+    /** 没查成的那几站、那几段路再问一次（找到的、确实没找到的、查到的路不再问，不白花次数） */
     function retry(d) {
       if (st.loading[d]) return;
       st.notes[d].clear();
@@ -1119,7 +1135,11 @@
       if (q.at === "pop") popSize = null;
       redraw();
     }
-    /** Esc 收起焦点所在那一处最里层弹开的东西：二维码 → 导航菜单 → 地图小卡。什么都没开就不管，全局的 Esc 照常 */
+    /**
+     * Esc 收起焦点所在那一处最里层弹开的东西：二维码 → 导航菜单 → 地图小卡。
+     * 焦点不在那一处（开着菜单又点了地图）：开着的照样收，焦点不挪——不然这一下 Esc 漏到全局，把正在跑的任务叫停了。
+     * 什么都没开就不管，全局的 Esc 照常
+     */
     function escClose(t) {
       const inPop = pop.contains(t), inPanel = panel.contains(t);
       if (st.qr && (inPop ? st.qr.at === "pop" : inPanel && st.qr.at !== "pop")) {
@@ -1135,11 +1155,17 @@
         if (b) b.focus({ preventScroll: true });
         return true;
       }
-      return closePop(!inPanel);
+      if (closePop(!inPanel)) return true;
+      if (st.view !== "map") return false;   // 切到时间线了，地图那边开着的看不见，不替它吃掉这一下
+      if (st.qr) { showQr(null); return true; }
+      if (st.nav >= 0) { setNav(-1); return true; }
+      return false;
     }
 
     // ---- 交互 ----
     el.addEventListener("click", (e) => {
+      // 导航菜单开着、点了它那一行以外的地方：收起（点的是别的「导航 ▾」就换成那一个，下面照常处理）
+      if (st.nav >= 0 && !e.target.closest(`.tc-leg[data-leg="${st.nav}"]`)) setNav(-1);
       const t = e.target.closest("button, .tc-card, .tc-tlr.go");
       if (!t || !el.contains(t)) return;
       const qrAt = (b) => { const at = b.dataset.at, l = b.closest(".tc-leg"); return { at, i: at === "leg" && l ? +l.dataset.leg : -1 }; };
@@ -1202,10 +1228,11 @@
     map.addEventListener("click", (e) => {
       if (!e.target.closest(".tc-pop, .tc-zoom, .tc-msg, button, a")) closePop(false);
     });
-    // 点卡片外面也收起；监听挂在 document 上，dispose() 里摘掉
+    // 点卡片外面也收起（小卡、导航菜单）；监听挂在 document 上，dispose() 里摘掉
     const onDocClick = (e) => {
-      if (st.pop < 0 || dragged(e) || el.contains(e.target)) return;
+      if ((st.pop < 0 && st.nav < 0) || dragged(e) || el.contains(e.target)) return;
       closePop(false);
+      if (st.nav >= 0) setNav(-1);
     };
     document.addEventListener("click", onDocClick);
     el.addEventListener("keydown", (e) => {
@@ -1434,7 +1461,7 @@
     let w = (live.get(key) || []).find((x) => !x.el.isConnected);
     if (!w) {
       let it = null;
-      try { it = normalize(JSON.parse(host.dataset.tc || "")); } catch (e) { /* 数据坏了就留着静态那份 */ }
+      try { it = normalize(JSON.parse(host.dataset.tc || ""), true); } catch (e) { /* 数据坏了就留着静态那份 */ }
       if (!it) return;
       w = makeWidget(it, key);
       if (!live.has(key)) live.set(key, []);
