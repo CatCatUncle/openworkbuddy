@@ -7,6 +7,13 @@
 function sysPermsCardShown(hostPlatform, os = UI_OS) {
   return hostPlatform ? hostPlatform === "darwin" : os === "mac";
 }
+/** 系统沙箱现在立没立起来：服务端最近一次起命令（或启动预检）时判的 */
+function sandboxLine(st) {
+  if (!st || !st.mode) return "";
+  if (st.mode === "off") return "现在：已关闭，命令不隔离。";
+  if (st.ok) return "现在：已生效。" + (st.warn && st.warn.length ? `<br><b>这些机密文件在别处还有硬链接，沙箱挡不住：</b>${esc(st.warn.join("、"))}` : "");
+  return `<b>现在：没立起来</b>（${esc(st.reason || "")}）` + (st.mode === "required" ? "，命令不会执行。" : "，命令照常跑但没隔离。");
+}
 function renderSecurityPane(pane, s) {
   const sec = s.security || {};
   const joinLines = (a) => esc((a || []).join("\n"));
@@ -79,6 +86,18 @@ function renderSecurityPane(pane, s) {
       ${chk("sec-crisk", sec.cmd_risk_gate === true, "名单外先判一句",
         "名单外的命令（含 run_node）先问判断模型能否撤回，撤不回就弹审批，拿不准照跑。<b>命令原文会发给判断模型</b>，每条约两万分之一美金。默认关"
         + (s.agent && s.agent.judge_ready ? "" : "<br><b>没配判断模型，勾了也不生效</b>（设置 → 模型 填 Key）"))}
+      ${sysPermsCardShown() ? `
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size: 14px;margin:12px 0 4px">
+        <b>系统沙箱</b> <select id="sec-sbx" style="margin:0">${[
+          ["default", "默认：多人用时必须，一个人用自动"],
+          ["auto", "自动：立不起来照常跑"],
+          ["required", "必须：立不起来就不跑"],
+          ["off", "关闭：不隔离"],
+        ].map(([v, t]) => `<option value="${v}"${(sec.sandbox || "default") === v ? " selected" : ""}>${t}</option>`).join("")}</select>
+      </div>
+      <div class="d">命令和 run_node 由 macOS 按真实路径隔离：读不到 Key 和账本，改不了应用本身。</div>
+      ${chk("sec-sbx-strict", sec.sandbox_level !== "basic", "严格隔离", "不许命令打开别的 App、发 Apple 事件、连没放行的本机 socket。某个工具因此不正常再关")}
+      <div class="d" id="sec-sbx-st">${sandboxLine(s.sandbox_status)}</div>` : ""}
     </div>
     <div class="card-item">
       <div class="t">${ic("globe")} 沙箱安全 · 网络</div>
@@ -148,6 +167,11 @@ function renderSecurityPane(pane, s) {
       runtime_node: pane.querySelector("#sec-node").checked,
       runtime_python: pane.querySelector("#sec-py").checked,
       env_passthrough: linesOf("#sec-envpass"),
+      // 不是 Mac 时沙箱控件不画，同理别塞
+      ...(pane.querySelector("#sec-sbx") ? {
+        sandbox: pane.querySelector("#sec-sbx").value,
+        sandbox_level: pane.querySelector("#sec-sbx-strict").checked ? "hardened" : "basic",
+      } : {}),
       // 这张卡片没装 toolward 时只画一行说明，没有这两个控件——取不到就别往后端塞空值，
       // 那会把用户原来填好的路径洗掉
       ...(pane.querySelector("#sec-tw-mode") ? {

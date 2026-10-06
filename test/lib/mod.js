@@ -141,6 +141,7 @@ const TABLE = Object.freeze({
   retention: "src/server/retention.js",
   review: "src/cli/review.js",
   "run-spend": "src/core/billing/run-spend.js",
+  sandbox: "src/platform/sandbox.js",
   scheduler: "src/core/automation/scheduler.js",
   security: "src/core/safety/security.js",
   "server-supervisor": "src/desktop/server-supervisor.js",

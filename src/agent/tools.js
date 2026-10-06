@@ -27,6 +27,7 @@ const HK = require("./hooks"); // config.json 里 agent.hooks 配的命令：跑
 const CT = require("./code-tools"); // 写代码那几样：按名找文件、后台命令、进度清单、改前查有没有被动过
 const depsGuard = require("../platform/deps-guard"); // 工作空间嵌在应用目录里时，npm/pnpm 别往上找到应用自己的 package.json
 const { buildChildEnv } = require("../platform/child-env"); // AI 跑的命令/脚本只拿最小环境变量：用户 shell 里的 Key 不跟着下去
+const sandbox = require("../platform/sandbox"); // macOS 上命令/脚本套系统沙箱：读不到 Key 和账本、改不了应用自己
 const winname = require("../util/winname"); // Windows 不认的文件名（a:b 会悄悄写进备用数据流）
 // 媒体那几样（生图 / 生视频 / 配音 / 转写 / 看图 / 截图 + 生成缓存）和画布状态拆到 src/tools/ 下了，这里只是转手。
 // 它们要用的工作目录根还在本文件（下面那套 ALS），递过去的是取值函数、用到时才读，按请求切换的根照样生效
@@ -1141,7 +1142,91 @@ function timeoutNote(timeoutMs, tip) {
   return `(执行超时被终止：跑满 ${Math.max(1, Math.round(timeoutMs / 1000))} 秒没结束，连同它拉起的子进程一起停了${tip || ""})\n`;
 }
 
-function runNode(code, timeoutMs, cwd, stopSignal, session = "") {
+// ---------- 系统沙箱（macOS） ----------
+// 命令闸看的是命令原文，同一件事换个写法就认不出来；沙箱由系统按真实路径拦，怎么写都一样（见 src/platform/sandbox.js）
+
+/** 设置页看的现状：最近一次起命令时判出来的 */
+let sandboxState = { mode: "", ok: false, reason: "还没跑过命令", warn: /** @type {string[]} */ ([]), at: 0 };
+function noteSandbox(next) {
+  const prev = sandboxState;
+  sandboxState = { warn: [], ...next, at: Date.now() };
+  if (prev.ok === sandboxState.ok && prev.reason === sandboxState.reason && prev.mode === sandboxState.mode) return;
+  if (sandboxState.mode === "off") return;
+  if (!sandboxState.ok) security.audit("系统沙箱", `没立起来：${sandboxState.reason}`, sandboxState.mode === "required" ? "拦截" : "未隔离");
+  else if (sandboxState.warn.length) security.audit("系统沙箱", `这些机密文件在别处还有硬链接：${sandboxState.warn.join("、")}`, "提醒");
+}
+function sandboxStatus() {
+  return { ...sandboxState, warn: [...sandboxState.warn] };
+}
+
+/** 属主的项目目录（server 启动时接上）：成员的任务要把它们藏起来 */
+let ownerDirsFn = () => /** @type {string[]} */ ([]);
+function setOwnerDirs(fn) { ownerDirsFn = typeof fn === "function" ? fn : () => []; }
+
+/** 各组织的工作根：没指定目录的都在 tenants/ 底下，指定了的各在各处 */
+function tenantRoots() {
+  const org = require("../domains/account/org");
+  const out = [org.tenantsDir()];
+  try {
+    for (const o of org._internals.load().orgs) if (o && o.id !== org.DEFAULT_ORG && o.root_dir) out.push(org.rootDirOf(o, workspaceDir));
+  } catch {}
+  return out;
+}
+
+/** 这一趟命令的沙箱参数 */
+function sandboxOpts(sec) {
+  const root = sandbox.real(ws());
+  let hide = [];
+  if (security.isMultiUser()) {
+    const roots = tenantRoots().map((r) => sandbox.real(r));
+    // 成员的任务：别家组织、属主的工作区和项目都藏；属主的任务：只藏各组织的
+    const member = roots.some((r) => sandbox.isUnder(root, r));
+    hide = member ? [...roots, dataPath("workspace"), dataPath("projects"), workspaceDir, ...ownerDirsFn()] : roots;
+    hide = sandbox.hideAround(hide, root);
+  }
+  // 手改 config.json 写进来的：不是绝对路径的扔掉，别让一条错字把整个沙箱拖成立不起来
+  const unixAllow = Array.isArray(sec.sandbox_unix_allow) ? sec.sandbox_unix_allow.map(String).filter((p) => path.isAbsolute(p)) : [];
+  // 一个人用时放 ssh-agent，git push 照常；多人时不放：那是属主的钥匙
+  const agentSock = process.env.SSH_AUTH_SOCK;
+  if (!security.isMultiUser() && agentSock && path.isAbsolute(agentSock)) unixAllow.push(agentSock);
+  return {
+    data: DATA_DIR, app: require("../platform/root").ROOT, home: require("os").homedir(),
+    ports: netGuard.ownPorts(), writable: [root], hide, unixAllow, hardened: sec.sandbox_level !== "basic",
+  };
+}
+
+/**
+ * 这一趟命令怎么包：{ wrap } 就照着包好再 spawn，{ error } 就别跑了。
+ * auto：立不起来照常跑，记一笔、设置页看得到；required：立不起来就不跑；off：不包。
+ * 没设过的档位：多人用的 Mac 按 required，其余按 auto（别的系统上没有这层，不能因此一条命令都跑不了）
+ * @returns {Promise<{ wrap: (bin: string, args: string[]) => { bin: string, args: string[] }, error?: undefined } | { error: string, wrap?: undefined }>}
+ */
+async function sandboxFor(sec) {
+  const mode = sandbox.effectiveMode(sec.sandbox, security.isMultiUser() && process.platform === "darwin");
+  const bare = { wrap: (/** @type {string} */ bin, /** @type {string[]} */ args) => ({ bin, args }) };
+  if (mode === "off") { noteSandbox({ mode, ok: false, reason: "已关闭" }); return bare; }
+  let pf;
+  if (process.platform !== "darwin") pf = { ok: false, reason: "系统沙箱只有 macOS 上有", warn: [] };
+  else {
+    let o = null;
+    try { o = sandboxOpts(sec); } catch (e) { pf = { ok: false, reason: String(/** @type {any} */ (e).message || e), warn: [] }; }
+    if (o) {
+      pf = await sandbox.preflight(o);
+      const opts = o;
+      if (pf.ok) { noteSandbox({ mode, ...pf }); return { wrap: (bin, args) => sandbox.wrap(bin, args, opts) }; }
+    }
+  }
+  noteSandbox({ mode, ...pf });
+  if (mode === "required") return { error: `这台机器要求命令在系统沙箱里跑，可沙箱没立起来（${pf.reason}），命令没有执行。管理员可以在 设置 → 安全 里看沙箱状态。` };
+  return bare;
+}
+/** 启动时先预检一遍：设置页一打开就有现状，第一条命令也不用等 */
+function warmSandbox(sec) {
+  return sandboxFor(sec || security.DEFAULTS).then(() => sandboxStatus(), () => sandboxStatus());
+}
+
+/** box：sandboxFor 给的包法，不传就不包 */
+function runNode(code, timeoutMs, cwd, stopSignal, session = "", box = null) {
   ensureDirs();
   const syntaxErr = precheckSyntax(code);
   if (syntaxErr) return Promise.resolve({ content: syntaxErr, isError: true });
@@ -1157,7 +1242,9 @@ function runNode(code, timeoutMs, cwd, stopSignal, session = "") {
   fs.writeFileSync(file, code, "utf8");
   return new Promise((resolve) => {
     // nodeExec：服务端在独立服务进程里时 execPath 是 Electron Helper，换回应用本体（行为和以前一样）
-    const child = spawn(require("../platform/electron-bridge").nodeExec(), [file], {
+    const nodeBin = require("../platform/electron-bridge").nodeExec();
+    const w = box ? box.wrap(nodeBin, [file]) : { bin: nodeBin, args: [file] };
+    const child = spawn(w.bin, w.args, {
       cwd: cwd || ws(),
       // 自成进程组，好让 killTree 能连着孙子进程一起收（脚本里再 spawn 是常事）
       detached: process.platform !== "win32",
@@ -1440,11 +1527,12 @@ function missingBinHint(text, platform = process.platform, ctx = {}) {
   return lines.join("\n");
 }
 
-function runShell(command, timeoutMs, cwd, stopSignal, session = "") {
+function runShell(command, timeoutMs, cwd, stopSignal, session = "", box = null) {
   ensureDirs();
   return new Promise((resolve) => {
     const sh = pickShell(command);
-    const child = spawn(sh.bin, sh.args, {
+    const w = box ? box.wrap(sh.bin, sh.args) : { bin: sh.bin, args: sh.args };
+    const child = spawn(w.bin, w.args, {
       cwd: cwd || ws(),
       // 同 runNode：整组一起杀，否则 `npm install` 那一窝会活过「让我停下」。超时也一样，见 armTimeout
       detached: process.platform !== "win32",
@@ -2294,7 +2382,7 @@ function bgListenPorts(opts) {
 /** 联网工具过地址闸时带上的：这一趟任务的后台命令端口（要拦本机地址时才去查） */
 const netOpts = (opts) => ({ bgPorts: () => bgListenPorts(opts) });
 
-function startBackground(cmd, cwd, opts, keep = false) {
+function startBackground(cmd, cwd, opts, keep = false, box = null) {
   ensureDirs();
   const r = CT.bgStart({
     command: cmd,
@@ -2306,7 +2394,8 @@ function startBackground(cmd, cwd, opts, keep = false) {
     logDir: tmpDir(),
     spawnFn: () => {
       const sh = pickShell(cmd);
-      return spawn(sh.bin, sh.args, {
+      const w = box ? box.wrap(sh.bin, sh.args) : { bin: sh.bin, args: sh.args };
+      return spawn(w.bin, w.args, {
         cwd: cwd || ws(),
         detached: process.platform !== "win32",
         stdio: ["ignore", "pipe", "pipe"],
@@ -4167,7 +4256,9 @@ async function executeToolCore(name, input, opts = {}) {
         // modeGated：只看不动/每步都问是用户当场选的档，闸门总开关关着也得照档办
         const blocked = await passGate(await judgeRisk(security.checkCode(sec, code), "代码", code), "代码", code, { force: modeGated() });
         if (blocked) return blocked;
-        return await runNode(code, timeoutMs, fileBase, opts.stopSignal, opts.sessionId || "");
+        const box = await sandboxFor(sec);
+        if (box.error) { security.audit("命令拦截", "run_node（系统沙箱没立起来）", "拦截"); return { content: box.error, isError: true }; }
+        return await runNode(code, timeoutMs, fileBase, opts.stopSignal, opts.sessionId || "", box);
       }
       case "run_shell": {
         if (orgBlocksShell()) return shellBlocked("run_shell");
@@ -4179,9 +4270,11 @@ async function executeToolCore(name, input, opts = {}) {
         if (blocked) return blocked;
         const hookSays = await HK.beforeShell(opts.hooks, cmd, { cwd: fileBase, stopSignal: opts.stopSignal });
         if (hookSays) { security.audit("命令执行", cmd, "钩子拦截"); return { content: hookSays, isError: true }; }
+        const box = await sandboxFor(sec);
+        if (box.error) { security.audit("命令拦截", cmd + "（系统沙箱没立起来）", "拦截"); return { content: box.error, isError: true }; }
         security.audit("命令执行", cmd, "放行");
-        if (input.background) return startBackground(cmd, fileBase, opts, input.keep === true);
-        return await runShell(cmd, timeoutMs, fileBase, opts.stopSignal, opts.sessionId || "");
+        if (input.background) return startBackground(cmd, fileBase, opts, input.keep === true, box);
+        return await runShell(cmd, timeoutMs, fileBase, opts.stopSignal, opts.sessionId || "", box);
       }
       case "shell_output": {
         const who = bgOwner(opts);
@@ -5257,4 +5350,4 @@ const diskConnectorHost = {
 };
 
 module.exports = {
-  _internals: { setDepsAppDir: (d) => { depsAppDir = d; }, depsGuardEnv, searchBodyError, searchHttpError, toItems, pickHits, SEARCH_HTTP_HINT, searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, execCheck, extCheck, EXT_CHECK_MAX, openHiddenWeb, hiddenWeb, WEB_PARTITION, checkPage, runShell, runNode, startBackground, trackBgGroup, noteStray, strays, psRows, verifiedPgids, reapStrays, reapStraysAtExit, strayFile, saveStrays, auditHtml, savedAt, markDuplicates, pickShell, winTextEnv, fetchRetry, nearestTool, viaMedia, lookAtImage, pickEye, mainCanSee, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, unitsFor, anySignal, sleepFor, videoPlan: mediaModels.videoPlan, editFile, planEdit, planMulti, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, WIN_PYTHON_HINT, runsPython, winPython3Shim, winStoreStub, shCheckBin, SH_ENV_NOISE, reapBgJob, pdfHowTo, underRoot, winCanonCase, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES, docToText, slidesToText, sheetsToText }, TOOL_DEFS, executeTool, ownRootFiles, releaseRun, holdRun, runHeld, reapLeftoverStrays, badToolArgs, outputFiles, turnSnapshot, statOutputs, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withLibraryBase, libBase, notesFileOf, LIB_DIR, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage, canvasSafeName, setConnectorHost, checkConnector };
+  _internals: { setDepsAppDir: (d) => { depsAppDir = d; }, depsGuardEnv, searchBodyError, searchHttpError, toItems, pickHits, SEARCH_HTTP_HINT, searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, execCheck, extCheck, EXT_CHECK_MAX, openHiddenWeb, hiddenWeb, WEB_PARTITION, checkPage, runShell, runNode, startBackground, sandboxFor, sandboxOpts, trackBgGroup, noteStray, strays, psRows, verifiedPgids, reapStrays, reapStraysAtExit, strayFile, saveStrays, auditHtml, savedAt, markDuplicates, pickShell, winTextEnv, fetchRetry, nearestTool, viaMedia, lookAtImage, pickEye, mainCanSee, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, unitsFor, anySignal, sleepFor, videoPlan: mediaModels.videoPlan, editFile, planEdit, planMulti, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, WIN_PYTHON_HINT, runsPython, winPython3Shim, winStoreStub, shCheckBin, SH_ENV_NOISE, reapBgJob, pdfHowTo, underRoot, winCanonCase, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES, docToText, slidesToText, sheetsToText }, TOOL_DEFS, executeTool, ownRootFiles, releaseRun, holdRun, runHeld, reapLeftoverStrays, badToolArgs, outputFiles, turnSnapshot, statOutputs, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withLibraryBase, libBase, notesFileOf, LIB_DIR, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage, canvasSafeName, setConnectorHost, checkConnector, sandboxStatus, warmSandbox, setOwnerDirs };

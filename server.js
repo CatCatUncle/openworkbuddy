@@ -135,6 +135,9 @@ const config = fillDefaults(rawConfig, CONFIG_DEFAULTS);
 childEnv.setPolicy(() => ({ allow: security.getSecurity(config).env_passthrough, keys: !admin.multiUser() }));
 // 多人共用时命令、代码碰了文件黑名单直接拦、不出审批卡：卡是发起任务的人自己批的
 security.setMultiUser(() => admin.multiUser());
+// 系统沙箱：成员的任务要把属主的项目目录藏起来；启动时先预检一遍，设置页一打开就有现状
+require("./src/agent/tools").setOwnerDirs(() => (config.projects || []).map((p) => p && p.dir).filter(Boolean));
+require("./src/agent/tools").warmSandbox(security.getSecurity(config));
 // 助理的名字和头像：想叫它「小秘」就叫「小秘」。界面（气泡头像/侧栏/品牌位）和系统提示词都跟着这里走
 // "@cat" 是内置猫标的哨兵值，跟应用图标同一只猫；前端 avatarBits 认它，account.normalizeAvatar 放行
 const ASSISTANT_DEFAULT = { name: "OpenWorkBuddy", avatar: "@cat" };
@@ -1943,6 +1946,8 @@ app.get("/api/settings", (req, res) => {
     // 启动时替用户改挂过的媒体模型，只回一次。只给平台管理员：改的是整台机器的配置
     moved_on_boot: isPlatformOwner(req) ? takeMovedOnBoot() : [],
     security: config.security,
+    // 系统沙箱眼下立没立起来、为什么：开着却没生效时界面要说出来，不能只摆一个「已开启」
+    sandbox_status: require("./src/agent/tools").sandboxStatus(),
     // 安全中心「命令能看到的环境变量」那张卡要照实说：像 Key 的名字现在写进清单给不给，看的是账号数
     env_keys_pass: !admin.multiUser(),
     shortcuts: prefs.shortcutsCfg(config),
@@ -2400,6 +2405,13 @@ app.post("/api/settings", (req, res) => {
       if (Array.isArray(b.security.env_passthrough)) sec.env_passthrough = childEnv.cleanNames(b.security.env_passthrough);
       // 本机/内网放行清单：只收 host:端口（端口可写 *），写成网址的剥成 host:端口，主机写 * 的不收，最多 50 条
       if (Array.isArray(b.security.url_allow_local)) sec.url_allow_local = netAddr.cleanAllow(b.security.url_allow_local);
+      // 系统沙箱档位：认不出的值一律当没填过（按部署走），不能因为一个错字就变成不套
+      if (b.security.sandbox !== undefined) {
+        const m = String(b.security.sandbox || "");
+        sec.sandbox = ["default", "auto", "required", "off"].includes(m) ? m : "default";
+      }
+      if (b.security.sandbox_level !== undefined) sec.sandbox_level = b.security.sandbox_level === "basic" ? "basic" : "hardened";
+      if (b.security.sandbox !== undefined || b.security.sandbox_level !== undefined) require("./src/agent/tools").warmSandbox(sec);
     }
     if (b.langfuse && typeof b.langfuse === "object") {
       const cur = config.langfuse || (config.langfuse = { enabled: false, host: "https://cloud.langfuse.com", public_key: "", secret_key: "" });

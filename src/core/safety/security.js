@@ -126,6 +126,11 @@ const DEFAULTS = {
   // AI 跑的命令、脚本、外部引擎、钩子只拿最小环境变量（platform/child-env.js），这里是属主额外放行的变量名。
   // 像 Key 的名字（*_API_KEY、*_TOKEN……）只在这台机器只有一个账号时才给；只有平台属主能改
   env_passthrough: [],
+  // AI 跑的命令和脚本在 macOS 上套系统沙箱（platform/sandbox.js）：default = 多人用的 Mac 按 required、其余按 auto；
+  // auto = 立不起来照常跑、设置页标出来；required = 立不起来就不跑；off = 不套
+  sandbox: "default",
+  sandbox_level: "hardened", // hardened = 连沙箱外服务的 unix socket 只放 DNS 和下面这份；basic = 不管 socket
+  sandbox_unix_allow: [], // 额外放行的 unix socket 绝对路径（docker、数据库之类）
 };
 
 /** 给 config.security 补默认值（保留用户已改项），返回引用 */
@@ -213,6 +218,83 @@ function underPrefix(p, prefix, platform = process.platform) {
 }
 
 /**
+ * 应用自己的账本：谁也去不掉的那几条黑名单，跟设置里那份名单取并集。
+ * config.json 里是全部 Key，users.json 里是登录令牌，orgs.json / vkeys.json 里是限额，
+ * usage / api-usage 是限额拿来比的账本，audit 是拦截记录，backups 里是整份 config.json 的打包，
+ * secrets 留给以后落盘加密的 Key。改了哪一个，模型白名单和企业限额都形同虚设。
+ * 以前它们只是 DEFAULTS 里的默认值：设置页存过一次名单，那份就落进 config.json，后来补的条目一条也进不去。
+ */
+const CORE_BLACKLIST = [
+  "<app>/config.json",
+  "<app>/data/users.json",
+  "<app>/data/orgs.json",
+  "<app>/data/vkeys.json",
+  "<app>/data/usage",
+  "<app>/data/usage.json",
+  "<app>/data/api-usage",
+  "<app>/data/api-usage.json",
+  "<app>/data/audit*",
+  "<app>/backups",
+  "<app>/secrets*",
+];
+/** 实际生效的文件黑名单：应用自带的 + 用户填的 */
+function blacklistOf(sec) {
+  const all = [...CORE_BLACKLIST, ...(((sec || {}).file_blacklist) || [])].map((b) => String(b).trim()).filter(Boolean);
+  return [...new Set(all)];
+}
+/** data 目录被 OPENWORKBUDDY_DATA_DIR 挪到了别处：账号、组织、账本都跟着去了那儿 */
+const MOVED_DATA = (() => {
+  const d = process.env.OPENWORKBUDDY_DATA_DIR;
+  if (!d) return "";
+  const p = path.resolve(d);
+  return p === path.join(DATA_DIR, "data") ? "" : p;
+})();
+/**
+ * 一条黑名单落到磁盘上管哪些东西：
+ *   - 结尾带 *：按名字前缀（`<app>/data/audit*` 管 audit/ 目录，也管 audit.json）
+ *   - 最后一截像文件名（带扩展名）：管整个文件族。写盘留的 .bak、坏文件隔离出的 .corrupt-时间戳、
+ *     写到一半的 .<pid>.tmp、编辑器的 ~，内容跟正本一样，Key 一个不少
+ *   - 其余当目录：它自己和底下的一切
+ * `<app>/data/…` 在 data 目录被挪走时两处都算。
+ */
+function blacklistTargets(entry, platform = process.platform) {
+  const raw = String(entry || "").trim();
+  if (!raw) return [];
+  const prefix = /[^\\/*]\*+$/.test(raw);
+  const bare = raw.replace(/\*+$/, "").replace(/(.)[\\/]+$/, "$1");
+  const leaf = bare.split(/[\\/]/).pop() || "";
+  const kind = prefix ? "prefix" : /^[^.].*\.[A-Za-z0-9]{1,8}$/.test(leaf) ? "file" : "dir";
+  const roots = [expandPath(bare, platform)];
+  const m = /^<app>[\\/]data(?=$|[\\/])/.exec(bare);
+  if (m && MOVED_DATA && platform === process.platform) roots.push(path.join(MOVED_DATA, bare.slice(m[0].length)));
+  return roots.map((p) => ({ raw, kind, path: p, dir: path.dirname(p), leaf: path.basename(p) }));
+}
+/** 名字后面接的这截还算不算同一个文件族：正本自己，或者 .xxx / ~xxx 的留底 */
+const familyRest = (rest) => rest === "" || /^[.~]/.test(rest);
+/** p 落没落在这条黑名单管的范围里 */
+function hitsTarget(p, t, platform = process.platform) {
+  if (t.kind === "dir") return underPrefix(p, t.path, platform);
+  const win = platform === "win32";
+  const P = win ? foldWin(p) : p;
+  const D = (win ? foldWin(t.dir) : t.dir).replace(/[\\/]$/, "");
+  const sep = win ? "/" : path.sep;
+  if (!P.startsWith(D + sep)) return false;
+  const first = P.slice(D.length + 1).split(sep)[0];
+  const leaf = win ? t.leaf.toLowerCase() : t.leaf;
+  if (!first.startsWith(leaf)) return false;
+  return t.kind === "prefix" || familyRest(first.slice(leaf.length));
+}
+/** 同一条黑名单按真实位置再算一份（目录本身是符号链接的，比如 /tmp → /private/tmp） */
+function realTarget(t) {
+  if (t.kind === "dir") {
+    const r = realOf(t.path);
+    return r && r !== t.path ? { ...t, path: r } : null;
+  }
+  const d = realOf(t.dir);
+  return d && d !== t.dir ? { ...t, dir: d, path: path.join(d, t.leaf) } : null;
+}
+
+/**
  * 顺着符号链接走到底的真实位置。还不存在的那几截照原样接在后面（要新建的文件也得判）；
  * 悬空的链接也要追——`notes.txt -> ~/.ssh/authorized_keys2` 这种，write_file 一写就在链接那头新建了。
  * 追不下去（链接绕成圈、没权限）返回 null。
@@ -261,6 +343,14 @@ function sameInodeAsBlacklisted(st, bp) {
   if (!bst.isDirectory()) return false;
   return inodesUnder(bp).has(`${st.dev}:${st.ino}`);
 }
+/** 硬链接比对按整条黑名单算：文件族里的 .bak 和前缀命中的那几个也算，不只认正本 */
+function sameInodeAsTarget(st, t) {
+  if (t.kind === "dir") return sameInodeAsBlacklisted(st, t.path);
+  let names;
+  try { names = fs.readdirSync(t.dir); } catch { return false; }
+  return names.some((n) => n.startsWith(t.leaf) && (t.kind === "prefix" || familyRest(n.slice(t.leaf.length))) &&
+    sameInodeAsBlacklisted(st, path.join(t.dir, n)));
+}
 /**
  * 黑名单目录里所有文件的 设备号+inode。只在碰到链接数大于 1 的文件时才走一遍，
  * 走过的缓存几秒（同一轮里连读几个文件不用反复扫）；目录大到走不完就按走到的算——
@@ -306,10 +396,14 @@ function resolvePathWithPolicy(sec, rel, workspaceDir, base, platform = process.
   const under = (a, b) => underPrefix(a, b, platform);
   if (sec.gateway) {
     const st = linkedFile(real);
-    for (const b of sec.file_blacklist || []) {
-      const bp = expandPath(b, platform);
-      if (under(p, bp) || under(real, bp) || under(real, realOf(bp) || bp) || (st && sameInodeAsBlacklisted(st, bp))) {
-        return { path: p, allowed: false, reason: `路径在文件黑名单内（${b}）` };
+    for (const b of blacklistOf(sec)) {
+      for (const t of blacklistTargets(b, platform)) {
+        const rt = realTarget(t);
+        const fileReal = t.kind === "dir" ? null : realOf(t.path); // 正本自己是个符号链接：直接读它指过去的那个文件
+        if (hitsTarget(p, t, platform) || hitsTarget(real, t, platform) || (rt && hitsTarget(real, rt, platform)) ||
+          (fileReal && fileReal !== t.path && under(real, fileReal)) || (st && sameInodeAsTarget(st, t))) {
+          return { path: p, allowed: false, reason: `路径在文件黑名单内（${b}）` };
+        }
       }
     }
   }
@@ -897,7 +991,8 @@ function commandSegments(command, platform = process.platform) {
 const HOME_VARS = ["%userprofile%", "$env:userprofile", "${env:userprofile}", "$home", "~", "%homepath%"];
 /** 一条黑名单路径在命令行里可能长什么样 */
 function pathNeedles(entry, platform = process.platform) {
-  const raw = String(entry).trim();
+  // 带 * 的、结尾带 / 的按去掉之后的样子认；后面跟什么才算命中由 needleIn 按条目种类管
+  const raw = String(entry).trim().replace(/\*+$/, "").replace(/(.)[\\/]+$/, "$1");
   if (!raw) return [];
   if (platform === "win32") return winPathNeedles(raw);
   const out = [raw.toLowerCase(), expandPath(raw).toLowerCase()];
@@ -906,6 +1001,31 @@ function pathNeedles(entry, platform = process.platform) {
   const parts = tail.split("/").filter(Boolean);
   if (tail.startsWith("/") && (parts.length > 1 || (parts[0] || "").startsWith("."))) out.push(tail.toLowerCase());
   return out;
+}
+/**
+ * 针后面紧跟的那个字决定算不算命中：目录后面得是分隔符、引号、空白或结尾（`/data/usage-2024.csv` 不是账本目录）；
+ * 文件还认 .bak、~ 这类留底后缀；前缀条目（audit*）后面跟什么都算。
+ */
+function needleIn(text, n, kind) {
+  if (!n) return false;
+  const stop = kind === "prefix" ? null : kind === "file" ? /[A-Za-z0-9_\-]/ : /[A-Za-z0-9_\-.~]/;
+  for (let i = text.indexOf(n); i >= 0; i = text.indexOf(n, i + 1)) {
+    const c = text[i + n.length];
+    if (!stop || c === undefined || !stop.test(c)) return true;
+  }
+  return false;
+}
+/** 一条黑名单拿去在命令、代码原文里找的针，连同它是哪一种（见 blacklistTargets） */
+function needlesOf(entry, platform) {
+  const raw = String(entry).trim();
+  const t = blacklistTargets(entry, platform)[0];
+  const kind = t ? t.kind : "dir";
+  const all = pathNeedles(entry, platform);
+  if (kind !== "prefix") return { raw, kind, needles: all };
+  // 前缀条目后面跟什么都算，所以 `/data/audit` 这种短尾巴不拿去找：不然用户自己项目里的 data/audit_2024.csv 也会被拦
+  const fold = platform === "win32" ? foldWin : (/** @type {string} */ x) => x.toLowerCase();
+  const tail = fold(raw.replace(/\*+$/, "").replace(/^~|^<app>/, ""));
+  return { raw, kind, needles: all.filter((n) => n !== tail) };
 }
 /**
  * Windows 版：黑名单写的是 `~/.ssh`，命令行里却可能是 `type %USERPROFILE%\.ssh\id_rsa`、
@@ -1104,12 +1224,12 @@ function checkCommand(sec, command, platform = process.platform) {
   // `bash -c '…'`、`find -exec …` 里套着的那条也各算一段，外面那层批过了不代替里面那条
   const segs = commandSegments(command, platform);
   const mode = permissionMode(sec);
-  const needles = sec.gateway ? (sec.file_blacklist || []).map((b) => ({ raw: String(b).trim(), needles: pathNeedles(b, platform) })) : [];
+  const needles = sec.gateway ? blacklistOf(sec).map((b) => needlesOf(b, platform)) : [];
   for (const seg of segs) {
     // Windows 上路径不分大小写、正反斜杠混着写，命令也得跟黑名单折成同一个样子再比
     const low = win ? foldWin(seg) : seg.toLowerCase();
     for (const b of needles) {
-      if (b.needles.some((n) => n && low.includes(n))) {
+      if (b.needles.some((n) => needleIn(low, n, b.kind))) {
         // 有 shell 在手，文件黑名单本来是形同虚设的（read_file 拦得住，`cat` 拦不住）
         return blacklistVerdict(`命令碰到了文件黑名单（${b.raw}）`, seg);
       }
@@ -1275,10 +1395,9 @@ function checkCode(sec, code, platform = process.platform) {
   // 拆成几截再用 + 接起来的字符串，按接好的样子再看一遍
   const joined = joinLiterals(low);
   // 黑名单排最前：下面这几条在任何档位下都拦（全自动也不例外），它们挡的是 ~/.ssh、config.json、账号额度这些
-  for (const b of sec.file_blacklist || []) {
-    const raw = String(b).trim();
-    const needles = pathNeedles(b, platform);
-    if (needles.some((n) => n && (low.includes(n) || joined.includes(n)))) {
+  for (const b of blacklistOf(sec)) {
+    const { raw, kind, needles } = needlesOf(b, platform);
+    if (needles.some((n) => needleIn(low, n, kind) || needleIn(joined, n, kind))) {
       return blacklistVerdict(`代码碰到了文件黑名单（${raw}）`, raw);
     }
     if (pointsAtBlacklisted(raw, joined, platform)) {
