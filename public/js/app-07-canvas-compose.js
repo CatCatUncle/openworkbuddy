@@ -65,6 +65,10 @@ function canvasComposeHtml(p) {
       + (job.log || []).map((l) => `<div class="cp-compose-log">${esc(l)}</div>`).join("")
       + `</div>`;
   }
+  // 服务重启过，进度问不到了：不知道跑没跑完，也不猜，只给重来的路
+  if (job && job.lost) {
+    return `<div class="cp-compose is-bad"><div class="cp-compose-head"><b>这次合成的进度找不到了</b>${button("重新合成")}</div></div>`;
+  }
   if (job && job.output) {
     return `<div class="cp-compose is-done"><div class="cp-compose-head"><b>成片好了</b>`
       + `<code>${esc(job.subtitled || job.output)}</code>`
@@ -579,7 +583,7 @@ async function canvasRunProposal(p) {
  *      没有任何一条报错会红，只有人看到第三分钟才发现。所以顺序必须先过一眼。
  *   ② 确认了才跑。跑的是服务端拼好的 ffmpeg 命令，一条一条来，跑到哪写到哪。
  *   ③ 跑完了认账：成片真的落盘才说成了，没落盘就说没落盘。
- * 中途能停。停下来已经拼好的片段都留着，下次接着拼不用重跑。
+ * 中途能停。停下来已经拼好的片段文件还在盘上，但下次合成会从第一镜重新拼一遍（每一步都覆盖重写）。
  */
 async function canvasComposeOpen() {
   canvasState.progressOpen = true;
@@ -621,7 +625,21 @@ function canvasComposePoll() {
   canvasState.composeTimer = window.setTimeout(async () => {
     const id = canvasState.composeJob && canvasState.composeJob.id;
     if (!id) return;
-    const r = await fetch("/api/canvas/compose?job=" + encodeURIComponent(id)).then((x) => x.json()).catch(() => null);
+    const res = await fetch("/api/canvas/compose?job=" + encodeURIComponent(id)).catch(() => null);
+    // 合成记录只在服务端内存里：服务重启过，这条就再也问不到了。404 不是「还没好」，
+    // 接着问只会一直转、按钮一直灰。停下来照实说，给一个重新合成的按钮
+    if (res && res.status === 404) {
+      if (!canvasState.composeJob || canvasState.composeJob.id !== id) return;
+      canvasState.composeJob = { id, done: true, lost: true, steps: [], log: [] };
+      canvasRenderProgress();
+      // 剪辑节点上那颗「正在合成…」也得放开，不然进度带上说找不到了，卡上的按钮还灰着
+      (canvasState.graph?.getElements?.() || []).filter((n) => canvasKind(n) === "timeline").forEach((n) => canvasRefreshNode(n));
+      canvasToast("这次合成的进度找不到了，可以重新合成。", "circle-x", "err");
+      return;
+    }
+    const r = res ? await res.json().catch(() => null) : null;
+    // 等回话的工夫用户可能已经点了「重新合成」：那份旧回话不能把新的盖掉
+    if (!canvasState.composeJob || canvasState.composeJob.id !== id) return;
     if (r && r.job) canvasState.composeJob = r.job;
     canvasRenderProgress();
     if (!r || !r.job || !r.job.done) return canvasComposePoll();
@@ -642,7 +660,7 @@ async function canvasComposeStop() {
   await fetch("/api/canvas/compose", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cancel: id }),
   }).catch(() => null);
-  canvasToast("正在停…已经拼好的片段都留着。", "info");
+  canvasToast("正在停…下次合成要从头再拼一遍。", "info");
 }
 
 /** 起手模板里那几句占位文字。跟服务端 drama-pipeline.js 的 PLACEHOLDERS 是同一份口径 */

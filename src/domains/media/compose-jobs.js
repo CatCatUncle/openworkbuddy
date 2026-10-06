@@ -248,7 +248,7 @@ async function composeExecute(job, plan, bin, name) {
     job.done = true;
     return;
   }
-  if (job.canceled) { job.error = "你叫停了，已经拼好的片段都留着，下次接着来不用重跑"; job.done = true; return; }
+  if (job.canceled) { job.error = "你叫停了。下次合成会从第一镜重新拼一遍"; job.done = true; return; }
 
   // ── 认账：文件真的在盘上，才敢说成片出来了，才敢写回画布
   const film = path.join(cwd, plan.outputs.film);

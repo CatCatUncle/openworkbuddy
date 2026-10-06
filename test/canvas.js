@@ -325,6 +325,9 @@ const STUB3 = `
       if (m === "POST") return J({ plan: { ready: true, shots: [], blockers: [] } });
       // __composeDone：轮询问到的那一趟已经跑完（第三十四节量「合成完了、人不在跟前」）
       if (window.__composeDone) return J({ job: window.__composeDone });
+      // __composeLost：服务端重启过，合成记录只在内存里，按任务号问回 404（routes/compose.js 原话）。第四十七节
+      window.__composePolls = (window.__composePolls || 0) + 1;
+      if (window.__composeLost) return J({ error: "这条合成记录已经不在了（服务重启过，或者太久了）" }, 404);
       return J({ job: { id: "job1", done: false, at: 1, total: 3, steps: [] } });
     }
     if (s.includes("/api/canvas/progress")) return J(window.__progress || {});
@@ -3546,6 +3549,47 @@ app.whenReady().then(async () => {
   ok(断.丁.有钮 && 断.丁.k1 && !断.丁.k2 && 断.丁.选着 === "" && 断.丁.当前 === null && 断.丁.面板 && 断.丁.提示.字 === "节点已删除。" && 断.丁.提示.钮 === "撤销" && 断.丁.撤后.k2 && 断.丁.撤后.线 === "c1>k1,c1>k2",
      "★检查器「删除节点」也一样：不问、只删正看着的这一张、能撤★", 断.丁);
   ok(断.问了 === 0, "★断线、卡上的 ×、检查器删除，一个确认框都没弹★ 以前两处删除要先确认、删了却撤不回来", 断.问了);
+
+  console.log("\n— 四十七、合成进度问不到了（服务重启过）：不再一直转，照实说找不到了，给【重新合成】 —");
+  const 丢 = await run(`
+    (async () => {
+      ${一集}
+      window.__progress = { stages: [{ key: "film", label: "成片", total: 1, done: 0, state: "todo" }], shots: [] };
+      await canvasLoadProgress();
+      canvasState.progressOpen = true;
+      const tl = canvasAddNode("timeline", { title: "最终剪辑" }, { x: 900, y: 40 }, { skipSelect: true, persist: false });
+      ${等(50)}
+      const 卡钮 = () => { const b = tl.findView(canvasState.paper).el.querySelector("[data-canvas-compose]"); return b ? { 灰: b.disabled, 字: b.textContent } : null; };
+      canvasState.composeJob = { id: "job-old", done: false, at: 2, total: 5, steps: [] };
+      canvasRenderProgress(); canvasRefreshNode(tl);
+      const 跑着 = 卡钮();
+      window.__composeLost = true; window.__composePolls = 0; window.__bodies = [];
+      canvasComposePoll();
+      ${等(1500)}
+      const 问了 = window.__composePolls;
+      const box = document.getElementById("canvas-progress");
+      const 字 = box.querySelector(".cp-compose") ? box.querySelector(".cp-compose").textContent : "";
+      const 钮 = box.querySelector("[data-cp-compose]");
+      const 停钮 = !!box.querySelector("[data-cp-compose-stop]");
+      const toast = (document.querySelector("#owb-toast span") || {}).textContent || "";
+      const 丢后 = { lost: !!(canvasState.composeJob && canvasState.composeJob.lost), done: !!(canvasState.composeJob && canvasState.composeJob.done), 卡: 卡钮() };
+      ${等(2600)}
+      const 又问 = window.__composePolls - 问了;
+      if (钮) 钮.click();
+      ${等(100)}
+      const 重来 = { posts: window.__bodies.filter((b) => b.url === "/api/canvas/compose").map((b) => b.body), job: canvasState.composeJob, plan: !!canvasState.composePlan };
+      window.__composeLost = false; canvasState.composePlan = null; canvasState.composeJob = null; canvasRenderProgress();
+      return { 跑着, 问了, 字, 钮字: 钮 ? 钮.textContent : null, 钮灰: 钮 ? 钮.disabled : null, 停钮, toast, 丢后, 又问, 重来 };
+    })()`);
+  ok(丢.跑着 && 丢.跑着.灰 && 丢.问了 === 1 && 丢.丢后.lost && 丢.丢后.done,
+     "★按任务号问回 404：记成「找不到了」、算跑完（done），不当「还没好」接着问★", 丢);
+  ok(丢.又问 === 0, "★404 之后不再轮询★ 以前每 1.2 秒问一次，问到天荒地老", 丢.又问);
+  ok(/这次合成的进度找不到了/.test(丢.字) && 丢.钮字 === "重新合成" && 丢.钮灰 === false && !丢.停钮,
+     "★进度带照实说「这次合成的进度找不到了」，摆一颗能点的【重新合成】，不再挂「停下」★", 丢);
+  ok(丢.丢后.卡 && 丢.丢后.卡.灰 === false && 丢.丢后.卡.字 !== "正在合成…", "剪辑节点上的合成按钮也放开了，不是一直灰着「正在合成…」", 丢.丢后.卡);
+  ok(/找不到了/.test(丢.toast) && !/重启|太久/.test(丢.toast), "提示只说找不到了，不替人猜是重启还是太久", 丢.toast);
+  ok(丢.重来.posts.length === 1 && !丢.重来.posts[0].run && 丢.重来.job === null && 丢.重来.plan,
+     "点【重新合成】：重新算方案摆出来给人看（不直接开跑），旧任务清掉", 丢.重来);
 
   srv.close();
   console.log(fail ? `\n有失败：${pass} 过 / ${fail} 挂` : `\n全部通过：${pass} 过 / 0 挂`);
