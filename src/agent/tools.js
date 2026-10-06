@@ -27,7 +27,7 @@ const HK = require("./hooks"); // config.json 里 agent.hooks 配的命令：跑
 const CT = require("./code-tools"); // 写代码那几样：按名找文件、后台命令、进度清单、改前查有没有被动过
 const depsGuard = require("../platform/deps-guard"); // 工作空间嵌在应用目录里时，npm/pnpm 别往上找到应用自己的 package.json
 const { buildChildEnv } = require("../platform/child-env"); // AI 跑的命令/脚本只拿最小环境变量：用户 shell 里的 Key 不跟着下去
-const sandbox = require("../platform/sandbox"); // macOS 上命令/脚本套系统沙箱：读不到 Key 和账本、改不了应用自己
+const sandbox = require("../platform/sandbox"); // macOS / Windows 上命令和脚本套系统沙箱：读不到 Key 和账本、改不了应用自己
 const winname = require("../util/winname"); // Windows 不认的文件名（a:b 会悄悄写进备用数据流）
 // 媒体那几样（生图 / 生视频 / 配音 / 转写 / 看图 / 截图 + 生成缓存）和画布状态拆到 src/tools/ 下了，这里只是转手。
 // 它们要用的工作目录根还在本文件（下面那套 ALS），递过去的是取值函数、用到时才读，按请求切换的根照样生效
@@ -1156,7 +1156,8 @@ function noteSandbox(next) {
   else if (sandboxState.warn.length) security.audit("系统沙箱", `这些机密文件在别处还有硬链接：${sandboxState.warn.join("、")}`, "提醒");
 }
 function sandboxStatus() {
-  return { ...sandboxState, warn: [...sandboxState.warn] };
+  // platform：设置页按跑服务的那台决定摆不摆沙箱这一栏、说明写哪个系统
+  return { ...sandboxState, warn: [...sandboxState.warn], platform: process.platform };
 }
 
 /** 属主的项目目录（server 启动时接上）：成员的任务要把它们藏起来 */
@@ -1177,7 +1178,8 @@ function tenantRoots() {
 function sandboxOpts(sec) {
   const root = sandbox.real(ws());
   let hide = [];
-  if (security.isMultiUser()) {
+  // Windows 那层是完整性级别，没有「藏哪几个目录」这一说：多人用时各组织的工作区不互相藏（设置页写明了）
+  if (security.isMultiUser() && process.platform !== "win32") {
     const roots = tenantRoots().map((r) => sandbox.real(r));
     // 成员的任务：别家组织、属主的工作区和项目都藏；属主的任务：只藏各组织的
     const member = roots.some((r) => sandbox.isUnder(root, r));
@@ -1196,29 +1198,52 @@ function sandboxOpts(sec) {
 }
 
 /**
- * 这一趟命令怎么包：{ wrap } 就照着包好再 spawn，{ error } 就别跑了。
+ * @typedef {{ bin: string, args: string[], opts?: object, env?: Record<string, string> }} Wrapped
+ *   opts、env 要叠在调用方自己的 spawn 选项和环境变量之上（Windows 那层要改命令行拼法、临时目录）
+ * @typedef {(bin: string, args: string[], o?: { verbatim?: boolean }) => Wrapped} WrapFn
+ *   verbatim：args 已按 cmd 的规矩拼好，原样接上
+ */
+/**
+ * 这一趟命令怎么包：{ wrap } 就照着包好再 spawn，{ error } 就别跑了。sandboxed：真套上了
  * auto：立不起来照常跑，记一笔、设置页看得到；required：立不起来就不跑；off：不包。
- * 没设过的档位：多人用的 Mac 按 required，其余按 auto（别的系统上没有这层，不能因此一条命令都跑不了）
- * @returns {Promise<{ wrap: (bin: string, args: string[]) => { bin: string, args: string[] }, error?: undefined } | { error: string, wrap?: undefined }>}
+ * 没设过的档位：多人用的 Mac 按 required，其余按 auto（Linux 上没有这层，不能因此一条命令都跑不了）
+ * @returns {Promise<{ wrap: WrapFn, sandboxed?: boolean, error?: undefined } | { error: string, wrap?: undefined, sandboxed?: undefined }>}
  */
 async function sandboxFor(sec) {
   const mode = sandbox.effectiveMode(sec.sandbox, security.isMultiUser() && process.platform === "darwin");
-  const bare = { wrap: (/** @type {string} */ bin, /** @type {string[]} */ args) => ({ bin, args }) };
+  /** @type {WrapFn} */
+  const asIs = (bin, args) => ({ bin, args });
+  const bare = { wrap: asIs };
   if (mode === "off") { noteSandbox({ mode, ok: false, reason: "已关闭" }); return bare; }
+  const win = process.platform === "win32";
   let pf;
-  if (process.platform !== "darwin") pf = { ok: false, reason: "系统沙箱只有 macOS 上有", warn: [] };
+  if (process.platform !== "darwin" && !win) pf = { ok: false, reason: "系统沙箱只有 macOS 和 Windows 上有", warn: [] };
   else {
     let o = null;
     try { o = sandboxOpts(sec); } catch (e) { pf = { ok: false, reason: String(/** @type {any} */ (e).message || e), warn: [] }; }
     if (o) {
-      pf = await sandbox.preflight(o);
       const opts = o;
-      if (pf.ok) { noteSandbox({ mode, ...pf }); return { wrap: (bin, args) => sandbox.wrap(bin, args, opts) }; }
+      pf = await (win ? sandbox.preflightWin(opts) : sandbox.preflight(opts));
+      if (pf.ok) {
+        noteSandbox({ mode, ...pf });
+        /** @type {WrapFn} */
+        const wrap = win ? (bin, args, wo) => sandbox.wrapWin(bin, args, { ...wo, home: opts.home || undefined }) : (bin, args) => sandbox.wrap(bin, args, opts);
+        return { wrap, sandboxed: true };
+      }
     }
   }
   noteSandbox({ mode, ...pf });
   if (mode === "required") return { error: `这台机器要求命令在系统沙箱里跑，可沙箱没立起来（${pf.reason}），命令没有执行。管理员可以在 设置 → 安全 里看沙箱状态。` };
   return bare;
+}
+/**
+ * Windows 那层比 macOS 管得宽：工作区和临时目录以外一律写不了。输出里有「拒绝访问」就补一句现状，
+ * 模型别换着写法反复去撞，也好跟用户说清开关在哪
+ */
+const DENIED_RE = /Access is denied|拒绝访问|\bEPERM\b|\bEACCES\b|Permission denied/i;
+function sandboxDeniedHint(text, box, platform = process.platform) {
+  if (!box || !box.sandboxed || platform !== "win32" || !DENIED_RE.test(String(text || ""))) return "";
+  return "（这条命令在系统沙箱里跑：只能写工作区和临时目录，Key 和账本读不到。开关在 设置 → 安全 → 系统沙箱。）";
 }
 /** 启动时先预检一遍：设置页一打开就有现状，第一条命令也不用等 */
 function warmSandbox(sec) {
@@ -1243,6 +1268,7 @@ function runNode(code, timeoutMs, cwd, stopSignal, session = "", box = null) {
   return new Promise((resolve) => {
     // nodeExec：服务端在独立服务进程里时 execPath 是 Electron Helper，换回应用本体（行为和以前一样）
     const nodeBin = require("../platform/electron-bridge").nodeExec();
+    /** @type {Wrapped} */
     const w = box ? box.wrap(nodeBin, [file]) : { bin: nodeBin, args: [file] };
     const child = spawn(w.bin, w.args, {
       cwd: cwd || ws(),
@@ -1255,10 +1281,11 @@ function runNode(code, timeoutMs, cwd, stopSignal, session = "", box = null) {
       // PATH 跟 run_shell 同一份（shellPath）：脚本里 execSync("ffmpeg …") 也得找得到刚装的东西，
       // 不然 Windows 上拿的还是应用启动那一刻的 PATH，run_shell 找得到、run_node 里找不到
       // 其余环境变量只给白名单里的：process.env 整份传下去，脚本一句 process.env 就把 Key 全读走了（见 child-env.js）
-      env: buildChildEnv({ NODE_PATH: appPath("node_modules"), OPENWORKBUDDY_HOME: DATA_DIR, ELECTRON_RUN_AS_NODE: "1", PATH: shellPath(), ...depsGuardEnv(cwd, code, shellPath()) }),
+      env: buildChildEnv({ NODE_PATH: appPath("node_modules"), OPENWORKBUDDY_HOME: DATA_DIR, ELECTRON_RUN_AS_NODE: "1", PATH: shellPath(), ...depsGuardEnv(cwd, code, shellPath()), ...w.env }),
       // 同 runShell：脚本里读 stdin 就当场读到结尾，别空等到超时
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
+      ...w.opts,
     });
     const out = makeOutSink("node", 8000, 8000);
     const err = makeOutSink("node-err", 4000, 6000);
@@ -1280,6 +1307,8 @@ function runNode(code, timeoutMs, cwd, stopSignal, session = "", box = null) {
       if (stopped) result += "(用户已停止任务，脚本被终止)\n";
       else if (timedOut) result += timeoutNote(timeoutMs);
       result += `exit code: ${code2}`;
+      const deny = code2 !== 0 ? sandboxDeniedHint(o + "\n" + e, box) : "";
+      if (deny) result += "\n" + deny;
       const done = { content: result, isError: stopped || timedOut || code2 !== 0 };
       // 脚本自己 spawn 了没等的子进程：看一眼进程组，还有人就记账（见 noteStray）
       noteStray(child.pid, "run_node 脚本", session, { quiet: stopped || timedOut, tip: "要一直跑，用 run_shell 的 background:true 起" })
@@ -1531,16 +1560,18 @@ function runShell(command, timeoutMs, cwd, stopSignal, session = "", box = null)
   ensureDirs();
   return new Promise((resolve) => {
     const sh = pickShell(command);
-    const w = box ? box.wrap(sh.bin, sh.args) : { bin: sh.bin, args: sh.args };
+    /** @type {Wrapped} */
+    const w = box ? box.wrap(sh.bin, sh.args, { verbatim: !!sh.opts.windowsVerbatimArguments }) : { bin: sh.bin, args: sh.args };
     const child = spawn(w.bin, w.args, {
       cwd: cwd || ws(),
       // 同 runNode：整组一起杀，否则 `npm install` 那一窝会活过「让我停下」。超时也一样，见 armTimeout
       detached: process.platform !== "win32",
-      env: buildChildEnv({ ...winTextEnv(), PATH: shellPath(), OPENWORKBUDDY_HOME: DATA_DIR, ...depsGuardEnv(cwd, command, shellPath()) }),
+      env: buildChildEnv({ ...winTextEnv(), PATH: shellPath(), OPENWORKBUDDY_HOME: DATA_DIR, ...depsGuardEnv(cwd, command, shellPath()), ...w.env }),
       // stdin 不给：留着一根没人写的管道，`read`、python 的 input()、npm init 这种等输入的命令
       // 会一直等到超时才回来。给 /dev/null，它当场读到结尾，要么走默认值要么报错退出
       stdio: ["ignore", "pipe", "pipe"],
       ...sh.opts,
+      ...w.opts,
     });
     const out = makeOutSink("shell", 8000, 8000);
     const err = makeOutSink("shell-err", 4000, 6000);
@@ -1564,6 +1595,8 @@ function runShell(command, timeoutMs, cwd, stopSignal, session = "", box = null)
       // 缺的是我们认识的外部工具时，把 shell 那句 command not found 翻译一遍再递出去
       const hint = code2 !== 0 ? missingBinHint(o + "\n" + e, process.platform, { code: code2, command }) : "";
       if (hint) result += "\n" + hint;
+      const deny = code2 !== 0 ? sandboxDeniedHint(o + "\n" + e, box) : "";
+      if (deny) result += "\n" + deny;
       const done = { content: result, isError: stopped || timedOut || code2 !== 0 };
       // `(python3 -m http.server 8731 >/dev/null 2>&1 &)`、`nohup ... &`：外层 shell 退了，进程组里还有人（见 noteStray）
       noteStray(child.pid, command, session, { quiet: stopped || timedOut, tip: "要一直跑，用 background:true 起，交给用户接着用的再加 keep:true" })
@@ -2394,13 +2427,15 @@ function startBackground(cmd, cwd, opts, keep = false, box = null) {
     logDir: tmpDir(),
     spawnFn: () => {
       const sh = pickShell(cmd);
-      const w = box ? box.wrap(sh.bin, sh.args) : { bin: sh.bin, args: sh.args };
+      /** @type {Wrapped} */
+      const w = box ? box.wrap(sh.bin, sh.args, { verbatim: !!sh.opts.windowsVerbatimArguments }) : { bin: sh.bin, args: sh.args };
       return spawn(w.bin, w.args, {
         cwd: cwd || ws(),
         detached: process.platform !== "win32",
         stdio: ["ignore", "pipe", "pipe"],
-        env: buildChildEnv({ ...winTextEnv(), PATH: shellPath(), OPENWORKBUDDY_HOME: DATA_DIR, ...depsGuardEnv(cwd, cmd, shellPath()) }),
+        env: buildChildEnv({ ...winTextEnv(), PATH: shellPath(), OPENWORKBUDDY_HOME: DATA_DIR, ...depsGuardEnv(cwd, cmd, shellPath()), ...w.env }),
         ...sh.opts,
+        ...w.opts,
       });
     },
   });
@@ -5350,4 +5385,4 @@ const diskConnectorHost = {
 };
 
 module.exports = {
-  _internals: { setDepsAppDir: (d) => { depsAppDir = d; }, depsGuardEnv, searchBodyError, searchHttpError, toItems, pickHits, SEARCH_HTTP_HINT, searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, execCheck, extCheck, EXT_CHECK_MAX, openHiddenWeb, hiddenWeb, WEB_PARTITION, checkPage, runShell, runNode, startBackground, sandboxFor, sandboxOpts, trackBgGroup, noteStray, strays, psRows, verifiedPgids, reapStrays, reapStraysAtExit, strayFile, saveStrays, auditHtml, savedAt, markDuplicates, pickShell, winTextEnv, fetchRetry, nearestTool, viaMedia, lookAtImage, pickEye, mainCanSee, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, unitsFor, anySignal, sleepFor, videoPlan: mediaModels.videoPlan, editFile, planEdit, planMulti, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, WIN_PYTHON_HINT, runsPython, winPython3Shim, winStoreStub, shCheckBin, SH_ENV_NOISE, reapBgJob, pdfHowTo, underRoot, winCanonCase, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES, docToText, slidesToText, sheetsToText }, TOOL_DEFS, executeTool, ownRootFiles, releaseRun, holdRun, runHeld, reapLeftoverStrays, badToolArgs, outputFiles, turnSnapshot, statOutputs, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withLibraryBase, libBase, notesFileOf, LIB_DIR, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage, canvasSafeName, setConnectorHost, checkConnector, sandboxStatus, warmSandbox, setOwnerDirs };
+  _internals: { setDepsAppDir: (d) => { depsAppDir = d; }, depsGuardEnv, searchBodyError, searchHttpError, toItems, pickHits, SEARCH_HTTP_HINT, searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, execCheck, extCheck, EXT_CHECK_MAX, openHiddenWeb, hiddenWeb, WEB_PARTITION, checkPage, runShell, runNode, startBackground, sandboxFor, sandboxOpts, sandboxDeniedHint, trackBgGroup, noteStray, strays, psRows, verifiedPgids, reapStrays, reapStraysAtExit, strayFile, saveStrays, auditHtml, savedAt, markDuplicates, pickShell, winTextEnv, fetchRetry, nearestTool, viaMedia, lookAtImage, pickEye, mainCanSee, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, unitsFor, anySignal, sleepFor, videoPlan: mediaModels.videoPlan, editFile, planEdit, planMulti, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, WIN_PYTHON_HINT, runsPython, winPython3Shim, winStoreStub, shCheckBin, SH_ENV_NOISE, reapBgJob, pdfHowTo, underRoot, winCanonCase, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES, docToText, slidesToText, sheetsToText }, TOOL_DEFS, executeTool, ownRootFiles, releaseRun, holdRun, runHeld, reapLeftoverStrays, badToolArgs, outputFiles, turnSnapshot, statOutputs, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withLibraryBase, libBase, notesFileOf, LIB_DIR, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage, canvasSafeName, setConnectorHost, checkConnector, sandboxStatus, warmSandbox, setOwnerDirs };

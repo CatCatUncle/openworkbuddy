@@ -139,7 +139,8 @@ async function coreBlacklist() {
   ok(throws(() => SB.hideAround([wide], path.join(wide, "d0", "ws"))), "要藏的超过上限：throw（不悄悄少藏）");
   fs.rmSync(path.join(OWN, "wide"), { recursive: true, force: true });
 
-  if (!SB.supported()) {
+  // Windows 那层另有一套（test/sandbox-win.js）：这里只验 macOS 的 sandbox-exec
+  if (process.platform !== "darwin" || !SB.supported()) {
     console.log(`\n（这台机器${process.platform === "darwin" ? "没有 sandbox-exec" : "不是 macOS"}，【2】到【4】跳过）`);
     await coreBlacklist();
     finished = true;

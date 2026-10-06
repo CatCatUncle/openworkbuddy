@@ -21,10 +21,15 @@
  *
  * 它只管这一棵进程树，不是全部防线：OWB 自己的接口照样要鉴权，Key 照样不放进任何进程的启动环境（见 child-env.js）。
  * 沙箱不能套娃：自带沙箱的程序（codex 的工具命令、Chromium 的渲染进程）在里面起不来，所以外部引擎先不包。
- * 只在 macOS 上有。别的系统档位再怎么设都是不套。
+ *
+ * Windows 上没有 sandbox-exec，换成系统自带的「完整性级别」（下半截 wrapWin / preflightWin，小助手在 native/owb-sandbox）：
+ * 命令降到低级别跑，写不了普通文件；Key、账本那几处另打「低级别不许读」的标记；工作区打「低级别能写」的标记。
+ * 跟 macOS 比少两样：挡不住连 OpenWorkBuddy 自己的端口，多人用时各组织的工作区不互相藏。
+ * Linux 上没有，档位再怎么设都是不套。
  */
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
 const crypto = require("crypto");
 const { spawn } = require("child_process");
 
@@ -118,7 +123,7 @@ function profileText({ anc, writable, hide = 0, unix = 0, ports = 0, home = fals
 function absReal(p, name) {
   if (typeof p !== "string" || !p || !path.isAbsolute(p) || p.includes("\0")) throw new Error(`沙箱参数 ${name} 必须是绝对路径：${JSON.stringify(p)}`);
   const r = real(p);
-  if (r === "/") throw new Error(`沙箱参数 ${name} 不能是根目录：${JSON.stringify(p)}`);
+  if (path.dirname(r) === r) throw new Error(`沙箱参数 ${name} 不能是根目录：${JSON.stringify(p)}`);
   return r;
 }
 
@@ -190,6 +195,7 @@ function wrap(bin, args, { data, app, home = null, ports = [], writable = [], hi
 
 /** 这台机器能不能套 @param {string} [platform] */
 function supported(platform = process.platform) {
+  if (platform === "win32") return fs.existsSync(winHelper());
   return platform === "darwin" && fs.existsSync(SANDBOX_EXEC);
 }
 
@@ -206,19 +212,20 @@ function effectiveMode(v, multi) {
 
 /**
  * 跑一个包好的命令，收退出码和 stderr 头一行。只给预检用，输出不留
- * @param {{ bin: string, args: string[] }} w @returns {Promise<{ code: number|null, err: string, spawnError?: string }>}
+ * @param {{ bin: string, args: string[], opts?: object }} w @param {{ env?: Record<string, string|undefined>, timeout?: number }} [o]
+ * @returns {Promise<{ code: number|null, err: string, spawnError?: string }>}
  */
-function probe(w) {
+function probe(w, { env = { PATH: "/usr/bin:/bin" }, timeout = 5000 } = {}) {
   return new Promise((resolve) => {
     let err = "";
     let c;
     try {
-      c = spawn(w.bin, w.args, { stdio: ["ignore", "ignore", "pipe"], env: { PATH: "/usr/bin:/bin" }, windowsHide: true });
+      c = spawn(w.bin, w.args, { stdio: ["ignore", "ignore", "pipe"], env, windowsHide: true, ...w.opts });
     } catch (e) {
       resolve({ code: null, err: "", spawnError: String((e && /** @type {any} */ (e).message) || e) });
       return;
     }
-    const t = setTimeout(() => { try { c.kill("SIGKILL"); } catch {} }, 5000);
+    const t = setTimeout(() => { try { c.kill("SIGKILL"); } catch {} }, timeout);
     c.stderr.on("data", (d) => { if (err.length < 2000) err += d; });
     c.on("error", (e) => { clearTimeout(t); resolve({ code: null, err, spawnError: e.message }); });
     c.on("close", (code) => { clearTimeout(t); resolve({ code, err }); });
@@ -287,6 +294,178 @@ function linkWarnings(data) {
   return out;
 }
 
+// ==== Windows：低完整性级别（小助手见 native/owb-sandbox） ====
+
+const W32 = path.win32;
+/** 小助手的退出码，跟 main.go 里的常量对齐 */
+const WIN_EXIT = { helperFailed: 125, denied: 3, other: 2, notLow: 4 };
+/** 第一次给大工作区打标记要逐个文件过，给足时间；根目录最后标，被掐了下回从头再来 */
+const LABEL_TIMEOUT = 5 * 60 * 1000;
+
+/** @type {string|null} */
+let WIN_HELPER = null;
+/** 小助手在哪：应用目录 native/bin 下按本机架构挑（scripts/build-sandbox.js 编出来的） */
+function winHelper() {
+  return WIN_HELPER || path.join(require("./root").ROOT, "native", "bin", `owb-sandbox-${process.arch}.exe`);
+}
+
+/**
+ * 按 Windows 命令行的规矩给一个参数加引号，跟 Node 自己拼命令行的写法一致：
+ * 没有空格、引号的原样；有就包一层引号，引号前和结尾的反斜杠加倍
+ * @param {string} s
+ */
+function winQuote(s) {
+  s = String(s);
+  if (s === "") return '""';
+  if (!/[ \t"]/.test(s)) return s;
+  if (!/["\\]/.test(s)) return `"${s}"`;
+  let out = '"', bs = 0;
+  for (const ch of s) {
+    if (ch === "\\") { bs++; continue; }
+    out += ch === '"' ? "\\".repeat(bs * 2 + 1) + '"' : "\\".repeat(bs) + ch;
+    bs = 0;
+  }
+  return out + "\\".repeat(bs * 2) + '"';
+}
+
+/**
+ * 低级别进程能写的几处，都在 LocalLow 底下：系统给这个目录打好了低级别标记，在里面新建的跟着继承。
+ * 临时目录和 npm / pip / uv 的缓存指过来，不然一装依赖就写缓存被拒
+ * @param {string} home
+ */
+function lowDirs(home) {
+  const base = W32.join(home, "AppData", "LocalLow", "OpenWorkBuddy");
+  return { base, tmp: W32.join(base, "tmp"), npm: W32.join(base, "npm-cache"), pip: W32.join(base, "pip-cache"), uv: W32.join(base, "uv-cache") };
+}
+/** @param {string} home @returns {Record<string, string>} */
+function lowEnv(home) {
+  const d = lowDirs(home);
+  return { TEMP: d.tmp, TMP: d.tmp, npm_config_cache: d.npm, PIP_CACHE_DIR: d.pip, UV_CACHE_DIR: d.uv };
+}
+
+/**
+ * Windows 上把一次 spawn 包进沙箱：起小助手，由它降了级再起原来那条命令。
+ * 返回的 opts、env 要叠在调用方自己的 spawn 选项和环境变量之上；cwd、stdio 原样不变。
+ * verbatim：args 已按 cmd 的规矩拼好（pickShell 给 cmd 的那几段），原样接上，不再加引号
+ * @param {string} bin @param {string[]} args @param {{ verbatim?: boolean, home?: string }} [o]
+ * @returns {{ bin: string, args: string[], opts: { windowsVerbatimArguments: boolean, argv0: string }, env: Record<string, string> }}
+ */
+function wrapWin(bin, args, { verbatim = false, home = os.homedir() } = {}) {
+  const helper = winHelper();
+  const tail = verbatim ? args.join(" ") : args.map(winQuote).join(" ");
+  const env = lowEnv(home);
+  if (process.platform === "win32") { try { fs.mkdirSync(env.TEMP, { recursive: true }); } catch {} }
+  // 小助手从自己的命令行里原样截 run -- 后面那段，整行不能再让 Node 加引号；它自己的路径可能带空格，在这里先加好
+  return { bin: helper, args: ["run", "--", winQuote(bin) + (tail ? " " + tail : "")], opts: { windowsVerbatimArguments: true, argv0: winQuote(helper) }, env };
+}
+
+/**
+ * 工作区要打「低级别能写」的标记，标记留在磁盘上：打错了地方，以后哪个低级别程序都能往那儿写。
+ * 所以整个盘、含用户主目录或数据根或应用目录的、系统和程序目录底下的，一律不标。Windows 路径不分大小写
+ * @param {string} ws @param {{ data: string, app: string, home: string, env?: Record<string, string|undefined> }} o
+ * @returns {string} 不能标的原因，能标是空串
+ */
+function winWorkspaceProblem(ws, { data, app, home, env = process.env }) {
+  const k = (/** @type {string} */ p) => W32.resolve(p).replace(/[\\/]+$/, "").toLowerCase();
+  const under = (/** @type {string} */ a, /** @type {string} */ b) => a === b || a.startsWith(b + "\\");
+  const W = k(ws);
+  if (W32.dirname(W32.resolve(ws)) === W32.resolve(ws)) return "工作区是整个盘";
+  if (under(k(home), W)) return "工作区包含用户主目录";
+  if (under(k(data), W)) return "工作区包含数据目录";
+  if (under(k(app), W)) return "工作区包含应用目录";
+  for (const v of ["SystemRoot", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "ProgramData"]) {
+    const sys = env[v];
+    if (sys && W32.isAbsolute(sys) && under(W, k(sys))) return `工作区在系统目录 ${sys} 底下`;
+  }
+  return "";
+}
+
+/**
+ * 打标记那一趟的参数：工作区先标，Key 和账本后标（万一重叠，机密那份盖过工作区），数据根本身最后
+ * @param {string} D @param {string[]} W @param {string[]} names 数据根底下现有的名字
+ */
+function winLabelArgs(D, W, names) {
+  const secret = ["data", "backups", ...names.filter((n) => /^(config\.json|secrets)/i.test(n)).sort()];
+  return [...W.flatMap((w) => ["workspace", w]), ...secret.flatMap((n) => ["secret", W32.join(D, n)]), "data-root", D];
+}
+
+/**
+ * Windows 预检。先以本级别跑一趟打标记，再写金丝雀，然后让降了级的小助手自己去碰几处：
+ * 级别真是低、金丝雀和 config.json 读不到、工作区和临时目录写得进、应用目录写不进。全对上才算立起来。
+ * 按 数据根 + 应用目录 + 工作区 + 小助手 缓存：换了工作区就再来一遍（标过的工作区不会重走）
+ * @param {{ data: string, app: string, writable?: string[], home?: string|null }} o
+ * @returns {Promise<{ ok: boolean, reason: string, warn: string[] }>}
+ */
+function preflightWin(o) {
+  const no = (/** @type {string} */ reason) => ({ ok: false, reason, warn: /** @type {string[]} */ ([]) });
+  const home = o.home || os.homedir();
+  const helper = winHelper();
+  let D, A, W;
+  try {
+    D = absReal(o.data, "DATA");
+    A = absReal(o.app, "APP");
+    W = (o.writable || []).map((p) => absReal(p, "writable"));
+  } catch (e) {
+    return Promise.resolve(no(String((e && /** @type {any} */ (e).message) || e)));
+  }
+  for (const w of W) {
+    const bad = winWorkspaceProblem(w, { data: D, app: A, home });
+    if (bad) return Promise.resolve(no(`${bad}，不给它打标记：${w}`));
+  }
+  if (!fs.existsSync(helper)) return Promise.resolve(no(`找不到 ${helper}`));
+  const key = ["win", D, A, ...W, helper].join("\0");
+  const hit = preflights.get(key);
+  if (hit) return hit;
+  const p = (async () => {
+    const low = lowDirs(home);
+    const base = { SystemRoot: process.env.SystemRoot || "C:\\Windows" };
+    try {
+      for (const d of [low.tmp, path.join(D, "data"), path.join(D, "backups")]) fs.mkdirSync(d, { recursive: true });
+    } catch (e) {
+      return no(`建不了目录：${/** @type {any} */ (e).code || e}`);
+    }
+    let names = [];
+    try { names = fs.readdirSync(D); } catch {}
+    const lab = await probe({ bin: helper, args: ["label", ...winLabelArgs(D, W, names)] }, { env: base, timeout: LABEL_TIMEOUT });
+    if (lab.spawnError) return no(`沙箱小助手起不来：${lab.spawnError}`);
+    if (lab.code !== 0) return no(`打标记失败（退出码 ${lab.code}）：${firstLine(lab.err)}`);
+    const canary = path.join(D, "data", "sandbox-canary");
+    try {
+      fs.writeFileSync(canary, "sandbox canary\n");
+    } catch (e) {
+      return no(`写不了金丝雀文件 ${canary}：${/** @type {any} */ (e).code || e}`);
+    }
+    const cfg = path.join(D, "config.json");
+    const checks = [
+      { args: ["il"], want: 0, bad: "命令没降到低权限" },
+      { args: ["try-read", canary], want: WIN_EXIT.denied, bad: "金丝雀文件读到了，规则没生效" },
+      ...(fs.existsSync(cfg) ? [{ args: ["try-read", cfg], want: WIN_EXIT.denied, bad: "config.json 读到了，规则没生效" }] : []),
+      ...W.map((w) => ({ args: ["try-write", w], want: 0, bad: `工作区写不进去：${w}` })),
+      { args: ["try-write", low.tmp], want: 0, bad: `临时目录写不进去：${low.tmp}` },
+      { args: ["try-write", A], want: WIN_EXIT.denied, bad: "应用目录没挡住" },
+    ];
+    const got = await Promise.all(checks.map((c) => {
+      const w = wrapWin(helper, c.args, { home });
+      return probe(w, { env: { ...base, ...w.env }, timeout: 15000 });
+    }));
+    for (let i = 0; i < checks.length; i++) {
+      const g = got[i], c = checks[i];
+      if (g.spawnError) return no(`沙箱小助手起不来：${g.spawnError}`);
+      if (g.code === WIN_EXIT.helperFailed) return no(`降权起命令失败：${firstLine(g.err)}`);
+      if (g.code !== c.want) return no(`${c.bad}（退出码 ${g.code}${g.err.trim() ? "：" + firstLine(g.err) : ""}）`);
+    }
+    return { ok: true, reason: "", warn: [] };
+  })();
+  preflights.set(key, p);
+  return p;
+}
+
+/** 测试用：换一个小助手路径（传空复原） @param {string|null} p */
+function _setWinHelper(p) {
+  WIN_HELPER = p || null;
+  preflights.clear();
+}
+
 /** 测试用：清掉预检缓存 */
 function resetPreflight() { preflights.clear(); }
 
@@ -299,4 +478,5 @@ function _setBin(p) {
 module.exports = {
   get SANDBOX_EXEC() { return SANDBOX_EXEC; },
   MODES, real, ancestors, isUnder, hideAround, profileText, absReal, wrap, supported, effectiveMode, preflight, resetPreflight, _setBin,
+  WIN_EXIT, winHelper, winQuote, lowDirs, lowEnv, wrapWin, winWorkspaceProblem, winLabelArgs, preflightWin, _setWinHelper,
 };

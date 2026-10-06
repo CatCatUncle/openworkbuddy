@@ -87,3 +87,6 @@ docs/images/short-drama-canvas-agent.png
 
 # 跟 Cowork / Codex 的能力对照，属于个人笔记，不进仓库
 docs/能力对照-Cowork-Codex.md
+
+# Windows 沙箱小助手的编译产物（npm run build:sandbox），装机包里那份由发版流水线现编
+native/bin/

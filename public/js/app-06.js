@@ -7,6 +7,13 @@
 function sysPermsCardShown(hostPlatform, os = UI_OS) {
   return hostPlatform ? hostPlatform === "darwin" : os === "mac";
 }
+/** 「系统沙箱」那一栏摆不摆、按哪个系统写说明：macOS、Windows 有，Linux 没有。
+ *  以服务端报的为准（st.platform），没拿到就按眼前这台猜。返回 "mac" / "win" / "" */
+function sandboxHostOs(st, os = UI_OS) {
+  const p = st && st.platform;
+  if (p) return p === "darwin" ? "mac" : p === "win32" ? "win" : "";
+  return os === "mac" || os === "win" ? os : "";
+}
 /** 系统沙箱现在立没立起来：服务端最近一次起命令（或启动预检）时判的 */
 function sandboxLine(st) {
   if (!st || !st.mode) return "";
@@ -16,6 +23,7 @@ function sandboxLine(st) {
 }
 function renderSecurityPane(pane, s) {
   const sec = s.security || {};
+  const sbxOs = sandboxHostOs(s.sandbox_status);
   const joinLines = (a) => esc((a || []).join("\n"));
   const chk = (id, on, label, desc) => `
     <label style="display:flex;align-items:flex-start;gap:8px;margin:7px 0;cursor:pointer;font-size: 14px">
@@ -86,7 +94,7 @@ function renderSecurityPane(pane, s) {
       ${chk("sec-crisk", sec.cmd_risk_gate === true, "名单外先判一句",
         "名单外的命令（含 run_node）先问判断模型能否撤回，撤不回就弹审批，拿不准照跑。<b>命令原文会发给判断模型</b>，每条约两万分之一美金。默认关"
         + (s.agent && s.agent.judge_ready ? "" : "<br><b>没配判断模型，勾了也不生效</b>（设置 → 模型 填 Key）"))}
-      ${sysPermsCardShown() ? `
+      ${sbxOs ? `
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size: 14px;margin:12px 0 4px">
         <b>系统沙箱</b> <select id="sec-sbx" style="margin:0">${[
           ["default", "默认：多人用时必须，一个人用自动"],
@@ -95,8 +103,10 @@ function renderSecurityPane(pane, s) {
           ["off", "关闭：不隔离"],
         ].map(([v, t]) => `<option value="${v}"${(sec.sandbox || "default") === v ? " selected" : ""}>${t}</option>`).join("")}</select>
       </div>
+      ${sbxOs === "win" ? `
+      <div class="d">命令和 run_node 降到低权限跑：读不到 Key 和账本，只能写工作区和临时目录。</div>` : `
       <div class="d">命令和 run_node 由 macOS 按真实路径隔离：读不到 Key 和账本，改不了应用本身。</div>
-      ${chk("sec-sbx-strict", sec.sandbox_level !== "basic", "严格隔离", "不许命令打开别的 App、发 Apple 事件、连没放行的本机 socket。某个工具因此不正常再关")}
+      ${chk("sec-sbx-strict", sec.sandbox_level !== "basic", "严格隔离", "不许命令打开别的 App、发 Apple 事件、连没放行的本机 socket。某个工具因此不正常再关")}`}
       <div class="d" id="sec-sbx-st">${sandboxLine(s.sandbox_status)}</div>` : ""}
     </div>
     <div class="card-item">
@@ -167,10 +177,11 @@ function renderSecurityPane(pane, s) {
       runtime_node: pane.querySelector("#sec-node").checked,
       runtime_python: pane.querySelector("#sec-py").checked,
       env_passthrough: linesOf("#sec-envpass"),
-      // 不是 Mac 时沙箱控件不画，同理别塞
+      // Linux 上沙箱控件不画，同理别塞
       ...(pane.querySelector("#sec-sbx") ? {
         sandbox: pane.querySelector("#sec-sbx").value,
-        sandbox_level: pane.querySelector("#sec-sbx-strict").checked ? "hardened" : "basic",
+        // Windows 上没有「严格隔离」这一项：不带，存着的值原样留着
+        ...(pane.querySelector("#sec-sbx-strict") ? { sandbox_level: pane.querySelector("#sec-sbx-strict").checked ? "hardened" : "basic" } : {}),
       } : {}),
       // 这张卡片没装 toolward 时只画一行说明，没有这两个控件——取不到就别往后端塞空值，
       // 那会把用户原来填好的路径洗掉
