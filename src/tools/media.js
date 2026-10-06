@@ -95,6 +95,12 @@ function safeOutName(name, ext, stem, platform = process.platform) {
  * 超时（AbortError）也不重试：那是上面设的总时限已经到了，再发一次只会立刻再失败。
  */
 const retryableStatus = (s) => s === 429 || (s >= 500 && s < 600);
+/**
+ * 生成失败的回执上带不带 retryable：上游明说没收这一单（回了非 2xx、任务状态是失败），或者压根没发出去（模型没配）。
+ * 画布只对带它的补枪、换备用模型——这几种再发一枪不会重复下单。等超时、下载断了、200 却没给图这几种不带：
+ * 那一单可能已经在上游扣了钱，再发是再买一次
+ */
+const refused = (upstreamOk) => (upstreamOk ? {} : { retryable: true });
 
 /**
  * 几路信号合成一路，任何一路断了它就断，reason 照搬断掉的那一路。
@@ -569,7 +575,7 @@ async function wanAsyncImage(cfg, base, headers, prompt, size, deadlineMs, stop,
     { ...headers, "X-DashScope-Async": "enable" }, signal,
     (wm) => ({ model: cfg.model, input: { prompt }, parameters: { n: 1, ...(size ? { size } : {}), ...(wm ? { watermark: false } : {}) } }), "图像接口", 1));
   const taskId = ((j || {}).output || {}).task_id;
-  if (!r.ok || !taskId) return { err: `图像接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}` };
+  if (!r.ok || !taskId) return { err: `图像接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}`, ...refused(r.ok) };
   const billed = `\n上游已经收下这一单（任务号 ${taskId}），多半照样出图、照样扣费。先到百炼控制台按任务号查，别直接重跑——重跑是再下一单。`;
   const t0 = Date.now();
   let lastErr = "";
@@ -592,16 +598,16 @@ async function wanAsyncImage(cfg, base, headers, prompt, size, deadlineMs, stop,
       const url = ((out.results || []).find((x) => x && x.url) || {}).url;
       return url ? { url, stripped } : { err: "图像任务完成但没有返回图片：" + JSON.stringify(out).slice(0, 300) + billed, submitted: String(taskId) };
     }
-    if (st === "FAILED" || st === "CANCELED" || st === "UNKNOWN") return { err: `图像任务失败：${JSON.stringify(out).slice(0, 300)}` };
+    if (st === "FAILED" || st === "CANCELED" || st === "UNKNOWN") return { err: `图像任务失败：${JSON.stringify(out).slice(0, 300)}`, retryable: true };
   }
   return { err: `图像任务等了 ${Math.round(deadlineMs / 1000)} 秒还没出结果${lastErr ? `（最后一次查询：${lastErr}）` : ""}。${billed}`, submitted: String(taskId) };
 }
 
 async function generateImage(media, input, timeoutMs, saveDir, resolveFile, stop) {
   let cfg;
-  try { cfg = mediaModels.pick(media, "image", input.model); } catch (e) { return { content: e.message, isError: true }; }
+  try { cfg = mediaModels.pick(media, "image", input.model); } catch (e) { return { content: e.message, isError: true, retryable: true }; }
   if (!cfg.base_url || !cfg.model) {
-    return { content: "图像模型未配置：请在 设置 → 模型 → 图像模型 填写接口地址 / API Key / 模型名后再用。", isError: true };
+    return { content: "图像模型未配置：请在 设置 → 模型 → 图像模型 填写接口地址 / API Key / 模型名后再用。", isError: true, retryable: true };
   }
   const prompt = String(input.prompt || "").trim();
   if (!prompt) return { content: "缺少 prompt（画面描述）", isError: true };
@@ -627,7 +633,7 @@ async function generateImage(media, input, timeoutMs, saveDir, resolveFile, stop
     // 尺寸写法是「宽*高」，模型常照 OpenAI 的习惯写 1024x1024，顺手换过来
     const size = input.size ? String(input.size).trim().replace(/\s*[x×]\s*/i, "*") : "";
     const got = await wanAsyncImage(cfg, base, headers, prompt, size, Math.max(timeoutMs || 0, 300000), stop);
-    if (got.err) return { content: got.err, isError: true, ...(got.submitted ? { submitted: got.submitted } : {}) };
+    if (got.err) return { content: got.err, isError: true, ...(got.submitted ? { submitted: got.submitted } : {}), ...(got.retryable ? { retryable: true } : {}) };
     imgUrl = got.url;
     watermarked = got.stripped;
   } else if (speaksDashscope(cfg)) {
@@ -639,7 +645,7 @@ async function generateImage(media, input, timeoutMs, saveDir, resolveFile, stop
       // 参考图排在文字前面：多模态这边约定俗成是「先看图，再读要求」，顺序反了有些模型会只当描述看
       (wm) => ({ model: cfg.model, input: { messages: [{ role: "user", content: [...refs.map((u) => ({ image: u })), { text: prompt }] }] }, parameters: wm ? { watermark: false } : {} }), "图像接口");
     watermarked = stripped;
-    if (!r.ok) return { content: `图像接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}${refFailHint}`, isError: true };
+    if (!r.ok) return { content: `图像接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}${refFailHint}`, isError: true, retryable: true };
     const parts = ((((j.output || {}).choices || [])[0] || {}).message || {}).content || [];
     imgUrl = (parts.find((c) => c.image) || {}).image;
     if (!imgUrl) return { content: "图像接口没有返回图片：" + JSON.stringify(j).slice(0, 300), isError: true };
@@ -650,7 +656,7 @@ async function generateImage(media, input, timeoutMs, saveDir, resolveFile, stop
       // 不改走 multipart 的 /images/edits：那条路绕开了 postWantClean，水印退让就没人留痕了
       (wm) => ({ model: cfg.model, prompt, n: 1, ...(input.size ? { size: String(input.size) } : {}), ...(refs.length ? { image: refs.length === 1 ? refs[0] : refs } : {}), ...(wm ? { watermark: false } : {}) }), "图像接口");
     watermarked = stripped;
-    if (!r.ok) return { content: `图像接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}${refFailHint}`, isError: true };
+    if (!r.ok) return { content: `图像接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}${refFailHint}`, isError: true, retryable: true };
     const d = (j.data || [])[0] || {};
     imgUrl = d.url;
     b64 = d.b64_json;
@@ -676,9 +682,9 @@ async function generateImage(media, input, timeoutMs, saveDir, resolveFile, stop
 
 async function generateVideo(media, input, opts = {}) {
   let cfg;
-  try { cfg = mediaModels.pick(media, "video", input.model); } catch (e) { return { content: e.message, isError: true }; }
+  try { cfg = mediaModels.pick(media, "video", input.model); } catch (e) { return { content: e.message, isError: true, retryable: true }; }
   if (!cfg.base_url || !cfg.model) {
-    return { content: "视频模型未配置：请在 设置 → 模型 → 视频模型 填写接口地址 / API Key / 模型名后再用。", isError: true };
+    return { content: "视频模型未配置：请在 设置 → 模型 → 视频模型 填写接口地址 / API Key / 模型名后再用。", isError: true, retryable: true };
   }
   const prompt = String(input.prompt || "").trim();
   if (!prompt) return { content: "缺少 prompt（视频内容描述）", isError: true };
@@ -787,7 +793,7 @@ async function generateVideo(media, input, opts = {}) {
         (wm) => ({ model: cfg.model, input: { prompt, ...kfBody }, parameters: { ...wanParams, ...(wm ? { watermark: false } : {}) } }), "视频接口", 1));
       vWm = stripped ? "stripped" : "clean";
       const taskId = ((j || {}).output || {}).task_id;
-      if (!r.ok || !taskId) return { content: `视频接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}${kfHint}`, isError: true };
+      if (!r.ok || !taskId) return { content: `视频接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}${kfHint}`, isError: true, ...refused(r.ok) };
       upstream = taskId; took(taskId);
       videoUrl = await poll(async () => {
         const s = await askJson(`${base}/tasks/${taskId}`, { headers: auth }, 30000);
@@ -814,7 +820,7 @@ async function generateVideo(media, input, opts = {}) {
         ] }),
       }, 60000);
       const j = await r.json().catch(() => ({}));
-      if (!r.ok || !j.id) return { content: `视频接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}${kfHint}`, isError: true };
+      if (!r.ok || !j.id) return { content: `视频接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}${kfHint}`, isError: true, ...refused(r.ok) };
       upstream = j.id; took(j.id);
       videoUrl = await poll(async () => {
         const s = await askJson(`${base}/contents/generations/tasks/${j.id}`, { headers: auth }, 30000);
@@ -832,7 +838,7 @@ async function generateVideo(media, input, opts = {}) {
       }, 60000);
       const j = await r.json().catch(() => ({}));
       const id = j.id || j.request_id;
-      if (!r.ok || !id) return { content: `视频接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}${kfHint}`, isError: true };
+      if (!r.ok || !id) return { content: `视频接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}${kfHint}`, isError: true, ...refused(r.ok) };
       took(id);
       videoUrl = await poll(async () => {
         const s = await askJson(`${base}/async-result/${id}`, { headers: auth }, 30000);
@@ -855,7 +861,7 @@ async function generateVideo(media, input, opts = {}) {
       const j = await r.json().catch(() => ({}));
       const code = ((j || {}).base_resp || {}).status_code;
       if (!r.ok || !j.task_id || (code != null && code !== 0)) {
-        return { content: `视频接口错误 ${r.status}${code ? `（base_resp ${code}）` : ""}: ${JSON.stringify(j).slice(0, 300)}${kfHint}`, isError: true };
+        return { content: `视频接口错误 ${r.status}${code ? `（base_resp ${code}）` : ""}: ${JSON.stringify(j).slice(0, 300)}${kfHint}`, isError: true, ...refused(r.ok && !(code != null && code !== 0)) };
       }
       took(j.task_id);
       const fileId = await poll(async () => {
@@ -883,7 +889,7 @@ async function generateVideo(media, input, opts = {}) {
       }, 60000);
       const j = await r.json().catch(() => ({}));
       const rid = j.requestId || j.request_id;
-      if (!r.ok || !rid) return { content: `视频接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}${kfHint}`, isError: true };
+      if (!r.ok || !rid) return { content: `视频接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}${kfHint}`, isError: true, ...refused(r.ok) };
       took(rid);
       videoUrl = await poll(async () => {
         const s = await askJson(`${base}/video/status`, {
@@ -996,9 +1002,9 @@ function ttsExtOf(cfg) {
 /** 文字 → 语音（渠道协议：OpenAI 兼容 /audio/speech、DashScope 原生 qwen-tts） */
 async function textToSpeech(media, input, timeoutMs, saveDir, stop) {
   let cfg;
-  try { cfg = mediaModels.pick(media, "tts", input.model); } catch (e) { return { content: e.message, isError: true }; }
+  try { cfg = mediaModels.pick(media, "tts", input.model); } catch (e) { return { content: e.message, isError: true, retryable: true }; }
   if (!cfg.base_url || !cfg.model) {
-    return { content: TTS_UNSET, isError: true };
+    return { content: TTS_UNSET, isError: true, retryable: true };
   }
   const text = String(input.text || "").trim();
   if (!text) return { content: "缺少 text（要念的文字）", isError: true };
@@ -1016,7 +1022,7 @@ async function textToSpeech(media, input, timeoutMs, saveDir, stop) {
       body: JSON.stringify({ model: cfg.model, input: { text, ...(voice ? { voice } : {}) } }),
     });
     const j = await r.json().catch(() => ({}));
-    if (!r.ok) return { content: `语音接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}`, isError: true };
+    if (!r.ok) return { content: `语音接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}`, isError: true, retryable: true };
     const url = (((j.output || {}).audio || {}).url) || "";
     if (!url) return { content: "语音接口没有返回音频：" + JSON.stringify(j).slice(0, 300), isError: true };
     await downloadToWorkspace(url, fname, saveDir, stop);
@@ -1033,7 +1039,7 @@ async function textToSpeech(media, input, timeoutMs, saveDir, stop) {
     });
     if (!r.ok) {
       const t = await r.text().catch(() => "");
-      return { content: `语音接口错误 ${r.status}: ${t.slice(0, 300)}`, isError: true };
+      return { content: `语音接口错误 ${r.status}: ${t.slice(0, 300)}`, isError: true, retryable: true };
     }
     const buf = Buffer.from(await r.arrayBuffer());
     if (buf.length < 200) return { content: "语音接口返回的音频为空", isError: true };

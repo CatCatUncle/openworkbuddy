@@ -1445,6 +1445,7 @@ async function runtimeChecks() {
     eq(got.submitted, "task-2", "等超时：回执带任务号（外面看到就不自动补一枪）");
     ok(/task-2/.test(got.err) && /别直接重跑/.test(got.err), "……话里说清别重跑", got.err);
     eq(seen.filter((x) => x.method === "POST").length, 1, "……整个过程只下了一单");
+    ok(!got.retryable, "★等超时不带 retryable★ 画布见了它才补枪、换备用模型；这一单可能已经扣了钱", got);
 
     // 上游明说失败：不扣钱，不带任务号
     global.fetch = async (url) => {
@@ -1453,6 +1454,32 @@ async function runtimeChecks() {
     };
     const failed = await MEDIA.wanAsyncImage(cfg, DASH, { Authorization: "Bearer dash-key" }, "一只猫", "", 5000, null, 10);
     ok(/任务失败/.test(failed.err) && !failed.submitted, "★对照★ 上游回 FAILED：报失败、不带任务号", failed);
+    ok(failed.retryable === true, "……上游明说失败：带 retryable，画布可以补枪", failed);
+    let viaTool = await generateImage(wmedia, { prompt: "一只猫", filename: "wan-failed.png" }, 1000, saveDir);
+    ok(viaTool.isError && viaTool.retryable === true && !viaTool.submitted, "……生图工具的回执原样带出 retryable", viaTool);
+
+    // 提交就被上游拒了（非 2xx）：没收单，可以补枪
+    global.fetch = async () => ({ ok: false, status: 400, json: async () => ({ code: "InvalidParameter" }), text: async () => JSON.stringify({ code: "InvalidParameter" }) });
+    viaTool = await generateImage(wmedia, { prompt: "一只猫", filename: "wan-400.png" }, 1000, saveDir);
+    ok(viaTool.isError && viaTool.retryable === true, "提交被上游回了 400：带 retryable", viaTool);
+
+    // 收了单、跑完却没给图：钱多半已经扣了，不带 retryable
+    global.fetch = async (url) => {
+      const body = String(url).endsWith("/image-synthesis") ? { output: { task_id: "task-4" } } : { output: { task_status: "SUCCEEDED", results: [] } };
+      return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) };
+    };
+    viaTool = await generateImage(wmedia, { prompt: "一只猫", filename: "wan-empty.png" }, 3000, saveDir);
+    ok(viaTool.isError && viaTool.submitted === "task-4" && !viaTool.retryable, "★收了单却没给图：带任务号、不带 retryable★", viaTool);
+
+    // 没配模型：压根没发出去，可以换备用模型
+    viaTool = await generateImage(wmedia, { prompt: "一只猫", model: "并不存在的画师" }, 1000, saveDir);
+    ok(viaTool.isError && viaTool.retryable === true, "点名的模型不在：一个请求都没发，带 retryable（画布可以按备用顺序换）", viaTool);
+
+    // 接线：抛出来的错只有「上游明说失败」的才带 retryable；直调接口把它交给画布
+    const toolsSrc = fs.readFileSync(path.join(ROOT, "src", "agent", "tools.js"), "utf8");
+    ok(/e && e\.taskFailed && !e\.submitted \? \{ retryable: true \}/.test(toolsSrc), "executeTool：视频任务上游明说失败（taskFailed）才带 retryable，超时断网不带");
+    const serverSrc = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+    ok(/retryable: !!\(r\.isError && \(r\.retryable \|\| r\.mediaBreaker\)\)/.test(serverSrc), "/api/tool/run 回执带 retryable（本机熔断拦下的也算没发出去）");
 
     // 只做文生图的型号带了参考图：拦下，不悄悄丢图
     fs.writeFileSync(path.join(saveDir, "ref.png"), Buffer.from(PNG_1x1, "base64"));

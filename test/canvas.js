@@ -2065,7 +2065,7 @@ app.whenReady().then(async () => {
       const 字 = () => ((document.querySelector("#owb-toast span") || {}).textContent) || "";
       const 原设置 = settingsCache.media_fallback;
       settingsCache.media_fallback = { image: ["备用图模型"] };
-      const 工具失败 = (submitted) => ({ status: 200, body: { ok: false, isError: true, content: "工具执行出错: 视频生成超时" + (submitted ? "\\n上游已经收下这一单（任务号 vt-9）" : ""), submitted } });
+      const 工具失败 = (submitted, retryable) => ({ status: 200, body: { ok: false, isError: true, content: "工具执行出错: 视频生成超时" + (submitted ? "\\n上游已经收下这一单（任务号 vt-9）" : ""), submitted, ...(retryable ? { retryable: true } : {}) } });
       window.__bodies = []; window.__runs = [];
       window.__failRun = () => 工具失败("vt-9");
       const 结果 = await canvasGenerate(卡(), "image");
@@ -2076,17 +2076,27 @@ app.whenReady().then(async () => {
       await canvasGenerate(卡(), "image");
       const 挂着 = { 次数: window.__runs.length, 记: ((卡().get("canvasPayload") || {}).pending_jobs || {}).image || null };
       canvasDismissJob(卡(), "image");
+      // 不带 submitted、也不带 retryable：生图同步接口等满超时、出完图下载断了都长这样——请求已经到了上游
+      const 超时结果 = await canvasGenerate(卡(), "image");
+      const 不带 = { 次数: window.__runs.length, 型号: window.__bodies.filter((b) => b.url === "/api/tool/run").map((b) => b.body.input.model || ""), 结果: 超时结果, 提示: 字() };
+      canvasDismissJob(卡(), "image");
+      window.__bodies = []; window.__runs = [];
+      // 服务端明说上游没收（回了非 2xx / 任务失败）：retryable
+      window.__failRun = () => 工具失败("", true);
       await canvasGenerate(卡(), "image");
-      const 不带 = { 次数: window.__runs.length };
+      const 明说 = { 次数: window.__runs.length, 型号: window.__bodies.filter((b) => b.url === "/api/tool/run").map((b) => b.body.input.model || "") };
       settingsCache.media_fallback = 原设置; window.__failRun = null;
       await canvasFlushRemoteWrite(); ${等(200)}
-      return { 带单号, 挂着, 不带 };
+      return { 带单号, 挂着, 不带, 明说 };
     })()`);
   ok(已下单.带单号.次数 === 1 && 已下单.带单号.结果 && 已下单.带单号.结果.ok === false && /任务号 vt-9/.test(已下单.带单号.提示),
      "★回执带 submitted（上游已经收下那一单）：不补枪、也不换备用模型，原话贴出来★ 补一枪等于再买一单", 已下单.带单号);
   ok(已下单.挂着.次数 === 0 && 已下单.挂着.记 && 已下单.挂着.记.submitted === "vt-9",
      "★上游收过单的那一格记在卡片上（任务号 vt-9），再点「生成」不开枪★", 已下单.挂着);
-  ok(已下单.不带.次数 === 3, "反向对照：同样的工具失败不带 submitted，照常补枪、再按备用顺序换", 已下单.不带);
+  ok(已下单.不带.次数 === 1 && 已下单.不带.结果 && 已下单.不带.结果.ok === false && /视频生成超时/.test(已下单.不带.提示),
+     "★工具报错却没说上游没收（不带 retryable）：不补枪、也不换备用模型，原话贴出来★ 超时、下载断了的那一单可能已经扣了钱", 已下单.不带);
+  ok(已下单.明说.次数 === 3 && 已下单.明说.型号[2] === "备用图模型",
+     "反向对照：服务端明说上游没收（retryable），照常补一枪、再按备用顺序换", 已下单.明说);
 
   console.log("\n— 二十八、滚轮：捏合 / 鼠标滚轮以光标为锚点缩放，双指滑动只平移 —");
   const 滚轮 = await run(`

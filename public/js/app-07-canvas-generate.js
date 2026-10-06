@@ -1095,8 +1095,11 @@ async function canvasGenerate(node, kind) {
  * 连接断了它照样跑完、结果记账；同一个号再来只交回那份结果，不再调上游。
  *
  * 只对「服务端明说没成、上游也没收单」的失败补枪：5xx（服务端自己的回执，带 job）、408、429、
- * 工具自己报错（上游超时多半长这样）。400 / 402 / 403 / 404 是参数、余额、权限的事，再发一遍还是一样。
- * 不补枪的两种：
+ * 工具报错且回执带 retryable（上游回了非 2xx / 任务状态是失败，或者压根没发出去，见 src/tools/media.js refused）。
+ * 400 / 402 / 403 / 404 是参数、余额、权限的事，再发一遍还是一样。
+ * 不补枪的三种：
+ *   · 工具报错却不带 retryable：等超时、下载断了、200 却没给图——请求已经到了上游，那一单可能已经扣了钱，
+ *     补一枪、换备用模型都是再买一次。原话报给人，让他自己决定要不要再生成；
  *   · 回执带 submitted：上游已经收下那一单（视频等结果超时、下载断了），多半照样扣费，补一枪是再买一次；
  *   · 没拿到服务端的回执（断网、代理 / 网关回的 5xx）：先拿单号问一次服务端（只查不发）。跑完了就用那份结果；
  *     服务端压根没收到，用同一个号再递一次（号不变，前一趟万一刚到，服务端认得出是同一单）；
@@ -1146,7 +1149,9 @@ async function canvasRunTool(body, cap, hooks = {}) {
     if (r.result && r.result.submitted) return false;
     const st = Number(r.response && r.response.status) || 0;
     if (r.response && !r.response.ok) return !st || st >= 500 || st === 408 || st === 429;
-    return true;   // 200 但工具报错
+    // 200 但工具报错：只有服务端明说「上游没收 / 没发出去」才再发。以前一律当临时故障补枪还顺着备用模型往下换——
+    // 生图同步接口等满 300 秒超时、出完图下载断了，都长这样，上游那一单早扣了钱，一张图买了三回
+    return !!(r.result && r.result.retryable);
   };
   const reason = (r) => String(r.why || r.result.error || r.result.content || "生成失败");
   // 抛出去的错带上这一单的身份：断线不知道结果的标 unknown，上游收过单的标 submitted，canvasGenerate 据此不算「可重跑」

@@ -6810,6 +6810,9 @@ app.post("/api/tool/run", async (req, res) => {
         path: toolRunRel(baseDir, r.file), // 工作区相对路径；找不到就是空串
         cached: !!r.cached, // true = 这一次没花钱，复用的是上次的产物
         submitted: r.submitted || "", // 非空 = 上游已经收下了这一单才出的错，多半已扣费，别自动重跑
+        // true = 上游明说没收这一单、或者压根没发出去（模型没配、本机熔断拦下），画布才补枪 / 换备用模型。
+        // 不带的失败（等超时、下载断了、200 却没给图）可能已经扣了钱，画布原样报错，不再发
+        retryable: !!(r.isError && (r.retryable || r.mediaBreaker)),
         ms: Date.now() - t0,
       } };
     } catch (e) {

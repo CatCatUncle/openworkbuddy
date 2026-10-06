@@ -4812,8 +4812,11 @@ async function executeToolCore(name, input, opts = {}) {
     if ((opts.signal && opts.signal.aborted) || (opts.stopSignal && opts.stopSignal.aborted)) {
       return { content: "用户已停止任务，这一步没做完。", isError: true, stopped: true };
     }
-    // submitted：视频上游已经收下了那一单才出的错（见 generateVideo），带出去让画布别自动补枪
-    return { content: `工具执行出错: ${e.message}`, isError: true, ...(e && e.submitted ? { submitted: String(e.submitted) } : {}) };
+    // submitted：视频上游已经收下了那一单才出的错（见 generateVideo），带出去让画布别自动补枪。
+    // retryable：上游明说这一单失败了（taskFailed，一般不收钱），画布可以补枪；别的抛错（超时、断网、下载断了）
+    // 说不清上游收没收，不带
+    return { content: `工具执行出错: ${e.message}`, isError: true, ...(e && e.submitted ? { submitted: String(e.submitted) } : {}),
+      ...(e && e.taskFailed && !e.submitted ? { retryable: true } : {}) };
   }
 }
 
