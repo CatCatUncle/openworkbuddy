@@ -26,9 +26,25 @@ function str(v, n) {
 
 /**
  * @typedef {{ name: string, time: string, note: string, kind: string, city: string, addr: string }} Stop
- * @typedef {{ label: string, title: string, summary: string, stops: Stop[] }} Day
- * @typedef {{ title: string, city: string, days: Day[] }} Itinerary
+ * @typedef {{ label: string, title: string, summary: string, stops: Stop[], more?: number }} Day
+ * @typedef {{ title: string, city: string, days: Day[], more?: number }} Itinerary
+ * more：超过 LIMIT 被截掉了几站 / 几天。没截就没有这个字段。
  */
+
+/**
+ * 已经收过一遍的数据里带着的 more。卡片把收好的 JSON 存在 data-tc 里，点活、复制时再收一遍——
+ * 那时候多出来的已经截掉了，不接着记，第二遍就忘了少过几站。
+ * @param {unknown} v
+ */
+const moreOf = (v) => (typeof v === "number" && Number.isInteger(v) && v > 0 && v < 1e4 ? v : 0);
+
+/**
+ * 截掉了多少，卡片和文字版说同一句话。
+ * @param {"天"|"站"} unit @param {number} n
+ */
+const moreText = (unit, n) => (unit === "天"
+  ? `只显示前 ${LIMIT.days} 天，后面 ${n} 天没列出`
+  : `这天只显示前 ${LIMIT.stops} 站，后面 ${n} 站没列出`);
 
 /** @param {any} s @returns {Stop | null} */
 function normStop(s) {
@@ -51,14 +67,19 @@ function normDay(d) {
   if (Array.isArray(d)) d = { stops: d };
   if (!d || typeof d !== "object") return null;
   const raw = d.stops || d.items || d.places || d.spots || d.schedule || [];
-  const stops = (Array.isArray(raw) ? raw : []).map(normStop).filter(Boolean).slice(0, LIMIT.stops);
+  const all = (Array.isArray(raw) ? raw : []).map(normStop).filter(Boolean);
+  const stops = all.slice(0, LIMIT.stops);
   if (!stops.length) return null;
-  return {
+  /** @type {Day} */
+  const day = {
     label: str(d.label || (typeof d.day === "string" ? d.day : ""), 12),
     title: str(d.title || d.theme || d.name, LIMIT.title),
     summary: str(d.summary || d.desc || d.description || d.note, LIMIT.summary),
     stops: /** @type {Stop[]} */ (stops),
   };
+  const more = all.length - stops.length + moreOf(d.more);
+  if (more) day.more = more;
+  return day;
 }
 
 /**
@@ -69,9 +90,14 @@ function normalize(obj) {
   if (Array.isArray(obj)) obj = { days: obj };
   if (!obj || typeof obj !== "object") return null;
   const raw = obj.days || obj.itinerary || obj.plan || [];
-  const days = (Array.isArray(raw) ? raw : []).map(normDay).filter(Boolean).slice(0, LIMIT.days);
+  const all = (Array.isArray(raw) ? raw : []).map(normDay).filter(Boolean);
+  const days = all.slice(0, LIMIT.days);
   if (!days.length) return null;
-  return { title: str(obj.title || obj.name, LIMIT.title), city: str(obj.city || obj.destination, LIMIT.city), days: /** @type {Day[]} */ (days) };
+  /** @type {Itinerary} */
+  const it = { title: str(obj.title || obj.name, LIMIT.title), city: str(obj.city || obj.destination, LIMIT.city), days: /** @type {Day[]} */ (days) };
+  const more = all.length - days.length + moreOf(obj.more);
+  if (more) it.more = more;
+  return it;
 }
 
 const BARE_KEY = /[A-Za-z_$][\w$]*(?=\s*:)/y;
@@ -119,6 +145,67 @@ function parse(text) {
 }
 
 /**
+ * JSON 第一处语法错在第几个字符；解得开回 -1。只用来告诉人「第几行」，什么都不修。
+ * 不读 JSON.parse 的报错：各家浏览器写法不一样，有的根本不带位置。
+ * @param {string} s
+ */
+function badAt(s) {
+  let i = 0;
+  const ws = () => { while (i < s.length && " \t\n\r".includes(s[i])) i++; };
+  const fail = () => { throw i; };
+  const lit = () => {
+    if (s[i] !== '"') fail();
+    for (i++; i < s.length; i++) {
+      const c = s[i];
+      if (c === '"') { i++; return; }
+      if (c === "\\") i++;
+      else if (c < " ") fail();
+    }
+    fail();
+  };
+  const val = () => {
+    ws();
+    const c = s[i];
+    if (c === "{" || c === "[") {
+      const end = c === "{" ? "}" : "]";
+      i++; ws();
+      if (s[i] === end) { i++; return; }
+      for (;;) {
+        if (end === "}") { ws(); lit(); ws(); if (s[i] !== ":") fail(); i++; }
+        val(); ws();
+        if (s[i] === ",") { i++; continue; }
+        if (s[i] === end) { i++; return; }
+        fail();
+      }
+    }
+    if (c === '"') return lit();
+    const m = /^(?:-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null)/.exec(s.slice(i, i + 64));
+    if (!m) fail();
+    i += /** @type {RegExpExecArray} */ (m)[0].length;
+  };
+  try { val(); ws(); if (i < s.length) fail(); return -1; }
+  catch (e) { if (typeof e === "number") return e; throw e; }
+}
+
+/**
+ * 围栏解不开的时候说一句哪儿不对（行号从围栏里第一行数起）；解得开回 ""。
+ * 网页卡片、聊天软件、命令行都拿这一句，前面加「行程卡没画成：」。
+ * @param {string} text
+ */
+function whyBad(text) {
+  const raw = String(text || "");
+  const s = raw.trim();
+  if (!s) return "里面是空的";
+  if (parse(s)) return "";
+  const t = loosen(s);   // 那两处常见格式错先补上再找：补的时候换行一个不动，行号对得上
+  const at = badAt(t);
+  if (at < 0) return "里面没有能画的地点";
+  const lead = raw.slice(0, raw.length - raw.trimStart().length);
+  const line = (lead.match(/\n/g) || []).length + (t.slice(0, at).match(/\n/g) || []).length + 1;
+  return `第 ${line} 行格式不对`;
+}
+
+/**
  * 「上午 / 9:30 / 晚饭」→ 卡片上分段用的那一格。认不出来回空串（不分段，照原顺序排）。
  * @param {string} time
  */
@@ -159,15 +246,18 @@ function toMarkdown(it) {
       const head = (s.time ? s.time + " · " : "") + s.name;
       out.push(`- ${head}${s.note ? "：" + s.note : ""}`);
     }
+    if (d.more) out.push(`（${moreText("站", d.more)}）`);
     out.push("");
   });
+  if (it.more) out.push(`（${moreText("天", it.more)}）`);
   return out.join("\n").trim();
 }
 
-const FENCE_RE = /```itinerary[^\S\n]*\n([\s\S]*?)```/gi;
+/** 收了尾的围栏，和正文末尾没收尾的那一段（模型忘了写收尾的三个反引号） */
+const FENCE_RE = /```itinerary[^\S\n]*\n([\s\S]*?)(?:```|$)/gi;
 
 /**
- * 正文里所有 ```itinerary 围栏换成文字版。解不出来的那段原样留着——宁可贴原文，不吞内容。
+ * 正文里所有 ```itinerary 围栏换成文字版。解不出来的先说一句哪儿不对，再原样贴原文——宁可贴原文，不吞内容。
  * @param {string} md
  */
 function fencesToMarkdown(md) {
@@ -175,7 +265,7 @@ function fencesToMarkdown(md) {
   if (!/```itinerary/i.test(s)) return s;
   return s.replace(FENCE_RE, (all, body) => {
     const it = parse(body);
-    return it ? toMarkdown(it) : all;
+    return it ? toMarkdown(it) : `行程卡没画成：${whyBad(body)}，下面是原文：\n\n${all}`;
   });
 }
 
@@ -193,4 +283,4 @@ const PROMPT_BLOCK = [
   "- 目的地都没说就先问一句再排；天数没说就按 2～3 天排，并在开头说一句可以改。",
 ].join("\n");
 
-module.exports = { parse, normalize, segmentOf, toMarkdown, fencesToMarkdown, dayLabel, PROMPT_BLOCK, LIMIT };
+module.exports = { parse, normalize, whyBad, moreText, segmentOf, toMarkdown, fencesToMarkdown, dayLabel, PROMPT_BLOCK, LIMIT };

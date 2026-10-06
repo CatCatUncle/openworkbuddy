@@ -141,9 +141,27 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
     ok(!/```/.test(conv) && conv.includes("**第1天 · 老昆明慢逛**") && conv.includes("- 第") === false && conv.includes("- X") && conv.startsWith("前面") && conv.endsWith("后面"),
       "正文里几段围栏都换成文字（大写语言名、语言名后面带空格也认），前后文一字不动", conv);
     const bad = "看这个\n```itinerary\n{坏的\n```\n完";
-    ok(itinerary.fencesToMarkdown(bad) === bad, "解不开的那段原样留着：宁可贴原文，不吞内容");
+    eq(itinerary.fencesToMarkdown(bad), "看这个\n行程卡没画成：第 1 行格式不对，下面是原文：\n\n```itinerary\n{坏的\n```\n完",
+      "解不开的那段：先说一句哪行不对，原文整段跟在后面——不吞内容");
     const plain = "没有围栏的正文 ```js\nx\n```";
     ok(itinerary.fencesToMarkdown(plain) === plain, "没有行程卡的正文原样返回");
+    const unclosed = itinerary.fencesToMarkdown("前面\n```itinerary\n" + PROMPT_EXAMPLE);
+    ok(!/```/.test(unclosed) && unclosed.startsWith("前面\n") && unclosed.includes("**第1天 · 老昆明慢逛**"), "回答停在围栏中间（没收尾）：写完的 JSON 照样换成文字", unclosed);
+
+    // 哪行不对：模型最常见的是字符串里的双引号没转义
+    const multi = '{\n  "title": "北京一日",\n  "days": [{"stops": [{"name": "天安门", "note": "他说"好"的"}]}]\n}';
+    eq([multi, "\n\n{\"days\":[", "", "  \n ", '{"a":1}', "[1,2]", PROMPT_EXAMPLE, '{"days":[{"stops":["A",]},]}'].map(itinerary.whyBad),
+      ["第 3 行格式不对", "第 3 行格式不对", "里面是空的", "里面是空的", "里面没有能画的地点", "里面没有能画的地点", "", ""],
+      "解不开的原因：第几行格式不对（前面的空行也算）、里面是空的、是 JSON 但没有能画的地点；解得开的回空串");
+
+    // 封顶截掉的：卡片、文字版都要说一声，不悄悄少几站（big、L 是上面「封顶」那条的）
+    ok(big.more === 20 - L.days && big.days[0].more === 20 - L.stops && big.days.every((d) => d.more === 20 - L.stops), `截掉的记下来：后面 ${20 - L.days} 天、每天后面 ${20 - L.stops} 站`, { more: big.more, d0: big.days[0].more });
+    eq(itinerary.normalize(JSON.parse(JSON.stringify(big))), big, "截过的再收一遍（data-tc 存的就是它）：截掉几站的数不丢、不重复算");
+    const bigMd = itinerary.toMarkdown(big);
+    ok(bigMd.includes(`（这天只显示前 ${L.stops} 站，后面 ${20 - L.stops} 站没列出）`) && bigMd.endsWith(`（只显示前 ${L.days} 天，后面 ${20 - L.days} 天没列出）`),
+      "文字版：截掉的天、站各说一句", bigMd.slice(-80));
+    ok(itinerary.parse(PROMPT_EXAMPLE).more === undefined && itinerary.parse(PROMPT_EXAMPLE).days[0].more === undefined, "没截的不带 more（文字版不多一句）");
+    ok(!/核对|以实际为准/.test(itinerary.toMarkdown(itinerary.parse(PROMPT_EXAMPLE))), "文字版末尾不加「请核对」之类的话");
   }
 
   // ================= 二、前端那份跟服务端那份对答案 =================
@@ -166,6 +184,9 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
       for (const [n, a, b] of pairs) if (JSON.stringify(a) !== JSON.stringify(b)) cd.push(`${n}(${x},${y})`);
     }
     ok(cd.length === 0, `坐标换算 ${PTS.length} 个点 × 5 个函数两边一样`, cd);
+    const badOnes = [...SAMPLES, '{\n  "days": [{"stops": [{"name": "天安门", "note": "他说"好"的"}]}]\n}', "\n\n\n{\"days\":[", "  \n "];
+    eq(badOnes.map((s) => TC.whyBad(s)), badOnes.map(itinerary.whyBad), "whyBad（哪行不对）两边一样");
+    eq([["天", 3], ["站", 2]].map(([u, n]) => TC.moreText(u, n)), [["天", 3], ["站", 2]].map(([u, n]) => itinerary.moreText(u, n)), "moreText（截掉几天几站）两边一样");
   }
 
   // ================= 三、坐标换算 =================
@@ -233,12 +254,30 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
     const tick = "`";
     ok([1, 2].every((n) => TC.cardHtml(esc(evil) + "\n" + tick.repeat(n), { open: true, live: true }) === card),
       "JSON 写完、收尾的反引号只到一两个：已经是那张卡片（key 不变），不退回「正在排行程」");
-    ok(TC.cardHtml(esc(evil) + "\n" + tick.repeat(2), {}) === "", "围栏已收尾时不去反引号：正文里真带反引号的照原样当坏数据");
-    ok(TC.cardHtml(half, { open: true }) === "" && TC.cardHtml(half, { live: true }) === "" && TC.cardHtml(esc("{坏的}"), { open: false, live: true }) === "",
-      "停笔了、回放历史、围栏已收尾还解不开：回空串，调用方照普通代码块显示");
+    ok(/^<div class="tc tc-bad">/.test(TC.cardHtml(esc(evil) + "\n" + tick.repeat(2), {})), "围栏已收尾时不去反引号：正文里真带反引号的照原样当坏数据");
+    const bads = [TC.cardHtml(half, { open: true }), TC.cardHtml(half, { live: true }), TC.cardHtml(esc("{坏的}"), { open: false, live: true })];
+    ok(bads.every((h) => /^<div class="tc tc-bad"><div class="tc-badh">行程卡没画成：第 1 行格式不对<\/div>/.test(h)),
+      "停笔了、回放历史、围栏已收尾还解不开：说一句「行程卡没画成：第 N 行格式不对」", bads);
+    ok(bads[2].includes('<details class="tc-raw"><summary>看原文</summary><pre><code>{坏的}</code></pre></details>') && !/<details[^>]*open/.test(bads[2]),
+      "原文收在「看原文」里（默认收起），照样转义", bads[2]);
+    const evilBad = TC.cardHtml(esc('{"name":"<img src=x onerror=alert(1)>"'), {});
+    ok(!/<img/i.test(evilBad) && evilBad.includes("&lt;img src=x"), "坏数据的原文里带 HTML：转义，不会被当标签", evilBad);
+    ok(!bads.some((h) => h.includes("tc-redo")), "没有输入框的地方（这里的沙箱、别的页面）不给「让 AI 重写这段」按钮");
+    const multiBad = TC.cardHtml(esc('{\n"days": [\n{"stops": [{"name": "天安门" "note": "x"}]}]}'), {});
+    ok(multiBad.includes("行程卡没画成：第 3 行格式不对"), "第几行按原文的换行数", multiBad.slice(0, 120));
     const host = { dataset: { tc: attr ? TC.unescHtml(attr[1]) : "" }, textContent: "" };
     ok(TC.staticOf(host) === TC.staticHtml(itinerary.parse(evil)), "复制出去用的文字版：从 data-tc 重新排");
     ok(TC.staticOf({ dataset: { tc: "{坏" }, textContent: "<原文>" }) === "&lt;原文&gt;", "data-tc 坏了：退回元素里的文字，照样转义");
+    const badHost = { classList: { contains: (c) => c === "tc-bad" }, dataset: {}, textContent: "行程卡没画成：第 1 行格式不对看原文{坏<的}",
+      querySelector: (q) => (q === "pre code" ? { textContent: "{坏<的}" } : null) };
+    eq(TC.staticOf(badHost), "<pre><code>{坏&lt;的}</code></pre>", "没画成的那块复制出去：只贴原文（代码块），不带按钮、提示");
+
+    // 封顶截掉的，卡片上也说
+    const bigCard = TC.staticHtml(TC.parse(SAMPLES[4]));
+    const L = TC.LIMIT;
+    ok(bigCard.includes(`<div class="tc-smore">这天只显示前 ${L.stops} 站，后面 ${20 - L.stops} 站没列出</div>`) && bigCard.includes(`只显示前 ${L.days} 天，后面 ${20 - L.days} 天没列出`),
+      "静态卡片（也是复制出去的那份）：截掉的天、站各说一句");
+    ok(!TC.staticHtml(TC.parse(PROMPT_EXAMPLE)).includes("tc-smore"), "没截的不多这一句");
   }
 
   // ================= 五、查地点、查路：假的地图服务 =================
@@ -274,8 +313,10 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
     hits.push({ path: u.pathname, q, ua: req.headers["user-agent"] || "" });
     const json = (o, code = 200) => { res.writeHead(code, { "Content-Type": "application/json" }); res.end(JSON.stringify(o)); };
     if (u.pathname.startsWith("/v5/") && /bad/.test(q.key)) return json({ status: "0", info: "INVALID_USER_KEY", infocode: "10001" });
+    if (u.pathname.startsWith("/v5/") && /over/.test(q.key)) return json({ status: "0", info: "USER_DAILY_QUERY_OVER_LIMIT", infocode: "10044" });
     if (u.pathname === "/v5/place/text") {
       if (q.keywords === "炸了") return json({ oops: true }, 500);
+      if (q.keywords === "参数错") return json({ status: "0", info: "INVALID_PARAMS", infocode: "20000" });
       return json({ status: "1", info: "OK", infocode: "10000", pois: POIS[q.keywords] || [] });
     }
     if (u.pathname === "/v5/direction/walking" || u.pathname === "/v5/direction/driving") {
@@ -329,12 +370,20 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
 
   console.log("\n六、设置：用哪家、Key 从哪来");
   {
-    eq(places.settingsOf({}), { provider: "auto", key: "", from: "", cap: 2000 }, "什么都没配：auto，没 Key，每天上限 2000");
-    eq(places.settingsOf({ map: { amap_key: " sk-test-amap ", amap_daily_cap: 50 } }), { provider: "auto", key: "sk-test-amap", from: "settings", cap: 50 }, "设置里填的 Key（去掉两边空白）");
-    eq(places.settingsOf({ mcp_servers: [{ env: {} }, { env: { AMAP_MAPS_API_KEY: "sk-test-conn" } }] }), { provider: "auto", key: "sk-test-conn", from: "connector", cap: 2000 }, "设置里没填：用高德连接器里那把");
+    const DEF = { search: places.SEARCH_CAP, route: places.ROUTE_CAP };
+    ok(DEF.search === 4500 && DEF.route === 140000, "每月默认上限：搜索 4500、路线 14 万（比高德给个人认证开发者的 5000 / 15 万各留一点）", DEF);
+    eq(places.settingsOf({}), { provider: "auto", key: "", from: "", caps: DEF }, "什么都没配：auto，没 Key，按月的默认上限");
+    eq(places.settingsOf({ map: { amap_key: " sk-test-amap ", amap_search_cap: 50, amap_route_cap: "300" } }), { provider: "auto", key: "sk-test-amap", from: "settings", caps: { search: 50, route: 300 } },
+      "设置里填的 Key（去掉两边空白）、搜索和路线各自的上限");
+    eq(places.settingsOf({ mcp_servers: [{ env: {} }, { env: { AMAP_MAPS_API_KEY: "sk-test-conn" } }] }), { provider: "auto", key: "sk-test-conn", from: "connector", caps: DEF }, "设置里没填：用高德连接器里那把");
     eq(places.settingsOf({ map: { amap_key: "sk-test-set" }, mcp_servers: [{ env: { AMAP_MAPS_API_KEY: "sk-test-conn" } }] }).from, "settings", "两处都有：设置里的优先");
     eq(places.settingsOf({ map: { provider: "osm", amap_key: "sk-test-amap" }, mcp_servers: [{ env: { AMAP_MAPS_API_KEY: "sk-test-conn" } }] }).key, "", "选了 OpenStreetMap：哪儿的 Key 都不用");
-    eq([0, "-1", "abc", 12.7].map((c) => places.settingsOf({ map: { amap_daily_cap: c } }).cap), [0, 2000, 2000, 12], "上限：0 是不用高德，负数和乱填的按默认，小数取整");
+    eq([0, "-1", "abc", 12.7].map((c) => places.settingsOf({ map: { amap_search_cap: c, amap_route_cap: c } }).caps),
+      [{ search: 0, route: 0 }, DEF, DEF, { search: 12, route: 12 }], "上限：0 是不用高德，负数和乱填的按默认，小数取整");
+    eq([0, "-1", "abc", 12.7, 50, 2000].map((c) => places.settingsOf({ map: { amap_daily_cap: c } }).caps),
+      [{ search: 0, route: 0 }, DEF, DEF, { search: 372, route: 372 }, { search: 1550, route: 1550 }, { search: 4500, route: 62000 }],
+      "老配置只有「每天上限」：按 31 天折成每月，不超过新默认值（不会比原来允许的多打）；填过 0 的还是不用高德");
+    eq(places.settingsOf({ map: { amap_daily_cap: 0, amap_search_cap: 100 } }).caps, { search: 100, route: 0 }, "新的两项填了哪项就用哪项，没填的那项才看老的");
     eq(places.settingsOf({ map: { provider: "baidu" } }).provider, "auto", "不认识的 provider 按 auto");
   }
 
@@ -344,8 +393,8 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
   {
     const r = await places.lookup(withKey, [{ name: "翠湖公园", city: "昆明" }]);
     const p = r.items[0];
-    eq(p, { ok: true, name: "翠湖公园", lng: 102.703, lat: 25.048, datum: "gcj02", addr: "五华区 翠湖南路67号", kind: "公园", rating: 4.7, photo: "https://aos-comment.amap.com/a.jpg", src: "amap" },
-      "有 Key：高德 POI 给坐标（GCJ-02）、地址、类别、评分、照片");
+    eq(p, { ok: true, name: "翠湖公园", lng: 102.703, lat: 25.048, datum: "gcj02", addr: "五华区 翠湖南路67号", kind: "公园", rating: 4.7, photo: "https://aos-comment.amap.com/a.jpg", photoSrc: "amap", src: "amap" },
+      "有 Key：高德 POI 给坐标（GCJ-02）、地址、类别、评分、照片；地点和照片各标来自哪");
     const h = last("/v5/place/text");
     ok(h && h.q.key === KEY && h.q.keywords === "翠湖公园" && h.q.region === "昆明" && h.q.city_limit === "true" && h.q.show_fields === "business,photos",
       "请求带 Key、限定城市（region + city_limit）、要了评分和照片", h && h.q);
@@ -363,72 +412,131 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
     const paris = await places.lookup(withKey, [{ name: "埃菲尔铁塔", city: "巴黎" }]);
     const pp = paris.items[0];
     ok(pp.ok && pp.src === "osm" && pp.datum === "wgs84" && pp.lng === 2.2945 && pp.lat === 48.8584, "高德只搜到杭州那座仿建的：城市对不上不要，改去 OpenStreetMap 查到巴黎那座", pp);
-    ok(pp.photo === "https://commons.wikimedia.org/wiki/Special:FilePath/Tour_Eiffel_Wikimedia_Commons.jpg?width=320", "OSM 没给照片：去 Wikidata 拿头图（空格换下划线、要 320 宽的）", pp.photo);
     ok(pp.kind === "景点" && pp.rating === null && pp.addr === "战神广场，第七区，巴黎", "OSM 的类别翻成中文；没有评分；地址取中间几段", pp);
     const s = last("/search");
     ok(count("/search") === nSearch + 1 && s.q.q === "埃菲尔铁塔, 巴黎" && s.q.format === "jsonv2" && s.q.limit === "1" && s.q.extratags === "1" && /OpenWorkBuddy/.test(s.ua),
       "Nominatim 请求：名字带城市、jsonv2、只要一条、要 extratags、带 User-Agent（它的使用条款要求）", s && s.q);
-    ok(last("/w/api.php").q.entity === "Q243" && last("/w/api.php").q.property === "P18", "Wikidata 要的是 P18（图像）");
+    // 照片不在这一趟里等：钉子先钉上，照片前端再来 photos 要
+    ok(pp.photo === "" && pp.photoPending === true && pp.qid === "Q243", "OSM 没给照片：先不等 Wikidata，标「照片待补」，带上条目号", pp);
+    const nwp = count("/w/api.php");
+    const ph = await places.photos([{ name: "埃菲尔铁塔", city: "巴黎", lng: pp.lng, lat: pp.lat, datum: pp.datum, qid: pp.qid }]);
+    eq(ph.items[0], { photo: "https://commons.wikimedia.org/wiki/Special:FilePath/Tour_Eiffel_Wikimedia_Commons.jpg?width=320", src: "wikidata" },
+      "photos：拿条目号去 Wikidata 要头图（空格换下划线、要 320 宽的），标来自 Wikidata");
+    ok(count("/w/api.php") === nwp + 1 && last("/w/api.php").q.entity === "Q243" && last("/w/api.php").q.property === "P18", "Wikidata 要的是 P18（图像），一次就够");
+    const pp2 = (await places.lookup(withKey, [{ name: "埃菲尔铁塔", city: "巴黎" }])).items[0];
+    ok(pp2.photo === ph.items[0].photo && pp2.photoSrc === "wikidata" && !pp2.photoPending, "补过的照片下次查地点时直接带上，不再标待补", pp2);
 
+    const mixed = await places.lookup(withKey, [{ name: "翠湖公园", city: "昆明" }, { name: "埃菲尔铁塔", city: "巴黎" }]);
+    ok(mixed.provider === "mixed" && mixed.items.map((x) => x.src).join() === "amap,osm", "一批里有高德的、有 OpenStreetMap 的：provider 报 mixed，每一站各标各的", mixed.provider);
+
+    // 高德报的是 Key 本身的毛病：当天停掉高德，说一次
     const badKey = "amap-test-badkey-987654321";
     const nb = count("/v5/place/text");
     const bad = await places.lookup({ map: { amap_key: badKey } }, [{ name: "滇池", city: "昆明" }]);
-    ok(bad.notes.includes("高德：INVALID_USER_KEY（10001）"), "Key 不对：高德的原话原样往上递，不替人猜原因", bad.notes);
+    ok(bad.amapOff === "高德：INVALID_USER_KEY（10001）", "Key 不对：高德的原话原样往上递（amapOff），不替人猜原因", bad);
     ok(!JSON.stringify(bad).includes(badKey), "报错里不带 Key");
-    eq(bad.items[0], { ok: false, failed: true }, "高德报错 + OSM 也没查到：标 failed（前端不记住它，下次再试）");
-    await places.lookup({ map: { amap_key: badKey } }, [{ name: "滇池", city: "昆明" }]);
-    ok(count("/v5/place/text") === nb + 2, "报错的结果不进缓存：下次照样再查");
+    eq(bad.items[0], { ok: false, tried: ["osm"] }, "高德停了不算问过：只问了 OpenStreetMap，它也没有 → 没找到（不是没查成，再查一次也一样）");
+    eq(places.usage({}).stop, "高德：INVALID_USER_KEY（10001）", "今天停了高德：设置页看得到原话");
+    const again2 = await places.lookup({ map: { amap_key: badKey } }, [{ name: "滇池", city: "昆明" }, { name: "西山", city: "昆明" }, { name: "海埂", city: "昆明" }]);
+    ok(count("/v5/place/text") === nb + 1 && again2.amapOff === "高德：INVALID_USER_KEY（10001）", "当天后面的站一次也不再打高德（每站再试只是白记用量）", count("/v5/place/text") - nb);
+    places.resetStop();
+    ok(places.usage({}).stop === "", "resetStop（存地图设置时调）：今天的停用作废");
+    for (const [k, code] of [["amap-test-over-1", "10044"]]) {
+      await places.lookup({ map: { amap_key: k } }, [{ name: "大观楼", city: "昆明" }]);
+      ok(places.usage({}).stop.endsWith(`（${code}）`), `高德说当天总量用完（${code}）：也停`, places.usage({}).stop);
+      places.resetStop();
+    }
+    const pe = await places.lookup(withKey, [{ name: "参数错", city: "昆明" }]);
+    ok(!pe.amapOff && places.usage({}).stop === "" && pe.notes.includes("高德：INVALID_PARAMS（20000）"), "别的错（这一站的参数不对）只算这一次没成，不停高德", pe);
+    eq(pe.items[0], { ok: false, failed: true, error: "高德：INVALID_PARAMS（20000）" }, "高德报错 + OSM 也没查到：标没查成，带原话（前端不记住它，能再查一次）");
+    const np = count("/v5/place/text");
+    await places.lookup(withKey, [{ name: "参数错", city: "昆明" }]);
+    ok(count("/v5/place/text") === np + 1, "报错的结果不进缓存：下次照样再查");
 
     const boom = await places.lookup(withKey, [{ name: "炸了", city: "昆明" }]);
-    ok(boom.notes.some((n) => /127\.0\.0\.1:\d+ 回了 HTTP 500/.test(n)) && !JSON.stringify(boom).includes(KEY), "对方回 500：说是哪台机器、什么状态码，不带请求地址（里面有 Key）", boom.notes);
+    ok(boom.notes.some((n) => /^高德 回了 HTTP 500/.test(n)) && !JSON.stringify(boom).includes(KEY), "对方回 500：说是哪一家（人认得的名字）、什么状态码，不带请求地址（里面有 Key）", boom.notes);
+    ok(boom.items[0].failed === true && /^高德 回了 HTTP 500/.test(boom.items[0].error) && !boom.amapOff, "  这一站标没查成；不停高德", boom.items[0]);
 
     const nc = count("/v5/place/text");
-    const capped = await places.lookup({ map: { amap_key: KEY, amap_daily_cap: 0 } }, [{ name: "石林", city: "昆明" }]);
-    ok(count("/v5/place/text") === nc && capped.notes.includes("今天的高德查询次数到上限了，先改用 OpenStreetMap"), "每天上限到了：一次也不打高德，说一声改用 OpenStreetMap", capped.notes);
+    const capped = await places.lookup({ map: { amap_key: KEY, amap_search_cap: 0 } }, [{ name: "石林", city: "昆明" }]);
+    ok(count("/v5/place/text") === nc && capped.notes.includes("这个月的高德搜索次数到上限了，先改用 OpenStreetMap"), "这个月的搜索上限到了：一次也不打高德，说一声改用 OpenStreetMap", capped.notes);
     ok(last("/search").q.q === "石林, 昆明", "到上限的那一站照样去 OpenStreetMap 查");
+    eq(capped.items[0], { ok: false, tried: ["osm"] }, "到上限不算问过高德，也不算没查成");
 
     const no = count("/v5/place/text");
     const osm = await places.lookup({ map: { provider: "osm", amap_key: KEY } }, [{ name: "天安门", city: "北京" }]);
     ok(count("/v5/place/text") === no && osm.provider === "osm" && osm.items[0].src === "osm", "选了 OpenStreetMap：填着 Key 也一次不打高德");
-    ok(osm.items[0].photo === "https://upload.wikimedia.org/wikipedia/commons/a/ab/Tiananmen.jpg" && osm.items[0].kind === "纪念碑", "OSM 自带 Wikimedia 照片就直接用", osm.items[0]);
+    ok(osm.items[0].photo === "https://upload.wikimedia.org/wikipedia/commons/a/ab/Tiananmen.jpg" && osm.items[0].photoSrc === "wikimedia" && osm.items[0].kind === "纪念碑" && !osm.items[0].photoPending,
+      "OSM 自带 Wikimedia 照片就直接用，标来自 Wikimedia", osm.items[0]);
 
     await places.lookup({ mcp_servers: [{ env: { AMAP_MAPS_API_KEY: "sk-test-conn-1" } }] }, [{ name: "翠湖公园", city: "大理" }]);
     ok(last("/v5/place/text").q.key === "sk-test-conn-1", "设置里没填：用连接器那把 Key 去查");
 
-    const many = await places.lookup(withKey, Array.from({ length: 25 }, () => ({ name: "" })));
-    ok(many.items.length === places.MAX_ITEMS && many.items.every((x) => x.ok === false), `一次最多 ${places.MAX_ITEMS} 个，没名字的直接算没找到（不打接口）`);
-    eq(await places.lookup(withKey, "乱给的"), { provider: "amap", items: [], notes: [] }, "items 不是数组：回空的，不抛错");
+    const both = await places.lookup(withKey, [{ name: "没这地方", city: "昆明" }]);
+    eq(both.items[0], { ok: false, tried: ["amap", "osm"] }, "高德、OpenStreetMap 都正常回了「没有」：没找到，带上问过谁");
+    eq((await places.lookup({}, [{ name: "没这地方", city: "大理" }])).items[0], { ok: false, tried: ["osm"] }, "没 Key：只问了 OpenStreetMap");
 
+    const many = await places.lookup(withKey, Array.from({ length: 25 }, () => ({ name: "" })));
+    ok(many.items.length === places.MAX_ITEMS && many.items.every((x) => x.ok === false && !x.failed), `一次最多 ${places.MAX_ITEMS} 个，没名字的直接算没找到（不打接口）`);
+    eq(await places.lookup(withKey, "乱给的"), { provider: "", items: [], notes: [] }, "items 不是数组：回空的，不抛错");
+
+    // 照片：按名字去 Wikidata 搜（photos），跟查地点分开
     const yl = await places.lookup({}, [{ name: "岳麓山", city: "长沙" }, { name: "昙华林", city: "武汉" }]);
-    ok(yl.items[0].photo === "https://commons.wikimedia.org/wiki/Special:FilePath/Yuelu_Mountain.jpg?width=320",
-      "OSM 没标 Wikidata：拿名字去搜，按排名取第一个 3 公里内的条目的头图（没坐标的、离太远的跳过）", yl.items[0].photo);
-    ok(yl.items[1].ok && yl.items[1].photo === "", "第一个离得近的条目没头图：就不配图，不往下拿旁边地铁站那张", yl.items[1]);
+    ok(yl.items.every((x) => x.ok && x.photo === "" && x.photoPending === true), "OSM 没标 Wikidata 也没给图：标待补", yl.items);
+    const at = (x) => ({ name: x.name, lng: x.lng, lat: x.lat, datum: x.datum, qid: x.qid });
+    const ylp = await places.photos([{ ...at(yl.items[0]), name: "岳麓山", city: "长沙" }, { ...at(yl.items[1]), name: "昙华林", city: "武汉" }]);
+    ok(ylp.items[0].photo === "https://commons.wikimedia.org/wiki/Special:FilePath/Yuelu_Mountain.jpg?width=320" && ylp.items[0].src === "wikidata",
+      "拿名字去搜，按排名取第一个 3 公里内的条目的头图（没坐标的、离太远的跳过）", ylp.items[0]);
+    eq(ylp.items[1], { photo: "", src: "" }, "第一个离得近的条目没头图：就不配图，不往下拿旁边地铁站那张");
     const ws = hits.filter((h) => h.path === "/w/api.php" && h.q.action === "wbsearchentities").slice(-2);
     ok(ws.length === 2 && ws.map((h) => h.q.search).sort().join() === "岳麓山,昙华林" && ws.every((h) => h.q.language === "zh" && /OpenWorkBuddy/.test(h.ua)),
       "Wikidata 按中文名搜，带 User-Agent", ws.map((h) => h.q));
     const nw = count("/w/api.php");
-    await places.lookup({}, [{ name: "岳麓山", city: "长沙" }, { name: "昙华林", city: "武汉" }]);
-    ok(count("/w/api.php") === nw, "补过的照片记住了（找到的、没找到的都算）：第二次不再搜");
+    const yl2 = await places.lookup({}, [{ name: "岳麓山", city: "长沙" }, { name: "昙华林", city: "武汉" }]);
+    ok(count("/w/api.php") === nw && yl2.items[0].photoSrc === "wikidata" && !yl2.items[0].photoPending && !yl2.items[1].photoPending && yl2.items[1].photo === "",
+      "补过的照片记住了（找到的、没找到的都算）：再查地点直接带上，不再标待补、不再搜", yl2.items);
+    eq(await places.photos([{ name: "岳麓山", city: "长沙", lng: yl.items[0].lng, lat: yl.items[0].lat }, { name: "", lng: 1, lat: 1 }, { name: "无坐标" }, null]),
+      { items: [{ photo: "https://commons.wikimedia.org/wiki/Special:FilePath/Yuelu_Mountain.jpg?width=320", src: "wikidata" }, { photo: "", src: "" }, { photo: "", src: "" }, { photo: "", src: "" }] },
+      "photos：补过的从缓存拿；没名字、没坐标的给空，不抛错");
+    ok(count("/w/api.php") === nw, "  这些一次都没打 Wikidata");
     const jm = await places.lookup(withKey, [{ name: "金马碧鸡坊", city: "昆明" }]);
-    ok(jm.items[0].src === "amap" && jm.items[0].photo === "https://commons.wikimedia.org/wiki/Special:FilePath/Jinma_Biji.jpg?width=320",
-      "高德没给照片：同样去 Wikidata 补", jm.items[0]);
+    ok(jm.items[0].src === "amap" && jm.items[0].photo === "" && jm.items[0].photoPending, "高德没给照片：同样标待补", jm.items[0]);
+    const jmp = await places.photos([{ ...at(jm.items[0]), city: "昆明" }]);
+    ok(jmp.items[0].photo === "https://commons.wikimedia.org/wiki/Special:FilePath/Jinma_Biji.jpg?width=320", "高德的点（GCJ-02）照样去 Wikidata 补，按换算后的坐标比远近", jmp.items[0]);
     const zt = await places.lookup({}, [{ name: "炸图", city: "长沙" }]);
-    ok(zt.items[0].ok && zt.items[0].photo === "" && zt.notes.length === 0, "Wikidata 回 500：地点照样给，没照片，不往卡片上报错", zt);
+    ok(zt.items[0].ok && zt.items[0].photoPending && zt.notes.length === 0, "地点照样给", zt);
+    const ztp = await places.photos([{ ...at(zt.items[0]), city: "长沙" }]);
+    eq(ztp.items[0], { photo: "", src: "" }, "Wikidata 回 500：没照片，不往卡片上报错");
     const nz = count("/w/api.php");
-    await places.lookup({}, [{ name: "炸图", city: "长沙" }]);
-    ok(count("/w/api.php") === nz + 1, "补照片出错不进缓存：下次再试");
+    await places.photos([{ ...at(zt.items[0]), city: "长沙" }]);
+    const zt2 = await places.lookup({}, [{ name: "炸图", city: "长沙" }]);
+    ok(count("/w/api.php") === nz && !zt2.items[0].photoPending, "补照片出错记一小会儿：十分钟里不再挨个去撞（Wikidata 连不上时每站都要等超时）", count("/w/api.php") - nz);
 
     const ctl = places._testing({});
     await ctl.flush();
     const disk = fs.readFileSync(ctl.cacheFile, "utf8");
-    ok(disk.includes("a|昆明|翠湖公园") && disk.includes("o|巴黎|埃菲尔铁塔") && disk.includes("w|长沙|岳麓山"), "查过的记了盘（补的照片单记一条）", ctl.cacheFile);
-    ok(!disk.includes("sk-test"), "盘上的缓存里没有 Key");
+    ok(disk.includes("a|昆明|翠湖公园") && disk.includes("o|巴黎|埃菲尔铁塔") && disk.includes("w|长沙|岳麓山") && disk.includes("q|Q243"), "查过的记了盘（补的照片单记一条）", ctl.cacheFile);
+    ok(!disk.includes("sk-test") && !disk.includes(KEY), "盘上的缓存里没有 Key");
     places._testing({ reset: true });
     const nd = count("/v5/place/text");
     const again = await places.lookup(withKey, [{ name: "翠湖公园", city: "昆明" }]);
     ok(count("/v5/place/text") === nd && again.items[0].rating === 4.7, "重启后（内存清空）从盘上读回来，不再打高德");
-    const used = JSON.parse(disk).used;
-    ok(used >= 5, `今天打了几次高德记在盘上（${used}）`);
+    const dj = JSON.parse(disk);
+    ok(dj.month === new Date().toLocaleDateString("sv").slice(0, 7) && dj.used.search >= 5 && dj.used.route === 0, `这个月打了几次高德记在盘上，搜索、路线分开（搜索 ${dj.used.search}）`, dj.used);
+    eq(places.usage(withKey).used, dj.used, "设置页看到的次数就是盘上那个");
+
+    // 上个月的次数、昨天的停用：读盘时作废；老格式（{ day, used: 数字 }）的 items 照用，次数从这个月重新数
+    const items = dj.items;
+    for (const [what, raw] of [["上个月的", { month: "1999-01", used: { search: 9, route: 9 }, stop: { day: "1999-01-31", msg: "高德：X（10001）" }, items }],
+      ["老格式", { day: "1999-01-31", used: 1234, items }]]) {
+      fs.writeFileSync(ctl.cacheFile, JSON.stringify(raw));
+      places._testing({ reset: true });
+      const u = places.usage(withKey);
+      ok(u.used.search === 0 && u.used.route === 0 && u.stop === "", `${what}缓存：次数从这个月重新数、不带昨天的停用`, u);
+      const n1 = count("/v5/place/text");
+      await places.lookup(withKey, [{ name: "翠湖公园", city: "昆明" }]);
+      ok(count("/v5/place/text") === n1, `  ${what}缓存里查过的地点照用`);
+    }
   }
 
   console.log("\n八、两站之间的路");
@@ -472,8 +580,20 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
     ok(count("/v5/direction/walking") + count("/v5/direction/driving") === n2, "这些一次都没打高德");
     ok((await places.legs({}, Array.from({ length: 25 }, () => ({ a: A, b: B })))).items.length === places.MAX_LEGS, `一次最多 ${places.MAX_LEGS} 段`);
 
-    const badLeg = await places.legs({ map: { amap_key: "sk-test-badkey-2" } }, [{ a: A, b: { lng: 102.72, lat: 25.04, datum: "gcj02" } }]);
-    ok(badLeg.items[0].mode === "line" && badLeg.notes.includes("高德：INVALID_USER_KEY（10001）"), "高德报错：退回直线，报错原样带上", badLeg);
+    const badLeg = await places.legs({ map: { amap_key: "amap-test-badkey-2" } }, [{ a: A, b: { lng: 102.72, lat: 25.04, datum: "gcj02" } }]);
+    ok(badLeg.items[0].mode === "line" && badLeg.amapOff === "高德：INVALID_USER_KEY（10001）", "Key 不对：退回直线，高德原话带上（amapOff），今天停用", badLeg);
+    const nr = count("/v5/direction/walking") + count("/v5/direction/driving");
+    const stopped = await places.legs(withKey, [{ a: A, b: { lng: 102.721, lat: 25.041, datum: "gcj02" } }]);
+    ok(count("/v5/direction/walking") + count("/v5/direction/driving") === nr && stopped.items[0].mode === "line" && stopped.amapOff, "停用的这一天：查路也不打高德，画直线");
+    places.resetStop();
+
+    const ur = places.usage(withKey).used.route;
+    ok(ur >= 3, `路线次数单独记（${ur}）`);
+    const rc = await places.legs({ map: { amap_key: KEY, amap_route_cap: ur } }, [{ a: A, b: { lng: 102.722, lat: 25.042, datum: "gcj02" } }]);
+    ok(rc.items[0].mode === "line" && rc.notes.includes("这个月的高德路线次数到上限了，两站之间先画直线") && count("/v5/direction/walking") + count("/v5/direction/driving") === nr,
+      "这个月的路线上限到了：不打高德，画直线，说一声", rc);
+    const sc = await places.lookup({ map: { amap_key: KEY, amap_route_cap: 0 } }, [{ name: "南强街", city: "大理" }]);
+    ok(sc.items[0].ok === false && !sc.notes.length && last("/v5/place/text").q.region === "大理", "路线到数了不挡搜索：两样各算各的", sc);
 
     const thin = places.thin(Array.from({ length: 1000 }, (_, i) => [i, i]));
     ok(thin.length <= 241 && thin[0][0] === 0 && thin[thin.length - 1][0] === 999, `折线太密抽稀，留头留尾（1000 → ${thin.length}）`);
@@ -487,11 +607,22 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
     const t1 = await places.test({}, KEY);
     ok(t1.ok && t1.provider === "amap" && t1.msg === "高德 Key 能用：查到「天安门」", "给了 Key：真查一次「天安门」", t1);
     places._testing({ reset: true });
-    const tc = await places.test({ map: { amap_key: KEY, amap_daily_cap: 0 } }).catch((e) => ({ error: e.message }));
-    ok(tc.ok && tc.provider === "amap", "上限填了 0 也能测：人点的这一下不被每天的上限挡住", tc);
-    await rejects(places.test({}, "sk-test-badkey-3"), /^高德：INVALID_USER_KEY（10001）$/, "Key 不对：原话报出来");
+    const u0 = places.usage({}).used.search;
+    const tc = await places.test({ map: { amap_key: KEY, amap_search_cap: 0 } }).catch((e) => ({ error: e.message }));
+    ok(tc.ok && tc.provider === "amap", "上限填了 0 也能测：人点的这一下不被每月的上限挡住", tc);
+    ok(places.usage({}).used.search === u0 + 1, "  测的这一下照算进这个月的搜索次数", { before: u0, after: places.usage({}).used });
+    await rejects(places.test({}, "amap-test-badkey-3"), /^高德：INVALID_USER_KEY（10001）$/, "Key 不对：原话报出来");
+    ok(places.usage({}).stop === "", "测一把不对的 Key 不停卡片用的高德（测的未必是存着的那把）");
+
+    await places.lookup({ map: { amap_key: "amap-test-badkey-4" } }, [{ name: "圆通山", city: "昆明" }]);
+    ok(places.usage({}).stop !== "", "（卡片撞上 Key 不对，今天停了）");
+    const ts = await places.test({ map: { amap_key: "amap-test-badkey-4" } }, KEY).catch((e) => ({ error: e.message }));
+    ok(ts.ok && places.usage({}).stop !== "", "停用时也能测；测的不是存着的那把：不解除停用", ts);
+    const tt = await places.test({ map: { amap_key: KEY } }).catch((e) => ({ error: e.message }));
+    ok(tt.ok && places.usage({}).stop === "", "测存着的那把、而且通了：今天的停用作废，卡片接着用高德", tt);
+
     places._testing({ bases: { amap: "http://127.0.0.1:1" } });
-    const e = await rejects(places.test({}, KEY), /^127\.0\.0\.1:1 连不上：/, "连不上：说连不上哪台机器");
+    const e = await rejects(places.test({}, KEY), /^高德 连不上：/, "连不上：说连不上哪一家（人认得的名字，不是地址）");
     ok(e && !String(e.message).includes(KEY), "连不上的报错里也不带 Key");
     places._testing({ bases: { amap: BASE } });
   }
@@ -556,7 +687,8 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
 
     const c = await (await fetch(API + "/api/geo/config")).json();
     ok(c.provider === "auto" && c.amap === true && c.keyFrom === "settings" && c.sources.amap.datum === "gcj02", "config：用哪家、有没有 Key、Key 从哪来、底图信息", c);
-    ok(!JSON.stringify(c).includes("sk-test"), "config 里不给 Key 本身");
+    ok(!JSON.stringify(c).includes("sk-test") && !JSON.stringify(c).includes(KEY), "config 里不给 Key 本身");
+    ok(c.usage && c.usage.caps.search === 4500 && c.usage.caps.route === 140000 && typeof c.usage.used.search === "number" && c.usage.stop === "", "config 带上这个月用了几次、上限、今天停没停（设置页显示）", c.usage);
     cfg = { mcp_servers: [{ env: { AMAP_MAPS_API_KEY: "sk-test-conn-9" } }] };
     const c2 = await (await fetch(API + "/api/geo/config")).json();
     ok(c2.keyFrom === "connector" && c2.amap === true, "配置热生效：每次现取（换成连接器那把）");
@@ -568,6 +700,10 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
     ok(empty.status === 200 && (await empty.json()).items.length === 0, "places 没给 items：回空的");
     const lg = await (await post("/api/geo/legs", { pairs: [{ a: { lng: 102.703, lat: 25.048, datum: "gcj02" }, b: { lng: 102.711, lat: 25.036, datum: "gcj02" } }] })).json();
     ok(lg.items[0].mode === "walking", "legs：查得到");
+    const phr = await (await post("/api/geo/photos", { items: [{ name: "岳麓山", city: "长沙", lng: 112.933, lat: 28.183, datum: "wgs84" }] })).json();
+    ok(phr.items && phr.items[0].photo.includes("Yuelu_Mountain.jpg") && phr.items[0].src === "wikidata", "photos：补得到", phr);
+    const phe = await post("/api/geo/photos", {});
+    ok(phe.status === 200 && (await phe.json()).items.length === 0, "photos 没给 items：回空的");
 
     const tr = await fetch(API + "/api/geo/tile/osm/3/1/2.png");
     ok(tr.status === 200 && tr.headers.get("content-type") === "image/png" && /private/.test(tr.headers.get("cache-control") || ""), "tile：带 .png 后缀也认，private 缓存");
@@ -595,7 +731,9 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
     const prep = await imReply.prepareFigures(reply, { canSend: false });
     ok(prep.text.includes("**第1天 · 老昆明慢逛**") && !prep.text.includes("```itinerary"), "带图的那条路（prepareFigures）也换");
     const badReply = "看：\n```itinerary\n{坏的\n```";
-    ok(imReply.chunks(badReply)[0] === badReply, "IM：解不开的原样发，不吞内容");
+    eq(imReply.chunks(badReply).join("\n\n"), "看：\n行程卡没画成：第 1 行格式不对，下面是原文：\n\n```itinerary\n{坏的\n```", "IM：解不开的先说一句哪行不对，原文照发，不吞内容");
+    const bigReply = "```itinerary\n" + SAMPLES[4] + "\n```";
+    ok(imReply.chunks(bigReply).join("\n\n").includes("只显示前 14 天，后面 6 天没列出"), "IM：截掉的天数也说");
 
     const plain = (md) => { const r = mdTty.createRenderer({ color: false }); return r.write(md) + r.end(); };
     const streamed = (md, n) => { const r = mdTty.createRenderer({ color: false }); let o = ""; for (let i = 0; i < md.length; i += n) o += r.write(md.slice(i, i + n)); return o + r.end(); };
@@ -603,7 +741,10 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
     ok(out.includes("第1天 · 老昆明慢逛") && out.includes("• 上午 · 翠湖公园：湖边散步、喝咖啡") && !out.includes('"stops"') && !out.includes("itinerary"), "命令行：渲染成按天排的文字，不打 JSON", out);
     ok(streamed(reply, 7) === out, "命令行一段段流式喂进来，结果跟一次给全一样");
     const bo = plain(badReply);
-    ok(bo.includes("│ itinerary") && bo.includes("│ {坏的"), "命令行：解不开的照代码块打出来", bo);
+    ok(bo.includes("行程卡没画成：第 1 行格式不对，下面是原文：\n│ itinerary") && bo.includes("│ {坏的"), "命令行：解不开的先说哪行不对，再照代码块打出来", bo);
+    ok(streamed(badReply, 3) === bo, "  流式喂进来也一样");
+    const bigOut = plain("```itinerary\n" + SAMPLES[4] + "\n```");
+    ok(bigOut.includes("只显示前 14 天，后面 6 天没列出") && bigOut.includes("这天只显示前 15 站，后面 5 站没列出"), "命令行：截掉的天、站也说");
     const open = plain("```itinerary\n" + PROMPT_EXAMPLE);
     ok(open.includes("第1天 · 老昆明慢逛"), "围栏没收尾就结束了：攒着的照样交代出去", open);
     ok(plain("```js\nconst a = 1;\n```") === "│ js\n│ const a = 1;\n", "别的代码块照旧");
@@ -631,10 +772,31 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
     const admin = require(mod("admin"));
     ok(admin.PLATFORM_WRITE.includes("/api/geo/test"), "「测一下」归平台管理员（花的是整台服务器那把 Key 的额度）");
     eq(admin.redactSecrets({ map: { provider: "amap", amap_key: KEY, amap_daily_cap: 9 } }), { map: { provider: "amap", amap_key: "", amap_daily_cap: 9 } }, "普通成员拉设置时 amap_key 被抹掉");
+    eq(admin.redactSecrets({ map: { provider: "amap", amap_key: KEY, amap_search_cap: 4500, amap_route_cap: 140000 } }),
+      { map: { provider: "amap", amap_key: "", amap_search_cap: 4500, amap_route_cap: 140000 } }, "  新的两项上限照常带回去，只抹 Key");
+    ok(!app05.includes("每天免费") && app05.includes("每月最多搜几次地点") && app05.includes("每月最多查几次路线"), "设置页按月说上限，搜索、路线分开填（不再写「每天免费」）");
+    ok(app05.includes("以高德控制台显示的为准") && app05.includes('id="map-usage"'), "  额度以高德控制台为准；这个月用了几次也摆出来");
+    ok(/return v === "" \? def :/.test(app05), "  框清空了按默认算，不当成 0（0 是不用高德）");
+    ok(app01.includes('".tc[data-tc], .tc-bad"'), "复制回答时没画成的那块贴原文");
+    const tcSrc = read("public/tripcard.js");
+    ok(/class="tc-ai"[^>]*>AI 排的</.test(tcSrc), "卡头标「AI 排的」");
+    ok(tcSrc.includes('class="tc-retry"') && tcSrc.includes("st.loading[d] = null"), "没查成的有「再查一次」，查完放手，下回能再查");
+    ok(tcSrc.includes('post("/api/geo/photos"'), "照片单独后补，不挡钉子");
+    ok(tcSrc.includes("!el.isConnected || !st.visible"), "提前查只查还在页面上、在视野里的卡");
+    ok(/root\.insertAtCursor\(input, redoText/.test(tcSrc) && !/tc-redo[\s\S]{0,400}(send|submit)\(/.test(tcSrc.slice(tcSrc.indexOf("让 AI 重写这段：只把话填进输入框"))),
+      "「让 AI 重写这段」只填进输入框，不自动发");
+    const css = read("public/css/tripcard.css");
+    const tabsRule = (css.match(/^\.tc-tabs \{[^}]*\}/m) || [""])[0];
+    ok(tabsRule.includes("overflow-x: auto") && !tabsRule.includes("scrollbar-width: none") && !/\.tc-tabs::-webkit-scrollbar \{ display: none/.test(css),
+      "天数标签放不下时露出滚动条（不再藏起来）");
+    const newRules = css.split("\n").filter((l) => /^(\.tc-w |\.tc-bad |\.tc-panel |\.a-text )?\.(tc-alert|tc-bad|tc-badh|tc-raw|tc-redo|tc-ai|tc-src|tc-retry|tc-more|tc-smore|tc-tlmsg)\b/.test(l));
+    ok(newRules.length >= 10 && newRules.every((l) => !/#[0-9a-f]{3,8}\b|rgba?\(/i.test(l)), "新加的样式只用现成的颜色变量", newRules.filter((l) => /#[0-9a-f]{3,8}\b|rgba?\(/i.test(l)));
     ok(require(mod("config-lint")).KNOWN_EXTRA[""].includes("map"), "配置体检认得 map 这一节");
     const server = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
     ok(/app\.use\(createGeoRouter\(\{ getConfig: \(\) => config \}\)\)/.test(server), "server.js 挂上了 /api/geo/*");
     ok(/b\.map\.provider[\s\S]{0,200}\["auto", "amap", "osm"\]/.test(server), "保存设置时 provider 只认 auto / amap / osm");
+    ok(/\["amap_search_cap", "每月高德搜索的上限"\], \["amap_route_cap", "每月高德路线的上限"\]/.test(server), "保存设置时两项上限分别检查（0 或正整数）");
+    ok(/geoPlaces\.resetStop\(\)/.test(server), "  存一次地图设置就解开今天的熔断（换了 Key 能马上用）");
   }
 
   srv.close();

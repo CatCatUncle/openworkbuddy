@@ -11,6 +11,15 @@
 .a-text .tc-static ol { margin: 4px 0 0; padding-left: 20px; }
 .tc-pending { display: flex; align-items: center; gap: 8px; padding: 14px 16px; border: 1px dashed var(--owb-border); border-radius: var(--radius-xl); color: var(--owb-text-2); font-size: 13px; }
 .tc-pn { color: var(--owb-text-3); }
+.tc-smore { margin-top: 4px; color: var(--owb-text-3); font-size: 12px; }
+/* 围栏里的 JSON 解不开：一句话说哪儿不对，原文收在「看原文」里 */
+.tc-bad { padding: 10px 14px; border: 1px dashed var(--owb-border); border-radius: var(--radius-xl); font-size: 13px; }
+.tc-badh { color: var(--owb-text-2); }
+.tc-raw { margin-top: 4px; }
+.tc-raw summary { cursor: pointer; color: var(--owb-text-3); font-size: 12px; }
+.a-text .tc-raw pre { margin: 6px 0 0; max-height: 240px; overflow: auto; font-size: 12px; }
+.tc-bad .tc-redo { margin-top: 6px; padding: 3px 12px; border: 1px solid var(--owb-border); border-radius: var(--radius-full); background: none; color: var(--owb-text); font: inherit; font-size: 12px; cursor: pointer; }
+.tc-bad .tc-redo:hover { border-color: var(--owb-text-3); }
 .tc-spin { width: 14px; height: 14px; border: 2px solid var(--owb-border); border-top-color: var(--owb-brand); border-radius: 50%; animation: tc-spin .8s linear infinite; }
 @keyframes tc-spin { to { transform: rotate(360deg); } }
 
@@ -22,14 +31,21 @@
 
 .tc-head { display: flex; align-items: center; gap: 10px; padding: 10px 12px 8px 14px; }
 .tc-ttl { flex: 1; min-width: 0; font-weight: 600; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tc-ai { flex: none; color: var(--owb-text-3); font-size: 12px; white-space: nowrap; }
 .tc-w .tc-found { color: var(--owb-text-2); font-size: 12px; white-space: nowrap; }
 .tc-w .tc-found:hover { color: var(--owb-brand-text); }
 .tc-views { display: inline-flex; padding: 2px; border-radius: var(--radius-md); background: var(--owb-bg-side); }
 .tc-w .tc-views button { padding: 3px 10px; border-radius: var(--radius-sm); font-size: 12px; color: var(--owb-text-2); }
 .tc-w .tc-views button[aria-selected="true"] { background: var(--owb-card); color: var(--owb-text); box-shadow: var(--owb-shadow-sm); }
 
-.tc-tabs { display: flex; gap: 6px; padding: 0 12px 10px 14px; overflow-x: auto; scrollbar-width: none; }
-.tc-tabs::-webkit-scrollbar { display: none; }
+.tc-alert { margin: 0 12px 8px 14px; color: var(--owb-warn); font-size: 12px; }
+.tc-more { margin: 0 12px 8px 14px; color: var(--owb-text-3); font-size: 12px; }
+.tc-panel .tc-more, .tc-tl .tc-more { margin: 12px 0 0; }
+/* 十来天的行程标签一行放不下：留一条细滚动条，看得出后面还有 */
+.tc-tabs { display: flex; gap: 6px; padding: 0 12px 8px 14px; margin-bottom: 2px; overflow-x: auto; scrollbar-width: thin; scrollbar-color: var(--owb-border) transparent; }
+.tc-tabs::-webkit-scrollbar { height: 6px; }
+.tc-tabs::-webkit-scrollbar-thumb { border-radius: 3px; background: var(--owb-border); }
+.tc-tabs::-webkit-scrollbar-thumb:hover { background: var(--owb-text-3); }
 .tc-w .tc-tabs button { flex: none; padding: 4px 12px; border: 1px solid var(--owb-border); border-radius: var(--radius-full); font-size: 13px; color: var(--owb-text-2); }
 .tc-w .tc-tabs button:hover { border-color: var(--owb-text-3); color: var(--owb-text); }
 .tc-w .tc-tabs button[aria-selected="true"] { border-color: var(--owb-text); background: var(--owb-text); color: var(--owb-bg); }
@@ -129,6 +145,10 @@ html[data-theme="dark"] .tc-tiles { filter: invert(1) hue-rotate(180deg) brightn
 .tc-star { color: #d97706; }
 .tc-note { margin-top: 3px; color: var(--owb-text-2); font-size: 13px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .tc-miss { margin-top: 3px; color: var(--owb-text-3); font-size: 12px; }
+.tc-src { margin-top: 3px; color: var(--owb-text-3); font-size: 12px; }
+.tc-w .tc-retry { color: var(--owb-brand-text); }
+.tc-w .tc-retry:hover { text-decoration: underline; }
+.tc-w .tc-retry:disabled { color: var(--owb-text-3); cursor: default; text-decoration: none; }
 .tc-w .tc-setkey { color: var(--owb-brand-text); }
 .tc-w .tc-setkey:hover { text-decoration: underline; }
 
@@ -140,6 +160,7 @@ html[data-theme="dark"] .tc-tiles { filter: invert(1) hue-rotate(180deg) brightn
 /* ---------- 时间线 ---------- */
 .tc-tl { padding: 12px 16px 14px; border-top: 1px solid var(--owb-border); }
 .tc-tlh { margin-bottom: 8px; color: var(--owb-text-2); font-size: 13px; }
+.tc-tlmsg { margin-bottom: 8px; color: var(--owb-text-3); font-size: 12px; }
 .tc-tlr { display: grid; grid-template-columns: 64px 18px minmax(0, 1fr); column-gap: 8px; }
 .tc-tls { padding-top: 1px; color: var(--owb-text-2); font-size: 13px; text-align: right; }
 .tc-tld { position: relative; }

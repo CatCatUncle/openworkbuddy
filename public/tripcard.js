@@ -39,26 +39,39 @@
       addr: str(s.address || s.addr, LIMIT.addr),
     };
   }
+  // 截掉了几站 / 几天记在 more 上；data-tc 里存的是截过的，再收一遍时接着记，不然第二遍就忘了
+  const moreOf = (v) => (typeof v === "number" && Number.isInteger(v) && v > 0 && v < 1e4 ? v : 0);
+  const moreText = (unit, n) => (unit === "天"
+    ? `只显示前 ${LIMIT.days} 天，后面 ${n} 天没列出`
+    : `这天只显示前 ${LIMIT.stops} 站，后面 ${n} 站没列出`);
   function normDay(d) {
     if (Array.isArray(d)) d = { stops: d };
     if (!d || typeof d !== "object") return null;
     const raw = d.stops || d.items || d.places || d.spots || d.schedule || [];
-    const stops = (Array.isArray(raw) ? raw : []).map(normStop).filter(Boolean).slice(0, LIMIT.stops);
+    const all = (Array.isArray(raw) ? raw : []).map(normStop).filter(Boolean);
+    const stops = all.slice(0, LIMIT.stops);
     if (!stops.length) return null;
-    return {
+    const day = {
       label: str(d.label || (typeof d.day === "string" ? d.day : ""), 12),
       title: str(d.title || d.theme || d.name, LIMIT.title),
       summary: str(d.summary || d.desc || d.description || d.note, LIMIT.summary),
       stops,
     };
+    const more = all.length - stops.length + moreOf(d.more);
+    if (more) day.more = more;
+    return day;
   }
   function normalize(obj) {
     if (Array.isArray(obj)) obj = { days: obj };
     if (!obj || typeof obj !== "object") return null;
     const raw = obj.days || obj.itinerary || obj.plan || [];
-    const days = (Array.isArray(raw) ? raw : []).map(normDay).filter(Boolean).slice(0, LIMIT.days);
+    const all = (Array.isArray(raw) ? raw : []).map(normDay).filter(Boolean);
+    const days = all.slice(0, LIMIT.days);
     if (!days.length) return null;
-    return { title: str(obj.title || obj.name, LIMIT.title), city: str(obj.city || obj.destination, LIMIT.city), days };
+    const it = { title: str(obj.title || obj.name, LIMIT.title), city: str(obj.city || obj.destination, LIMIT.city), days };
+    const more = all.length - days.length + moreOf(obj.more);
+    if (more) it.more = more;
+    return it;
   }
   // 模型常漏的两处格式：收尾逗号、键名引号（kind:"商业街"）。只改字符串外面，字符串里一个字不动
   const BARE_KEY = /[A-Za-z_$][\w$]*(?=\s*:)/y, TRAIL_COMMA = /,(?=\s*[}\]])/y;
@@ -91,6 +104,57 @@
       try { return normalize(JSON.parse(t)); } catch (e) { /* 再试下一种 */ }
     }
     return null;
+  }
+  // JSON 第一处语法错在第几个字符（解得开回 -1）。不读 JSON.parse 的报错：各家写法不一样，有的不带位置
+  function badAt(s) {
+    let i = 0;
+    const ws = () => { while (i < s.length && " \t\n\r".includes(s[i])) i++; };
+    const fail = () => { throw i; };
+    const lit = () => {
+      if (s[i] !== '"') fail();
+      for (i++; i < s.length; i++) {
+        const c = s[i];
+        if (c === '"') { i++; return; }
+        if (c === "\\") i++;
+        else if (c < " ") fail();
+      }
+      fail();
+    };
+    const val = () => {
+      ws();
+      const c = s[i];
+      if (c === "{" || c === "[") {
+        const end = c === "{" ? "}" : "]";
+        i++; ws();
+        if (s[i] === end) { i++; return; }
+        for (;;) {
+          if (end === "}") { ws(); lit(); ws(); if (s[i] !== ":") fail(); i++; }
+          val(); ws();
+          if (s[i] === ",") { i++; continue; }
+          if (s[i] === end) { i++; return; }
+          fail();
+        }
+      }
+      if (c === '"') return lit();
+      const m = /^(?:-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null)/.exec(s.slice(i, i + 64));
+      if (!m) fail();
+      i += m[0].length;
+    };
+    try { val(); ws(); if (i < s.length) fail(); return -1; }
+    catch (e) { if (typeof e === "number") return e; throw e; }
+  }
+  /** 围栏解不开时说一句哪儿不对（行号从围栏里第一行数起）；解得开回 "" */
+  function whyBad(text) {
+    const raw = String(text || "");
+    const s = raw.trim();
+    if (!s) return "里面是空的";
+    if (parse(s)) return "";
+    const t = loosen(s);
+    const at = badAt(t);
+    if (at < 0) return "里面没有能画的地点";
+    const lead = raw.slice(0, raw.length - raw.trimStart().length);
+    const line = (lead.match(/\n/g) || []).length + (t.slice(0, at).match(/\n/g) || []).length + 1;
+    return `第 ${line} 行格式不对`;
   }
   function segmentOf(time) {
     const t = String(time || "").toLowerCase();
@@ -226,14 +290,25 @@
 
   // ---------------- 静态占位（renderMd 里用） ----------------
   function staticHtml(it) {
+    const more = (unit, n) => (n ? `<div class="tc-smore">${esc(moreText(unit, n))}</div>` : "");
     const days = it.days.map((d, i) => `<div class="tc-sday"><b>${esc(dayLabel(d, i))}${d.title ? " · " + esc(d.title) : ""}</b>`
       + (d.summary ? `<div class="tc-ssum">${esc(d.summary)}</div>` : "")
-      + `<ol>${d.stops.map((s) => `<li>${s.time ? esc(s.time) + " · " : ""}<b>${esc(s.name)}</b>${s.note ? "：" + esc(s.note) : ""}</li>`).join("")}</ol></div>`).join("");
-    return `<div class="tc-static">${it.title ? `<div class="tc-stitle">${esc(it.title)}</div>` : ""}${days}</div>`;
+      + `<ol>${d.stops.map((s) => `<li>${s.time ? esc(s.time) + " · " : ""}<b>${esc(s.name)}</b>${s.note ? "：" + esc(s.note) : ""}</li>`).join("")}</ol>${more("站", d.more)}</div>`).join("");
+    return `<div class="tc-static">${it.title ? `<div class="tc-stitle">${esc(it.title)}</div>` : ""}${days}${more("天", it.more)}</div>`;
+  }
+  // 「让 AI 重写这段」只在主界面画：要有输入框能填。分享页、导出里没有输入框，按钮按不了就不画
+  const canRedo = () => typeof document !== "undefined" && typeof root.insertAtCursor === "function" && !!document.getElementById("input");
+  /** 填进输入框的那句话（不替人发出去，人看过、改过再自己发） */
+  const redoText = (why) => `行程卡${why}，没画成。请把那段 \`\`\`itinerary 重写成标准 JSON：键名和字符串都用英文双引号，字符串里的双引号前加反斜杠。`;
+  /** 解不开的那段：说一句哪儿不对，原文收起来，不把一大坨 JSON 甩在人脸上 */
+  function badHtml(raw) {
+    return `<div class="tc tc-bad"><div class="tc-badh">行程卡没画成：${esc(whyBad(raw))}</div>`
+      + `<details class="tc-raw"><summary>看原文</summary><pre><code>${esc(raw)}</code></pre></details>`
+      + (canRedo() ? `<button type="button" class="tc-redo">让 AI 重写这段</button>` : "") + `</div>`;
   }
   /**
    * renderMd 遇到 ```itinerary 时调这个。code 是 HTML 转义过的围栏正文。
-   * 解不出来：还在往外吐字（open && live）给个「正在排行程」；否则回空串，调用方照普通代码块显示。
+   * 解不出来：还在往外吐字（open && live）给个「正在排行程」；停笔了就是「行程卡没画成」那一块。
    */
   function cardHtml(code, o) {
     o = o || {};
@@ -243,7 +318,7 @@
     if (o.open) raw = raw.replace(/\n`{1,2}$/, "");
     const it = parse(raw);
     if (!it) {
-      if (!(o.open && o.live)) return "";
+      if (!(o.open && o.live)) return badHtml(raw);
       const n = (raw.match(/"name"\s*:/g) || []).length;
       return `<div class="tc tc-pending"><span class="tc-spin" aria-hidden="true"></span>正在排行程…${n ? `<span class="tc-pn">已写 ${n} 站</span>` : ""}</div>`;
     }
@@ -251,8 +326,12 @@
     return `<div class="tc" data-tc-key="${hashKey(json)}" data-tc="${esc(json)}">${staticHtml(it)}</div>`;
   }
 
-  /** 一张卡片（点没点活都行）按天排好的文字版：复制、导出用 */
+  /** 一张卡片（点没点活都行）按天排好的文字版：复制、导出用。没画成的那块贴原文 */
   function staticOf(host) {
+    if (host.classList && host.classList.contains("tc-bad")) {
+      const c = host.querySelector("pre code");
+      return `<pre><code>${esc(c ? c.textContent : "")}</code></pre>`;
+    }
     let it = null;
     try { it = normalize(JSON.parse(host.dataset.tc || "")); } catch (e) { /* 下面退回原文字 */ }
     return it ? staticHtml(it) : esc(host.textContent || "");
@@ -276,9 +355,26 @@
     if (!r.ok) throw new Error((j && j.error) || `HTTP ${r.status}`);
     return j || {};
   }
-  /** 查过的地点整页共用：同一份行程重新点活、两条消息提到同一个地方，都不再问服务端 */
+  /**
+   * 查过的地点整页共用：同一份行程重新点活、两条消息提到同一个地方，都不再问服务端。
+   * 存的是服务端回的那一项：找到的 { ok: true, … }、确实没找到的 { ok: false, tried }。没查成的不存，下回接着查。
+   */
   const placeMemo = new Map();
   const pkey = (name, city) => city + "|" + name;
+  /** 补照片：地点对象 → 那一趟请求。两张卡片提到同一个地方只问一次 */
+  const photoAsk = new WeakMap();
+  const SRC_NAME = { amap: "高德地图", osm: "OpenStreetMap" };
+  const PHOTO_NAME = { amap: "高德地图", wikimedia: "Wikimedia", wikidata: "Wikidata" };
+  /** 「外滩」和「外滩」算同一个名字，空格、大小写不算差别 */
+  const sameName = (a, b) => String(a || "").replace(/\s+/g, "").toLowerCase() === String(b || "").replace(/\s+/g, "").toLowerCase();
+  /** 没找到时说问了谁：两家都问了才说「都没搜到」 */
+  function missText(tried) {
+    const t = Array.isArray(tried) ? tried : [];
+    if (t.includes("amap") && t.includes("osm")) return "高德地图和 OpenStreetMap 都没搜到";
+    if (t.length === 1 && t[0] === "osm") return "OpenStreetMap 没搜到";
+    if (t.length === 1 && t[0] === "amap") return "高德地图没搜到";
+    return "地图上没搜到";
+  }
 
   // 「填高德 Key」那颗按钮只在主界面里、而且这人改得了服务器级设置时画：成员点进去是一页他看不到的设置
   const canSetKey = () => typeof root.openModal === "function" && typeof root.amPlatformOwner === "function" && !!root.amPlatformOwner();
@@ -318,10 +414,14 @@
     const el = document.createElement("div");
     el.className = "tc-w";
     const multi = it.days.length > 1;
+    // 「AI 排的」：去哪、几点是模型排的；坐标、照片是拿地名去地图上查的，每站底下写着查自哪一家
     el.innerHTML = `<div class="tc-head"><div class="tc-ttl">${esc(it.title || (it.city ? it.city + "行程" : "行程"))}</div>`
+      + `<span class="tc-ai" title="去哪、几点由 AI 排，地点按名字去地图上查">AI 排的</span>`
       + `<button type="button" class="tc-found" aria-expanded="false">正在找地点…</button>`
       + `<div class="tc-views" role="tablist"><button type="button" role="tab" data-v="map">地图</button><button type="button" role="tab" data-v="timeline">时间线</button></div></div>`
+      + `<div class="tc-alert" hidden></div>`
       + `<div class="tc-tabs" role="tablist"${multi ? "" : " hidden"}>${it.days.map((d, i) => `<button type="button" role="tab" data-d="${i}">${esc(dayLabel(d, i))}</button>`).join("")}</div>`
+      + (it.more ? `<div class="tc-more">${esc(moreText("天", it.more))}</div>` : "")
       + `<div class="tc-list" hidden></div>`
       + `<div class="tc-body"><div class="tc-map" tabindex="0" aria-label="行程地图，拖动平移，双击放大，按 0 回到全览">`
       + `<div class="tc-tiles"></div><svg class="tc-route" aria-hidden="true"></svg><div class="tc-pins"></div>`
@@ -336,14 +436,18 @@
     const $ = (s) => el.querySelector(s);
     const map = $(".tc-map"), tilesEl = $(".tc-tiles"), routeEl = $(".tc-route"), pinsEl = $(".tc-pins"),
       panel = $(".tc-panel"), tl = $(".tc-tl"), body = $(".tc-body"), msg = $(".tc-msg"), attr = $(".tc-attr"),
-      found = $(".tc-found"), list = $(".tc-list"), split = $(".tc-split"), grip = $(".tc-grip"), foldBtn = $(".tc-fold");
+      found = $(".tc-found"), list = $(".tc-list"), split = $(".tc-split"), grip = $(".tc-grip"), foldBtn = $(".tc-fold"),
+      alertEl = $(".tc-alert");
 
     const st = {
       day: 0, view: "map", userView: false,
-      places: it.days.map(() => null),   // 每天：每站一个地点（没找到 null）；还没查 null 整天
+      places: it.days.map(() => null),   // 每天：每站一个地点（没找到、没查成都是 null）；还没查 null 整天
+      why: it.days.map(() => []),        // 每天：每站 null 的缘由——{ error } 没查成（原话），{ tried } 没找到（问了谁）
       legs: it.days.map(() => []),       // 每天：第 i 段 = 第 i 站 → 第 i+1 站
-      loading: it.days.map(() => null),
-      notes: new Set(), provider: "",
+      loading: it.days.map(() => null),  // 正在查的那一趟；查完就清掉，失败的站还能再查
+      notes: it.days.map(() => new Set()), // 每天各记各的报错：地图中央只说这一天的
+      alert: "",                         // 高德今天停了：它回的原话，卡片上说一次
+      visible: false,                    // 在不在视野里：不在就不往下查后面几天
       cfg: null, src: "", z: 12, cx: 0, cy: 0, fitted: -1, started: false, active: -1,
     };
     const tiles = new Map();
@@ -377,7 +481,7 @@
       el.querySelectorAll(".tc-views button").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.v === v)));
       if (v === "map") { fit(false); draw(); }
     }
-    function setDay(d) {
+    function setDay(d, byUser) {
       st.day = d;
       st.active = -1;
       el.querySelectorAll(".tc-tabs button").forEach((b) => b.setAttribute("aria-selected", String(+b.dataset.d === d)));
@@ -385,7 +489,8 @@
       renderTimeline();
       if (st.places[d]) afterLoad(d);
       else { msg.textContent = "正在找地点…"; msg.hidden = !st.started; }
-      if (st.started) loadDay(d);
+      // 查过的不再查（没查成的站点「再查一次」）；不在视野里的等进了视野再查
+      if (st.started && !st.places[d] && (st.visible || byUser)) loadDay(d);
       fit(true);
       draw();
     }
@@ -415,14 +520,27 @@
           + `<div class="tc-ph"><span class="tc-ini" aria-hidden="true">${esc(ini.toUpperCase())}</span>${ph}<span class="tc-no">${i + 1}</span></div>`
           + `<div class="tc-info"><div class="tc-nm">${esc(s.name)}</div>${meta ? `<div class="tc-meta">${meta}</div>` : ""}`
           + (s.note ? `<div class="tc-note">${esc(s.note)}</div>` : "")
-          + (p === null ? `<div class="tc-miss">地图上没找到这个地方${keyHint() ? ` · ${keyBtn("填高德 Key 再找找")}` : ""}</div>` : "") + `</div></div>`;
+          + (p ? `<div class="tc-src">${esc(srcLine(p, s.name))}</div>` : p === null ? missHtml((st.why[d] || [])[i]) : "") + `</div></div>`;
       });
+      if (day.more) h += `<div class="tc-more">${esc(moreText("站", day.more))}</div>`;
       panel.innerHTML = h;
       panel.querySelectorAll(".tc-ph img").forEach((img) => img.addEventListener("error", () => img.remove(), { once: true }));
     }
-    /** 走的是 OpenStreetMap、高德 Key 没填、行程在国内、这人改得了设置：提醒一句「填高德 Key」 */
+    /** 这一站查自哪一家；地图上那个点的名字跟行程里写的对不上，把查到的名字露出来，好让人核对是不是这儿 */
+    function srcLine(p, name) {
+      return `来源：${SRC_NAME[p.src] || "地图"}`
+        + (p.name && !sameName(p.name, name) ? ` · 匹配到「${p.name}」` : "")
+        + (p.photo && PHOTO_NAME[p.photoSrc] ? ` · 照片 ${PHOTO_NAME[p.photoSrc]}` : "");
+    }
+    /** 没查成（有原话，能再查一次）和没找到（问了谁）分开说 */
+    function missHtml(w) {
+      if (w && w.error) return `<div class="tc-miss">没查成：${esc(w.error)} · <button type="button" class="tc-retry">再查一次</button></div>`;
+      const tried = (w && w.tried) || [];
+      return `<div class="tc-miss">没找到：${esc(missText(tried))}${keyHint() && !tried.includes("amap") ? ` · ${keyBtn("填高德 Key 再找找")}` : ""}</div>`;
+    }
+    /** 高德 Key 没填、没指定只用 OpenStreetMap、行程在国内、这人改得了设置：提醒一句「填高德 Key」 */
     function keyHint() {
-      if (!st.cfg || st.cfg.amap || st.provider === "amap" || !canSetKey()) return false;
+      if (!st.cfg || st.cfg.amap || st.cfg.provider === "osm" || !canSetKey()) return false;
       const ps = st.places.flat().filter(Boolean);
       if (ps.length) return ps.some((p) => { const w = convert(p.lng, p.lat, p.datum, "wgs84"); return inChina(w[0], w[1]); });
       return /[\u4e00-\u9fff]/.test(it.city || "");
@@ -443,14 +561,25 @@
     function renderTimeline() {
       const day = it.days[st.day];
       let last = null;
-      tl.innerHTML = (day.title ? `<div class="tc-tlh">${esc(dayLabel(day, st.day))} · ${esc(day.title)}</div>` : "")
+      // 这天一个地点都没找到、自动切到时间线的：地图中央那句话也写在这儿，不然切过来就看不见了
+      const none = dayNone(st.day);
+      tl.innerHTML = (none ? `<div class="tc-tlmsg">${esc(none)}</div>` : "")
+        + (day.title ? `<div class="tc-tlh">${esc(dayLabel(day, st.day))} · ${esc(day.title)}</div>` : "")
         + day.stops.map((s) => {
           const lab = s.time || segmentOf(s.time);
           const show = lab && lab !== last;
           last = lab || last;
           return `<div class="tc-tlr"><div class="tc-tls">${show ? esc(lab) : ""}</div><div class="tc-tld"></div>`
             + `<div class="tc-tlt"><b>${esc(s.name)}</b>${s.note ? `<span>${esc(s.note)}</span>` : ""}</div></div>`;
-        }).join("");
+        }).join("")
+        + (day.more ? `<div class="tc-more">${esc(moreText("站", day.more))}</div>` : "");
+    }
+    /** 这一天查完了、一个都没找到、也没有哪站是没查成的：说问了谁。别的情况回 "" */
+    function dayNone(d) {
+      const ps = st.places[d], why = st.why[d] || [];
+      if (!ps || ps.some(Boolean) || why.some((w) => w && w.error)) return "";
+      const tried = [...new Set(why.flatMap((w) => (w && w.tried) || []))];
+      return `这一天的地点，${missText(tried)}`;
     }
 
     // ---- 找到几个地点 ----
@@ -462,16 +591,33 @@
       found.textContent = done ? `找到 ${got} 个地点 ›` : got ? `已找到 ${got} 个地点…` : "正在找地点…";
       if (done && got < total) found.title = `${total - got} 个没找到`;
       if (list.hidden) return;
-      const src = st.provider === "amap" ? "地点数据：高德地图"
-        : "地点数据：OpenStreetMap，照片：Wikimedia" + (keyHint() ? ` · ${keyBtn("填高德 Key，国内地点更准")}` : "");
+      // 照实写这张卡上的点查自哪几家，没查过的天不算
+      const ps = st.places.flat().filter(Boolean);
+      const srcs = [...new Set(ps.map((p) => SRC_NAME[p.src]).filter(Boolean))];
+      const phs = [...new Set(ps.map((p) => (p.photo ? PHOTO_NAME[p.photoSrc] : "")).filter(Boolean))];
+      const src = (srcs.length ? `地点数据：${srcs.join("、")}` : "") + (phs.length ? `，照片：${phs.join("、")}` : "")
+        + (keyHint() ? `${srcs.length ? " · " : ""}${keyBtn("填高德 Key，国内地点更准")}` : "");
+      const notes = new Set(st.notes.flatMap((n) => [...n]));
       list.innerHTML = it.days.map((d, di) => {
         const ps = st.places[di];
         return `<div class="tc-lday"><b>${esc(dayLabel(d, di))}</b>${d.stops.map((s, i) => {
           const p = ps ? ps[i] : undefined;
-          const tail = p ? esc(p.addr || p.name) : p === null ? "没找到" : "还在找";
+          const w = p === null ? (st.why[di] || [])[i] : null;
+          const tail = p ? esc(p.addr || p.name) : p === null ? (w && w.error ? "没查成" : "没找到") : "还在找";
           return `<div class="tc-lrow${p ? "" : " miss"}"><span>${esc(s.name)}</span><em>${tail}</em></div>`;
         }).join("")}</div>`;
-      }).join("") + `<div class="tc-lsrc">${src}${[...st.notes].map((n) => `<div class="tc-note-err">${esc(n)}</div>`).join("")}</div>`;
+      }).join("") + `<div class="tc-lsrc">${src}${[...notes].map((n) => `<div class="tc-note-err">${esc(n)}</div>`).join("")}</div>`;
+    }
+    function renderAlert() {
+      alertEl.hidden = !st.alert;
+      alertEl.innerHTML = st.alert
+        ? `高德今天停用了，它回的是「${esc(st.alert)}」，先改用 OpenStreetMap${canSetKey() ? ` · ${keyBtn("打开地图设置")}` : ""}` : "";
+    }
+    /** 高德的 Key 级报错：服务端当天熔断了，这张卡上说一次 */
+    function setAlert(m) {
+      if (st.alert || !m) return;
+      st.alert = String(m);
+      renderAlert();
     }
 
     // ---- 查地点、查路 ----
@@ -479,63 +625,143 @@
       if (st.loading[d]) return st.loading[d];
       const g = cfgGen;   // 查到一半设置变了：这一趟的结果作废，别写进新一轮的状态里
       const stale = () => g !== cfgGen;
-      st.loading[d] = (async () => {
+      const notes = st.notes[d];
+      const run = (async () => {
         const cfg = await getCfg();
         if (stale()) return;
         if (!st.cfg) st.cfg = cfg;
         const stops = it.days[d].stops;
         const q = stops.map((s) => ({ name: s.name, city: s.city || it.city }));
+        // 只问还没答案的：找到的、确实没找到的都在 placeMemo 里，「再查一次」只重查没查成的那几站
         const need = q.filter((x) => !placeMemo.has(pkey(x.name, x.city)));
+        const errs = new Map();
         if (need.length) {
           try {
             const r = await post("/api/geo/places", { items: need });
             if (stale()) return;
-            st.provider = r.provider || st.provider;
-            (r.notes || []).forEach((n) => st.notes.add(n));
-            (r.items || []).forEach((p, j) => { if (!(p && p.failed)) placeMemo.set(pkey(need[j].name, need[j].city), p && p.ok ? p : null); });
-          } catch (e) { if (stale()) return; st.notes.add(e.message); }
+            (r.notes || []).forEach((n) => notes.add(n));
+            setAlert(r.amapOff);
+            need.forEach((x, j) => {
+              const p = (r.items || [])[j], k = pkey(x.name, x.city);
+              if (p && p.ok) placeMemo.set(k, p);
+              else if (p && !p.failed) placeMemo.set(k, { ok: false, tried: Array.isArray(p.tried) ? p.tried : [] });
+              else errs.set(k, (p && p.error) || "服务端没回这一站");
+            });
+          } catch (e) {
+            if (stale()) return;
+            need.forEach((x) => errs.set(pkey(x.name, x.city), e.message));
+          }
         }
-        if (!st.provider) st.provider = st.cfg && st.cfg.amap ? "amap" : "osm";
-        st.places[d] = q.map((x) => placeMemo.get(pkey(x.name, x.city)) || null);
+        const memo = q.map((x) => placeMemo.get(pkey(x.name, x.city)));
+        st.places[d] = memo.map((m) => (m && m.ok ? m : null));
+        st.why[d] = memo.map((m, i) => (m && m.ok ? null : m ? { tried: m.tried || [] } : { error: errs.get(pkey(q[i].name, q[i].city)) || "没查" }));
+        fillPhotos(d);   // 照片另外要，不让钉子陪着等
         const ps = st.places[d];
         const pairs = [];
-        for (let i = 0; i + 1 < ps.length; i++) if (ps[i] && ps[i + 1]) pairs.push(i);
+        for (let i = 0; i + 1 < ps.length; i++) if (ps[i] && ps[i + 1] && !st.legs[d][i]) pairs.push(i);
         if (pairs.length) {
           try {
             const pt = (p) => ({ lng: p.lng, lat: p.lat, datum: p.datum });
             const r = await post("/api/geo/legs", { pairs: pairs.map((i) => ({ a: pt(ps[i]), b: pt(ps[i + 1]) })) });
             if (stale()) return;
-            (r.notes || []).forEach((n) => st.notes.add(n));
+            (r.notes || []).forEach((n) => notes.add(n));
+            setAlert(r.amapOff);
             pairs.forEach((i, j) => { st.legs[d][i] = (r.items || [])[j] || null; });
-          } catch (e) { if (!stale()) st.notes.add(e.message); }
+          } catch (e) { if (!stale()) notes.add(e.message); }
         }
-      })().catch((e) => { if (stale()) return; st.notes.add(e.message); st.places[d] = st.places[d] || it.days[d].stops.map(() => null); })
-        .then(() => {
-          if (stale()) return;
-          renderFound();
-          if (d !== st.day) return;
-          renderPanel();
-          fit(true);
-          afterLoad(d);
-          draw();
+      })().catch((e) => {
+        if (stale()) return;
+        notes.add(e.message);
+        if (!st.places[d]) {
+          st.places[d] = it.days[d].stops.map(() => null);
+          st.why[d] = it.days[d].stops.map(() => ({ error: e.message }));
+        }
+      }).then(() => {
+        // 查完就放手：留着这趟 promise 的话，没查成的站不刷新页面就永远不会再查
+        if (st.loading[d] === run) st.loading[d] = null;
+        if (stale()) return;
+        renderFound();
+        if (d !== st.day) return;
+        renderPanel();
+        renderTimeline();
+        fit(true);
+        afterLoad(d);
+        draw();
+      });
+      st.loading[d] = run;
+      return run;
+    }
+    /** 没查成的那几站再问一次（找到的、确实没找到的不再问，不白花次数） */
+    function retry(d) {
+      if (st.loading[d]) return;
+      st.notes[d].clear();
+      el.querySelectorAll(".tc-retry").forEach((b) => { b.disabled = true; b.textContent = "正在查…"; });
+      loadDay(d);
+    }
+    /** 钉子钉完再补照片：补图要去 Wikidata，连不上时一等好几秒 */
+    function fillPhotos(d) {
+      const ps = st.places[d] || [], stops = it.days[d].stops;
+      const want = [];
+      ps.forEach((p, i) => { if (p && p.photoPending && !photoAsk.has(p)) want.push([p, i]); });
+      if (want.length) {
+        const ask = post("/api/geo/photos", {
+          items: want.map(([p, i]) => ({ name: stops[i].name, city: stops[i].city || it.city, lng: p.lng, lat: p.lat, datum: p.datum, qid: p.qid || "" })),
+        }).then((r) => {
+          want.forEach(([p], j) => {
+            const x = (r.items || [])[j];
+            p.photoPending = false;
+            if (x && x.photo) { p.photo = x.photo; p.photoSrc = x.src || "wikidata"; }
+          });
+        }).catch((e) => {
+          want.forEach(([p]) => { p.photoPending = false; });
+          console.warn("[tripcard] 照片没补上", e && e.message);
         });
-      return st.loading[d];
+        want.forEach(([p]) => photoAsk.set(p, ask));
+      }
+      const asks = [...new Set(ps.filter((p) => p && p.photoPending && photoAsk.has(p)).map((p) => photoAsk.get(p)))];
+      if (!asks.length) return;
+      const g = cfgGen;
+      Promise.all(asks).then(() => {
+        if (g !== cfgGen || st.places[d] !== ps) return;
+        if (!list.hidden) renderFound();
+        if (d !== st.day) return;
+        renderPanel();
+        draw();
+      });
     }
     function afterLoad(d) {
-      const any = st.places[d] && st.places[d].some(Boolean);
-      if (!any) {
-        msg.hidden = false;
-        msg.textContent = st.notes.size ? [...st.notes][0] : "这一天的地点在地图上都没找到";
-        if (!st.userView) setView("timeline");
-      } else {
+      const ps = st.places[d] || [];
+      const err = (st.why[d] || []).find((w) => w && w.error);
+      if (ps.some(Boolean)) {
         msg.hidden = true;
         if (!st.userView && st.view !== "map") setView("map");
+      } else if (err) {
+        // 一站都没查成：原话留在地图中央，给「再查一次」，不切走
+        msg.hidden = false;
+        msg.innerHTML = `没查成：${esc(err.error)} <button type="button" class="tc-retry">再查一次</button>`;
+        if (!st.userView && st.view !== "map") setView("map");
+      } else {
+        msg.hidden = false;
+        msg.textContent = dayNone(d);
+        if (!st.userView) setView("timeline");
       }
     }
-    /** 第一天查完，顺着把后面几天也查了：「找到 N 个地点」要数全，切到第几天也不用等 */
+    /**
+     * 当天查完，顺着把后面几天也查了：「找到 N 个地点」要数全，切到第几天也不用等。
+     * 卡片不在页面上（切走对话了）、滚出视野了就停，回来再接着查。
+     */
+    let fetching = false;
     async function prefetch() {
-      await loadDay(st.day);
-      for (let d = 0; d < it.days.length; d++) if (!st.places[d]) await loadDay(d);
+      if (fetching) return;
+      fetching = true;
+      try {
+        for (let n = 0; n < it.days.length * 3; n++) {
+          if (!el.isConnected || !st.visible) return;
+          const d = !st.places[st.day] ? st.day : st.places.findIndex((p) => !p);
+          if (d < 0) return;
+          await loadDay(d);
+        }
+      } finally { fetching = false; }
     }
 
     // ---- 地图 ----
@@ -665,10 +891,11 @@
       const t = e.target.closest("button, .tc-card");
       if (!t || !el.contains(t)) return;
       if (t.dataset.v) setView(t.dataset.v, true);
-      else if (t.dataset.d != null) setDay(+t.dataset.d);
+      else if (t.dataset.d != null) setDay(+t.dataset.d, true);
       else if (t.dataset.z) zoomAt(+t.dataset.z);
       else if (t.classList.contains("tc-reset")) resetView();
       else if (t.classList.contains("tc-setkey")) { if (canSetKey()) root.openModal("settings", "map"); }
+      else if (t.classList.contains("tc-retry")) retry(st.day);
       else if (t.classList.contains("tc-fold")) setFold(!lay.fold);
       else if (t.classList.contains("tc-found")) {
         list.hidden = !list.hidden;
@@ -782,8 +1009,12 @@
       if (!st.places[st.day]) { msg.hidden = false; msg.textContent = "正在找地点…"; }
       prefetch();
     }
+    // 一直盯着进没进视野：滚出去了 prefetch 停手，滚回来接着查
     const io = typeof IntersectionObserver === "function"
-      ? new IntersectionObserver((es) => { if (es.some((x) => x.isIntersecting)) { io.disconnect(); start(); } }, { rootMargin: "200px" })
+      ? new IntersectionObserver((es) => {
+        st.visible = es[es.length - 1].isIntersecting;
+        if (st.visible) { if (st.started) prefetch(); else start(); }
+      }, { rootMargin: "200px" })
       : null;
 
     setDay(0);
@@ -791,13 +1022,20 @@
     renderFound();
     return {
       el, key,
-      attached() { if (io && !st.started) io.observe(el); else start(); redraw(); },
-      /** 设置改了（resetConfig）：按新设置从头查一遍。还没进过视野的不用管，进来时查的就是新的 */
+      attached() {
+        if (io) io.observe(el);
+        else { st.visible = true; if (st.started) prefetch(); else start(); }
+        redraw();
+      },
+      /** 设置改了（resetConfig）：按新设置从头查一遍。不在视野里的等进来再查 */
       reload() {
-        st.cfg = null; st.provider = ""; st.notes.clear(); st.fitted = -1; st.src = "";
+        st.cfg = null; st.alert = ""; st.fitted = -1; st.src = "";
         st.places = it.days.map(() => null);
+        st.why = it.days.map(() => []);
         st.legs = it.days.map(() => []);
         st.loading = it.days.map(() => null);
+        st.notes = it.days.map(() => new Set());
+        renderAlert();
         renderFound();
         setDay(st.day);
         if (st.started) prefetch();
@@ -857,6 +1095,15 @@
   function watch() {
     if (watching || typeof MutationObserver !== "function" || !document.body) return;
     watching = true;
+    // 「让 AI 重写这段」：只把话填进输入框，发不发由人定
+    document.addEventListener("click", (e) => {
+      const b = e.target && e.target.closest ? e.target.closest(".tc-redo") : null;
+      const box = b && b.closest(".tc-bad");
+      const input = document.getElementById("input");
+      if (!box || !input || typeof root.insertAtCursor !== "function") return;
+      const c = box.querySelector("pre code");
+      root.insertAtCursor(input, redoText(whyBad(c ? c.textContent : "")));
+    });
     hydrateAll(document);
     new MutationObserver((ms) => {
       for (const m of ms) for (const n of m.addedNodes) if (n.nodeType === 1) hydrateAll(n);
@@ -868,7 +1115,7 @@
   }
 
   root.TripCard = {
-    parse, normalize, segmentOf, dayLabel, cardHtml, staticHtml, staticOf, unescHtml, hashKey,
+    parse, normalize, whyBad, moreText, segmentOf, dayLabel, cardHtml, staticHtml, staticOf, unescHtml, hashKey,
     wgsToGcj, gcjToWgs, convert, inChina, distance, legNavUrl, dayNavUrl, fmtDist, fmtDur,
     hydrate, hydrateAll, resetConfig, LIMIT, _live: live,
   };

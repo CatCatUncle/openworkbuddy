@@ -2246,9 +2246,13 @@ function renderMapPane(pane, s) {
       <div class="f">高德 Web 服务 Key ${keyLink("amap")}</div>
       <input id="map-key" type="password" placeholder="建 Key 时服务平台选「Web服务」" value="${esc(m.amap_key || "")}">
       <div class="d" id="map-from" style="margin-top:4px"></div>
-      <div class="f">每天最多查高德几次</div>
-      <input id="map-cap" type="number" min="0" step="100" value="${esc(String(m.amap_daily_cap ?? 2000))}">
-      <div class="d" style="margin-top:4px">个人开发者每天免费 5000 次，超了按量收费。到数就改用 OpenStreetMap；填 0 就不用高德。</div>
+      <div class="f">每月最多搜几次地点</div>
+      <input id="map-cap" type="number" min="0" step="100" value="${esc(String(m.amap_search_cap ?? 4500))}">
+      <div class="f">每月最多查几次路线</div>
+      <input id="map-route-cap" type="number" min="0" step="1000" value="${esc(String(m.amap_route_cap ?? 140000))}">
+      <div class="d" style="margin-top:4px">高德按月给免费额度，个人和企业不一样，以高德控制台显示的为准。超出要按量付费。</div>
+      <div class="d" style="margin-top:4px">到数就改用 OpenStreetMap，路线画直线；填 0 就不用高德。</div>
+      <div class="d" id="map-usage" style="margin-top:4px"></div>
     </div>
     <button class="btn-brand" id="map-save">保存</button>
     <button class="btn-plain" id="map-test">测一下</button>
@@ -2260,11 +2264,23 @@ function renderMapPane(pane, s) {
     if (c && c.keyFrom === "connector" && !pane.querySelector("#map-key").value) {
       pane.querySelector("#map-from").textContent = "这里没填，正在用高德连接器里的那把 Key。";
     }
+    // 这个月已经打了几次：跟上限摆一起，快到数了自己看得见
+    const u = c && c.usage;
+    if (u && u.used) {
+      pane.querySelector("#map-usage").textContent = `这个月已用：搜索 ${u.used.search} 次，路线 ${u.used.route} 次`
+        + (u.stop ? `；今天停用高德，它回的是「${u.stop}」` : "");
+    }
   }).catch(() => {});
+  // 清空了按默认，不当成 0（0 是「不用高德」，不该是删掉一个数的结果）
+  const capVal = (sel, def) => {
+    const v = pane.querySelector(sel).value.trim();
+    return v === "" ? def : Math.max(0, Math.floor(+v || 0));
+  };
   const collect = () => ({
     provider: pane.querySelector("#map-provider").value,
     amap_key: pane.querySelector("#map-key").value.trim(),
-    amap_daily_cap: Math.max(0, Math.floor(+pane.querySelector("#map-cap").value || 0)),
+    amap_search_cap: capVal("#map-cap", 4500),
+    amap_route_cap: capVal("#map-route-cap", 140000),
   });
   const save = async (el) => {
     const ok = await saveSettings({ map: collect() }, el);

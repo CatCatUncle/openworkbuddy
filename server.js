@@ -34,6 +34,7 @@ const { createComposeRouter } = require("./src/server/routes/compose"); // 一�
 const libraryRoutes = require("./src/server/routes/library"); // 资料库的封面、正文摘录、收藏
 const { createPromptTplsRouter } = require("./src/server/routes/prompt-tpls"); // 参考模板库里「我的」「公司」两层的增删改
 const { createGeoRouter } = require("./src/server/routes/geo"); // 行程卡：查地点、两站间路线、底图瓦片和地点照片
+const geoPlaces = require("./src/domains/geo/places"); // 行程卡查地点：设置页要它折算高德上限、存设置时解除当天停用
 const { createComposeJobs } = require("./src/domains/media/compose-jobs"); // 一键合成的任务队列：把镜头真的拼成成片
 const taskDirs = require("./src/util/task-dirs"); // 成果按对话分文件夹：哪些根下分、文件夹叫什么
 const prefs = require("./src/core/config/prefs"); // 按账号存的个人偏好：底层引擎 / 思考档 / 上次选的模型 / 宠物 / 快捷键
@@ -1832,11 +1833,13 @@ app.get("/api/settings", (req, res) => {
       custom_url: (config.search || {}).custom_url || "",
       custom_query_field: (config.search || {}).custom_query_field || "",
     },
-    // 行程卡的地图：用哪家查地点、高德 Web 服务 Key、每天打高德的上限
+    // 行程卡的地图：用哪家查地点、高德 Web 服务 Key、每月打高德的上限（搜索、路线分开）。
+    // 上限给的是折算后的：老配置只有「每天上限」，怎么折见 places.settingsOf
     map: {
       provider: (config.map || {}).provider || "auto",
       amap_key: (config.map || {}).amap_key || "",
-      amap_daily_cap: (config.map || {}).amap_daily_cap ?? 2000,
+      amap_search_cap: geoPlaces.settingsOf(config).caps.search,
+      amap_route_cap: geoPlaces.settingsOf(config).caps.route,
     },
     im: {
       feishu: (config.im || {}).feishu || { app_id: "", app_secret: "", verification_token: "", group_reply_mode: "mention" },
@@ -2171,11 +2174,22 @@ app.post("/api/settings", (req, res) => {
         if (!["auto", "amap", "osm"].includes(b.map.provider)) throw new Error(`地图只认 auto / amap / osm，收到的是「${b.map.provider}」`);
         config.map.provider = b.map.provider;
       }
+      // 老界面（升级前开着没刷新的那页）还会送每天的上限：照收，places.settingsOf 会折成每月
       if (b.map.amap_daily_cap !== undefined) {
         const n = Math.floor(+b.map.amap_daily_cap);
         if (!Number.isFinite(n) || n < 0) throw new Error("每天打高德的上限要填 0 或正整数");
         config.map.amap_daily_cap = n;
       }
+      for (const [k, what] of [["amap_search_cap", "每月高德搜索的上限"], ["amap_route_cap", "每月高德路线的上限"]]) {
+        if (b.map[k] === undefined) continue;
+        const n = Math.floor(+b.map[k]);
+        if (!Number.isFinite(n) || n < 0) throw new Error(`${what}要填 0 或正整数`);
+        config.map[k] = n;
+      }
+      // 两项新的都存了，老的每天上限就用不上了，删掉免得以后看配置的人以为它还管用
+      if (b.map.amap_search_cap !== undefined && b.map.amap_route_cap !== undefined) delete config.map.amap_daily_cap;
+      // 地图设置存过（多半是换了 Key）：今天因为 Key 用不了停掉的高德，按新设置再试
+      geoPlaces.resetStop();
     }
     if (b.workspace_dir !== undefined && b.workspace_dir !== getDefaultWorkspaceDir()) {
       config.workspace_dir = setWorkspaceDir(b.workspace_dir);

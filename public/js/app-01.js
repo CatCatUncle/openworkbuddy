@@ -763,7 +763,7 @@ function renderMd(src, base, live, root, opts) {
   let s = esc(pre);
   const codeBlocks = [];
   const pushCode = (lang, code, open) => {
-    // ```itinerary 是行程卡（public/tripcard.js）：解得开就画卡片，解不开照普通代码块显示
+    // ```itinerary 是行程卡（public/tripcard.js）：解得开就画卡片，解不开说一句哪儿不对、原文收起来
     const card = /^itinerary$/i.test(lang) && window.TripCard ? TripCard.cardHtml(code, { open, live }) : "";
     if (card) { codeBlocks.push(card); return `\x00CODE${codeBlocks.length - 1}\x00`; }
     codeBlocks.push(`<div class="code-wrap"><div class="code-head"><span>${esc(lang || "")}</span><a class="code-copy" title="复制代码">复制</a></div><pre><code>${code.replace(/\n$/, "")}</code></pre></div>`);
@@ -3135,8 +3135,8 @@ function copyTextLegacy(text, html) {
 function renderedCopy(nodes) {
   const parts = nodes.map((t) => {
     const c = t.cloneNode(true);
-    // 行程卡贴出去是按天排好的文字，不是地图上那堆按钮
-    if (window.TripCard) c.querySelectorAll(".tc[data-tc]").forEach((h) => { h.innerHTML = TripCard.staticOf(h); });
+    // 行程卡贴出去是按天排好的文字，不是地图上那堆按钮；没画成的那块贴原文
+    if (window.TripCard) c.querySelectorAll(".tc[data-tc], .tc-bad").forEach((h) => { h.innerHTML = TripCard.staticOf(h); });
     c.querySelectorAll(".code-head").forEach((h) => {
       const lang = h.querySelector("span")?.textContent || "";
       h.replaceWith(Object.assign(document.createElement("div"), { textContent: lang, style: "font-size:12px;color:#888" }));

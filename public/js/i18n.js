@@ -2456,12 +2456,19 @@
       "备用模型": "Fallback model",
       // 历史版本按产物分组的小标题（首帧、配音在上面「制片进度」那段已有）
       "视频": "Video",
+      // 设置 → 地图（行程卡）：高德按月计的两个上限
+      "每月最多搜几次地点": "Max place searches per month",
+      "每月最多查几次路线": "Max route lookups per month",
+      "高德按月给免费额度，个人和企业不一样，以高德控制台显示的为准。超出要按量付费。": "Amap's free quota is monthly and differs for personal and business accounts. Check the Amap console for yours. Usage beyond it is billed.",
+      "到数就改用 OpenStreetMap，路线画直线；填 0 就不用高德。": "Once a cap is reached, places come from OpenStreetMap and routes are drawn as straight lines. Enter 0 to never use Amap.",
     },
   };
 
   // 带数字/名字的动态句子：整句匹配，$1 回填
   const PATTERNS = {
     en: [
+      [/^这个月已用：搜索 (\d+) 次，路线 (\d+) 次$/, "Used this month: $1 searches, $2 routes"],
+      [/^这个月已用：搜索 (\d+) 次，路线 (\d+) 次；今天停用高德，它回的是「(.+)」$/, "Used this month: $1 searches, $2 routes; Amap is off for today. It said: \u201c$3\u201d"],
       [/^第 (\d+) 步 · 思考规划中…$/, "Step $1 · thinking…"],
       [/^已退回这步之前，(\d+) 个文件恢复了$/, "Rewound to before this step, $1 file(s) restored"],
       [/^撤销了回退，(\d+) 个文件回到改完的样子$/, "Rewind undone, $1 file(s) back to their edited state"],

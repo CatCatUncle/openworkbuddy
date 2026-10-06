@@ -234,13 +234,16 @@ function createRenderer(opts) {
   let trip = null; // ```itinerary 围栏里攒着的行（null = 不在行程卡里）
 
   const codeLine = (line) => on("dim") + "│ " + on("dimOff") + on("cyan") + line + on("colorOff") + "\n";
-  // 行程卡在网页上是地图；终端里等围栏收齐、换成按天排的文字行程。解不开就照代码块原样打，不吞内容
+  // 行程卡在网页上是地图；终端里等围栏收齐、换成按天排的文字行程。
+  // 解不开就先说一句哪儿不对，再照代码块原样打，不吞内容
   const flushTrip = () => {
     const lines = trip || [];
     trip = null;
-    const it = itinerary.parse(lines.join("\n"));
+    const body = lines.join("\n");
+    const it = itinerary.parse(body);
     if (it) return itinerary.toMarkdown(it).split("\n").map(renderLine).join("");
-    return on("dim") + "│ itinerary" + on("dimOff") + "\n" + lines.map(codeLine).join("");
+    return on("dim") + `行程卡没画成：${itinerary.whyBad(body)}，下面是原文：` + on("dimOff") + "\n"
+      + on("dim") + "│ itinerary" + on("dimOff") + "\n" + lines.map(codeLine).join("");
   };
 
   const renderLine = (line) => {

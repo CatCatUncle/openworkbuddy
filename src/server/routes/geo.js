@@ -3,8 +3,10 @@
 "use strict";
 /**
  * 行程卡（聊天里的地图卡片）用的几个接口：
- *   GET  /api/geo/config                    用哪家查地点、有没有 Key（不给 Key 本身）、几种底图的坐标系和署名
+ *   GET  /api/geo/config                    用哪家查地点、有没有 Key（不给 Key 本身）、几种底图的坐标系和署名、
+ *                                           这个月打了高德几次（设置页看）
  *   POST /api/geo/places   { items }        一批地点名 → 坐标、照片、评分（src/domains/geo/places.js）
+ *   POST /api/geo/photos   { items }        钉子钉上之后再补的照片（去 Wikidata 找，慢，所以单独一趟）
  *   POST /api/geo/legs     { pairs }        相邻两站之间的路线 / 直线距离
  *   GET  /api/geo/tile/:src/:z/:x/:y        底图瓦片，本机记盘（src/domains/geo/tiles.js）
  *   GET  /api/geo/img?u=                    地点照片，只代理名单里的图床
@@ -41,10 +43,11 @@ const router = express.Router();
 
 router.get("/api/geo/config", (_req, res) => {
   const st = places.settingsOf(getConfig());
-  res.json({ provider: st.provider, amap: !!st.key, keyFrom: st.from, sources: tiles.sources() });
+  res.json({ provider: st.provider, amap: !!st.key, keyFrom: st.from, sources: tiles.sources(), usage: places.usage(getConfig()) });
 });
 
 router.post("/api/geo/places", (req, res) => send(res, () => places.lookup(getConfig(), (req.body || {}).items)));
+router.post("/api/geo/photos", (req, res) => send(res, () => places.photos((req.body || {}).items)));
 router.post("/api/geo/legs", (req, res) => send(res, () => places.legs(getConfig(), (req.body || {}).pairs)));
 router.post("/api/geo/test", (req, res) => send(res, () => places.test(getConfig(), (req.body || {}).key)));
 
