@@ -65,6 +65,10 @@ function canvasComposeHtml(p) {
       + (job.log || []).map((l) => `<div class="cp-compose-log">${esc(l)}</div>`).join("")
       + `</div>`;
   }
+  // 服务重启过，进度问不到了：不知道跑没跑完，也不猜，只给重来的路
+  if (job && job.lost) {
+    return `<div class="cp-compose is-bad"><div class="cp-compose-head"><b>这次合成的进度找不到了</b>${button("重新合成")}</div></div>`;
+  }
   if (job && job.output) {
     return `<div class="cp-compose is-done"><div class="cp-compose-head"><b>成片好了</b>`
       + `<code>${esc(job.subtitled || job.output)}</code>`
@@ -90,7 +94,8 @@ function canvasComposeHtml(p) {
     const rows = (plan.shots || []).map((r, i) => `<li${r.why ? ' class="is-bad"' : ""}>`
       + `<span class="cp-ord">${i + 1}</span><b>${esc(r.id)}</b>`
       + `<span>${r.seconds ? r.seconds + "s" : "时长探不到"}</span>`
-      + `<span>${r.audio ? "有配音" : r.line ? "缺配音" : "无人声"}${r.pad ? `（画面补 ${r.pad}s）` : ""}</span>`
+      // 没配音但视频自带声音的，成片里用的是原声——写成「缺配音」「无人声」都不对，它是有声音的
+      + `<span>${r.audio ? "有配音" : r.origAudio ? "用视频原声" : r.line ? "缺配音" : "无人声"}${r.pad ? `（画面补 ${r.pad}s）` : ""}</span>`
       + `<span class="cp-why">${esc(r.why || "")}</span></li>`).join("");
     const eta = canvasEtaText(plan.etaMs);
     // 「烧不了」有三种不一样的原因，混成一句「做不了」等于没说：
@@ -103,7 +108,7 @@ function canvasComposeHtml(p) {
     return `<div class="cp-compose is-plan"><div class="cp-compose-head"><b>合成方案</b>`
       + `<span>${(plan.shots || []).length} 镜 · ${plan.totalSeconds ? plan.totalSeconds + " 秒" : "总时长探不到"} · ${plan.mode === "copy" ? "直接拼，一帧都不重压" : `统一到 ${plan.target.w}×${plan.target.h} 重新编码`}</span>`
       + `<button class="ui-btn ui-btn--xs ui-btn--ghost" data-cp-compose-close>收起</button></div>`
-      + `<div class="cp-compose-tip">按分镜编号排序，不对就改镜头 ID。</div>`
+      + `<div class="cp-compose-tip">跟时间线一个顺序，不对就去时间线上拖。</div>`
       + `<ol class="cp-order">${rows}</ol>`
       + [...stop, ...warn].map((b) => `<div class="cp-compose-log is-${esc(b.level)}">${esc(b.text)}</div>`).join("")
       + `<label class="cp-compose-sub"><input type="checkbox" data-cp-compose-sub ${canvasState.composeSub ? "checked" : ""}>把字幕烧进画面${subNote}</label>`
@@ -348,10 +353,20 @@ async function canvasRunPending(kind) {
   // 不是画布上写没写路径——写着路径而文件没了，照样得重跑。
   const castRows = (canvasState.progress && canvasState.progress.cast) || [];
   const castOk = (id) => { const row = castRows.find((r) => String(r.nodeId) === String(id)); return !!(row && row.image && row.image.ok); };
-  const todo = kind === "cast"
+  const missing = kind === "cast"
     ? elements.filter((n) => canvasKind(n) === "character" && !castOk(n.id) && !canvasIsPlaceholderPrompt(canvasPayload(n).description))
     : elements.filter((n) => canvasKind(n) === "shot" && !has(n.id, kind)
       && !canvasIsPlaceholderPrompt(canvasPayload(n).prompt));
+  // 上一单还没收回来的格子（断线、刷新、服务重启过）不进这一批：那一单可能已经在上游出片、扣费，
+  // 再排进来就是同一格买两次。单列出来，让人去卡片上点「看结果」
+  const jobKind = kind === "cast" ? "image" : kind;
+  const waiting = missing.filter((n) => typeof canvasPendingJob === "function" && canvasPendingJob(canvasPayload(n), jobKind));
+  const todo = missing.filter((n) => !waiting.includes(n));
+  if (!todo.length && waiting.length) {
+    canvasToast(canvasT("{n} 格的上一单还没收到结果，先在卡片上点「看结果」。", { n: waiting.length }), "triangle-alert", "err");
+    canvasProgressFocus(waiting.map((n) => n.id));
+    return;
+  }
   if (!todo.length) {
     // 「没有要补的了」和「有要补的，但都还没写设定」是两回事，不能都报一句绿的
     const held = kind === "cast" && elements.some((n) => canvasKind(n) === "character" && !castOk(n.id));
@@ -364,7 +379,8 @@ async function canvasRunPending(kind) {
   // 最后那句「N 个没成」盖掉——所以把它们摘出来单算，跑完一起说清楚，再跳到那几个镜头上。
   const noSpeaker = kind === "audio" ? todo.filter((n) => canvasResolveVoice(n, canvasPayload(n)).error) : [];
   const queue = todo.filter((n) => !noSpeaker.includes(n));
-  const heldNote = noSpeaker.length ? `，${noSpeaker.length} 个不知道该用谁的嗓子（去镜头的「说话的角色」里点个名）` : "";
+  const heldNote = (noSpeaker.length ? `，${noSpeaker.length} 个不知道该用谁的嗓子（去镜头的「说话的角色」里点个名）` : "")
+    + (waiting.length ? `，${waiting.length} 个上一单没收到结果，没排进来` : "");
   if (!queue.length) {
     canvasToast(`${noSpeaker.length} 个镜头连了多个角色，先指定说话人。`, "triangle-alert", "err");
     canvasProgressFocus(noSpeaker.map((n) => n.id));
@@ -383,18 +399,21 @@ async function canvasRunPending(kind) {
  * 并发是个小池子：limit 个 worker 共用一个游标，谁空了谁取下一个，按镜头顺序发出去。
  */
 async function canvasRunQueue(kind, queue, noSpeaker = [], heldNote = "") {
+  // 返回开没开跑：确认框上点了「先不了」、或者另一批正在跑，都是 false（Agent 清单的横幅凭它决定收不收）
   // 确认框开着的时候再点一次，不能叠出第二个确认、更不能绕过确认直接开跑
-  if (canvasState.batch || canvasState.confirming) return;
+  if (canvasState.batch || canvasState.confirming) return false;
   if (typeof canvasConfirmBatch === "function") {
     canvasState.confirming = true;
     let go = false;
     try { go = await canvasConfirmBatch(kind, queue); } finally { canvasState.confirming = false; }
-    if (!go || canvasState.batch) return;
+    if (!go || canvasState.batch) return false;
   }
   canvasState.batch = { kind, total: queue.length, at: 0, label: "", stop: false };
   canvasRenderProgress();
   let ok = 0;
   const failed = [];
+  // 没收到结果、或者上游收过单之后才出错的：不进「重试失败的」——重试就是再下一单
+  const parked = [];
   // 记下是哪张画布发起的：重试按钮要认这个，换到别的画布上点，不能拿同名 id 去那张图上开枪
   const where = { board: canvasState.canvasName, project: canvasState.workspaceName }, hadGraph = !!canvasState.graph;
   let moved = false, next = 0;
@@ -415,7 +434,7 @@ async function canvasRunQueue(kind, queue, noSpeaker = [], heldNote = "") {
       canvasState.batch.label = String(canvasPayload(node).id || canvasPayload(node).name || canvasPayload(node).title || "");
       canvasRenderProgress();
       const r = await canvasGenerate(node, kind === "cast" ? "image" : kind);
-      if (r && r.ok) ok += 1; else failed.push(node.id);
+      if (r && r.ok) ok += 1; else if (r && (r.unknown || r.submitted)) parked.push(node.id); else failed.push(node.id);
     }
   };
   try {
@@ -426,12 +445,13 @@ async function canvasRunQueue(kind, queue, noSpeaker = [], heldNote = "") {
     const bad = failed.length;
     // 按钮上的字是模板 + 参数：英文界面按整句查词条，数字单独塞进去
     const retry = bad ? { label: "重试失败的 {n} 条", params: { n: bad }, run: () => canvasRetryFailed(kind, failed, where) } : undefined;
-    const warn = bad || noSpeaker.length || moved;
-    canvasToast(`${ok} 个做好了${bad ? `，${bad} 个没成` : ""}${heldNote}${stopped ? "（手动停了）" : ""}${moved ? "（换了画布，没跑完）" : ""}`, warn ? "triangle-alert" : "circle-check", warn ? "err" : undefined, retry);
+    const warn = bad || parked.length || noSpeaker.length || moved || /没收到结果/.test(heldNote);
+    canvasToast(`${ok} 个做好了${bad ? `，${bad} 个没成` : ""}${parked.length ? `，${parked.length} 个没收到结果（没重发，卡片上点「看结果」）` : ""}${heldNote}${stopped ? "（手动停了）" : ""}${moved ? "（换了画布，没跑完）" : ""}`, warn ? "triangle-alert" : "circle-check", warn ? "err" : undefined, retry);
     if (noSpeaker.length) canvasProgressFocus(noSpeaker.map((n) => n.id));
     await canvasLoadProgress();
     canvasLoadLibrary();
   }
+  return true;
 }
 
 /** 只重跑上一趟没成的那几个。点按钮时已经被删掉的就不管了，全删光了要说一声，不能点了没反应 */
@@ -447,6 +467,145 @@ async function canvasRetryFailed(kind, ids, where) {
 }
 
 /**
+ * Agent 交上来的待生成清单（canvas_manage propose，服务端随 GET /api/canvas 一起给）。
+ *
+ * 画布任务里的 Agent 不自己开枪花钱（s_canvas_ 会话里生成工具一律拦下，见 src/tools/canvas.js CANVAS_QUOTE_FIRST）。
+ * 它把提示词和型号写进节点、交一份「哪几个节点、生什么」的清单，这里摆成顶上一条：几张图几段视频、什么型号、大概多少钱。
+ * 型号和价钱按节点上此刻写的现算（canvasEstimateItem / canvasDramaModel，跟真跑那一枪同一个口径），不照抄 Agent 说的。
+ * 点「开跑」才按类走 canvasRunQueue：那条路自己还有一道带报价的扣费确认、并发上限、任务号台账；
+ * 点「不要」就作废，一个生成请求都不发。
+ */
+function canvasNoteProposal(proposal) {
+  const scope = canvasScope(), cur = canvasState.proposal;
+  const fresh = proposal && proposal.id && Array.isArray(proposal.items) && proposal.items.length ? proposal : null;
+  // 换了画布、服务端那份没了（点过了、别的标签页点过了）、Agent 又交了一份新的：旧横幅先收
+  if (cur && (cur.scope !== scope || !fresh || cur.id !== String(fresh.id))) { canvasState.proposal = null; canvasHideBar("proposal"); }
+  if (!fresh || canvasState.proposal) return;
+  if (canvasState.proposalGone instanceof Set && canvasState.proposalGone.has(String(fresh.id))) return;
+  if (typeof document === "undefined" || !document.getElementById("canvas-bars")) return;   // 画布页还没搭好：下一圈同步再摆
+  canvasState.proposal = { id: String(fresh.id), scope, name: canvasState.canvasName,
+    items: fresh.items.map((it) => ({ node_id: String((it && it.node_id) || ""), kind: String((it && it.kind) || "") })) };
+  canvasRenderProposal(canvasState.proposal);
+}
+
+/** 清单里还对得上号的那几项：先认画布上的节点，图还没铺好就拿刚读到的盘上那份顶一下（只拿来写横幅、估价） */
+function canvasProposalRows(p) {
+  const disk = (canvasState.remoteSnapshot && Array.isArray(canvasState.remoteSnapshot.nodes)) ? canvasState.remoteSnapshot.nodes : [];
+  return p.items.map((it) => {
+    let node = canvasState.graph?.getCell?.(it.node_id) || null;
+    if (!node) {
+      const raw = disk.find((n) => n && n.id === it.node_id);
+      if (raw) node = { id: raw.id, get: (k) => (k === "canvasPayload" ? raw.payload || {} : k === "canvasKind" ? raw.kind : undefined) };
+    }
+    return node && ["image", "video", "audio"].includes(it.kind) ? { node, kind: it.kind } : null;
+  }).filter(Boolean);
+}
+
+async function canvasRenderProposal(p) {
+  const rows = canvasProposalRows(p);
+  if (!rows.length) { canvasHideBar("proposal"); return; }
+  const list = ["image", "video", "audio"].map((kind) => {
+    const mine = rows.filter((r) => r.kind === kind);
+    if (!mine.length) return "";
+    const count = canvasT(kind === "image" ? "{n} 张图" : kind === "video" ? "{n} 段视频" : "{n} 条配音", { n: mine.length });
+    if (kind === "audio") return count;   // 配音按角色音色走，不按型号选
+    const models = [...new Set(mine.map((r) => (typeof canvasDramaModel === "function" ? canvasDramaModel(canvasPayload(r.node), kind, canvasKind(r.node)) : "") || canvasT("默认型号")))];
+    return canvasT("{count}（{models}）", { count, models: models.join(" / ") });
+  }).filter(Boolean).join(canvasT("、"));
+  const show = (price) => {
+    if (canvasState.proposal !== p) return;   // 估价那会儿横幅已经点掉、换掉了
+    canvasShowBar("proposal", { kind: "warn", icon: "sparkles", text: canvasT("Agent 列了待生成清单：{list}。{price}", { list, price }), actions: [
+      { label: "开跑", run: (button) => { button.disabled = true; canvasRunProposal(p); } },
+      { label: "不要", run: () => canvasDropProposal(p) },
+    ] });
+  };
+  show(canvasT("正在估价…"));
+  const { est, error } = await canvasEstimate(rows.map((r) => canvasEstimateItem(r.node, r.kind)));
+  const known = est ? est.items.filter((x) => x && x.known).length : 0;
+  const unknown = est ? (Number.isFinite(Number(est.unknownCount)) ? Number(est.unknownCount) : est.items.length - known) : 0;
+  // 估不出来照样摆、照样能点：跟一键补齐的确认框一个规矩，不猜数，原话照抄
+  show(!est ? canvasT("没拿到报价：{n}", { n: error })
+    : !known ? canvasT("价格未知，点「开跑」才扣费。")
+      : unknown > 0 ? canvasT("预计 {m}，另有 {n} 条价格未知。", { m: canvasFormatYuan(est.total), n: unknown })
+        : canvasT("预计 {m}，点「开跑」才扣费。", { m: canvasFormatYuan(est.total) }));
+}
+
+/**
+ * 请服务端收掉（kinds 为空）或划掉其中几类（kinds）。回服务端的回话；没收成就照原话报一句：
+ * 以前一律吞掉，这台机器上横幅是没了，刷新一下整份又摆出来，跑过的那几项再点「开跑」就是再买一遍
+ */
+async function canvasProposalPost(p, kinds) {
+  const body = { name: p.name, id: p.id, ...(kinds && kinds.length ? { kinds } : {}) };
+  try {
+    const r = await fetch("/api/canvas/proposal/dismiss", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d || d.ok === false) throw new Error((d && d.error) || `HTTP ${r.status}`);
+    return d;
+  } catch (e) {
+    const why = String((e && e.message) || e);
+    canvasToast(kinds && kinds.length ? canvasT("服务端没划掉跑过的那几类：{why}。刷新后整份清单会再摆出来", { why })
+      : canvasT("服务端没收掉这份清单：{why}。刷新后它会再摆出来", { why }), "triangle-alert", "err");
+    return null;
+  }
+}
+
+/** 「不要」，或者开跑之后全跑了：这台机器先记下点过了，再请服务端收掉那一份（带清单号，Agent 新交的不受牵连） */
+function canvasDropProposal(p) {
+  if (!(canvasState.proposalGone instanceof Set)) canvasState.proposalGone = new Set();
+  canvasState.proposalGone.add(p.id);
+  if (canvasState.proposal === p) canvasHideBar("proposal");
+  return canvasProposalPost(p);
+}
+
+/**
+ * 「开跑」：按图 → 视频 → 配音的顺序一类一批（视频要用刚出的首帧），每批照常过 canvasRunQueue 的扣费确认。
+ * 第一批就点了「先不了」就把横幅摆回去，清单不作废。开了几批：跑过的那几类从清单里划掉，
+ * 没跑的（后面那批点了「先不了」、跑到一半换了画布）留在横幅上，带着新报价再等人点——
+ * 以前开了任何一批就整份收掉，后面没跑的那几类连同型号、报价一起没了
+ */
+async function canvasRunProposal(p) {
+  if (canvasState.proposal !== p) return;
+  if (canvasState.batch || canvasState.confirming) {
+    canvasToast("还有一批在跑，跑完再点开跑。", "triangle-alert", "err");
+    canvasRenderProposal(p);
+    return;
+  }
+  const groups = ["image", "video", "audio"].map((kind) => ({ kind, nodes: p.items.filter((it) => it.kind === kind)
+    .map((it) => canvasState.graph?.getCell?.(it.node_id)).filter(Boolean) })).filter((g) => g.nodes.length);
+  if (!groups.length) { canvasToast("清单里的节点都已不在画布上。", "triangle-alert", "err"); canvasDropProposal(p); return; }
+  // 上一单还没收回来的格子不排进来（跟一键补齐一个规矩）：那一单可能已经在上游扣过费，再排就是买两次
+  const waitingOf = (g) => g.nodes.filter((n) => typeof canvasPendingJob === "function" && canvasPendingJob(canvasPayload(n), g.kind));
+  const waitingAll = groups.flatMap(waitingOf);
+  if (waitingAll.length && groups.every((g) => waitingOf(g).length === g.nodes.length)) {
+    canvasToast(canvasT("{n} 格的上一单还没收到结果，先在卡片上点「看结果」。", { n: waitingAll.length }), "triangle-alert", "err");
+    canvasProgressFocus(waitingAll.map((n) => n.id));
+    canvasRenderProposal(p);   // 横幅留着、按钮恢复：看完结果还能再点
+    return;
+  }
+  canvasHideBar("proposal");
+  // done：这一趟开过枪的那几类。整类都在等上一单的也算——那几格已经下过单，留在清单上再点就是买两次
+  let started = false; const done = new Set();
+  for (const g of groups) {
+    if (canvasScope() !== p.scope) break;   // 跑前一批的工夫换了画布：后面几批不在这张图上开枪
+    const waiting = waitingOf(g), queue = g.nodes.filter((n) => !waiting.includes(n));
+    if (!queue.length) { done.add(g.kind); continue; }
+    // 哪一批的确认框上点了「先不了」就整张清单停在那儿，不接着问下一类
+    if (!(await canvasRunQueue(g.kind, queue, [], waiting.length ? `，${waiting.length} 个上一单没收到结果，没排进来` : ""))) break;
+    started = true; done.add(g.kind);
+  }
+  const here = () => canvasState.proposal === p && canvasScope() === p.scope;
+  if (!started) { if (here()) canvasRenderProposal(p); return; }
+  // 还没跑的：画布上还有节点、又没开过枪的那几类。一项不剩就整份收掉
+  const live = new Set(groups.map((g) => g.kind));
+  const left = p.items.filter((it) => live.has(it.kind) && !done.has(it.kind));
+  if (!left.length) { canvasDropProposal(p); return; }
+  p.items = left;
+  if (here()) canvasRenderProposal(p);
+  const d = await canvasProposalPost(p, [...done]);
+  if (d && d.id) p.id = String(d.id);   // 剩下的换了新号：下一圈同步认得出还是这一份，不当成新交的再摆一遍
+}
+
+/**
  * 合成成片：把画布上的镜头真的拼成一条能播的片子。
  *
  * 三步，缺一不可：
@@ -455,7 +614,7 @@ async function canvasRetryFailed(kind, ids, where) {
  *      没有任何一条报错会红，只有人看到第三分钟才发现。所以顺序必须先过一眼。
  *   ② 确认了才跑。跑的是服务端拼好的 ffmpeg 命令，一条一条来，跑到哪写到哪。
  *   ③ 跑完了认账：成片真的落盘才说成了，没落盘就说没落盘。
- * 中途能停。停下来已经拼好的片段都留着，下次接着拼不用重跑。
+ * 中途能停。停下来已经拼好的片段文件还在盘上，但下次合成会从第一镜重新拼一遍（每一步都覆盖重写）。
  */
 async function canvasComposeOpen() {
   canvasState.progressOpen = true;
@@ -497,7 +656,21 @@ function canvasComposePoll() {
   canvasState.composeTimer = window.setTimeout(async () => {
     const id = canvasState.composeJob && canvasState.composeJob.id;
     if (!id) return;
-    const r = await fetch("/api/canvas/compose?job=" + encodeURIComponent(id)).then((x) => x.json()).catch(() => null);
+    const res = await fetch("/api/canvas/compose?job=" + encodeURIComponent(id)).catch(() => null);
+    // 合成记录只在服务端内存里：服务重启过，这条就再也问不到了。404 不是「还没好」，
+    // 接着问只会一直转、按钮一直灰。停下来照实说，给一个重新合成的按钮
+    if (res && res.status === 404) {
+      if (!canvasState.composeJob || canvasState.composeJob.id !== id) return;
+      canvasState.composeJob = { id, done: true, lost: true, steps: [], log: [] };
+      canvasRenderProgress();
+      // 剪辑节点上那颗「正在合成…」也得放开，不然进度带上说找不到了，卡上的按钮还灰着
+      (canvasState.graph?.getElements?.() || []).filter((n) => canvasKind(n) === "timeline").forEach((n) => canvasRefreshNode(n));
+      canvasToast("这次合成的进度找不到了，可以重新合成。", "circle-x", "err");
+      return;
+    }
+    const r = res ? await res.json().catch(() => null) : null;
+    // 等回话的工夫用户可能已经点了「重新合成」：那份旧回话不能把新的盖掉
+    if (!canvasState.composeJob || canvasState.composeJob.id !== id) return;
     if (r && r.job) canvasState.composeJob = r.job;
     canvasRenderProgress();
     if (!r || !r.job || !r.job.done) return canvasComposePoll();
@@ -518,7 +691,7 @@ async function canvasComposeStop() {
   await fetch("/api/canvas/compose", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cancel: id }),
   }).catch(() => null);
-  canvasToast("正在停…已经拼好的片段都留着。", "info");
+  canvasToast("正在停…下次合成要从头再拼一遍。", "info");
 }
 
 /** 起手模板里那几句占位文字。跟服务端 drama-pipeline.js 的 PLACEHOLDERS 是同一份口径 */
@@ -633,6 +806,44 @@ function canvasRenderBroken(page, world) {
   if (select) select.onchange = async (event) => { await canvasFlushRemoteWrite(); canvasState.canvasName = event.target.value || "main"; try { localStorage.setItem("openworkbuddy.canvas.name", canvasState.canvasName); } catch {} renderCanvasPage(); };
 }
 
+/**
+ * 留哪份：本机这份（没存进项目的那份）还是项目里那份。不给默认、不替人选；
+ * 选之前屏幕上铺本机这份，改动照存本机，不往项目里写也不拉。横幅一直挂着，切走再回来还问
+ */
+function canvasAskRestoreChoice(local, remote) {
+  const scope = canvasScope();
+  canvasState.restoreChoice = { scope, local, remote };
+  canvasApplySnapshot(local);
+  canvasShowBar("restore", {
+    kind: "warn", icon: "triangle-alert", text: canvasT("本机有改动没存进项目，跟项目里那份不一样。留哪份？"),
+    actions: [
+      { label: "用本机的", run: () => canvasSettleRestore("mine") },
+      { label: "用项目里的", run: () => canvasSettleRestore("disk") },
+    ],
+  });
+}
+async function canvasSettleRestore(side) {
+  const choice = canvasState.restoreChoice;
+  canvasHideBar("restore");
+  canvasState.restoreChoice = null;
+  if (!choice || choice.scope !== canvasScope() || !canvasState.graph) return;
+  if (canvasState.remoteWriteTimer) { clearTimeout(canvasState.remoteWriteTimer); canvasState.remoteWriteTimer = null; }
+  canvasState.remoteWriteArmed = null;
+  const mine = canvasSnapshot();
+  if (side === "mine") {
+    // base 还是打开时盘上那份（canvasRestoreOrSeed 记的）：这期间盘上没变就直接存上去，变了撞 409 按节点合并
+    await canvasPushRemote({ scope: choice.scope, name: canvasState.canvasName, snapshot: mine, contentKey: canvasHistoryKey(mine) });
+    return;
+  }
+  // 拉最新的一份：等人选的这会儿 Agent 可能又写过
+  const disk = (await canvasLoadRemote()) || choice.remote;
+  if (canvasScope() !== choice.scope) return;
+  canvasApplySnapshot(disk, { fromRemote: true });
+  canvasToast(canvasT("已换成项目里那份。"), "circle-check", "", {
+    label: "换回本机的", run: () => { if (canvasScope() === choice.scope) canvasApplySnapshot(mine); },
+  });
+}
+
 /** 拿本机副本盖掉那份读不出来的文件。只有用户自己点了才会走到这儿，且原件已经备份过。 */
 async function canvasRestoreFromLocal(local) {
   if (!local || !local.nodes.length) return;
@@ -652,6 +863,8 @@ async function canvasRestoreFromLocal(local) {
 
 function canvasRestoreOrSeed(remote = null) {
   const local = canvasLoadSaved();
+  // 这台机器上回看见这张画布是什么时候：Agent 在那之后清空、连删存下的快照，打开时挂「撤销」（见 canvasOfferSnapshotUndo）
+  canvasState.snapshotSince = Number(local && local.savedAt) || Date.now();
   // 拉到了盘上那份就先认它当 base（新建的画布是 updatedAt 0，照样算）：下面铺本机副本、铺起手卡之后
   // 那一趟存盘都照着它交，这中间别处要是先写了一笔，就撞 409 去合并，不再一把盖掉
   if (remote && Array.isArray(remote.nodes)) canvasState.remoteBase = { scope: canvasScope(), at: Number(remote.updatedAt) || 0, snapshot: remote };
@@ -663,6 +876,18 @@ function canvasRestoreOrSeed(remote = null) {
     canvasApplySnapshot(local); return;
   }
   if (pending) canvasClearPendingConflict();
+  // 本机副本里有没存进项目的改动（上回存盘失败、或者没等存完就关了），盘上那份又跟它不一样：问人留哪份。
+  // 以前这儿是「盘上有节点铺盘上的，没有铺本机的」——前者把本机没存上的活一声不吭盖掉，
+  // 后者把 Agent 清空的画布又顶回去。没记过指纹的老副本分不出来，照老规矩走
+  const synced = canvasLoadSynced();
+  const written = !!(remote && Array.isArray(remote.nodes) && (Number(remote.updatedAt) > 0 || remote.nodes.length));
+  const dirty = !!(local && synced !== null && canvasContentHash(canvasHistoryKey(local)) !== synced);
+  if (dirty && written && canvasMergeSameKey(local) !== canvasMergeSameKey(remote)) { canvasAskRestoreChoice(local, remote); return; }
+  // 本机没有没存的改动、盘上那份是本机上回存完之后清空的（Agent 清空画布）：照铺空的，不拿本机这份顶回去。
+  // 「撤销」见 canvasOfferSnapshotUndo
+  if (synced !== null && written && local && !remote.nodes.length && Number(remote.updatedAt) > Number(local.savedAt || 0)) {
+    canvasApplySnapshot(remote, { fromRemote: true }); return;
+  }
   const saved = remote && remote.nodes.length ? remote : local;
   if (saved && saved.nodes.length) {
     // 服务器那份直接铺、不回写；本机那份铺完要往上顶一次（这台机器上有、服务器上没有的改动）

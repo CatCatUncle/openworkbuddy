@@ -2074,6 +2074,9 @@ const ATTACH_CHECKS = `
     ok("重复的文件不挂第二枚 chip", chips().length === 1, "chip 数=" + chips().length);
     ok("但明说了它已经在这条消息里", window.toasts.some((t) => /已经在这条消息里/.test(t)), JSON.stringify(window.toasts));
     ok("内容照样更新成最新的那份", uploads.length === n + 1, n + " → " + uploads.length);
+    // 上一趟已经落了盘：第二趟带上它的路径，让服务端原地换，不另起 名字_2 留一份没人认的在目录里
+    ok("第二趟带上了上一趟那份的路径（replace）", uploads[uploads.length - 1].replace === "out/同一张.png", JSON.stringify(uploads[uploads.length - 1].replace));
+    ok("第一趟没带", !uploads[n - 1].replace, JSON.stringify(uploads[n - 1].replace));
   }
 
   // ---- 12. 拖进来一个文件夹：不传、不挂 chip、说清楚该怎么办 ----

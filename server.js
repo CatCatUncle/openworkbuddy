@@ -25,7 +25,7 @@ const { mergeBuiltinExperts } = require("./src/agent/experts-lib");
 const mcpCatalog = require("./src/core/ext/mcp-catalog");
 const { createLLM, createEmbedder, pingRequest, probeEmbedding, embedCandidates, embedChannels, embedHostable } = require("./src/core/model/llm");
 const sessSearch = require("./src/core/memory/session-search");
-const { outputFiles, noteUserInput, moveUserInput, filesScope, safePath, safePathIn, workspaceKeyOf, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, setLibraryDir, withLibraryBase, libBase, notesFileOf, withWorkspace, enterWorkspace, withPolicy, orgPolicy, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSafeName, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath } = require("./src/agent/tools");
+const { outputFiles, noteUserInput, moveUserInput, isUserInput, filesScope, safePath, safePathIn, workspaceKeyOf, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, setLibraryDir, withLibraryBase, libBase, notesFileOf, withWorkspace, enterWorkspace, withPolicy, orgPolicy, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSafeName, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath } = require("./src/agent/tools");
 const checkpoints = require("./src/agent/checkpoints"); // 这条对话改过的文件：列出来、整步退回去
 const worktree = require("./src/agent/worktree"); // 两条任务同时改一个仓库时，后来的那条进自己的 git worktree
 const canvasRoutes = require("./src/server/routes/canvas"); // 画布读写 + 短剧素材台账 + 制片进度
@@ -77,6 +77,8 @@ const quota = require("./src/core/billing/quota"); // 按次计费的外部 API�
 const pricing = require("./src/core/billing/pricing"); // 按量价目：批量生成前的预估跟记账查的是同一张表
 const tracing = require("./src/core/obs/trace"); // 执行追踪（Langfuse），默认关；跟 agent.js 共用同一个追踪器
 const genCache = require("./src/domains/media/gen-cache"); // 生成结果缓存：同一格重跑别再烧第二次钱
+const toolJobs = require("./src/domains/media/tool-jobs"); // 直调生成的收单台账：同一个 clientJobId 只真跑一次
+const uploadName = require("./src/util/upload-name"); // 上传同名不覆盖：挑 名字_2、名字_3
 const memory = require("./src/core/memory/memory");
 const notify = require("./src/core/obs/notify");
 const log = require("./src/platform/log");
@@ -5731,7 +5733,7 @@ async function startPluginMcp(pluginName) {
 // 所以没文件夹时先落根目录并记账，等文件夹一建好，assignSessionDir 再把它们搬进去。
 app.post("/api/upload", (req, res) => {
   try {
-    const { name, data_b64, session } = req.body || {};
+    const { name, data_b64, session, replace } = req.body || {};
     if (!name || !data_b64) return res.status(400).json({ error: "缺少 name 或 data_b64" });
     // basename 之后再洗一遍：控制字符和路径分隔符在文件名里没有正当用途，
     // 而这些名字会被拼进链接、传给系统程序、写进日志
@@ -5745,19 +5747,33 @@ app.post("/api/upload", (req, res) => {
     // 光看 sess.dir 的话，换过根以后拿旧根下的名字在新根里建出一个没人认的同名文件夹，附件就丢在那儿了
     const perChat = !!sess && perChatHere();
     const own = perChat ? sessDirOf(sess) : null;
-    const rel = own ? path.join(own, base) : base;
-    const p = safePath(rel);
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, Buffer.from(data_b64, "base64"));
+    // 先拿原名过一遍 safePath（落点在不在工作目录里），再在同一个目录里挑一个盘上没有的名字写：
+    // 同名的已经在了就叫 名字_2、名字_3，不覆盖（见 src/util/upload-name.js）。挑出来的名字只多了个
+    // 后缀，跟原名在同一个目录里，不用再判一次
+    const dir = path.dirname(safePath(own ? path.join(own, base) : base));
+    const buf = Buffer.from(data_b64, "base64");
+    // 同一枚附件重拖了一遍：replace 是它上一趟落盘的相对路径。只有那份确实是这一枚刚传的——同一个目录、
+    // 名字是原名或 原名_N、盘上的 mtime 跟上传那一刻记的对得上（Agent 改写过就对不上）——才原地换；
+    // 认不出来（服务重启过、路径是别处的）就照常另起名字，宁可多一份也不盖错
+    const prev = typeof replace === "string" ? replace : "";
+    const prevName = prev ? path.basename(prev) : "";
+    const sameSpot = !!prevName && prev === (own ? path.join(own, prevName) : prevName);
+    const swapped = sameSpot ? uploadName.writeUploadReplace(dir, base, prevName, buf, (n, file) => {
+      try { return isUserInput({ name: prev, mtime: fs.statSync(file).mtime.toISOString() }); } catch { return false; }
+    }) : "";
+    const saved = swapped || uploadName.writeUploadFresh(dir, base, buf);
+    const rel = own ? path.join(own, saved) : saved;
     // 记一笔「这份是用户传的」。不记的话，正在跑的那趟任务下一次对账就会把它当成自己的产出
     // 摆进「本回合产出」——用户粘张图想追问，图当场出现在上一轮的成果里（见 tools.js userInputs）
     noteUserInput(rel);
     if (perChat && !own) {
-      sess.pending_uploads = (sess.pending_uploads || []).filter((n) => n !== base).concat(base);
+      sess.pending_uploads = (sess.pending_uploads || []).filter((n) => n !== saved).concat(saved);
     }
     // 连相对路径一起回：前端那枚 chip 要按这个路径把文件打开给用户看。
     // 只回 name 的话，落进会话成果文件夹的文件在工作目录根上根本找不到。
-    res.json({ ok: true, name: base, path: rel });
+    // 改了名就把原名也带上：前端得把 chip 和输入框里那枚【图片 N：…】一起改过来，不然模型照着原名去读，读到的是旧的那份
+    // replaced：原地换掉了这一枚上一趟那份，前端说「换成刚拖进来的这份」，不说「另存成了…」
+    res.json({ ok: true, name: saved, path: rel, ...(swapped ? { replaced: true } : {}), ...(saved !== base ? { renamedFrom: base } : {}) });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -6928,6 +6944,15 @@ app.post("/api/tool/run", async (req, res) => {
   try { sub = toolRunSubdir((req.body || {}).subdir); } catch (e) { return res.status(400).json({ error: e.message }); }
   if (!runtime) return res.status(503).json({ error: "服务还在启动，稍等一下再试" });
   const user = req.user; // authGuard 已挂上
+  // 画布带来的这一单的编号（见 src/domains/media/tool-jobs.js）。同一个编号已经在跑、或者刚跑完：
+  // 交回那一单的结果，不再开枪——余额、组织这些闸门是给「要开新的一枪」设的，查旧单不用过
+  const jobId = toolJobs.toolJobId((req.body || {}).clientJobId);
+  const owner = user ? user.username : "";
+  const ledger = toolJobs.toolJobFile(getWorkspaceDir());
+  if (jobId && toolJobs.toolJobLookup({ file: ledger, owner, id: jobId })) {
+    const again = await toolJobs.toolJobRun({ file: ledger, owner, id: jobId, tool, exec: async () => ({ status: 409, body: { error: "这一单已经有了" } }) });
+    return res.status(again.status).json({ ...again.body, job: { ...again.job, replayed: true } });
+  }
   if (user && account.creditsEnabled(user) && account.balanceOf(user) <= 0) {
     return res.status(402).json({ error: "用量不足，跑不了。生图生视频每跑一次都是真花钱——找管理员在企业后台充值，或者把「用量限额」关掉。" });
   }
@@ -6947,27 +6972,57 @@ app.post("/api/tool/run", async (req, res) => {
   // 对话自己的成果目录优先；没有才用画布给的 subdir
   if (!baseDir && sub) { try { baseDir = toolRunSubdirReady(sub); } catch (e) { return res.status(e.status || 500).json({ error: e.message }); } }
   // 请求断了就叫停这次生成。挂在 res 的 close 上而不是 req 的：Node 新版里请求体一读完
-  // req 就会发 close，正常请求也会被当成断开；res 没写完就 close 才是真断了
+  // req 就会发 close，正常请求也会被当成断开；res 没写完就 close 才是真断了。
+  // 带了 clientJobId 的不叫停：这一枪可能已经在上游下了单，断线是网络的事，不是人说不要了。
+  // 叫停了上游照样渲染、照样扣费，画布这头却只剩一句「失败」，人一重试就是第二单。
+  // 跑完的结果记在台账里，画布回来拿同一个编号问（GET /api/tool/job）就拿得到
   const ac = new AbortController();
-  res.on("close", () => { if (!res.writableFinished) ac.abort(); });
+  if (!jobId) res.on("close", () => { if (!res.writableFinished) ac.abort(); });
   const t0 = Date.now();
-  try {
-    const r = await runtime.runTool(tool, input, { user: user ? user.username : undefined, baseDir, taskLabel: label, signal: ac.signal, stopSignal: ac.signal });
-    // 工具自己报的失败（渠道没配、模型点错名）不是 HTTP 错误：原话比任何状态码都说得清，
-    // 前端要把它贴在那一格上给用户看，所以照原样送出去，只用 isError 标明成没成
-    res.json({
-      ok: !r.isError,
-      isError: !!r.isError,
-      content: String(r.content || ""),
-      file: r.file || "",
-      path: toolRunRel(baseDir, r.file), // 工作区相对路径；找不到就是空串
-      cached: !!r.cached, // true = 这一次没花钱，复用的是上次的产物
-      submitted: r.submitted || "", // 非空 = 上游已经收下了这一单才出的错，多半已扣费，别自动重跑
-      ms: Date.now() - t0,
-    });
-  } catch (e) {
-    res.status(e.status || 500).json({ error: e.message });
+  const exec = async ({ onSubmitted } = {}) => {
+    try {
+      const r = await runtime.runTool(tool, input, { user: user ? user.username : undefined, baseDir, taskLabel: label, signal: ac.signal, stopSignal: ac.signal, onSubmitted });
+      // 工具自己报的失败（渠道没配、模型点错名）不是 HTTP 错误：原话比任何状态码都说得清，
+      // 前端要把它贴在那一格上给用户看，所以照原样送出去，只用 isError 标明成没成
+      return { status: 200, body: {
+        ok: !r.isError,
+        isError: !!r.isError,
+        content: String(r.content || ""),
+        file: r.file || "",
+        path: toolRunRel(baseDir, r.file), // 工作区相对路径；找不到就是空串
+        cached: !!r.cached, // true = 这一次没花钱，复用的是上次的产物
+        submitted: r.submitted || "", // 非空 = 上游已经收下了这一单才出的错，多半已扣费，别自动重跑
+        // true = 上游明说没收这一单、或者压根没发出去（模型没配、本机熔断拦下），画布才补枪 / 换备用模型。
+        // 不带的失败（等超时、下载断了、200 却没给图）可能已经扣了钱，画布原样报错，不再发
+        retryable: !!(r.isError && (r.retryable || r.mediaBreaker)),
+        ms: Date.now() - t0,
+      } };
+    } catch (e) {
+      // 抛出来的错也可能是收过单以后的（tools.js 外面没包住的那几种）：编号带上，前端照样不补枪
+      return { status: e.status || 500, body: { error: e.message, ...(e && e.submitted ? { submitted: String(e.submitted) } : {}) } };
+    }
+  };
+  if (!jobId) {
+    const out = await exec();
+    return res.status(out.status).json(out.body);
   }
+  const model = input && typeof input === "object" ? String(input.model || "") : "";
+  const out = await toolJobs.toolJobRun({ file: ledger, owner, id: jobId, tool, model, exec });
+  // 人还连着就交回去；断了也没关系，台账里有
+  if (!res.writableEnded && !res.destroyed) res.status(out.status).json({ ...out.body, job: { ...out.job, replayed: !!out.replayed } });
+});
+
+/**
+ * 问一单直调生成的下落：在跑 / 跑完（连同当时那份回执）/ 服务重启前没收完 / 没这一单。
+ * 只读台账，不开枪——画布断线回来点「看结果」走的就是这里，点多少次都不花钱
+ */
+app.get("/api/tool/job", (req, res) => {
+  const id = toolJobs.toolJobId(String(req.query.id || ""));
+  if (!id) return res.status(400).json({ error: "缺少 id，或者 id 不合法" });
+  const owner = req.user ? req.user.username : "";
+  const got = toolJobs.toolJobLookup({ file: toolJobs.toolJobFile(getWorkspaceDir()), owner, id });
+  if (!got) return res.json({ ok: true, job: { id, state: "missing" }, response: null });
+  res.json({ ok: true, job: got.job, response: got.response });
 });
 
 /**

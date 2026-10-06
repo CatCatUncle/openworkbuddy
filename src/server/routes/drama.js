@@ -2,7 +2,7 @@
 // Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
 "use strict";
 /**
- * 短剧分镜表路由：/api/drama/storyboard(s)（读、整份存、剧本拆草稿、草稿落盘、单格回写）和
+ * 短剧分镜表路由：/api/drama/storyboard(s)（读、整份存、剧本拆草稿、草稿落盘、单格回写、放映顺序）和
  * /api/drama/shot-history/*（一镜一镜的版本留底与恢复）。从 server.js 原样搬出来的，URL、状态码、返回体一个字没动。
  * 顶层登记、路由器变量叫 app、依赖做成模块级变量的缘故见 src/server/routes/canvas.js 开头。
  */
@@ -377,6 +377,26 @@ app.post("/api/drama/storyboard/output", (req, res) => {
     if (Buffer.byteLength(raw) > DRAMA_JSON_MAX) return res.status(400).json({ error: "分镜表超过 4MB 上限" });
     fs.writeFileSync(r.p, raw, "utf8");
     res.json({ ok: true, name: r.rel, target, id: shotId || charId, fields });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+/**
+ * 放映顺序回写：画布时间线上拖一格（或 Alt+←/→ 挪一格），整批镜头的 order 一次写进分镜表。
+ *
+ * 不走上面那条单格回写：一次拖动动的是一串镜头的顺序，一镜一趟就是几十次读-改-写，
+ * 中途断一趟，分镜表里就是半新半旧的顺序。这条一次读、一次写，要么全写要么一笔不写（见 applyShotOrder）。
+ * 也不留底：改顺序不盖掉任何产物，画布上 ⌘Z 就能退回去，退回去也走这一条。
+ */
+app.post("/api/drama/storyboard/order", (req, res) => {
+  try {
+    const body = req.body || {};
+    const r = readDramaJson(body.name);
+    const out = dramaPipeline.applyShotOrder(r.data, body.shots);
+    if (!out.ok) return res.status(out.status).json({ error: out.error });
+    const raw = JSON.stringify(r.data, null, 2) + "\n";
+    if (Buffer.byteLength(raw) > DRAMA_JSON_MAX) return res.status(400).json({ error: "分镜表超过 4MB 上限" });
+    if (out.changed) fs.writeFileSync(r.p, raw, "utf8");
+    res.json({ ok: true, name: r.rel, changed: out.changed });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 

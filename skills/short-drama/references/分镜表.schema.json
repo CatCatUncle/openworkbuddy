@@ -63,7 +63,8 @@
                 "video": { "type": "string", "description": "这一镜的视频产物路径" },
                 "audio": { "type": "string", "description": "这一镜的配音产物路径" },
                 "duration": { "type": "number", "description": "实测时长（秒），ffprobe 量完回写。以配音时长为准，别让话说一半画面没了" },
-                "note": { "type": "string", "description": "给人看的备注：为什么这么拍、重拍过几次、哪儿还不满意" }
+                "note": { "type": "string", "description": "给人看的备注：为什么这么拍、重拍过几次、哪儿还不满意" },
+                "order": { "type": "number", "minimum": 1, "description": "放映顺序（第几个放），画布时间线上拖过才有。有它就按它排，没有按场次、镜头号排。改顺序只改它，别动镜头号和文件名" }
               }
             }
           }

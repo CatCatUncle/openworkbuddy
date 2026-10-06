@@ -279,7 +279,7 @@ function composePlan(state, opts = {}) {
     push("stop", "这张画布上一个镜头节点都没有，先把分镜展开成镜头再来合成。", []);
   }
 
-  // ── 逐镜头体检：画面必须真在盘上；配音有就用，没有就补一段静音（不然 concat 会对不齐声轨）
+  // ── 逐镜头体检：画面必须真在盘上；配音有就用，没有就用视频自带的声音，再没有才补一段静音（不然 concat 会对不齐声轨）
   /** @type {ComposeRow[]} */
   const rows = [];
   const noVideo = [], lostVideo = [], wrongKind = [], noProbe = [], noVoice = [], twins = [];
@@ -317,13 +317,23 @@ function composePlan(state, opts = {}) {
     row.w = pv ? Number(pv.w) || 0 : 0; row.h = pv ? Number(pv.h) || 0 : 0;
     row.fps = pv ? Number(pv.fps) || 0 : 0; row.vcodec = pv ? String(pv.vcodec || "") : "";
     row.pix = pv ? String(pv.pix || "") : "";
+    // 没单独配音、视频自己带着声音（生成视频的模型常常连环境声、人声一起出）：用它的原声。
+    // 以前这种镜头一律垫静音，连播预览里听得见、成片里却哑了。只在真探到音轨时才这么做，
+    // 探不到（没 ffprobe、文件坏了）照旧垫静音——宁可哑，也不拿一条不知道在不在的音轨去 map。
+    // 写了配音、只是文件丢了或同名好几份的不算「没配音」：那一镜本来要的是配音，照旧按缺配音处理
+    if (row.video && !a && pv && pv.acodec) row.origAudio = true;
     rows.push(row);
   }
   if (noVideo.length) push("stop", `${noVideo.length} 个镜头还没有视频，这几镜先生成出来再合成`, noVideo);
   if (lostVideo.length) push("stop", `${lostVideo.length} 个镜头的视频文件已经不在盘上了，拼不进去`, lostVideo);
   if (wrongKind.length) push("stop", `${wrongKind.length} 个镜头的 video 字段指的不是视频文件`, wrongKind);
   if (twins.length) push("stop", `${twins.length} 个镜头的素材有同名的好几份，分不清用哪份；把路径改成带目录的`, twins);
-  if (noVoice.length) push("warn", `${noVoice.length} 个镜头有台词但没有配音，这几镜会是静音的`, noVoice);
+  // 有台词没配音的镜头分两种说：视频自带声音的用原声，不带的才是真静音。混成一句「会是静音的」，
+  // 用户会去补一堆其实不缺的配音
+  const byOrig = new Set(rows.filter((r) => r.origAudio).map((r) => r.nodeId));
+  const muteIds = noVoice.filter((id) => !byOrig.has(String(id))), origIds = noVoice.filter((id) => byOrig.has(String(id)));
+  if (muteIds.length) push("warn", `${muteIds.length} 个镜头有台词但没有配音，这几镜会是静音的`, muteIds);
+  if (origIds.length) push("warn", `${origIds.length} 个镜头有台词但没有配音，这几镜用视频自带的声音`, origIds);
 
   // ── 画幅一不一致：不一致就只能重新编码统一到一个尺寸，直拼出来的会是一条花屏
   const sized = rows.filter((r) => r.w && r.h);
@@ -383,7 +393,7 @@ function composePlan(state, opts = {}) {
   if (musicOn && !totalSeconds) {
     push("warn", "探不到成片总时长，配乐结尾就不做淡出了——音乐会跟着画面一起收，稍微有点硬", []);
   }
-  if (musicOn && !opts.duck && rows.some((r) => r.audio)) {
+  if (musicOn && !opts.duck && rows.some((r) => r.audio || r.origAudio)) {
     push("warn", "本机 ffmpeg 没有 sidechaincompress，配乐不会在说话的时候自动压低，只按固定音量垫在台词底下", []);
   }
 
@@ -417,7 +427,13 @@ function composePlan(state, opts = {}) {
     if (!r.video) return;
     const silent = ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"];
     let argv;
-    if (mode === "copy") {
+    if (r.origAudio) {
+      // 用视频自己的音轨。apad 把声音补到无限长、-shortest 让画面说了算：
+      // 原声比画面短，后半截补静音；比画面长，跟着画面一起收——每一段的声轨都和画面一样长，concat 才对得齐
+      argv = mode === "copy"
+        ? ["-y", "-i", r.video, "-map", "0:v:0", "-map", "0:a:0", "-c:v", "copy", "-af", "apad", ...AUDIO_ARGS, "-shortest", "-movflags", "+faststart", clip]
+        : ["-y", "-i", r.video, "-filter_complex", `[0:v]${fitPadVf(target.w, target.h, r.pad, fps)}[v];[0:a:0]apad[a]`, "-map", "[v]", "-map", "[a]", ...X264_ARGS, ...AUDIO_ARGS, "-shortest", "-movflags", "+faststart", clip];
+    } else if (mode === "copy") {
       argv = r.audio
         ? ["-y", "-i", r.video, "-i", r.audio, "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", ...AUDIO_ARGS, "-movflags", "+faststart", clip]
         : ["-y", "-i", r.video, ...silent, "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", ...AUDIO_ARGS, "-shortest", "-movflags", "+faststart", clip];
@@ -427,7 +443,7 @@ function composePlan(state, opts = {}) {
         ? ["-y", "-i", r.video, "-i", r.audio, "-filter_complex", `[0:v]${vf}[v]`, "-map", "[v]", "-map", "1:a:0", ...X264_ARGS, ...AUDIO_ARGS, "-movflags", "+faststart", clip]
         : ["-y", "-i", r.video, ...silent, "-filter_complex", `[0:v]${vf}[v]`, "-map", "[v]", "-map", "1:a:0", ...X264_ARGS, ...AUDIO_ARGS, "-shortest", "-movflags", "+faststart", clip];
     }
-    steps.push({ key: `clip:${r.id}`, label: `第 ${i + 1} 镜 ${r.id}：画面接配音`, argv, out: clip });
+    steps.push({ key: `clip:${r.id}`, label: `第 ${i + 1} 镜 ${r.id}：${r.origAudio ? "用视频原声" : "画面接配音"}`, argv, out: clip });
   });
   if (rows.length && rows.every((r) => r.video)) {
     steps.push({

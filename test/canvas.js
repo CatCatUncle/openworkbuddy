@@ -145,7 +145,8 @@ const PLAIN = {
 
 // 第二台假服务器：两个项目各一套画布。真实现里 /api/canvas 只收画布名，落到哪个文件是服务端
 // 按「当前打开的项目」自己定的，所以这儿照那样——PUT 一律落到「当前项目 + 请求里的画布名」那一格。
-// __delay 是给「等回包的工夫切走了」那条用的
+// __delay 是给「等回包的工夫切走了」那条用的；__putFail 有值时 PUT 存不进去：
+// "断线" = fetch 直接抛错（服务没起、断网），{ status, error } = 服务端回这个状态码和这句原话
 const STUB2 = `
 (() => {
   window.__store = {
@@ -175,6 +176,11 @@ const STUB2 = `
     }
     if (s.startsWith("/api/canvas") && m === "PUT") {
       const b = JSON.parse(o.body);
+      if (window.__putFail) {
+        (window.__putFails = window.__putFails || []).push((b.state.nodes || []).map((n) => (n.payload || {}).title));
+        if (window.__putFail === "断线") return Promise.reject(new TypeError("Failed to fetch"));
+        return Promise.resolve({ ok: false, status: window.__putFail.status, json: async () => ({ ok: false, error: window.__putFail.error }) });
+      }
       // 乐观并发（server.js PUT /api/canvas 的口径）：带了 baseUpdatedAt、盘上已经不是那一版就回 409 + 盘上那份。
       // 只在 __cas 打开时这么判——前面几节是直接改 __store 来冒充「别处写过」的，那几节量的不是这件事
       const disk = mine[b.name] || { version: 1, nodes: [], edges: [], updatedAt: 0 };
@@ -184,7 +190,10 @@ const STUB2 = `
       if (clash) return Promise.resolve({ ok: false, status: 409, json: async () => ({ ok: false, conflict: true, name: b.name, state: disk, error: "画布已被别处改过" }) });
       window.__puts.push({ 项目: window.__active, 画布: b.name, 标题: (b.state.nodes || []).map((n) => (n.payload || {}).title) });
       mine[b.name] = { ...b.state, updatedAt: Date.now() };
-      return J({ ok: true, updatedAt: mine[b.name].updatedAt, state: mine[b.name] });
+      const reply = J({ ok: true, updatedAt: mine[b.name].updatedAt, state: { ...mine[b.name] } });
+      // Agent 交的待生成清单住在画布文件旁边（src/tools/canvas.js canvasProposalPath），存画布不碰它
+      if (disk.proposal) mine[b.name].proposal = disk.proposal;
+      return reply;
     }
     if (s.includes("/api/canvas")) {
       if (window.__offline) return Promise.reject(new Error("断网"));   // 只掐这一条：取画布内容
@@ -205,10 +214,14 @@ const STUB2 = `
 // 第三层，套在 STUB2 外面：生成、合成、分镜表这几条接口。发出去的请求体一条条记下来（__bodies / __runs），
 // 断言看的是「真发出去了什么」，不是函数被叫了几次。
 //   __failRun(提示词第一行) 返回 true 的那几条回 500；__holdRun 是个 promise，挂着它就等于「生成还在跑」。
+//   __dropRun(提示词第一行, body) 返回 true 的那几条：请求记下了，回来的却是断线（fetch 抛错）——
+//   跟真服务端一样，那一单在「服务端」照常跑完、按 clientJobId 记进 __jobs；__jobState 可以改写台账里那一单的样子。
+//   GET /api/tool/job 按 __jobs 回（真服务端 /api/tool/job 的口径），问过哪些号记在 __jobAsks。
 // 一律假的：这套测试不许真花一分钱
 const STUB3 = `
 (() => {
   window.__bodies = []; window.__runs = []; window.__failRun = null; window.__holdRun = null;
+  window.__dropRun = null; window.__jobs = {}; window.__jobAsks = []; window.__jobState = null;
   window.__progress = null; window.__board = null;
   window.__deletes = []; window.__assets = null; window.__shotHistory = null; window.__echoName = false;
   // 生成成功后会顺手打开右侧预览，那条路要真文件，这儿用不着
@@ -221,6 +234,15 @@ const STUB3 = `
     try { body = o && typeof o.body === "string" ? JSON.parse(o.body) : null; } catch {}
     // 删文件、覆盖文件的请求一律记一笔：「用这一版」那条断言要的就是这里一条都没有
     if (m === "DELETE" || s.includes("/api/drama/shot-history/restore")) window.__deletes.push({ url: s, method: m, body });
+    if (s.includes("/api/tool/job")) {
+      const id = decodeURIComponent((s.split("id=")[1] || "").split("&")[0]);
+      window.__jobAsks.push(id);
+      const got = window.__jobs[id];
+      const job = got ? got.job : { id, state: "missing" };
+      const view = window.__jobState ? window.__jobState(id, job) : null;
+      if (view) return J(view);
+      return J({ ok: true, job, response: got && got.job.state !== "running" ? got.response : null });
+    }
     if (s.includes("/api/tool/run")) {
       const first = String((body && body.input && (body.input.prompt || body.input.text)) || "").split("\\n")[0];
       window.__runs.push(first);
@@ -234,7 +256,13 @@ const STUB3 = `
         const 失败 = window.__failRun && window.__failRun(first, body);
         // 返回对象 = 按它给的原样回（比如 200 但 isError、带 submitted 的那种工具失败）
         if (失败 && typeof 失败 === "object") return J(失败.body, 失败.status);
-        if (失败) return J({ error: "假服务器：这一条故意失败" }, 500);
+        // 真服务端带了 clientJobId 的那一单，5xx 回执里也带着 job（这一单的状态），画布凭它认出「是服务端说的没成」
+        if (失败) return J({ error: "假服务器：这一条故意失败", ...(body && body.clientJobId ? { job: { id: body.clientJobId, state: "failed", submitted: "" } } : {}) }, 500);
+        if (window.__dropRun && window.__dropRun(first, body)) {
+          const id = body && body.clientJobId;
+          if (id && !window.__jobs[id]) window.__jobs[id] = { job: { id, state: "done", submitted: "" }, response: { status: 200, body: { ok: true, file: "outputs/收回-" + window.__runs.length + ".png", path: "outputs/收回-" + window.__runs.length + ".png" } } };
+          throw new TypeError("Failed to fetch");
+        }
         // __echoName：照真服务端那样，按请求里的文件名落盘、path 带上子目录
         if (window.__echoName && body && body.input && body.input.filename) {
           return J({ ok: true, file: body.input.filename, path: (body.subdir ? body.subdir + "/" : "") + body.input.filename });
@@ -253,6 +281,46 @@ const STUB3 = `
       const rows = items.map((it) => ({ tool: it.tool, model: "假模型", units: 1, unit: "张", unitPrice: 0.3, cost: 0.3, known: true }));
       return J({ ok: true, items: rows, total: +(rows.length * 0.3).toFixed(2), unknownCount: 0 });
     }
+    // 回收站和快照（routes/canvas.js 那几条）。__trash 有值时画布列表带上它、删画布回执带上挪去哪了；
+    // 放回来、撤销的请求记进 __bodies。__snaps 是 GET 快照列表回的，__snapState 是「撤销」之后盘上那份
+    if (s.includes("/api/canvas/trash/restore")) {
+      window.__bodies.push({ url: "/api/canvas/trash/restore", body });
+      const hit = (window.__trash || []).find((t) => t.id === (body && body.id));
+      if (!hit) return J({ ok: false, error: "回收站里没有这张画布" }, 400);
+      window.__trash = window.__trash.filter((t) => t !== hit);
+      window.__store[window.__active][hit.name] = { version: 2, updatedAt: Date.now(), edges: [], nodes: hit.state || [] };
+      return J({ ok: true, name: hit.name });
+    }
+    if (s.includes("/api/canvas/snapshots/restore")) {
+      window.__bodies.push({ url: "/api/canvas/snapshots/restore", body });
+      const st = { ...window.__snapState, updatedAt: Date.now() };
+      window.__store[window.__active][body.name] = st;
+      return J({ ok: true, restored: st.nodes.length, edges: 0, updatedAt: st.updatedAt, state: st });
+    }
+    if (s.includes("/api/canvas/snapshots")) return J({ snapshots: window.__snaps || [] });
+    // Agent 待生成清单的「不要」/ 开跑后收掉（routes/canvas.js /api/canvas/proposal/dismiss）：按清单号收，
+    // 号对不上的不动（Agent 刚交的新一份不受牵连）
+    if (s.includes("/api/canvas/proposal/dismiss")) {
+      window.__bodies.push({ url: "/api/canvas/proposal/dismiss", body });
+      if (window.__dismissFail) return J({ ok: false, error: window.__dismissFail }, 500);
+      const board = window.__store[window.__active][(body && body.name) || "main"];
+      const hit = !!(board && board.proposal && board.proposal.id === (body && body.id));
+      // 带 kinds：只划掉开跑过的那几类，剩下的换新号（跟 canvasProposalTrim 一样）
+      if (hit && Array.isArray(body.kinds)) {
+        const left = board.proposal.items.filter((it) => !body.kinds.includes(it.kind));
+        if (!left.length) { delete board.proposal; return J({ ok: true, dropped: true }); }
+        board.proposal = { ...board.proposal, id: board.proposal.id + "_剩", items: left };
+        return J({ ok: true, dropped: false, id: board.proposal.id, left: left.length });
+      }
+      if (hit) delete board.proposal;
+      return J({ ok: true, dropped: hit });
+    }
+    if (s.includes("/api/canvas/list") && window.__trash) { const d = await (await inner.apply(this, arguments)).json(); return J({ ...d, trash: window.__trash }); }
+    if (s.includes("/api/canvas/boards/") && m === "DELETE" && window.__trash) {
+      await inner.apply(this, arguments);
+      const nm = decodeURIComponent(s.split("/api/canvas/boards/")[1] || ""), id = nm + "@2026-10-06T12-00-00.json";
+      return J({ ok: true, trashed: { id, name: nm, path: ".openworkbuddy/canvas-trash/" + id, deletedAt: Date.now() } });
+    }
     if (s.includes("/api/canvas/assets") && window.__assets) return J(window.__assets);
     // 留底的四条路由（server.js /api/drama/shot-history*）。snapshot / restore 回个样子，量的是画布碰没碰它们
     if (s.includes("/api/drama/shot-history")) {
@@ -268,11 +336,16 @@ const STUB3 = `
       if (m === "POST") return J({ plan: { ready: true, shots: [], blockers: [] } });
       // __composeDone：轮询问到的那一趟已经跑完（第三十四节量「合成完了、人不在跟前」）
       if (window.__composeDone) return J({ job: window.__composeDone });
+      // __composeLost：服务端重启过，合成记录只在内存里，按任务号问回 404（routes/compose.js 原话）。第四十七节
+      window.__composePolls = (window.__composePolls || 0) + 1;
+      if (window.__composeLost) return J({ error: "这条合成记录已经不在了（服务重启过，或者太久了）" }, 404);
       return J({ job: { id: "job1", done: false, at: 1, total: 3, steps: [] } });
     }
     if (s.includes("/api/canvas/progress")) return J(window.__progress || {});
     if (s.includes("/api/drama/storyboards")) return J({ storyboards: window.__board ? [{ name: "ep1", title: "第一集", shots: 2 }] : [] });
     if (s.includes("/api/drama/storyboard/output")) { window.__bodies.push({ url: "/api/drama/storyboard/output", body }); return J({ ok: true }); }
+    // 时间线上拖格子换顺序：整批 order 回分镜表（第四十八节）。__orderFail 给一句原话就照真服务端那样按 404 退回
+    if (s.includes("/api/drama/storyboard/order")) { window.__bodies.push({ url: "/api/drama/storyboard/order", body }); return window.__orderFail ? J({ error: window.__orderFail }, 404) : J({ ok: true, changed: 1 }); }
     if (s.includes("/api/drama/storyboard?")) return J(window.__board ? { data: window.__board } : { error: "没有这份分镜表" });
     return inner.apply(this, arguments);
   };
@@ -1478,6 +1551,71 @@ app.whenReady().then(async () => {
   ok(右键.键 && 右键.键.删后 === false && 右键.键.按钮 === "撤销" && 右键.键.撤后 === true,
      "Delete 键那条路同样挂「撤销」，点了就回来", 右键.键);
 
+  // 提示上的「撤销」只认它说的那一步：提示留 8 秒，这期间拖一张卡不弹提示、按钮还在。
+  // 以前按钮挂的就是 canvasUndo，点下去退掉的是那一下拖，删掉的卡没回来
+  const 认步 = await run(`
+    (async () => {
+      ${摆画布([
+        { id: "u1", kind: "note", payload: { title: "要删的" }, position: { x: 40, y: 40 }, size: { width: 280, height: 180 } },
+        { id: "u2", kind: "note", payload: { title: "删完又拖的" }, position: { x: 400, y: 40 }, size: { width: 280, height: 180 } },
+        { id: "u3", kind: "note", payload: { title: "外来改的" }, position: { x: 760, y: 40 }, size: { width: 280, height: 180 } }])}
+      const 钮 = () => document.querySelector("#owb-toast .owb-toast-act");
+      const 字 = () => ((document.querySelector("#owb-toast span") || {}).textContent) || "";
+      const 在 = (id) => !!canvasState.graph.getCell(id);
+      const x = (id) => canvasState.graph.getCell(id).position().x;
+
+      // 甲：删 u1 → 拖 u2（不弹提示，按钮还在）→ 点「撤销」
+      canvasHistoryReset(canvasSnapshot());
+      canvasDeleteSelection(canvasState.graph.getCell("u1"), true);
+      const 甲钮 = 钮();
+      canvasState.graph.getCell("u2").position(520, 40);
+      await new Promise((r) => setTimeout(r, 400));   // 过了 260ms 防抖，拖的那一下记成一步
+      const 甲还在 = 钮() === 甲钮 && !!甲钮;
+      if (甲钮) 甲钮.click();
+      await new Promise((r) => setTimeout(r, 100));
+      const 甲 = { 还在: 甲还在, u1: 在("u1"), u2x: x("u2"), 提示: 字(), 栈: canvasState.history.length, 位: canvasState.historyIndex };
+
+      // 乙（对照）：删完马上点，卡回来
+      canvasHistoryReset(canvasSnapshot());
+      canvasDeleteSelection(canvasState.graph.getCell("u2"), true);
+      const 乙钮 = 钮(); if (乙钮) 乙钮.click();
+      await new Promise((r) => setTimeout(r, 100));
+      const 乙 = { u2: 在("u2"), 提示: 字() };
+
+      // 丙：删完先按 ⌘Z 退了一格，再点提示上的「撤销」——不能再往前退一格
+      canvasHistoryReset(canvasSnapshot());
+      canvasState.graph.getCell("u3").position(800, 40);
+      canvasHistoryFlush();
+      canvasDeleteSelection(canvasState.graph.getCell("u2"), true);
+      const 丙钮 = 钮();
+      canvasUndo();
+      const 丙退后 = { u2: 在("u2"), u3x: x("u3") };
+      if (丙钮) 丙钮.click();
+      await new Promise((r) => setTimeout(r, 100));
+      const 丙 = { 退后: 丙退后, u3x: x("u3"), 提示: 字() };
+
+      // 丁：删完远端改了另一张卡（rebase 把栈里每一格换成新对象），删的那一步还在栈顶，照常撤得回来
+      canvasHistoryReset(canvasSnapshot());
+      canvasDeleteSelection(canvasState.graph.getCell("u2"), true);
+      const 丁钮 = 钮();
+      const 来前 = canvasSnapshot();
+      canvasState.historyMute = true;
+      try { canvasState.graph.getCell("u3").set("canvasPayload", { ...canvasState.graph.getCell("u3").get("canvasPayload"), title: "另一台机器改的" }); } finally { canvasState.historyMute = false; }
+      canvasHistoryRebase(来前, canvasSnapshot());
+      if (丁钮) 丁钮.click();
+      await new Promise((r) => setTimeout(r, 100));
+      const 丁 = { u2: 在("u2"), u3: (canvasState.graph.getCell("u3").get("canvasPayload") || {}).title };
+      return { 甲, 乙, 丙, 丁 };
+    })()`);
+  ok(认步.甲.还在 && !认步.甲.u1 && 认步.甲.u2x === 520 && /又改过了，没撤/.test(认步.甲.提示) && 认步.甲.位 === 认步.甲.栈 - 1,
+     "★删完又拖了一张卡，再点提示上的「撤销」：不去退那一下拖，原地说一声这之后改过、按 ⌘Z 一步步退★ 以前退掉的是拖，删的没回来", 认步.甲);
+  ok(认步.乙.u2 && 认步.乙.提示 === "已撤销上一步操作。",
+     "反向对照：删完马上点「撤销」，卡回来", 认步.乙);
+  ok(认步.丙.退后.u2 && 认步.丙.u3x === 800 && /又改过了，没撤/.test(认步.丙.提示),
+     "★已经按 ⌘Z 退过一格，提示上的「撤销」不再多退一格★（不然把删之前那一下挪也退掉了）", 认步.丙);
+  ok(认步.丁.u2 && 认步.丁.u3 === "另一台机器改的",
+     "远端改了别的卡（栈里每一格都换了新对象）：删的那一步还在栈顶，照常撤得回来，外来那一笔不跟着退", 认步.丁);
+
 
   // ———— 下面几节是「写回不串、改了能回」那一轮（2.2）：版本号、撞号、409 合并、历史版本、撤销回表 ————
   // 节点 id 和镜头号分开写：镜头号决定文件名，节点 id 只是画布上的身份
@@ -2003,22 +2141,38 @@ app.whenReady().then(async () => {
       const 字 = () => ((document.querySelector("#owb-toast span") || {}).textContent) || "";
       const 原设置 = settingsCache.media_fallback;
       settingsCache.media_fallback = { image: ["备用图模型"] };
-      const 工具失败 = (submitted) => ({ status: 200, body: { ok: false, isError: true, content: "工具执行出错: 视频生成超时" + (submitted ? "\\n上游已经收下这一单（任务号 vt-9）" : ""), submitted } });
+      const 工具失败 = (submitted, retryable) => ({ status: 200, body: { ok: false, isError: true, content: "工具执行出错: 视频生成超时" + (submitted ? "\\n上游已经收下这一单（任务号 vt-9）" : ""), submitted, ...(retryable ? { retryable: true } : {}) } });
       window.__bodies = []; window.__runs = [];
       window.__failRun = () => 工具失败("vt-9");
       const 结果 = await canvasGenerate(卡(), "image");
       const 带单号 = { 次数: window.__runs.length, 结果, 提示: 字() };
       window.__bodies = []; window.__runs = [];
       window.__failRun = () => 工具失败("");
+      // 上游收过单的那一格记在卡片上：再点「生成」不开枪，得先看结果或点「忽略」
       await canvasGenerate(卡(), "image");
-      const 不带 = { 次数: window.__runs.length };
+      const 挂着 = { 次数: window.__runs.length, 记: ((卡().get("canvasPayload") || {}).pending_jobs || {}).image || null };
+      canvasDismissJob(卡(), "image");
+      // 不带 submitted、也不带 retryable：生图同步接口等满超时、出完图下载断了都长这样——请求已经到了上游
+      const 超时结果 = await canvasGenerate(卡(), "image");
+      const 不带 = { 次数: window.__runs.length, 型号: window.__bodies.filter((b) => b.url === "/api/tool/run").map((b) => b.body.input.model || ""), 结果: 超时结果, 提示: 字() };
+      canvasDismissJob(卡(), "image");
+      window.__bodies = []; window.__runs = [];
+      // 服务端明说上游没收（回了非 2xx / 任务失败）：retryable
+      window.__failRun = () => 工具失败("", true);
+      await canvasGenerate(卡(), "image");
+      const 明说 = { 次数: window.__runs.length, 型号: window.__bodies.filter((b) => b.url === "/api/tool/run").map((b) => b.body.input.model || "") };
       settingsCache.media_fallback = 原设置; window.__failRun = null;
       await canvasFlushRemoteWrite(); ${等(200)}
-      return { 带单号, 不带 };
+      return { 带单号, 挂着, 不带, 明说 };
     })()`);
   ok(已下单.带单号.次数 === 1 && 已下单.带单号.结果 && 已下单.带单号.结果.ok === false && /任务号 vt-9/.test(已下单.带单号.提示),
      "★回执带 submitted（上游已经收下那一单）：不补枪、也不换备用模型，原话贴出来★ 补一枪等于再买一单", 已下单.带单号);
-  ok(已下单.不带.次数 === 3, "反向对照：同样的工具失败不带 submitted，照常补枪、再按备用顺序换", 已下单.不带);
+  ok(已下单.挂着.次数 === 0 && 已下单.挂着.记 && 已下单.挂着.记.submitted === "vt-9",
+     "★上游收过单的那一格记在卡片上（任务号 vt-9），再点「生成」不开枪★", 已下单.挂着);
+  ok(已下单.不带.次数 === 1 && 已下单.不带.结果 && 已下单.不带.结果.ok === false && /视频生成超时/.test(已下单.不带.提示),
+     "★工具报错却没说上游没收（不带 retryable）：不补枪、也不换备用模型，原话贴出来★ 超时、下载断了的那一单可能已经扣了钱", 已下单.不带);
+  ok(已下单.明说.次数 === 3 && 已下单.明说.型号[2] === "备用图模型",
+     "反向对照：服务端明说上游没收（retryable），照常补一枪、再按备用顺序换", 已下单.明说);
 
   console.log("\n— 二十八、滚轮：捏合 / 鼠标滚轮以光标为锚点缩放，双指滑动只平移 —");
   const 滚轮 = await run(`
@@ -2931,6 +3085,885 @@ app.whenReady().then(async () => {
      { 写了: 比例.量完写了, 推开: 比例.又推开, 前: 比例.前高, 挤后: 比例.挤后高, 回: 比例.回高 });
   ok(比例.盘上高 === 比例.前高, "下一次真改动时，量好的尺寸跟着一起存上", { 盘上: 比例.盘上高, 屏幕: 比例.前高 });
   ok(比例.旧样式 && !比例.旧样式.ia && !比例.旧样式.ic && !比例.旧样式.id, "反向对照：换回写死高度 + cover 的老样式，上面那把尺子量得出变形", 比例.旧样式);
+
+  console.log("\n— 三十九、断了线不重发：每一枪带单号，没收到结果就标「状态未知」，看结果只查不发 —");
+  const 断线 = await run(`
+    (async () => {
+      ${摆画布([镜头("j1", "断线镜头", 40), 镜头("j2", "照常镜头", 300), 镜头("j3", "还在跑镜头", 560)])}
+      window.__bodies = []; window.__runs = []; window.__echoName = false; window.__jobs = {}; window.__jobAsks = []; window.__jobState = null;
+      const 卡 = (id) => canvasState.graph.getCell(id);
+      const 字 = () => ((document.querySelector("#owb-toast span") || {}).textContent) || "";
+      const 发的 = () => window.__bodies.filter((b) => b.url === "/api/tool/run").map((b) => ({ 首行: String(b.body.input.prompt || "").split("\\n")[0], 单号: b.body.clientJobId || "" }));
+      const 原设置 = settingsCache.media_fallback;
+      settingsCache.media_fallback = { image: ["备用图模型"] };
+      // ① 断线、服务端那一单其实跑完了：问一次台账就拿回结果，一枪都不补
+      window.__dropRun = (first) => first === "断线镜头";
+      const r1 = await canvasGenerate(卡("j1"), "image");
+      const 甲 = { 结果: r1, 发的: 发的(), 问过: [...window.__jobAsks], 首帧: (卡("j1").get("canvasPayload") || {}).first_frame || "", 记录: (卡("j1").get("canvasPayload") || {}).pending_jobs || null };
+      // ② 断线、那一单还在跑：标「状态未知」，不补枪、不换备用模型；卡片上摆看结果 / 再生成一次
+      window.__bodies = []; window.__runs = []; window.__jobAsks = [];
+      window.__dropRun = (first) => first === "还在跑镜头";
+      window.__jobState = (id, job) => ({ ok: true, job: { ...job, state: "running" }, response: null });
+      const r2 = await canvasGenerate(卡("j3"), "image");
+      await new Promise((r) => setTimeout(r, 60));
+      const 记 = ((卡("j3").get("canvasPayload") || {}).pending_jobs || {}).image || null;
+      canvasRefreshNode(卡("j3")); await new Promise((r) => setTimeout(r, 60));
+      const 视图 = canvasState.paper.findViewByModel(卡("j3")), 卡片 = 视图 && 视图.el;
+      const 按钮 = 卡片 ? [...卡片.querySelectorAll("[data-canvas-job-collect],[data-canvas-job-again],[data-canvas-job-dismiss]")].map((b) => b.textContent.trim()) : [];
+      const 乙 = { 结果: r2, 发的: 发的(), 记, 提示: 字(), 按钮 };
+      // ③ 再点「生成」：不开枪，提示先看结果
+      window.__bodies = []; window.__runs = [];
+      const r3 = await canvasGenerate(卡("j3"), "image");
+      const 丙 = { 结果: r3, 发的: 发的().length, 提示: 字() };
+      // ④ 一键补齐的队列跑到它：照样不开枪，也不进「重试失败的」
+      window.__bodies = []; window.__runs = [];
+      const 原问 = window.askConfirm; window.askConfirm = async () => true;
+      await canvasRunQueue("image", [卡("j3"), 卡("j2")]);
+      window.askConfirm = 原问;
+      const 丁 = { 发的: 发的().map((x) => x.首行), 提示: 字(), 有重试钮: !!document.querySelector("#owb-toast .owb-toast-act") && /重试/.test(document.querySelector("#owb-toast .owb-toast-act").textContent) };
+      // ⑤ 那一单跑完了，点「看结果」：只问台账，一枪不发，放上画布、划掉记录
+      window.__bodies = []; window.__runs = []; window.__jobAsks = [];
+      window.__jobState = (id) => ({ ok: true, job: { id, state: "done", submitted: "" }, response: { status: 200, body: { ok: true, file: "outputs/后来收的.png", path: "outputs/后来收的.png" } } });
+      const r5 = await canvasCollectJob(卡("j3"), "image");
+      const p5 = 卡("j3").get("canvasPayload") || {};
+      const 戊 = { 结果: r5, 发的: 发的().length, 问过: window.__jobAsks.length, 首帧: p5.first_frame || "", 记录: p5.pending_jobs || null, 提示: 字() };
+      // ⑥ 「再生成一次」：明说再花一次钱，换个新单号真发
+      window.__jobState = null; window.__dropRun = (first) => first === "还在跑镜头";
+      window.__jobState = (id, job) => ({ ok: true, job: { ...job, state: "running" }, response: null });
+      canvasState.reroll.add("j3:image");   // 参数跟刚收回来那张一样，不「换一版」就直接沿用、不发了
+      await canvasGenerate(卡("j3"), "image");
+      const 旧号 = (((卡("j3").get("canvasPayload") || {}).pending_jobs || {}).image || {}).id || "";
+      window.__dropRun = null; window.__jobState = null; window.__bodies = []; window.__runs = [];
+      const r6 = await canvasGenerateAgain(卡("j3"), "image");
+      const 己 = { 结果: r6, 发的: 发的(), 旧号, 记录: (卡("j3").get("canvasPayload") || {}).pending_jobs || null };
+      // ⑦ 服务端说「没收到这一单」：同一个号再递一次（号不变，前一趟万一刚到也只算一单）
+      window.__bodies = []; window.__runs = []; window.__jobs = {};
+      let 丢 = 1;
+      window.__dropRun = () => { if (丢 > 0) { 丢 -= 1; return true; } return false; };
+      window.__jobState = (id, job) => (window.__runs.length === 1 ? { ok: true, job: { id, state: "missing" }, response: null } : null);
+      canvasState.reroll.add("j2:image");
+      const r7 = await canvasGenerate(卡("j2"), "image");
+      const 庚 = { 结果: r7, 发的: 发的() };
+      window.__dropRun = null; window.__jobState = null;
+      // ⑧ 一枪在路上：只记在本机，不写进节点（写进去就是「本机改过这张卡」，远端同步撞上要问人）；
+      // 刷新之后打开画布，本机记着、这页里没人在等的那一单挂回卡片上，标「没收到结果」
+      const 键 = canvasJobStoreKey();
+      let 放 = null; window.__holdRun = new Promise((r) => { 放 = r; });
+      canvasState.reroll.add("j1:image");
+      const 跑8 = canvasGenerate(卡("j1"), "image");
+      ${等(80)}
+      const 途中 = { 节点上: (卡("j1").get("canvasPayload") || {}).pending_jobs || null, 本机: JSON.parse(localStorage.getItem(键) || "{}") };
+      放(); await 跑8; window.__holdRun = null;
+      const 收完本机 = localStorage.getItem(键);
+      localStorage.setItem(键, JSON.stringify({ "j2:video": { id: "job_reload_0001", tool: "generate_video", state: "sent", at: Date.now(), model: "", submitted: "" },
+        "早删了的卡:image": { id: "job_reload_0002", tool: "generate_image", state: "sent", at: Date.now() } }));
+      canvasAdoptLocalJobs();
+      const 辛 = { 途中, 收完本机, 记: ((卡("j2").get("canvasPayload") || {}).pending_jobs || {}).video || null, 本机: localStorage.getItem(键) };
+      canvasDismissJob(卡("j2"), "video");
+      settingsCache.media_fallback = 原设置;
+      await canvasFlushRemoteWrite(); ${等(200)}
+      const 盘上 = ((window.__store.jia.main || {}).nodes || []).find((n) => n.id === "j3");
+      return { 甲, 乙, 丙, 丁, 戊, 己, 庚, 辛, 盘上记录: 盘上 && 盘上.payload ? 盘上.payload.pending_jobs || null : "无" };
+    })()`);
+  const 号形 = (x) => /^[A-Za-z0-9_.:-]{8,80}$/.test(String(x || ""));
+  ok(断线.甲.发的.length === 1 && 号形(断线.甲.发的[0].单号) && 断线.甲.问过[0] === 断线.甲.发的[0].单号
+     && 断线.甲.结果 && 断线.甲.结果.ok && /收回-/.test(断线.甲.首帧) && !断线.甲.记录,
+     "★断线、服务端那一单其实跑完了：拿同一个单号问一次就收回结果，一枪都不补★", 断线.甲);
+  ok(断线.乙.发的.length === 1 && 断线.乙.结果 && 断线.乙.结果.ok === false && 断线.乙.结果.unknown
+     && 断线.乙.记 && 断线.乙.记.state === "unknown" && 断线.乙.记.id === (断线.乙.发的[0] || {}).单号 && /没有重发/.test(断线.乙.提示),
+     "★断线、那一单还在跑：标「状态未知」，不补枪、不换备用模型，单号记在节点上★", 断线.乙);
+  ok(断线.乙.按钮.length === 3 && /看结果/.test(断线.乙.按钮[0]) && /再扣费/.test(断线.乙.按钮[1]),
+     "卡片上摆「看结果」「再生成一次（会再扣费）」「忽略」三颗按钮", 断线.乙.按钮);
+  ok(断线.丙.发的 === 0 && 断线.丙.结果 && 断线.丙.结果.unknown && /看结果/.test(断线.丙.提示),
+     "★再点「生成」：不开枪，让人先看结果★", 断线.丙);
+  ok(断线.丁.发的.length === 1 && 断线.丁.发的[0] === "照常镜头" && !断线.丁.有重试钮 && /没收到结果/.test(断线.丁.提示),
+     "★一键补齐跑到状态未知的那格：不开枪，也不进「重试失败的」★ 重试就是再下一单", 断线.丁);
+  ok(断线.戊.发的 === 0 && 断线.戊.问过 === 1 && 断线.戊.结果 && 断线.戊.结果.ok && 断线.戊.首帧 === "outputs/后来收的.png" && !断线.戊.记录 && /收到上一单/.test(断线.戊.提示),
+     "★「看结果」：只问台账、一枪不发，放上画布、划掉记录★", 断线.戊);
+  ok(断线.己.发的.length === 1 && 号形(断线.己.发的[0].单号) && 断线.己.发的[0].单号 !== 断线.己.旧号 && 断线.己.结果 && 断线.己.结果.ok && !断线.己.记录,
+     "「再生成一次」：换个新单号真发一枪，成了就划掉记录", 断线.己);
+  ok(断线.庚.发的.length === 2 && 断线.庚.发的[0].单号 === 断线.庚.发的[1].单号 && 断线.庚.结果 && 断线.庚.结果.ok,
+     "★服务端说没收到这一单：用同一个单号再递一次★ 号不变，服务端认得出是同一单，只跑一回", 断线.庚);
+  ok(!断线.辛.途中.节点上 && 断线.辛.途中.本机["j1:image"] && 号形(断线.辛.途中.本机["j1:image"].id) && 断线.辛.收完本机 === null,
+     "★一枪在路上只记在本机、不改卡片★ 改了卡片，生成途中别处改同一张卡，远端同步就停下来问人；收完本机那一笔划掉", 断线.辛);
+  ok(断线.辛.记 && 断线.辛.记.state === "unknown" && 断线.辛.记.id === "job_reload_0001" && 断线.辛.本机 === null,
+     "★刷新前发出去的那一单，打开画布挂回卡片上标「没收到结果」★ 卡已删的那笔直接划掉", 断线.辛);
+  ok(断线.盘上记录 === null || 断线.盘上记录 === undefined, "收完之后存进项目的那份也没有残留的记录", 断线.盘上记录);
+
+  console.log("\n— 四十、Agent 清空 / 连删一片：画布顶上挂「撤销」；删掉的画布进回收站，下拉里点一下放回来 —");
+  const 回收 = await run(`
+    (async () => {
+      const 八张 = Array.from({ length: 8 }, (_, i) => ({ id: "k" + i, kind: "note", payload: { title: "第" + i + "张" }, position: { x: 40 + (i % 4) * 320, y: 40 + Math.floor(i / 4) * 240 }, size: { width: 280, height: 180 } }));
+      window.__snaps = []; window.__trash = null; window.__bodies = [];
+      ${摆画布([...Array.from({ length: 8 }, (_, i) => ({ id: "k" + i, kind: "note", payload: { title: "第" + i + "张" }, position: { x: 40 + (i % 4) * 320, y: 40 + Math.floor(i / 4) * 240 }, size: { width: 280, height: 180 } }))])}
+      const 条 = () => document.querySelector('[data-canvas-bar="snapshot"]');
+      const 条字 = () => (条() ? 条().textContent : "");
+      const 字 = () => ((document.querySelector("#owb-toast span") || {}).textContent) || "";
+      const 同步一圈 = async () => { canvasStartRemoteSync(); ${等(2100)} clearInterval(canvasState.remoteTimer); canvasState.remoteTimer = null; };
+      // ① Agent 删了两张（快照里少 2 个）：正常干活，不挂
+      window.__snaps = [{ id: "s-two", why: "删节点前", at: Date.now() + 500, nodes: 8, missing: 2 }];
+      window.__store.jia.main = { version: 2, updatedAt: Date.now() + 1000, edges: [], nodes: 八张.slice(2) };
+      await 同步一圈();
+      const 甲 = { 节点: canvasState.graph.getElements().length, 有条: !!条() };
+      // ② Agent 清空了：挂一条，说清少了几个
+      window.__snaps = [{ id: "s-clear", why: "清空前", at: Date.now() + 500, nodes: 8, missing: 8 }, ...window.__snaps];
+      window.__store.jia.main = { version: 1, updatedAt: Date.now() + 2000, edges: [], nodes: [] };
+      await 同步一圈();
+      const 按钮 = 条() ? [...条().querySelectorAll("button")].map((b) => b.textContent.trim()) : [];
+      const 乙 = { 节点: canvasState.graph.getElements().length, 字: 条字(), 按钮, 容器显示: !document.getElementById("canvas-bars").hidden };
+      // ③ 点「撤销」：照快照放回去，条收掉
+      window.__snapState = { version: 2, edges: [], nodes: 八张 };
+      window.__bodies = [];
+      if (条()) 条().querySelector("button").click();
+      ${等(400)}
+      const 丙 = { 发的: window.__bodies.filter((b) => b.url === "/api/canvas/snapshots/restore").map((b) => b.body), 节点: canvasState.graph.getElements().length, 有条: !!条(), 提示: 字() };
+      // ④ 「知道了」点过的那份，下次少节点也不再冒出来
+      window.__snaps = [{ id: "s-again", why: "清空前", at: Date.now() + 500, nodes: 8, missing: 8 }];
+      window.__store.jia.main = { version: 1, updatedAt: Date.now() + 3000, edges: [], nodes: [] };
+      await 同步一圈();
+      const 有过 = !!条();
+      if (条()) [...条().querySelectorAll("button")][1].click();
+      window.__store.jia.main = { version: 2, updatedAt: Date.now() + 4000, edges: [], nodes: 八张.slice(0, 1) };
+      await 同步一圈();
+      window.__store.jia.main = { version: 1, updatedAt: Date.now() + 5000, edges: [], nodes: [] };
+      await 同步一圈();
+      const 丁 = { 有过, 又冒: !!条() };
+      // ⑤ 删画布：确认框说的是「挪进回收站」，删完提示挪到哪了、带「恢复」
+      window.__store.jia["第3集"] = { version: 2, updatedAt: 1000, edges: [], nodes: 八张.slice(0, 2) };
+      window.__trash = [];
+      canvasState.canvasName = "第3集"; localStorage.setItem("openworkbuddy.canvas.name", "第3集");
+      await renderCanvasPage(); ${等(300)}
+      if (canvasState.remoteTimer) { clearInterval(canvasState.remoteTimer); canvasState.remoteTimer = null; }
+      let 问的 = null; const 原问 = window.askConfirm; window.askConfirm = async (o) => { 问的 = o; return true; };
+      await canvasDeleteBoard(); ${等(300)}
+      window.askConfirm = 原问;
+      if (canvasState.remoteTimer) { clearInterval(canvasState.remoteTimer); canvasState.remoteTimer = null; }
+      const 删条 = document.querySelector('[data-canvas-bar="trashed"]');
+      const 戊 = { 提示语: 问的 && 问的.hint, 现在: canvasState.canvasName, 提示: 删条 ? 删条.textContent : "", 钮: 删条 ? [...删条.querySelectorAll("button")].map((b) => b.textContent.trim()).join("|") : "" };
+      // ⑥ 回收站列在画布下拉里，选中就放回来、切过去
+      window.__trash = [{ id: "第3集@2026-10-06T12-00-00.json", name: "第3集", deletedAt: Date.now() - 60000, nodes: 2, path: ".openworkbuddy/canvas-trash/第3集@2026-10-06T12-00-00.json", state: 八张.slice(0, 2) }];
+      await renderCanvasPage(); ${等(300)}
+      if (canvasState.remoteTimer) { clearInterval(canvasState.remoteTimer); canvasState.remoteTimer = null; }
+      const 下拉 = document.querySelector("[data-canvas-board-select]");
+      const 组 = 下拉.querySelector("optgroup");
+      const 行 = 组 ? [...组.querySelectorAll("option")].map((o) => ({ v: o.value, t: o.textContent })) : [];
+      window.__bodies = [];
+      下拉.value = "__trash__:第3集@2026-10-06T12-00-00.json";
+      下拉.dispatchEvent(new Event("change"));
+      ${等(700)}
+      if (canvasState.remoteTimer) { clearInterval(canvasState.remoteTimer); canvasState.remoteTimer = null; }
+      const 己 = { 组: 组 ? 组.label : "", 行, 发的: window.__bodies.filter((b) => b.url === "/api/canvas/trash/restore").map((b) => b.body), 现在: canvasState.canvasName, 节点: canvasState.graph.getElements().length, 提示: 字() };
+      window.__trash = null; window.__snaps = [];
+      canvasState.canvasName = "main"; localStorage.setItem("openworkbuddy.canvas.name", "main");
+      return { 甲, 乙, 丙, 丁, 戊, 己 };
+    })()`);
+  ok(回收.甲.节点 === 6 && !回收.甲.有条, "反向对照：Agent 删两张是正常干活，不挂「撤销」", 回收.甲);
+  ok(回收.乙.节点 === 0 && /清空/.test(回收.乙.字) && /8/.test(回收.乙.字) && 回收.乙.按钮.join("|") === "撤销|知道了" && 回收.乙.容器显示,
+     "★Agent 清空了画布：顶上挂一条，说少了几个，给「撤销」「知道了」★", 回收.乙);
+  ok(回收.丙.发的.length === 1 && 回收.丙.发的[0].id === "s-clear" && 回收.丙.发的[0].name === "main" && 回收.丙.节点 === 8 && !回收.丙.有条 && /放回了 8 个/.test(回收.丙.提示),
+     "★点「撤销」：按那份快照放回去，八张都回来，条收掉★", 回收.丙);
+  ok(回收.丁.有过 && !回收.丁.又冒, "点过「知道了」的那份不再冒出来", 回收.丁);
+  ok(/回收站/.test(回收.戊.提示语 || "") && !/一并删除/.test(回收.戊.提示语 || "") && 回收.戊.现在 === "main"
+     && /\.openworkbuddy\/canvas-trash\/第3集@/.test(回收.戊.提示) && 回收.戊.钮 === "恢复|知道了",
+     "★删画布：确认框说挪进回收站，删完顶上挂一条写着挪到哪个路径，带「恢复」★ 不用 toast：空画布一打开的提示会把它顶掉", 回收.戊);
+  ok(回收.己.组 === "回收站" && 回收.己.行.length === 1 && 回收.己.行[0].v === "__trash__:第3集@2026-10-06T12-00-00.json" && /第3集.*删的/.test(回收.己.行[0].t),
+     "回收站列在画布下拉里：名字 + 什么时候删的", 回收.己.行);
+  ok(回收.己.发的.length === 1 && 回收.己.发的[0].id === "第3集@2026-10-06T12-00-00.json" && 回收.己.现在 === "第3集" && 回收.己.节点 === 2 && /放回来了/.test(回收.己.提示),
+     "★下拉里选回收站那一行：放回来并切过去，上面的卡都在★", 回收.己);
+
+  console.log("\n— 四十一、没存进项目要看得见；本机有没存上的改动、盘上又不一样，打开时问留哪份 —");
+  const 存盘 = await run(`
+    (async () => {
+      const 两张 = [{ id: "r1", kind: "note", payload: { title: "原来的" }, position: { x: 40, y: 40 }, size: { width: 280, height: 180 } },
+        { id: "r2", kind: "note", payload: { title: "第二张" }, position: { x: 400, y: 40 }, size: { width: 280, height: 180 } }];
+      window.__putFail = null; window.__putFails = []; window.__cas = false;
+      ${摆画布([{ id: "r1", kind: "note", payload: { title: "原来的" }, position: { x: 40, y: 40 }, size: { width: 280, height: 180 } },
+        { id: "r2", kind: "note", payload: { title: "第二张" }, position: { x: 400, y: 40 }, size: { width: 280, height: 180 } }])}
+      const 条 = (k) => document.querySelector('[data-canvas-bar="' + k + '"]');
+      const 条况 = (k) => 条(k) ? { 字: 条(k).querySelector(".canvas-bar-text").textContent, 钮: [...条(k).querySelectorAll("button")].map((b) => b.textContent.trim()).join("|"), role: 条(k).getAttribute("role") } : null;
+      const 改 = (title) => { const c = canvasState.graph.getCell("r1"); c.set("canvasPayload", { ...c.get("canvasPayload"), title }); canvasPersist(); };
+      const 屏 = () => canvasState.graph.getElements().map((n) => (n.get("canvasPayload") || {}).title).sort().join("、");
+      const 盘 = () => (window.__store.jia.main.nodes || []).map((n) => (n.payload || {}).title).sort().join("、");
+      const 字 = () => ((document.querySelector("#owb-toast span") || {}).textContent) || "";
+      const 同步一圈 = async () => { canvasStartRemoteSync(); ${等(2100)} clearInterval(canvasState.remoteTimer); canvasState.remoteTimer = null; };
+      const 重开 = async () => { await canvasFlushRemoteWrite(); ${等(200)} await renderCanvasPage(); ${等(400)} if (canvasState.remoteTimer) { clearInterval(canvasState.remoteTimer); canvasState.remoteTimer = null; } };
+      // ① 服务端回 500 + 原话：顶上一条红的，照抄原话，给「重试保存」
+      window.__putFail = { status: 500, error: "写画布失败：ENOSPC: no space left on device" };
+      改("断电前写的"); ${等(500)}
+      const 甲 = { 条: 条况("save"), 盘: 盘(), 试过: window.__putFails.length };
+      // ② 存不上的这段时间不拉盘上那份：Agent 在盘上写了一笔，拉下来一铺，「断电前写的」就没了
+      window.__store.jia.main = { version: 2, updatedAt: Date.now() + 1000, edges: [], nodes: [{ ...两张[0], payload: { title: "Agent 写的" } }, 两张[1]] };
+      await 同步一圈();
+      const 乙 = { 屏: 屏() };
+      // ③ 点「重试保存」：存上了，条自己没了
+      window.__putFail = null;
+      if (条("save")) 条("save").querySelector("button").click();
+      ${等(400)}
+      const 丙 = { 条: 条况("save"), 盘: 盘() };
+      // ④ 断线（fetch 直接抛错）也一样挂条，照抄错误原话；下一笔改动存上了条就收掉
+      window.__putFail = "断线";
+      改("断线时写的"); ${等(500)}
+      const 丁一 = 条况("save");
+      window.__putFail = null;
+      改("连上后写的"); ${等(500)}
+      const 丁 = { 断线时: 丁一, 存上后: 条况("save"), 盘: 盘() };
+      // ⑤ 存不上就关了（本机副本里有没存上的改动）、盘上没变：重开问留哪份，屏幕上先铺本机这份，选之前一笔不写
+      window.__putFail = { status: 500, error: "写不进去" };
+      改("没存上就关了"); ${等(500)}
+      window.__putFail = null; window.__puts = [];
+      await 重开();
+      const 戊一 = { 条: 条况("restore"), 屏: 屏(), 写了: window.__puts.length };
+      await 同步一圈();
+      const 戊二 = { 屏: 屏(), 写了: window.__puts.length };
+      if (条("restore")) [...条("restore").querySelectorAll("button")][0].click();
+      ${等(400)}
+      const 戊 = { 一: 戊一, 拉了一圈: 戊二, 选后条: 条况("restore"), 盘: 盘() };
+      // ⑥ 本机没存上、盘上又被 Agent 改了：照样问；选「用项目里的」铺盘上那份，toast 上能「换回本机的」
+      window.__putFail = { status: 500, error: "写不进去" };
+      改("本机这份"); ${等(500)}
+      window.__putFail = null; window.__puts = [];
+      window.__store.jia.main = { version: 2, updatedAt: Date.now() + 2000, edges: [], nodes: [{ ...两张[0], payload: { title: "Agent 后来写的" } }, 两张[1]] };
+      await 重开();
+      const 己一 = { 条: !!条("restore"), 屏: 屏() };
+      if (条("restore")) [...条("restore").querySelectorAll("button")][1].click();
+      ${等(400)}
+      const 己二 = { 屏: 屏(), 条: !!条("restore"), 提示: 字(), 钮: ((document.querySelector("#owb-toast .owb-toast-act") || {}).textContent || "").trim(), 写了: window.__puts.length };
+      const 换回 = document.querySelector("#owb-toast .owb-toast-act"); if (换回) 换回.click();
+      ${等(500)}
+      const 己 = { 一: 己一, 二: 己二, 换回后屏: 屏(), 换回后盘: 盘() };
+      // ⑦ 反向对照：本机存上了、Agent 后来在盘上改了：重开不问，铺盘上的
+      window.__store.jia.main = { version: 2, updatedAt: Date.now() + 3000, edges: [], nodes: [{ ...两张[0], payload: { title: "Agent 又写的" } }, 两张[1]] };
+      await 重开();
+      const 庚 = { 条: !!条("restore"), 屏: 屏() };
+      // ⑧ 本机存上了、Agent 后来清空了画布：铺空的，不拿本机这份顶回去
+      window.__puts = [];
+      window.__store.jia.main = { version: 1, updatedAt: Date.now() + 4000, edges: [], nodes: [] };
+      await 重开(); ${等(400)}
+      const 辛 = { 条: !!条("restore"), 节点: canvasState.graph.getElements().length, 写了: window.__puts.length, 盘: (window.__store.jia.main.nodes || []).length };
+      // ⑨ 老副本（这台机器上从没记过指纹）：分不出有没有没存的，照老规矩，不问
+      ${摆画布([{ id: "r1", kind: "note", payload: { title: "原来的" }, position: { x: 40, y: 40 }, size: { width: 280, height: 180 } }])}
+      window.__putFail = { status: 500, error: "写不进去" };
+      改("老副本"); ${等(500)}
+      window.__putFail = null;
+      Object.keys(localStorage).filter((k) => k.includes(".synced:")).forEach((k) => localStorage.removeItem(k));
+      await 重开();
+      const 壬 = { 条: !!条("restore") };
+      return { 甲, 乙, 丙, 丁, 戊, 己, 庚, 辛, 壬 };
+    })()`);
+  ok(存盘.甲.条 && 存盘.甲.条.字 === "没存进项目：写画布失败：ENOSPC: no space left on device" && 存盘.甲.条.钮 === "重试保存" && 存盘.甲.条.role === "alert" && 存盘.甲.试过 === 1 && !/断电前/.test(存盘.甲.盘),
+     "★服务端没存上：顶上挂红条，照抄服务端原话，给「重试保存」★ 以前回 500 什么都不说，人以为一直在存；也不自己一遍遍重发", 存盘.甲);
+  ok(/断电前写的/.test(存盘.乙.屏), "★存不上的这段时间不拉盘上那份★ 拉下来一铺，没存上的那笔就被盖掉了", 存盘.乙);
+  ok(!存盘.丙.条 && /断电前写的/.test(存盘.丙.盘), "★点「重试保存」：屏幕上这份存进项目，红条自己没了★", 存盘.丙);
+  ok(存盘.丁.断线时 && 存盘.丁.断线时.字 === "没存进项目：Failed to fetch" && !存盘.丁.存上后 && /连上后写的/.test(存盘.丁.盘),
+     "★断网 / 服务没起（fetch 直接抛错）也挂条、照抄原话；下一笔存上了条就收掉★ 以前是 catch {} 一声不吭", 存盘.丁);
+  ok(存盘.戊.一.条 && /没存进项目/.test(存盘.戊.一.条.字) && 存盘.戊.一.条.钮 === "用本机的|用项目里的" && /没存上就关了/.test(存盘.戊.一.屏) && 存盘.戊.一.写了 === 0,
+     "★本机有没存上的改动：重开时问留哪份，屏幕上先铺本机这份，选之前不往项目里写★", 存盘.戊.一);
+  ok(/没存上就关了/.test(存盘.戊.拉了一圈.屏) && 存盘.戊.拉了一圈.写了 === 0, "等人选的时候同步也不拉、不写", 存盘.戊.拉了一圈);
+  ok(!存盘.戊.选后条 && /没存上就关了/.test(存盘.戊.盘), "★选「用本机的」：本机这份存进项目，条收掉★", 存盘.戊);
+  ok(存盘.己.一.条 && /本机这份/.test(存盘.己.一.屏) && /Agent 后来写的/.test(存盘.己.二.屏) && !/本机这份/.test(存盘.己.二.屏) && !存盘.己.二.条
+     && /换成项目里那份/.test(存盘.己.二.提示) && 存盘.己.二.钮 === "换回本机的" && 存盘.己.二.写了 === 0,
+     "★盘上被 Agent 改过也照样问；选「用项目里的」铺盘上那份、不回写，toast 上留「换回本机的」★", 存盘.己);
+  ok(/本机这份/.test(存盘.己.换回后屏) && /本机这份/.test(存盘.己.换回后盘), "点「换回本机的」：本机那份回到屏幕上，并存进项目", 存盘.己);
+  ok(!存盘.庚.条 && /Agent 又写的/.test(存盘.庚.屏), "反向对照：本机都存上了、盘上后来又改了：不问，铺盘上的", 存盘.庚);
+  ok(!存盘.辛.条 && 存盘.辛.节点 === 0 && 存盘.辛.写了 === 0 && 存盘.辛.盘 === 0,
+     "★本机都存上了、Agent 后来清空了画布：铺空的，不拿本机那份写回去★ 以前盘上空就铺本机的，清空当场被顶回去", 存盘.辛);
+  ok(!存盘.壬.条, "反向对照：老副本没记过指纹，分不出来就不问，照老规矩", 存盘.壬);
+
+  console.log("\n— 四十二、画布 Agent 先报价：交上来的是清单，顶上摆型号和报价，点「开跑」才生成，点「不要」一枪不发 —");
+  const 清单 = await run(`
+    (async () => {
+      ${摆画布([
+        { id: "q1", kind: "shot", payload: { id: "q1", title: "q1", prompt: "一号镜头", model: "假图模型-甲" }, position: { x: 40, y: 40 }, size: { width: 300, height: 220 } },
+        { id: "q2", kind: "shot", payload: { id: "q2", title: "q2", prompt: "二号镜头" }, position: { x: 40, y: 300 }, size: { width: 300, height: 220 } },
+        { id: "q3", kind: "shot", payload: { id: "q3", title: "q3", prompt: "三号镜头", first_frame: "outputs/q3.png", model: "假视频模型" }, position: { x: 400, y: 40 }, size: { width: 300, height: 220 } },
+        { id: "q9", kind: "shot", payload: { id: "q9", title: "q9", prompt: "九号镜头不在清单里" }, position: { x: 400, y: 300 }, size: { width: 300, height: 220 } },
+      ])}
+      const 条 = () => document.querySelector('[data-canvas-bar="proposal"]');
+      const 条况 = () => 条() ? { 字: 条().querySelector(".canvas-bar-text").textContent, 钮: [...条().querySelectorAll("button")].map((b) => b.textContent.trim()).join("|"), 可点: [...条().querySelectorAll("button")].every((b) => !b.disabled) } : null;
+      const 点 = (label) => { const b = 条() && [...条().querySelectorAll("button")].find((x) => x.textContent.trim() === label); if (b) b.click(); return !!b; };
+      const 收的 = () => window.__bodies.filter((b) => b.url === "/api/canvas/proposal/dismiss").map((b) => b.body);
+      let 问了 = 0, 答 = true; const 原问 = window.askConfirm;
+      window.askConfirm = async () => { 问了 += 1; return 答; };
+      window.__runs = []; window.__bodies = []; window.__estimates = []; window.__estimate = null; window.__failRun = null; window.__runDelay = 0;
+      // ① Agent 交了一份：两张图（一张指定型号、一张跟默认）、一段视频。清单里点名的节点不存在的那一项不算
+      window.__store.jia.main.proposal = { id: "p_test1", at: Date.now(), items: [
+        { node_id: "q1", kind: "image" }, { node_id: "q2", kind: "image" }, { node_id: "q3", kind: "video" }, { node_id: "没有这个", kind: "image" }] };
+      await canvasLoadRemote(); ${等(300)}
+      const 甲 = { 条: 条况(), 发了: window.__runs.length, 问了, 报价: (window.__estimates.at(-1) || []).map((x) => x.tool + ":" + ((x.input && x.input.model) || "")) };
+      // ② 点「开跑」，确认框上点「先不了」：一枪不发，横幅摆回来，清单不收
+      答 = false;
+      点("开跑"); ${等(400)}
+      const 乙 = { 问了, 发了: window.__runs.length, 条: 条况(), 收: 收的() };
+      // ③ 再点「开跑」、这回确认：先图后视频各问一次，只跑清单里那三条，跑完收掉清单
+      答 = true; 问了 = 0;
+      点("开跑"); ${等(900)}
+      const 丙一 = { 问了, 发了: [...window.__runs].sort(), 条: !!条(), 收: 收的(), 盘上还有: !!window.__store.jia.main.proposal };
+      await canvasLoadRemote(); ${等(200)}
+      const 丙 = { ...丙一, 再拉一圈: !!条() };
+      // ④ Agent 又交了一份，点「不要」：一枪不发，收掉；服务端没收成（还在盘上）也不再冒出来
+      window.__runs = []; window.__bodies = []; 问了 = 0;
+      window.__store.jia.main.proposal = { id: "p_test2", at: Date.now(), items: [{ node_id: "q9", kind: "image" }] };
+      await canvasLoadRemote(); ${等(300)}
+      const 丁有 = 条况();
+      点("不要"); ${等(200)}
+      const 丁收 = 收的();
+      window.__store.jia.main.proposal = { id: "p_test2", at: Date.now(), items: [{ node_id: "q9", kind: "image" }] };
+      await canvasLoadRemote(); ${等(200)}
+      const 丁 = { 有: 丁有, 收: 丁收, 又冒: !!条(), 发了: window.__runs.length, 问了: 问了 };
+      // ⑤ 估价接口出错：照抄原话，横幅照样摆、照样能点；服务端那份没了（别的标签页点过了）横幅就收
+      window.__estimate = () => ({ ok: false, error: "估价服务没开" });
+      window.__store.jia.main.proposal = { id: "p_test3", at: Date.now(), items: [{ node_id: "q9", kind: "image" }] };
+      await canvasLoadRemote(); ${等(300)}
+      const 戊有 = 条况();
+      delete window.__store.jia.main.proposal;
+      await canvasLoadRemote(); ${等(200)}
+      const 戊 = { 有: 戊有, 收后: !!条(), 发了: window.__runs.length };
+      window.__estimate = null;
+      // ⑥ 一图一视频，图那批点了确认、视频那批点「先不了」：图照跑，视频那一项留在横幅上，服务端只划掉图
+      const 字 = () => ((document.querySelector("#owb-toast span") || {}).textContent) || "";
+      // 两张卡先改一笔提示词：上面 ③ 已经按原提示词生成过，参数没变会沿用那一版、不发请求
+      ["q1", "q3"].forEach((id) => { const n = canvasState.graph.getCell(id); n.set("canvasPayload", { ...n.get("canvasPayload"), prompt: n.get("canvasPayload").prompt + "重写" }); });
+      ${等(300)}
+      window.__runs = []; window.__bodies = []; 问了 = 0;
+      let 答序 = [true, false]; window.askConfirm = async () => { 问了 += 1; return 答序.length ? 答序.shift() : true; };
+      window.__store.jia.main.proposal = { id: "p_test4", at: Date.now(), items: [{ node_id: "q1", kind: "image" }, { node_id: "q3", kind: "video" }] };
+      await canvasLoadRemote(); ${等(300)}
+      点("开跑"); ${等(900)}
+      const 己一 = { 问了, 发了: [...window.__runs], 条: 条况(), 收: 收的(), 盘上: window.__store.jia.main.proposal || null, 本机号: canvasState.proposal && canvasState.proposal.id };
+      await canvasLoadRemote(); ${等(200)}
+      const 己二 = { 条: 条况() };
+      window.__runs = []; window.__bodies = []; 问了 = 0; 答序 = [true];
+      点("开跑"); ${等(900)}
+      const 己 = { 一: 己一, 再拉: 己二, 再跑: { 问了, 发了: [...window.__runs], 条: !!条(), 收: 收的(), 盘上: !!window.__store.jia.main.proposal } };
+      // ⑦ 点「不要」时服务端回了错：横幅照样收，原话报出来，说清刷新后还会再摆出来
+      window.__runs = []; window.__bodies = [];
+      window.__store.jia.main.proposal = { id: "p_test5", at: Date.now(), items: [{ node_id: "q9", kind: "image" }] };
+      await canvasLoadRemote(); ${等(300)}
+      window.__dismissFail = "磁盘满了";
+      点("不要"); ${等(200)}
+      const 庚 = { 条: !!条(), 提示: 字(), 收: 收的().length, 发了: window.__runs.length };
+      window.__dismissFail = null; delete window.__store.jia.main.proposal;
+      await canvasLoadRemote(); ${等(100)}
+      window.askConfirm = 原问;
+      return { 甲, 乙, 丙, 丁, 戊, 己, 庚 };
+    })()`);
+  ok(清单.甲.条 && /^Agent 列了待生成清单：2 张图（假图模型-甲 \/ 默认型号）、1 段视频（假视频模型）。预计 ¥0\.90，点「开跑」才扣费。$/.test(清单.甲.条.字)
+     && 清单.甲.条.钮 === "开跑|不要" && 清单.甲.发了 === 0 && 清单.甲.问了 === 0,
+     "★Agent 交清单：顶上摆几张图几段视频、各用什么型号、预计多少钱，给「开跑」「不要」；这时一枪没发、也没弹扣费框★", 清单.甲);
+  ok(JSON.stringify(清单.甲.报价) === JSON.stringify(["generate_image:假图模型-甲", "generate_image:", "generate_video:假视频模型"]),
+     "报价按节点上写的型号现算（跟真跑那一枪同一个口径），画布上找不到的那项不算钱", 清单.甲.报价);
+  ok(清单.乙.问了 === 1 && 清单.乙.发了 === 0 && 清单.乙.条 && 清单.乙.条.可点 && 清单.乙.收.length === 0,
+     "★点「开跑」还要过扣费确认；点「先不了」一枪不发，横幅摆回来、按钮能再点，清单不作废★", 清单.乙);
+  ok(清单.丙.问了 === 2 && JSON.stringify(清单.丙.发了) === JSON.stringify(["一号镜头", "三号镜头", "二号镜头"].sort())
+     && !清单.丙.条 && 清单.丙.收.length === 1 && 清单.丙.收[0].id === "p_test1" && 清单.丙.收[0].name === "main" && !清单.丙.盘上还有 && !清单.丙.再拉一圈,
+     "★确认后只跑清单里那三条（先图后视频各确认一次），不在清单里的九号镜头不动；跑完清单收掉，再拉一圈也不回来★", 清单.丙);
+  ok(清单.丁.有 && /1 张图（默认型号）/.test(清单.丁.有.字) && 清单.丁.收.length === 1 && 清单.丁.收[0].id === "p_test2"
+     && !清单.丁.又冒 && 清单.丁.发了 === 0 && 清单.丁.问了 === 0,
+     "★点「不要」：一个生成请求都不发、不弹扣费框，请服务端收掉；服务端没收成也不再冒出来★", 清单.丁);
+  ok(清单.戊.有 && 清单.戊.有.字 === "Agent 列了待生成清单：1 张图（默认型号）。没拿到报价：估价服务没开" && 清单.戊.有.钮 === "开跑|不要" && !清单.戊.收后 && 清单.戊.发了 === 0,
+     "估价接口出错照抄原话、横幅照样能点；服务端那份没了（别处点过）横幅就收", 清单.戊);
+  ok(清单.己.一.问了 === 2 && JSON.stringify(清单.己.一.发了) === JSON.stringify(["一号镜头重写"]) && 清单.己.一.条
+     && /^Agent 列了待生成清单：1 段视频（假视频模型）。/.test(清单.己.一.条.字) && 清单.己.一.条.可点
+     && 清单.己.一.收.length === 1 && JSON.stringify(清单.己.一.收[0].kinds) === JSON.stringify(["image"])
+     && 清单.己.一.盘上 && 清单.己.一.盘上.items.length === 1 && 清单.己.一.盘上.items[0].kind === "video" && 清单.己.一.本机号 === 清单.己.一.盘上.id,
+     "★图那批跑了、视频那批点「先不了」：视频那一项留在横幅上（带型号、新报价），服务端只划掉图★ 以前开了一批就整份收掉，没跑的视频连同报价一起没了", 清单.己.一);
+  ok(清单.己.再拉.条 && /^Agent 列了待生成清单：1 段视频/.test(清单.己.再拉.条.字),
+     "再拉一圈：横幅上还是只剩视频那一项，跑过的图不回来", 清单.己.再拉);
+  ok(清单.己.再跑.问了 === 1 && JSON.stringify(清单.己.再跑.发了) === JSON.stringify(["三号镜头重写"]) && !清单.己.再跑.条 && !清单.己.再跑.盘上
+     && 清单.己.再跑.收.length === 1 && !清单.己.再跑.收[0].kinds,
+     "★再点「开跑」只跑剩下的视频，一号镜头不再买一遍；跑完整份收掉★", 清单.己.再跑);
+  ok(!清单.庚.条 && 清单.庚.收 === 1 && 清单.庚.提示 === "服务端没收掉这份清单：磁盘满了。刷新后它会再摆出来" && 清单.庚.发了 === 0,
+     "★点「不要」服务端回了错：横幅照样收，原话报出来、说清刷新后还会摆出来★ 以前一律吞掉", 清单.庚);
+
+  console.log("\n— 四十三、整图重铺收成一批：两百张卡只存一次盘，铺到一半抛了画纸也不冻着 —");
+  const 一批 = await run(`
+    (async () => {
+      ${摆画布([笔记("b0", "起头", 40)])}
+      const 键 = canvasStorageKey(), 原写 = Storage.prototype.setItem;
+      let 写了 = 0;
+      Storage.prototype.setItem = function (k, v) { if (k === 键) 写了 += 1; return 原写.call(this, k, v); };
+      try {
+        const nodes = Array.from({ length: 200 }, (_, i) => ({ id: "m" + i, kind: "note", payload: { title: "第" + i + "张" }, position: { x: (i % 20) * 320, y: Math.floor(i / 20) * 220 }, size: { width: 280, height: 180 } }));
+        const edges = nodes.slice(1).map((n, i) => ({ source: { id: nodes[i].id }, target: { id: n.id } }));
+        const t0 = performance.now();
+        canvasApplySnapshot({ version: 2, updatedAt: Date.now(), nodes, edges });
+        const 用时 = Math.round(performance.now() - t0);
+        const 末张 = canvasState.graph.getCell("m199"), 壳 = 末张 && 末张.findView(canvasState.paper).el.querySelector(".canvas-joint-node");
+        const 甲 = { 写了, 卡: canvasState.graph.getElements().length, 线: canvasState.graph.getLinks().length, 冻着: canvasState.paper.isFrozen(),
+          bulk: canvasState.bulk, 批: canvasState.graph.hasActiveBatch(), 画出来: !!壳 && 壳.textContent.includes("第199张"), 用时 };
+        // 铺到第三张抛了：画纸放开、bulk 落下、批次收掉，之后挪一张卡照常存盘
+        写了 = 0;
+        const 原加 = window.canvasAddNode; let 第几 = 0;
+        window.canvasAddNode = function () { 第几 += 1; if (第几 === 3) throw new Error("故意抛的"); return 原加.apply(this, arguments); };
+        let 抛 = "";
+        try { canvasApplySnapshot({ version: 2, updatedAt: Date.now(), nodes: nodes.slice(0, 10), edges: [] }); } catch (e) { 抛 = e.message; }
+        window.canvasAddNode = 原加;
+        const 乙 = { 抛, 冻着: canvasState.paper.isFrozen(), bulk: canvasState.bulk, 批: canvasState.graph.hasActiveBatch(), suspend: canvasState.suspendSync };
+        const 剩的 = canvasState.graph.getElements()[0];
+        if (剩的) 剩的.position(900, 900);
+        const 丙 = { 写了, 画出来: !!(剩的 && 剩的.findView(canvasState.paper).el.querySelector(".canvas-joint-node")) };
+        return { 甲, 乙, 丙 };
+      } finally { Storage.prototype.setItem = 原写; }
+    })()`);
+  ok(一批.甲.写了 === 1 && 一批.甲.卡 === 200 && 一批.甲.线 === 199,
+     "★铺两百张卡、一百九十九条线：本机副本只写一次★ 以前拆一张、接一条线都整图序列化写一遍，好几百趟", 一批.甲);
+  ok(!一批.甲.冻着 && !一批.甲.bulk && !一批.甲.批 && 一批.甲.画出来,
+     "铺完画纸解冻、批次收掉，冻着那会儿没画的卡解冻后内容都填上了", 一批.甲);
+  ok(一批.乙.抛 === "故意抛的" && !一批.乙.冻着 && !一批.乙.bulk && !一批.乙.批 && !一批.乙.suspend,
+     "★铺到一半抛了：画纸不会一直冻着、bulk 不会一直挡着存盘★ 不然之后的改动全都画不出来、存不下", 一批.乙);
+  ok(一批.丙.写了 === 1 && 一批.丙.画出来, "  └ 抛完再挪一张卡：照常画、照常存", 一批.丙);
+
+  console.log("\n— 四十四、拖卡不卡：手还按着只记「脏了」，松手存一次、记一步撤销 —");
+  const 松手存 = await run(`
+    (async () => {
+      ${摆画布([笔记("g1", "拖我", 40), 笔记("g2", "不动的", 400)])}
+      canvasHistoryReset(canvasSnapshot());
+      const 键 = canvasStorageKey(), 原写 = Storage.prototype.setItem;
+      let 写了 = 0;
+      Storage.prototype.setItem = function (k, v) { if (k === 键) 写了 += 1; return 原写.call(this, k, v); };
+      try {
+        window.__puts = [];
+        const 卡 = canvasState.graph.getCell("g1");
+        卡.findView(canvasState.paper).el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: 100, clientY: 100, button: 0 }));
+        for (let i = 1; i <= 60; i++) 卡.position(40 + i * 5, 40 + i * 3);
+        ${等(320)}
+        const 拖中 = { 写了, 脏: canvasState.dragDirty, 挂写: !!canvasState.remoteWriteArmed, 交了: window.__puts.length, 栈: canvasState.history.length };
+        document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, clientX: 400, clientY: 280, button: 0 }));
+        ${等(600)}
+        const 盘上 = (window.__store.jia.main.nodes || []).find((n) => n.id === "g1");
+        const 松手 = { 写了, 脏: canvasState.dragDirty, 手势: !!canvasState.nodeGesture, 交了: window.__puts.length, 栈: canvasState.history.length,
+          盘上: 盘上 && 盘上.position.x + "," + 盘上.position.y };
+        canvasUndo();
+        const 撤后 = canvasState.graph.getCell("g1").position();
+        return { 拖中, 松手, 撤后: 撤后.x + "," + 撤后.y };
+      } finally { Storage.prototype.setItem = 原写; }
+    })()`);
+  ok(松手存.拖中.写了 === 0 && 松手存.拖中.脏 && !松手存.拖中.挂写 && 松手存.拖中.交了 === 0 && 松手存.拖中.栈 === 1,
+     "★拖了六十帧：一次都没存、没往项目里交、没记撤销，只记一笔「脏了」★ 以前每一帧都整图序列化写一遍", 松手存.拖中);
+  ok(松手存.松手.写了 === 1 && !松手存.松手.脏 && !松手存.松手.手势 && 松手存.松手.交了 === 1 && 松手存.松手.栈 === 2 && 松手存.松手.盘上 === "340,220",
+     "★松手：本机存一次、项目里交一趟、撤销记一步，存的是松手那一刻的位置★", 松手存.松手);
+  ok(松手存.撤后 === "40,40", "按一次撤销回到拖之前，不是一帧一帧往回退", 松手存.撤后);
+
+  console.log("\n— 四十五、撤销只撤自己动的：别人（同步拉来、Agent 改的）不进撤销栈 —");
+  const 别人 = await run(`
+    (async () => {
+      ${摆画布([{ id: "u1", kind: "note", payload: { title: "原标题", text: "原文" }, position: { x: 40, y: 40 }, size: { width: 280, height: 180 } }])}
+      canvasHistoryReset(canvasSnapshot());
+      const 卡 = (id) => canvasState.graph.getCell(id);
+      const 改 = (id, patch) => { const n = 卡(id); n.set("canvasPayload", { ...canvasPayload(n), ...patch }); canvasRefreshNode(n); canvasPersist(); };
+      const 拉来 = (fn) => { const disk = JSON.parse(JSON.stringify(window.__store.jia.main)); fn(disk); disk.updatedAt = Date.now() + 5000; window.__store.jia.main = disk; canvasApplySnapshot(disk, { fromRemote: true }); };
+      const 字 = () => document.querySelector("#owb-toast span") ? document.querySelector("#owb-toast span").textContent : "";
+      // ① 我改标题；Agent 改了正文、又加了一张卡。⌘Z 只退我的标题
+      改("u1", { title: "我改的标题" }); ${等(600)}
+      拉来((d) => { d.nodes[0].payload.text = "Agent 改的正文"; d.nodes.push({ id: "u2", kind: "note", payload: { title: "Agent 加的" }, position: { x: 400, y: 40 }, size: { width: 280, height: 180 } }); });
+      const 栈长 = canvasState.history.length;
+      canvasUndo(); ${等(600)}
+      const 盘 = window.__store.jia.main;
+      const 甲 = { 栈长, 标题: canvasPayload(卡("u1")).title, 正文: canvasPayload(卡("u1")).text, u2: !!卡("u2"),
+        盘上正文: (盘.nodes.find((n) => n.id === "u1") || {}).payload.text, 盘上u2: 盘.nodes.some((n) => n.id === "u2") };
+      canvasRedo(); ${等(300)}
+      const 重做 = { 标题: canvasPayload(卡("u1")).title, 正文: canvasPayload(卡("u1")).text, u2: !!卡("u2") };
+      canvasUndo(); ${等(100)}
+      canvasUndo();
+      const 再撤 = { 字: 字(), u2: !!卡("u2"), 正文: canvasPayload(卡("u1")).text };
+      ${等(600)}
+      // ② 同一个字段：我改标题，Agent 紧跟着也改标题。撤不回来（撤回去就是拿我的旧值盖掉它的新值）
+      canvasHistoryReset(canvasSnapshot());
+      改("u1", { title: "我又改的" }); ${等(600)}
+      拉来((d) => { d.nodes.find((n) => n.id === "u1").payload.title = "Agent 的标题"; });
+      canvasUndo();
+      const 乙 = { 字: 字(), 标题: canvasPayload(卡("u1")).title };
+      return { 甲, 重做, 再撤, 乙 };
+    })()`);
+  ok(别人.甲.标题 === "原标题" && 别人.甲.正文 === "Agent 改的正文" && 别人.甲.u2 && 别人.甲.盘上正文 === "Agent 改的正文" && 别人.甲.盘上u2,
+     "★我改标题、Agent 改正文加一张卡，⌘Z 只退我的标题：Agent 改的正文、加的卡都还在，项目里那份也没被退回去★", 别人.甲);
+  ok(别人.甲.栈长 === 2, "拉来的那一趟没在撤销栈里多记一格", 别人.甲.栈长);
+  ok(别人.重做.标题 === "我改的标题" && 别人.重做.正文 === "Agent 改的正文" && 别人.重做.u2, "重做回来：我的标题回来，Agent 那几笔照旧", 别人.重做);
+  ok(别人.再撤.字 === "已经是最早一步了。" && 别人.再撤.u2 && 别人.再撤.正文 === "Agent 改的正文",
+     "再往前撤到底：Agent 加的卡不会被当成「我上一步」撤掉", 别人.再撤);
+  ok(别人.乙.字 === "已经是最早一步了。" && 别人.乙.标题 === "Agent 的标题",
+     "★同一个字段我改完 Agent 又改：我那一步撤不回来，不拿我的旧值盖掉它的新值★（取舍见 canvasHistoryRebase）", 别人.乙);
+
+  const 回表 = await run(`
+    (async () => {
+      ${摆画布([{ id: "S01", kind: "shot", payload: { id: "S01", title: "S01", prompt: "原画面", line: "原台词", board: "ep1", board_shot: "S01" }, position: { x: 40, y: 40 }, size: { width: 300, height: 220 } }])}
+      canvasHistoryReset(canvasSnapshot());
+      const n = canvasState.graph.getCell("S01");
+      n.set("canvasPayload", { ...canvasPayload(n), line: "我改的台词" }); canvasRefreshNode(n); canvasPersist(); ${等(600)}
+      const disk = JSON.parse(JSON.stringify(window.__store.jia.main));
+      Object.assign(disk.nodes[0].payload, { prompt: "Agent 改的画面", video: "outputs/agent.mp4" }); disk.updatedAt = Date.now() + 5000;
+      window.__store.jia.main = disk; canvasApplySnapshot(disk, { fromRemote: true });
+      window.__bodies = [];
+      canvasUndo(); ${等(400)}
+      const 回 = window.__bodies.filter((b) => b.url === "/api/drama/storyboard/output").map((b) => b.body);
+      const p = canvasPayload(canvasState.graph.getCell("S01"));
+      return { 回, 台词: p.line, 画面: p.prompt, 视频: p.video };
+    })()`);
+  ok(回表.回.length === 1 && JSON.stringify(回表.回[0].fields) === JSON.stringify({ line: "原台词" }) && 回表.台词 === "原台词" && 回表.画面 === "Agent 改的画面" && 回表.视频 === "outputs/agent.mp4",
+     "★⌘Z 回写分镜表只回我改的那句台词，Agent 改的画面、生成的视频不跟着退回分镜表★", 回表);
+
+  console.log("\n— 四十六、断开连线、删节点：不先问，直接做，提示上挂「撤销」 —");
+  const 断 = await run(`
+    (async () => {
+      ${摆画布([
+        { id: "c1", kind: "character", payload: { name: "阿青" }, position: { x: 40, y: 40 }, size: { width: 280, height: 180 } },
+        { id: "k1", kind: "note", payload: { title: "一号" }, position: { x: 420, y: 40 }, size: { width: 280, height: 180 } },
+        { id: "k2", kind: "note", payload: { title: "二号" }, position: { x: 420, y: 300 }, size: { width: 280, height: 180 } }],
+        [{ source: { id: "c1" }, target: { id: "k1" }, relation: "character" }, { source: { id: "c1" }, target: { id: "k2" }, relation: "character" }])}
+      canvasHistoryReset(canvasSnapshot());
+      let 问了 = 0; const 原问 = window.askConfirm;
+      window.askConfirm = async () => { 问了 += 1; return true; };
+      const 线 = () => canvasState.graph.getLinks().map((l) => canvasEndpointId(l.get("source")) + ">" + canvasEndpointId(l.get("target"))).sort().join(",");
+      const 撤 = () => { const b = document.querySelector("#owb-toast .owb-toast-act"); const t = document.querySelector("#owb-toast span"); const out = { 钮: b ? b.textContent : null, 字: t ? t.textContent : "" }; if (b) b.click(); return out; };
+      try {
+        // ① 检查器「已连接」里每条后面有 ×：点了断开这一条，节点都在，能撤
+        canvasState.inspectorOpen = true; canvasSetSelection(new Set(["c1"]), "c1");
+        const 叉 = [...document.querySelectorAll("#canvas-inspector [data-canvas-disconnect]")];
+        const 叉数 = 叉.length, 叉名 = 叉[0] ? 叉[0].getAttribute("aria-label") : "";
+        const 断哪条 = 叉[0] && canvasState.graph.getCell(叉[0].dataset.canvasDisconnect);
+        const 断的 = 断哪条 ? canvasEndpointId(断哪条.get("target")) : "";
+        if (叉[0]) 叉[0].click();
+        ${等(60)}
+        const 断后 = { 线: 线(), 卡: canvasState.graph.getElements().length, 叉: document.querySelectorAll("#canvas-inspector [data-canvas-disconnect]").length };
+        const 提示 = 撤(); ${等(600)}
+        const 甲 = { 叉数, 叉名, 断的, 断后, 提示, 撤后: 线(), 盘上线: (window.__store.jia.main.edges || []).length };
+
+        // ② 鼠标停在线上冒出 ×，点它断开这条
+        const lv = canvasState.graph.getLinks()[0].findView(canvasState.paper);
+        const 停前 = lv.hasTools();
+        lv.el.querySelector("path").dispatchEvent(new MouseEvent("mouseover", { bubbles: true, relatedTarget: document.body }));
+        const 停着 = lv.hasTools(), 钮 = lv.el.ownerSVGElement && document.querySelector(".joint-tools .canvas-link-remove");
+        const 这条 = canvasEndpointId(lv.model.get("target"));
+        if (钮) 钮.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+        ${等(60)}
+        const 乙 = { 停前, 停着, 有钮: !!钮, 断后: 线(), 这条, 提示: 撤() };
+        ${等(300)}
+        乙.撤后 = 线();
+        lv.el.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body }));
+
+        // ③ 卡上的 ×：不问，只删这一张（哪怕它在一片选中里），能撤
+        canvasHistoryReset(canvasSnapshot());
+        canvasState.inspectorOpen = false; canvasSetSelection(new Set(["k1", "k2"]), "k2");
+        const 卡叉 = canvasState.graph.getCell("k1").findView(canvasState.paper).el.querySelector("[data-canvas-remove]");
+        if (卡叉) 卡叉.click();
+        ${等(60)}
+        const 丙 = { 有叉: !!卡叉, k1: !!canvasState.graph.getCell("k1"), k2: !!canvasState.graph.getCell("k2"), 选着: [...canvasState.selectedIds].join(","), 当前: canvasState.selected, 提示: 撤() };
+        ${等(300)}
+        丙.撤后 = { k1: !!canvasState.graph.getCell("k1"), 线: 线() };
+
+        // ④ 检查器里的「删除节点」（检查器只在单选时摆出来）：同样不问、只删这一张、能撤
+        canvasHistoryReset(canvasSnapshot());
+        canvasState.inspectorOpen = true; canvasSetSelection(new Set(["k2"]), "k2");
+        canvasRenderInspector(false);
+        const 删钮 = document.querySelector("#canvas-inspector [data-inspect-delete]");
+        if (删钮) 删钮.click();
+        ${等(60)}
+        const 丁 = { 有钮: !!删钮, k1: !!canvasState.graph.getCell("k1"), k2: !!canvasState.graph.getCell("k2"), 选着: [...canvasState.selectedIds].join(","), 当前: canvasState.selected, 面板: document.querySelector("#canvas-inspector").innerHTML === "", 提示: 撤() };
+        ${等(300)}
+        丁.撤后 = { k2: !!canvasState.graph.getCell("k2"), 线: 线() };
+        return { 问了, 甲, 乙, 丙, 丁 };
+      } finally { window.askConfirm = 原问; }
+    })()`);
+  ok(断.甲.叉数 === 2 && 断.甲.叉名 === "断开这条线" && 断.甲.断后.线 === (断.甲.断的 === "k1" ? "c1>k2" : "c1>k1") && 断.甲.断后.卡 === 3 && 断.甲.断后.叉 === 1,
+     "★检查器「已连接」每条后面一颗 ×：点了只断这一条，三个节点都在，列表跟着少一条★", 断.甲);
+  ok(断.甲.提示.字 === "连线已断开。" && 断.甲.提示.钮 === "撤销" && 断.甲.撤后 === "c1>k1,c1>k2" && 断.甲.盘上线 === 2,
+     "断开后提示上挂「撤销」，点了线接回来，项目里那份也接回来", 断.甲);
+  ok(!断.乙.停前 && 断.乙.停着 && 断.乙.有钮 && 断.乙.断后 === (断.乙.这条 === "k1" ? "c1>k2" : "c1>k1") && 断.乙.提示.字 === "连线已断开。" && 断.乙.撤后 === "c1>k1,c1>k2",
+     "★鼠标停在线上冒出一颗 ×（平时不挂），点了断开这条，能撤★", 断.乙);
+  ok(断.丙.有叉 && !断.丙.k1 && 断.丙.k2 && 断.丙.选着 === "k2" && 断.丙.当前 === "k2" && 断.丙.提示.字 === "节点已删除。" && 断.丙.提示.钮 === "撤销" && 断.丙.撤后.k1 && 断.丙.撤后.线 === "c1>k1,c1>k2",
+     "★卡上的 × 跟 Delete 键一个脾气：不问、只删点的这一张（选着的另一张还选着），撤销连线一起回来★", 断.丙);
+  ok(断.丁.有钮 && 断.丁.k1 && !断.丁.k2 && 断.丁.选着 === "" && 断.丁.当前 === null && 断.丁.面板 && 断.丁.提示.字 === "节点已删除。" && 断.丁.提示.钮 === "撤销" && 断.丁.撤后.k2 && 断.丁.撤后.线 === "c1>k1,c1>k2",
+     "★检查器「删除节点」也一样：不问、只删正看着的这一张、能撤★", 断.丁);
+  ok(断.问了 === 0, "★断线、卡上的 ×、检查器删除，一个确认框都没弹★ 以前两处删除要先确认、删了却撤不回来", 断.问了);
+
+  console.log("\n— 四十七、合成进度问不到了（服务重启过）：不再一直转，照实说找不到了，给【重新合成】 —");
+  const 丢 = await run(`
+    (async () => {
+      ${一集}
+      window.__progress = { stages: [{ key: "film", label: "成片", total: 1, done: 0, state: "todo" }], shots: [] };
+      await canvasLoadProgress();
+      canvasState.progressOpen = true;
+      const tl = canvasAddNode("timeline", { title: "最终剪辑" }, { x: 900, y: 40 }, { skipSelect: true, persist: false });
+      ${等(50)}
+      const 卡钮 = () => { const b = tl.findView(canvasState.paper).el.querySelector("[data-canvas-compose]"); return b ? { 灰: b.disabled, 字: b.textContent } : null; };
+      canvasState.composeJob = { id: "job-old", done: false, at: 2, total: 5, steps: [] };
+      canvasRenderProgress(); canvasRefreshNode(tl);
+      const 跑着 = 卡钮();
+      window.__composeLost = true; window.__composePolls = 0; window.__bodies = [];
+      canvasComposePoll();
+      ${等(1500)}
+      const 问了 = window.__composePolls;
+      const box = document.getElementById("canvas-progress");
+      const 字 = box.querySelector(".cp-compose") ? box.querySelector(".cp-compose").textContent : "";
+      const 钮 = box.querySelector("[data-cp-compose]");
+      const 停钮 = !!box.querySelector("[data-cp-compose-stop]");
+      const toast = (document.querySelector("#owb-toast span") || {}).textContent || "";
+      const 丢后 = { lost: !!(canvasState.composeJob && canvasState.composeJob.lost), done: !!(canvasState.composeJob && canvasState.composeJob.done), 卡: 卡钮() };
+      ${等(2600)}
+      const 又问 = window.__composePolls - 问了;
+      if (钮) 钮.click();
+      ${等(100)}
+      const 重来 = { posts: window.__bodies.filter((b) => b.url === "/api/canvas/compose").map((b) => b.body), job: canvasState.composeJob, plan: !!canvasState.composePlan };
+      window.__composeLost = false; canvasState.composePlan = null; canvasState.composeJob = null; canvasRenderProgress();
+      return { 跑着, 问了, 字, 钮字: 钮 ? 钮.textContent : null, 钮灰: 钮 ? 钮.disabled : null, 停钮, toast, 丢后, 又问, 重来 };
+    })()`);
+  ok(丢.跑着 && 丢.跑着.灰 && 丢.问了 === 1 && 丢.丢后.lost && 丢.丢后.done,
+     "★按任务号问回 404：记成「找不到了」、算跑完（done），不当「还没好」接着问★", 丢);
+  ok(丢.又问 === 0, "★404 之后不再轮询★ 以前每 1.2 秒问一次，问到天荒地老", 丢.又问);
+  ok(/这次合成的进度找不到了/.test(丢.字) && 丢.钮字 === "重新合成" && 丢.钮灰 === false && !丢.停钮,
+     "★进度带照实说「这次合成的进度找不到了」，摆一颗能点的【重新合成】，不再挂「停下」★", 丢);
+  ok(丢.丢后.卡 && 丢.丢后.卡.灰 === false && 丢.丢后.卡.字 !== "正在合成…", "剪辑节点上的合成按钮也放开了，不是一直灰着「正在合成…」", 丢.丢后.卡);
+  ok(/找不到了/.test(丢.toast) && !/重启|太久/.test(丢.toast), "提示只说找不到了，不替人猜是重启还是太久", 丢.toast);
+  ok(丢.重来.posts.length === 1 && !丢.重来.posts[0].run && 丢.重来.job === null && 丢.重来.plan,
+     "点【重新合成】：重新算方案摆出来给人看（不直接开跑），旧任务清掉", 丢.重来);
+
+  console.log("\n— 四十八、时间线拖格子换顺序：写进 order、回分镜表，镜头号不动；Alt+←/→ 也能挪；一挪一步撤销 —");
+  const 排 = await run(`
+    (async () => {
+      ${一集}
+      window.__progress = ${一集进度};
+      await canvasLoadProgress();
+      canvasHistoryReset(canvasSnapshot());
+      window.__bodies = []; window.__orderFail = "";
+      const box = document.getElementById("canvas-timeline");
+      const 格 = (id) => box.querySelector('[data-ctl-shot="' + id + '"]');
+      const 顺序 = () => [...box.querySelectorAll("[data-ctl-shot]")].map((c) => c.querySelector(".ctl-cap b").textContent);
+      const 序号 = () => Object.fromEntries(canvasState.graph.getElements().filter((n) => canvasKind(n) === "shot").map((n) => [n.id, canvasPayload(n).order]));
+      const 镜头号 = () => canvasState.graph.getElements().filter((n) => canvasKind(n) === "shot").map((n) => canvasPayload(n).id + "/" + canvasPayload(n).board_shot).sort();
+      const 回表 = () => window.__bodies.filter((b) => b.url === "/api/drama/storyboard/order").map((b) => b.body);
+      const 单格回表 = () => window.__bodies.filter((b) => b.url === "/api/drama/storyboard/output").length;
+      const 字 = () => (document.querySelector("#owb-toast span") || {}).textContent || "";
+      const 中 = (el) => { const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; };
+      const 按 = (el, type, at) => (el || window).dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, clientX: at.x, clientY: at.y, button: 0, pointerId: 1, pointerType: "mouse" }));
+      const 起 = { 顺序: 顺序(), 镜头号: 镜头号() };
+
+      // ① 反向对照：按下松开没挪（点一下）——照旧选中这一格，不换顺序、不回表
+      const t3 = 格("t3"), a3 = 中(t3);
+      按(t3, "pointerdown", a3); 按(null, "pointerup", a3); t3.click();
+      ${等(100)}
+      const 点一下 = { 顺序: 顺序(), 回表: 回表().length, 选中: [...canvasState.selectedIds] };
+
+      // ② 把最后一镜 S2-02 拖到第一格左半边松手：插到最前面
+      const t1 = 格("t1"), a1 = 中(t1), 头 = box.querySelector("[data-ctl-shot]").getBoundingClientRect();
+      const 落 = { x: 头.left + 4, y: a1.y };
+      按(t1, "pointerdown", a1);
+      按(null, "pointermove", { x: a1.x - 20, y: a1.y });
+      按(null, "pointermove", 落);
+      const 拖着 = { 淡: t1.classList.contains("is-dragging"), 线: box.querySelector(".is-drop-before") ? box.querySelector(".is-drop-before").dataset.ctlShot : "" };
+      按(null, "pointerup", 落);
+      格("t1") && 格("t1").click();   // 松手后浏览器补的那个 click：不算点了这一格
+      ${等(100)}
+      const 拖后 = { 顺序: 顺序(), 序号: 序号(), 镜头号: 镜头号(), 回表: 回表(), 单格: 单格回表(), 提示: 字(), 有撤销: !!document.querySelector("#owb-toast .owb-toast-act"),
+        选中: [...canvasState.selectedIds], 残留: box.querySelectorAll(".is-dragging, .is-drop-before, .is-drop-after").length };
+
+      // ③ 键盘：焦点在 S1-02 上按 Alt+← 挪前一位；焦点跟着它走，等防抖那趟重画完还在它身上
+      window.__bodies = [];
+      格("t4").focus();
+      格("t4").dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", altKey: true, bubbles: true, cancelable: true }));
+      ${等(350)}
+      const 键后 = { 顺序: 顺序(), 焦点: document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.ctlShot : "", 回表: 回表() };
+      // 不按 Alt 的方向键还是只走格子，不挪顺序
+      document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }));
+      ${等(100)}
+      const 走格 = { 顺序: 顺序(), 焦点: document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.ctlShot : "" };
+
+      // ④ 撤销：一下退一挪，分镜表跟着退；退到没拖过，order 整个拿掉（分镜表那头发 null）
+      window.__bodies = [];
+      canvasUndo(); ${等(300)}
+      const 撤一 = { 顺序: 顺序(), 回表: 回表() };
+      window.__bodies = [];
+      canvasUndo(); ${等(300)}
+      const 撤二 = { 顺序: 顺序(), 序号: 序号(), 回表: 回表() };
+
+      // ⑤ 分镜表退回来了：画布上照样排好，照原话说没写回去
+      window.__orderFail = "分镜表里没有镜头 S2-02";
+      canvasTimelineMove("t1", 0); ${等(200)}
+      const 回不去 = { 顺序: 顺序(), 提示: 字() };
+      window.__orderFail = "";
+
+      // ⑥ 拖着的时候来了一趟整条重画（生成完一镜、远端同步一趟都会画）：先不画，松手落在指着的那格；
+      // 以前手里那排格子被换成摘下来的旧节点，量出来全是 0，松手一律落到最后一镜
+      const 格们 = () => [...box.querySelectorAll("[data-ctl-shot]")];
+      const 原序 = 顺序(), 原条 = box.querySelector(".ctl-strip");
+      const 末 = 格们()[格们().length - 1], a末 = 中(末), 第二 = 格们()[1].getBoundingClientRect();
+      const 落2 = { x: 第二.left + 4, y: a末.y };
+      按(末, "pointerdown", a末);
+      按(null, "pointermove", { x: a末.x - 20, y: a末.y });
+      canvasRenderTimeline();
+      const 拖中同一条 = box.querySelector(".ctl-strip") === 原条;
+      按(null, "pointermove", 落2);
+      按(null, "pointerup", 落2);
+      ${等(100)}
+      const 重画中 = { 拖中同一条, 顺序: 顺序(), 期望: [原序[0], 原序[原序.length - 1], ...原序.slice(1, -1)],
+        松手后换了条: box.querySelector(".ctl-strip") !== 原条, 标记: !!canvasState.timelineDragging, 攒着: canvasState.timelineRedrawLater };
+      // 反向对照：拖着来一趟重画、拖回原处松手（没挪）——攒下的那次照样补画，顺序不变
+      const 条2 = box.querySelector(".ctl-strip"), 序2 = 顺序(), 头格 = 格们()[0], a头 = 中(头格);
+      按(头格, "pointerdown", a头);
+      按(null, "pointermove", { x: a头.x + 10, y: a头.y });
+      canvasRenderTimeline();
+      按(null, "pointermove", a头);
+      按(null, "pointerup", a头);
+      ${等(100)}
+      const 原地 = { 顺序: 顺序(), 序2, 补画: box.querySelector(".ctl-strip") !== 条2, 标记: !!canvasState.timelineDragging, 攒着: canvasState.timelineRedrawLater };
+
+      // ⑦ 触屏：一按就滑是滚时间线，不拿起格子；按住 0.35 秒拿起来，再拖才换顺序，拖的时候 touchmove 被截住（不滚、不断）
+      const 摸 = (el, type, at) => (el || window).dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, clientX: at.x, clientY: at.y, button: 0, pointerId: 7, pointerType: "touch", isPrimary: true }));
+      const 滑 = (el) => { const t = new Event("touchmove", { bubbles: true, cancelable: true }); el.dispatchEvent(t); return t.defaultPrevented; };
+      const 触条 = box.querySelector(".ctl-strip");
+      const 触 = { 只认左右滑: getComputedStyle(触条).touchAction };
+      const 序3 = 顺序(), 尾 = 格们()[格们().length - 1], a尾 = 中(尾), 二格 = 格们()[1].getBoundingClientRect();
+      摸(尾, "pointerdown", a尾);
+      触.没按稳截没截 = 滑(尾);
+      摸(null, "pointermove", { x: a尾.x - 20, y: a尾.y });
+      摸(null, "pointermove", { x: 二格.left + 4, y: a尾.y });
+      摸(null, "pointerup", { x: 二格.left + 4, y: a尾.y });
+      ${等(50)}
+      触.一按就滑 = { 顺序: 顺序(), 拿起: !!box.querySelector(".is-armed, .is-dragging"), 标记: !!canvasState.timelineDragging };
+      const 尾2 = 格们()[格们().length - 1], a尾2 = 中(尾2);
+      摸(尾2, "pointerdown", a尾2);
+      ${等(450)}
+      触.拿起 = 尾2.classList.contains("is-armed");
+      触.拿起后截住 = 滑(尾2);
+      摸(null, "pointermove", { x: a尾2.x - 20, y: a尾2.y });
+      摸(null, "pointermove", { x: 二格.left + 4, y: a尾2.y });
+      摸(null, "pointerup", { x: 二格.left + 4, y: a尾2.y });
+      ${等(100)}
+      触.按住再拖 = { 顺序: 顺序(), 期望: [序3[0], 序3[序3.length - 1], ...序3.slice(1, -1)], 残留: box.querySelectorAll(".is-armed, .is-dragging, .is-drop-before, .is-drop-after").length };
+      触.松手后不截 = 滑(box.querySelector(".ctl-strip"));
+      return { 起, 点一下, 拖着, 拖后, 键后, 走格, 撤一, 撤二, 回不去, 重画中, 原地, 触, 序3 };
+    })()`);
+  ok(JSON.stringify(排.起.顺序) === JSON.stringify(["S1-01", "S1-02", "S2-01", "S2-02"]), "先验料：没拖过的时候按镜头号排", 排.起.顺序);
+  ok(JSON.stringify(排.点一下.顺序) === JSON.stringify(排.起.顺序) && 排.点一下.回表 === 0 && JSON.stringify(排.点一下.选中) === JSON.stringify(["t3"]),
+     "反向对照：按下松开没挪，就是点了一下——选中这一格，顺序不变、不回表", 排.点一下);
+  ok(排.拖着.淡 && 排.拖着.线 === "t2", "拖着的时候那一格变淡，松手会插到哪儿亮一道线（第一格前面）", 排.拖着);
+  ok(JSON.stringify(排.拖后.顺序) === JSON.stringify(["S2-02", "S1-01", "S1-02", "S2-01"]),
+     "★把最后一镜拖到最前面松手：时间线上它排第一，其余顺次往后★", 排.拖后.顺序);
+  ok(JSON.stringify(排.拖后.序号) === JSON.stringify({ t1: 1, t2: 2, t3: 4, t4: 3 }),
+     "★整条每一镜都写上 order（1、2、3、4），不只写挪的那一镜★ 只写一镜，没写的全排它后面，顺序就乱了", 排.拖后.序号);
+  ok(JSON.stringify(排.拖后.镜头号) === JSON.stringify(排.起.镜头号), "★镜头号一个没动★ 文件名里带它，改了就跟盘上的首帧、视频对不上", 排.拖后.镜头号);
+  ok(排.拖后.回表.length === 1 && 排.拖后.回表[0].name === "ep1" && 排.拖后.单格 === 0
+     && JSON.stringify(排.拖后.回表[0].shots) === JSON.stringify([{ shot: "S2-02", scene: "S2", order: 1 }, { shot: "S1-01", scene: "S1", order: 2 }, { shot: "S1-02", scene: "S1", order: 3 }, { shot: "S2-01", scene: "S2", order: 4 }]),
+     "★顺序整批写回分镜表（一份表一趟，带场次号定位）★ 分镜表是真源，只改画布的话下次展开又变回去", 排.拖后.回表);
+  ok(/S2-02 挪到第 1 镜/.test(排.拖后.提示) && 排.拖后.有撤销, "提示说清挪到第几镜，挂「撤销」", 排.拖后.提示);
+  ok(JSON.stringify(排.拖后.选中) === JSON.stringify(["t3"]) && 排.拖后.残留 === 0, "松手后补的那个 click 不算点了这一格（选中没换）；拖完淡色、竖线都收干净", 排.拖后);
+  ok(JSON.stringify(排.键后.顺序) === JSON.stringify(["S2-02", "S1-02", "S1-01", "S2-01"]) && 排.键后.焦点 === "t4",
+     "★Alt+←：选中的这一镜往前挪一位，焦点跟着它走★（重画完焦点没掉到页面上）", 排.键后);
+  ok(排.键后.回表.length === 1 && JSON.stringify(排.键后.回表[0].shots.map((x) => [x.shot, x.order])) === JSON.stringify([["S2-02", 1], ["S1-02", 2], ["S1-01", 3], ["S2-01", 4]]),
+     "键盘挪的也回分镜表", 排.键后.回表);
+  ok(JSON.stringify(排.走格.顺序) === JSON.stringify(排.键后.顺序) && 排.走格.焦点 === "t2", "反向对照：不按 Alt 的 → 只走到下一格，不挪顺序", 排.走格);
+  ok(JSON.stringify(排.撤一.顺序) === JSON.stringify(["S2-02", "S1-01", "S1-02", "S2-01"]) && 排.撤一.回表.length === 1
+     && JSON.stringify(排.撤一.回表[0].shots.map((x) => [x.shot, x.order]).sort()) === JSON.stringify([["S1-01", 2], ["S1-02", 3]]),
+     "★⌘Z 一下只退一挪（回到拖完那一步），分镜表里那两镜的 order 跟着退★", 排.撤一);
+  ok(JSON.stringify(排.撤二.顺序) === JSON.stringify(["S1-01", "S1-02", "S2-01", "S2-02"]) && Object.values(排.撤二.序号).every((v) => v === undefined)
+     && 排.撤二.回表.length === 1 && 排.撤二.回表[0].shots.length === 4 && 排.撤二.回表[0].shots.every((x) => x.order === null),
+     "★再撤一下回到没拖过：order 整个拿掉，分镜表那头也发 null 拿掉★ 不然下次展开又按旧 order 排回去", 排.撤二);
+  ok(JSON.stringify(排.回不去.顺序) === JSON.stringify(["S2-02", "S1-01", "S1-02", "S2-01"]) && /没写回分镜表/.test(排.回不去.提示) && /（分镜表里没有镜头 S2-02）/.test(排.回不去.提示),
+     "分镜表退回来：画布上照样排好，提示照原话说没写回去", 排.回不去.提示);
+  ok(排.重画中.拖中同一条 && JSON.stringify(排.重画中.顺序) === JSON.stringify(排.重画中.期望) && 排.重画中.松手后换了条 && !排.重画中.标记 && !排.重画中.攒着,
+     "★拖着的时候来了一趟重画：先不画，松手落在指着的第二格，不是一律落到最后一镜★ 松手后照常重画、拖着的标记收干净", 排.重画中);
+  ok(JSON.stringify(排.原地.顺序) === JSON.stringify(排.原地.序2) && 排.原地.补画 && !排.原地.标记 && !排.原地.攒着,
+     "反向对照：拖着来一趟重画、拖回原处松手：顺序不变，攒下的那次重画松手补上（不是吞了）", 排.原地);
+  ok(排.触.只认左右滑 === "pan-x", "时间线在触屏上只认左右滑（touch-action: pan-x）", 排.触.只认左右滑);
+  ok(!排.触.没按稳截没截 && JSON.stringify(排.触.一按就滑.顺序) === JSON.stringify(排.序3) && !排.触.一按就滑.拿起 && !排.触.一按就滑.标记,
+     "★手指一按就滑：是在滚时间线，不截 touchmove、不拿起格子、顺序不动★", 排.触.一按就滑);
+  ok(排.触.拿起 && 排.触.拿起后截住 && JSON.stringify(排.触.按住再拖.顺序) === JSON.stringify(排.触.按住再拖.期望) && 排.触.按住再拖.残留 === 0 && !排.触.松手后不截,
+     "★手指按住 0.35 秒拿起一格（亮一圈），touchmove 截住不让滚，拖到第二格松手就插到那儿★ 以前触屏上一滑就被当滚动掐断，换不了顺序", 排.触);
+
+  console.log("\n— 四十九、镜头检查器「生成配音」「换一版配音」：先报价、等点头；换一版带 no_cache、版本号 +1 —");
+  const 配 = await run(`
+    (async () => {
+      ${摆画布([号镜头("vo1", "S1-01", "雨夜街口", 40, { line: "今晚的雨下得真大" }), 号镜头("vo2", "S1-02", "空巷", 300)])}
+      window.__bodies = []; window.__runs = []; window.__failRun = null; window.__echoName = true; window.__estimate = null; window.__estimates = [];
+      canvasState.versionTaken = new Map(); canvasState.assetsCheckedAt = 0;
+      const 替身 = window.askConfirm; window.askConfirm = window.__realAskConfirm;
+      try {
+        const 卡 = (id) => canvasState.graph.getCell(id);
+        const 字 = () => ((document.querySelector("#owb-toast span") || {}).textContent) || "";
+        const 框 = document.getElementById("canvas-inspector");
+        const 发的 = () => window.__bodies.filter((b) => b.url === "/api/tool/run").map((b) => ({ 工具: b.body.tool, 字: b.body.input.text, 名: b.body.input.filename, 有no_cache: "no_cache" in b.body.input, no_cache: b.body.input.no_cache }));
+        const 等框 = async () => { const t = Date.now() + 4000; while (Date.now() < t && !document.querySelector(".ask-mask .ask-box")) ${等(30)} return document.querySelector(".ask-mask .ask-box"); };
+        const 读框 = (box) => box ? { 标题: (box.querySelector(".ask-t") || {}).textContent || "", 取消: (box.querySelector(".ask-no") || {}).textContent || "", 确定: (box.querySelector(".ask-ok") || {}).textContent || "" } : null;
+        const 等跑完 = async () => { const t = Date.now() + 4000; ${等(50)} while (Date.now() < t && (canvasState.busy.has("vo1:audio") || canvasState.inflight.has("vo1"))) ${等(50)} };
+        const 选 = async (id) => { canvasState.inspectorOpen = true; canvasSetSelection(new Set([id]), id); ${等(50)} };
+        const 按钮 = (sel) => 框.querySelector(sel);
+        const 读检查器 = () => ({ 配音: !!按钮('[data-inspect-generate="audio"]'), 配音字: (按钮('[data-inspect-generate="audio"]') || {}).textContent || "",
+          换配音: !!按钮('[data-inspect-reroll="audio"]'), 换配音字: (按钮('[data-inspect-reroll="audio"]') || {}).textContent || "",
+          价: ((按钮('[data-canvas-price="audio"]') || {}).textContent) || "" });
+
+        // ① 检查器：镜头上有「生成配音」，价挂在旁边；还没配过音就没有「换一版配音」
+        await 选("vo1");
+        const 到点 = Date.now() + 3000;
+        while (Date.now() < 到点 && !((按钮('[data-canvas-price="audio"]') || {}).textContent)) ${等(50)}
+        const 起 = 读检查器();
+
+        // ② 点「生成配音」：先弹报价框，框开着一枪不发；点「先不了」也一枪不发
+        window.__estimates = [];
+        按钮('[data-inspect-generate="audio"]').click();
+        let box = await 等框();
+        const 第一框 = 读框(box), 框开着发了 = 发的().length, 报价问的 = window.__estimates.slice(-1)[0] || [];
+        if (box) box.querySelector(".ask-no").click();
+        await 等跑完(); ${等(150)}
+        const 取消后 = { 发了: 发的().length, 配音: (卡("vo1").get("canvasPayload") || {}).audio || "", 框还在: !!document.querySelector(".ask-mask") };
+
+        // ③ 再点，这回「开始生成」：发 text_to_speech，文件名 v1，不带 no_cache；卡上记下配音
+        按钮('[data-inspect-generate="audio"]').click();
+        box = await 等框();
+        if (box) box.querySelector(".ask-ok").click();
+        await 等跑完();
+        const 生成后 = { 发的: 发的(), 配音: (卡("vo1").get("canvasPayload") || {}).audio || "", 检查器: 读检查器() };
+
+        // ④ 「换一版配音」：一样先报价；点了带 no_cache:true、文件名 v2
+        window.__bodies = []; window.__estimates = [];
+        按钮('[data-inspect-reroll="audio"]').click();
+        box = await 等框();
+        const 换框 = 读框(box), 换框开着发了 = 发的().length;
+        if (box) box.querySelector(".ask-ok").click();
+        await 等跑完();
+        const 换后 = { 发的: 发的(), 配音: (卡("vo1").get("canvasPayload") || {}).audio || "" };
+
+        // ⑤ 参数没变再点「生成配音」：沿用现在这一版，不问价、不弹框、不发
+        window.__bodies = []; window.__estimates = [];
+        按钮('[data-inspect-generate="audio"]').click();
+        ${等(400)}
+        const 沿用 = { 发了: 发的().length, 问价: window.__estimates.length, 框: !!document.querySelector(".ask-mask"), 提示: 字(), 配音: (卡("vo1").get("canvasPayload") || {}).audio || "" };
+
+        // ⑥ 换一版也能「先不了」
+        按钮('[data-inspect-reroll="audio"]').click();
+        box = await 等框();
+        if (box) box.querySelector(".ask-no").click();
+        await 等跑完(); ${等(150)}
+        const 换取消 = { 发了: 发的().length, 配音: (卡("vo1").get("canvasPayload") || {}).audio || "" };
+
+        // ⑦ 没写台词的镜头（新镜头卡上那句是模板占位）：拦下来说清楚，不问价、不弹框
+        await 选("vo2");
+        window.__estimates = [];
+        按钮('[data-inspect-generate="audio"]').click();
+        ${等(400)}
+        const 没台词 = { 发了: 发的().length, 问价: window.__estimates.length, 框: !!document.querySelector(".ask-mask"), 提示: 字() };
+        window.__echoName = false;
+        await canvasFlushRemoteWrite(); ${等(200)}
+        return { 起, 第一框, 框开着发了, 报价问的, 取消后, 生成后, 换框, 换框开着发了, 换后, 沿用, 换取消, 没台词 };
+      } finally { window.askConfirm = 替身; }
+    })()`);
+  ok(配.起.配音 && 配.起.配音字.trim() === "生成配音" && 配.起.价 === "约 ¥0.30" && !配.起.换配音,
+     "★镜头检查器里有「生成配音」，旁边挂着预估价★；还没配过音就不摆「换一版配音」", 配.起);
+  ok(配.第一框 && 配.第一框.标题 === "将生成 1 条配音，预计 ¥0.30，确认后开始扣费" && 配.第一框.确定 === "开始生成" && 配.第一框.取消 === "先不了",
+     "★点「生成配音」先弹报价框：几条、多少钱、点了才扣费★", 配.第一框);
+  ok(配.框开着发了 === 0 && JSON.stringify(配.报价问的) === JSON.stringify([{ tool: "text_to_speech", input: { text: "今晚的雨下得真大" } }]),
+     "报价问的是这一句台词的配音（按字算），框开着的时候一枪没发", { 发了: 配.框开着发了, 报价问的: 配.报价问的 });
+  ok(配.取消后.发了 === 0 && !配.取消后.配音 && !配.取消后.框还在, "★点「先不了」：/api/tool/run 一个请求都没收到，卡上没多出配音★", 配.取消后);
+  ok(配.生成后.发的.length === 1 && 配.生成后.发的[0].工具 === "text_to_speech" && 配.生成后.发的[0].字 === "今晚的雨下得真大"
+     && 配.生成后.发的[0].名 === "配音_S1-01_v1.mp3" && !配.生成后.发的[0].有no_cache && 配.生成后.配音 === "短剧/main/配音_S1-01_v1.mp3",
+     "★点「开始生成」：发一条 text_to_speech，文件名 v1、不带 no_cache，卡上记下配音★", 配.生成后);
+  ok(配.生成后.检查器.换配音 && 配.生成后.检查器.换配音字.trim() === "换一版配音", "配过音之后检查器里多出「换一版配音」", 配.生成后.检查器);
+  ok(配.换框 && 配.换框.标题 === "将生成 1 条配音，预计 ¥0.30，确认后开始扣费" && 配.换框开着发了 === 0, "★「换一版配音」也先报价、等点头★ 它一定会重新扣费", 配.换框);
+  ok(配.换后.发的.length === 1 && 配.换后.发的[0].no_cache === true && 配.换后.发的[0].名 === "配音_S1-01_v2.mp3" && 配.换后.配音 === "短剧/main/配音_S1-01_v2.mp3",
+     "★换一版：请求体带 no_cache:true，文件名 v1 → v2，卡片换上新的★ 跟首帧、视频的换一版同一个规矩", 配.换后);
+  ok(配.沿用.发了 === 0 && 配.沿用.问价 === 0 && !配.沿用.框 && /没扣费/.test(配.沿用.提示) && 配.沿用.配音 === "短剧/main/配音_S1-01_v2.mp3",
+     "★参数没变再点「生成配音」：沿用这一版，不弹「确认后开始扣费」★ 不花钱的事不该让人确认扣费", 配.沿用);
+  ok(配.换取消.发了 === 0 && 配.换取消.配音 === "短剧/main/配音_S1-01_v2.mp3", "反向对照：换一版点「先不了」，一枪不发、卡上还是 v2", 配.换取消);
+  ok(配.没台词.发了 === 0 && 配.没台词.问价 === 0 && !配.没台词.框 && /先写台词|请先填写对白/.test(配.没台词.提示),
+     "★没写台词的镜头点「生成配音」：直接说先写台词，不先拿一个价让人点★", 配.没台词);
 
   srv.close();
   console.log(fail ? `\n有失败：${pass} 过 / ${fail} 挂` : `\n全部通过：${pass} 过 / 0 挂`);

@@ -80,6 +80,7 @@ const LENDABLE = [
   "add_connector",    // 用户让接某个 MCP：不借的话 CLI 只会手改 config.json，或者装进它自己的配置，连接器页上都看不见
   "remember",         // 长期记忆：记
   "forget",           // 长期记忆：忘
+  "canvas_manage",    // 画布：改节点、交待生成清单。画布任务里生成工具不借（见 agent.js），不借它的话本机引擎既交不了清单、也改不了提示词
 ];
 
 function loadConfig() {

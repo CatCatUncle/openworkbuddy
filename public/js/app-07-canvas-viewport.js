@@ -105,10 +105,11 @@ function canvasAutoLayout(page) {
     if (layoutGraph.hasNode(source) && layoutGraph.hasNode(target) && source !== target) layoutGraph.setEdge(source, target, {}, `edge-${index}`);
   });
   D.layout(layoutGraph);
-  canvasState.historyMute = true;
+  // 每挪一张都会来一次 change:position：bulk 挡住，挪完下面存一次
+  canvasState.historyMute = true; canvasState.bulk = true;
   try {
     nodes.forEach((node) => { const point = layoutGraph.node(node.id), size = node.size(); if (point) node.position(Math.round(point.x - size.width / 2), Math.round(point.y - size.height / 2)); });
-  } finally { canvasState.historyMute = false; }
+  } finally { canvasState.historyMute = false; canvasState.bulk = false; }
   canvasPersist(); canvasFitAll(page); canvasToast("已按生成关系紧凑排版并居中。", "git-branch");
 }
 
@@ -176,7 +177,7 @@ function canvasBindViewport(page) {
         const name = await canvasUploadWorkspaceFile(file);
         const def = CANVAS_NODE_DEFS[kind];
         const node = canvasAddNode(kind, { title: file.name, path: name, url: name, role: "拖入素材", tags: "" }, { x: Math.max(20, point.x + index * 26 - (def.width || 320) / 2), y: Math.max(20, point.y + index * 26 - (def.height || 220) / 2) });
-        if (node) canvasToast(`${file.name} 已添加到画布。`, "plus");
+        if (node) canvasToast(name !== file.name ? canvasT("工作区里已有同名文件，这一份存成了 {n}，原来那份没动。", { n: name }) : `${file.name} 已添加到画布。`, "plus");
       } catch (error) { canvasToast(`上传失败：${String(error.message || error).slice(0, 140)}`, "circle-x", "err"); }
     }
     canvasLoadLibrary();
@@ -224,7 +225,7 @@ function canvasBindViewport(page) {
       const ids = new Set(canvasState.selectedIds), gone = (canvasState.graph?.getElements?.() || []).filter((node) => ids.has(node.id));
       gone.forEach((node) => node.remove());
       canvasState.selectedAll = false; canvasState.selectedIds = new Set(); canvasState.selected = null; canvasRenderInspector(); canvasPersist();
-      if (gone.length) canvasToast("节点已删除。", "trash-2", undefined, { label: "撤销", run: canvasUndo });
+      if (gone.length) canvasToast("节点已删除。", "trash-2", undefined, typeof canvasUndoAction === "function" ? canvasUndoAction() : { label: "撤销", run: canvasUndo });
     }
   };
   canvasState.keyUpHandler = (evt) => { if (evt.code === "Space") canvasState.spacePanning = false; };

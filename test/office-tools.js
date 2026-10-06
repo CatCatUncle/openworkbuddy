@@ -328,6 +328,11 @@ const run = (name, input) => tools.executeTool(name, input, { security: { gatewa
     for (const t of ["html_to_image", "render_page"]) {
       ok(!lent.includes(t), `桥接清单里也没有 ${t}（桥是个纯 node 子进程，更没有 Electron）`, lent);
     }
+    // 画布任务交给本机引擎时，生成那三样不借（agent.js 按会话号摘掉），Agent 只能靠 canvas_manage 交清单。
+    // 它也不在桥上的话，Claude Code / Codex 跑画布任务就既花不了钱、也交不出清单，只能干说
+    ok(lent.includes("canvas_manage"), "★桥接清单里有 canvas_manage★ 本机引擎跑画布任务要靠它改节点、交待生成清单", lent);
+    const canvasLent = bridge.LENDABLE.filter((n) => !require(path.join(ROOT, "src", "tools", "canvas.js")).CANVAS_QUOTE_FIRST.includes(n));
+    ok(canvasLent.includes("canvas_manage") && !canvasLent.includes("generate_image"), "  └ 画布任务那份（摘掉三样生成工具之后）canvas_manage 还在", canvasLent);
     // 反过来：桥上有浏览器的时候，render_page 必须还借得出去。
     // 它从本项目自己的工具清单里删了，但外部 CLI 引擎（Claude Code / Codex）手上没有本项目的
     // fetch_url——它们自带的抓网页工具不跑 JS，动态站点一律空壳。对它们来说这儿没有选择题，

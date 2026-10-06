@@ -16,6 +16,8 @@ const fs = require("fs");
 const path = require("path");
 const express = require("express");
 const dramaPipeline = require("../../domains/media/drama-pipeline");
+// 回收站和快照的存取跟画布文件住在一起（src/tools/canvas.js），工作目录它自己认（经 tools.js 绑定）
+const canvasStore = require("../../tools/canvas");
 
 // 下面这几个由 createCanvasRouter(deps) 填上。readDramaJson 住在 src/server/routes/drama.js，素材台账要读分镜表
 let getWorkspaceDir, outputFiles, safePath, rootedPath, canvasList, canvasReadState, canvasWriteState, canvasNormalizeState, canvasSafeName, readDramaJson;
@@ -25,7 +27,12 @@ const app = express.Router({ caseSensitive: true });
 
 // 无限画布的项目内状态：浏览器负责渲染，Agent 通过 canvas_manage 工具改同一份 JSON。
 // 不把它放到 localStorage 作为唯一真源，否则 Agent 改完节点浏览器永远看不到。
-app.get("/api/canvas/list", (_req, res) => res.json({ canvases: canvasList() }));
+app.get("/api/canvas/list", (_req, res) => {
+  // 回收站一起给：界面在画布下拉里列出来，点一下就恢复。读不出来也不该连画布列表一起挂
+  let trash = [];
+  try { trash = canvasStore.canvasTrashList(); } catch {}
+  res.json({ canvases: canvasList(), trash });
+});
 
 /**
  * 短剧素材台账。
@@ -48,7 +55,9 @@ const ASSET_KINDS = { image: /\.(png|jpe?g|webp|gif|bmp|avif)$/i, video: /\.(mp4
 // reference 这一条是补上的：角色节点的定妆照就落在 reference 里。少了它，定妆照会被算成
 // 「没人用」——而「没人用」这一栏在界面上是加粗的、旁边还写着「多半是重跑留下的旧版本，占地方」，
 // 等于指着这部戏最要命的几张图叫人删。文件删了，后面每一镜的脸都会开始换人。
-const ASSET_REF_KEYS = ["path", "url", "first_frame", "last_frame", "video", "audio", "image", "reference", "ref", "voice_file", "file"];
+// subtitled（烧好字幕的那一版成片）和 reference_video（动作参考视频）同理：少了它们，带字幕的成片
+// 和拿来对动作的参考片都会被标成「没人用」
+const ASSET_REF_KEYS = ["path", "url", "first_frame", "last_frame", "video", "audio", "image", "reference", "ref", "voice_file", "file", "subtitled", "reference_video"];
 
 function assetKindOf(name) {
   for (const [kind, re] of Object.entries(ASSET_KINDS)) if (re.test(name)) return kind;
@@ -117,18 +126,43 @@ app.get("/api/canvas/assets", (req, res) => {
     // 画布上没画出来的镜头，它的首帧照样是「有人在用」的。
     // 引用先原样收齐（连同从哪写出来的），拿到清单再统一认：以前按文件名记账，
     // 两集各有一张「镜头_S1-01_首帧.png」时，A 集的引用会记到 B 集那张图头上
-    const uses = [];   // { ref, near, use: { from, id, title, kind } }
+    const uses = [];   // { ref, near, use: { from, id, title, kind, board? } }
     const noteUse = (ref, use, near) => { if (assetBase(ref)) uses.push({ ref, near, use }); };
-    const boardNear = canvasAssetNear(name);
     let boardUnreadable = "";
-    try {
-      const state = canvasReadState(name || undefined, {});
+    // 项目里每一张画布都算：以前只看眼下这张，第 1 集画布上的定妆照，切到第 2 集再看就成了「没人用」——
+    // 那一栏是提示可以删的。别的画布上的用处在标题后面注明是哪张画布
+    const unreadable = [];   // 读不出来的画布：它们引用了什么不知道，「没人用」就一个都不敢说
+    // 一张画布上所有节点引用的文件记一遍。where 非空时写在标题后面，告诉人这处用处在哪张画布上
+    const noteBoard = (state, board, where, near = canvasAssetNear(board)) => {
       for (const node of state.nodes || []) {
         const refs = new Set();
         assetRefsIn(node.payload, refs);
-        for (const r of refs) noteUse(r, { from: "画布", id: String(node.id || ""), title: String((node.payload && (node.payload.title || node.payload.name || node.payload.id)) || node.kind || "节点"), kind: String(node.kind || "") }, boardNear);
+        const title = String((node.payload && (node.payload.title || node.payload.name || node.payload.id)) || node.kind || "节点");
+        for (const r of refs) noteUse(r, { from: "画布", id: String(node.id || ""), title: where ? `${title}（${where}）` : title, kind: String(node.kind || ""), board }, near);
       }
-    } catch (e) { boardUnreadable = e.message; }   // 画布坏了不该连素材台账一起看不了
+    };
+    const boardsToScan = [];
+    try { for (const b of canvasList()) if (b && b.name) boardsToScan.push(String(b.name)); } catch {}
+    if (name && !boardsToScan.includes(name)) boardsToScan.push(name);
+    if (!name) { try { canvasReadState(undefined, {}); } catch (e) { boardUnreadable = e.message; } }
+    for (const board of boardsToScan) {
+      let state;
+      try { state = canvasReadState(board, {}); } catch (e) {   // 画布坏了不该连素材台账一起看不了
+        if (board === name) boardUnreadable = e.message;
+        unreadable.push(board);
+        continue;
+      }
+      noteBoard(state, board, !name || board === name ? "" : `画布 ${board}`);
+    }
+    // 回收站里的画布也算：它随时可能被恢复，里面引用的素材这会儿被当成没人用删掉，恢复回来就是一屏「找不到」。
+    // 回收站里那份坏了就跳过——它恢复不出能用的画布，也不该让整个「没人用」从此一个都不标
+    let trashed = [];
+    try { trashed = canvasStore.canvasTrashList(); } catch {}
+    for (const t of trashed) {
+      let state;
+      try { state = canvasStore.canvasTrashRead(t.id); } catch { continue; }
+      noteBoard(state, `回收站/${t.id}`, `回收站里的画布 ${t.name}`, canvasAssetNear(t.name));
+    }
 
     const boards = [];
     for (const f of outputFiles()) {
@@ -160,7 +194,7 @@ app.get("/api/canvas/assets", (req, res) => {
     const users = new Map();   // 相对路径 → [{ from, id, title, kind }]
     const twins = new Map();   // 相对路径 → 跟它同名的那几份（含它自己）
     const lost = new Map();    // 文件名 → { base, paths, usedBy }
-    const addUse = (list, use) => { if (!list.some((u) => u.from === use.from && u.id === use.id)) list.push(use); return list; };
+    const addUse = (list, use) => { if (!list.some((u) => u.from === use.from && u.id === use.id && u.board === use.board)) list.push(use); return list; };
     for (const u of uses) {
       const hit = locate(u.ref, u.near);
       if (hit.ambiguous) { for (const r of hit.ambiguous) { users.set(r, addUse(users.get(r) || [], u.use)); twins.set(r, hit.ambiguous); } continue; }
@@ -177,10 +211,11 @@ app.get("/api/canvas/assets", (req, res) => {
       const kind = assetKindOf(f.name);
       if (!kind) continue;
       const base = assetBase(f.name), rel = String(f.name).replace(/[\\]/g, "/");   // [\\] 的缘故见上面 near 那行
-      const usedBy = users.get(rel) || [];
+      // 有画布读不出来的时候，没查到用处 ≠ 没人用：usedBy 给 null（界面上就是「不知道，不说」），不标没人用
+      const used = users.get(rel), usedBy = used || (unreadable.length ? null : []);
       const version = assetVersionOf(base);
       assets.push({
-        name: f.name, base, kind, role: assetRoleOf(base), size: f.size, mtime: f.mtime, dup_of: f.dup_of || undefined, usedBy, orphan: usedBy.length === 0,
+        name: f.name, base, kind, role: assetRoleOf(base), size: f.size, mtime: f.mtime, dup_of: f.dup_of || undefined, usedBy, orphan: !!usedBy && usedBy.length === 0,
         ...(version ? { version } : {}), ...(twins.has(rel) ? { ambiguous: twins.get(rel) } : {}),
       });
     }
@@ -188,7 +223,7 @@ app.get("/api/canvas/assets", (req, res) => {
     const missing = [...lost.values()];
     assets.sort((a, b) => String(b.mtime).localeCompare(String(a.mtime)));
     res.json({
-      assets, missing, boards, ...(boardUnreadable ? { boardUnreadable } : {}),
+      assets, missing, boards, ...(boardUnreadable ? { boardUnreadable } : {}), ...(unreadable.length ? { boardsUnreadable: unreadable } : {}),
       stat: {
         total: assets.length, orphan: assets.filter((a) => a.orphan).length, missing: missing.length, ambiguous: assets.filter((a) => a.ambiguous).length,
         bytes: assets.reduce((n, a) => n + (a.size || 0), 0),
@@ -252,12 +287,17 @@ app.get("/api/canvas", (req, res) => {
     // 两样内容不一样，拿同一个 ETag 回 304 会让前端留着另一张的缓存。
     // 带 lost 的那一回也不回 304：lost 只在这一次响应里说，缓存里那份没有它
     const stamp = Number(state.updatedAt) || 0;
+    // Agent 交的待生成清单（canvas_manage propose）住在旁边那个文件里，跟着这一趟一起给：画布轮询本来就在问这条，
+    // 不用另开一路。清单不改画布，版本号不变——所以 ETag 要把清单号也算进去，不然交了清单回的还是 304，横幅出不来
+    let proposal = null;
+    try { proposal = canvasStore.canvasProposalRead(name || canvasStore.canvasCurrentName()); } catch {}
+    const tag = proposal ? `${stamp}-${proposal.id}` : String(stamp);
     if (stamp > 0 && !Object.keys(lost).length) {
-      res.set("ETag", `"${stamp}"`);
+      res.set("ETag", `"${tag}"`);
       res.set("Cache-Control", "no-cache");
-      if (canvasEtagHit(req.headers["if-none-match"], stamp)) return res.status(304).end();
+      if (canvasEtagHit(req.headers["if-none-match"], tag)) return res.status(304).end();
     }
-    res.json({ name: name || undefined, ...state, ...(Object.keys(lost).length ? { lost } : {}) });
+    res.json({ name: name || undefined, ...state, ...(Object.keys(lost).length ? { lost } : {}), ...(proposal ? { proposal } : {}) });
   } catch (e) {
     // 读不出来就明说读不出来。以前这一层拿到的是一张空画布（tools 里一个 catch 全吞了），
     // 界面照着画成白板，用户在白板上随手一动、自动保存一回，原文件就没了
@@ -333,8 +373,56 @@ app.delete("/api/canvas/boards/:name", (req, res) => {
     const file = resolveBoardFile(name);
     if (!file) throw new Error("画布名称不合法");
     if (!fs.existsSync(file)) return res.status(404).json({ ok: false, error: "没有这张画布" });
-    fs.unlinkSync(file);
-    res.json({ ok: true, canvases: canvasList() });
+    // 不真删：挪进回收站（.openworkbuddy/canvas-trash/画布名@时间.json），点错了还拿得回来
+    const t = canvasStore.canvasTrashPut(name);
+    res.json({ ok: true, canvases: canvasList(), trashed: { id: t.id, name: t.name, path: `.openworkbuddy/canvas-trash/${t.id}`, deletedAt: t.deletedAt } });
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+app.get("/api/canvas/trash", (_req, res) => {
+  try { res.json({ trash: canvasStore.canvasTrashList() }); } catch (e) { res.status(400).json({ error: e.message }); }
+});
+// 原名被新画布占了就换成 原名_2，两张都留着
+app.post("/api/canvas/trash/restore", (req, res) => {
+  try {
+    const r = canvasStore.canvasTrashRestore(String(req.body && req.body.id || ""));
+    res.json({ ok: true, name: r.name, canvases: canvasList(), trash: canvasStore.canvasTrashList() });
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+// 用户在画布上点了「开跑」或「不要」：收掉那份清单。带 id 只收那一份，Agent 这期间又交了新的就不动。
+// 带 kinds（只开跑了其中几类）：只划掉这几类，剩下的换新号留着（见 canvasProposalTrim），回 { id, left }
+app.post("/api/canvas/proposal/dismiss", (req, res) => {
+  try {
+    const body = req.body || {};
+    const name = String(body.name || "").trim() || "main";
+    if (canvasSafeName(name) !== name) return res.status(400).json({ ok: false, error: "画布名称不合法" });
+    if (!body.id) return res.status(400).json({ ok: false, error: "缺清单号 id" });
+    if (body.kinds !== undefined) {
+      const kinds = Array.isArray(body.kinds) ? body.kinds.map(String) : [];
+      if (!kinds.length || kinds.some((k) => !["image", "video", "audio"].includes(k))) return res.status(400).json({ ok: false, error: "kinds 只能是 image / video / audio" });
+      const r = canvasStore.canvasProposalTrim(name, String(body.id), kinds);
+      return res.json({ ok: true, dropped: !!(r && r.dropped), ...(r && r.id ? { id: r.id, left: r.left } : {}) });
+    }
+    res.json({ ok: true, dropped: canvasStore.canvasProposalDrop(name, String(body.id)) });
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+/**
+ * Agent 清空画布、连着删一串节点之前存的快照（见 src/tools/canvas.js canvasSnapshotSave）。
+ * 放回去只补不盖：快照里有、现在没有的加回来，现在有的一个不动
+ */
+app.get("/api/canvas/snapshots", (req, res) => {
+  try {
+    const name = String(req.query.name || "").trim() || "main";
+    if (canvasSafeName(name) !== name) return res.status(400).json({ error: "画布名称不合法" });
+    res.json({ snapshots: canvasStore.canvasSnapshotList(name) });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.post("/api/canvas/snapshots/restore", (req, res) => {
+  try {
+    const body = req.body || {};
+    const name = String(body.name || "").trim() || "main";
+    if (canvasSafeName(name) !== name) return res.status(400).json({ ok: false, error: "画布名称不合法" });
+    const r = canvasStore.canvasSnapshotRestore(name, String(body.id || ""));
+    res.json({ ok: true, restored: r.nodes, edges: r.edges, updatedAt: r.state.updatedAt, state: r.state });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
 

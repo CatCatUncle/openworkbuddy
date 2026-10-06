@@ -529,6 +529,10 @@ html[data-theme="dark"] .ui-select {
 .canvas-generation-lineage { display: inline-flex; align-items: center; max-width: 100%; gap: 5px; margin: 8px 0 2px; padding: 4px 7px; border: 1px solid color-mix(in srgb, var(--owb-brand) 18%, var(--owb-border)); border-radius: 999px; background: color-mix(in srgb, var(--owb-brand-weak) 44%, var(--owb-bg)); color: var(--owb-text-3); font-size: 10px; line-height: 1.2; }
 .canvas-generation-lineage .i { width: 12px; height: 12px; color: var(--owb-brand-text); flex: none; }
 .canvas-generation-lineage span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 上一单没收回来：红边一条，三颗按钮跟在后面，窄卡片上自动折行 */
+.canvas-job-pending { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin: 8px 0 2px; padding: 6px 8px; border: 1px solid color-mix(in srgb, var(--owb-err) 34%, var(--owb-border)); border-radius: var(--radius-md, 8px); background: var(--danger-bg); color: var(--danger-text); font-size: 11px; line-height: 1.4; }
+.canvas-job-pending .i { width: 12px; height: 12px; flex: none; }
+.canvas-job-pending span { flex: 1 1 140px; min-width: 0; }
 .canvas-empty { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; color: var(--owb-text-3); }
 /* 「这张画布读不出来」的整页兜底。要长得像一条说明，不像一张空白布——
    看着像空白布，用户就会开始在上面画，而那正是我们拦下来的动作 */
@@ -697,6 +701,15 @@ html[data-theme="dark"] .ui-select {
 .canvas-connect-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(76px, 96px) auto; gap: 6px; }
 .canvas-connected-list { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
 .canvas-connected-list span { padding: 3px 6px; border-radius: var(--radius-full); background: var(--owb-brand-weak); color: var(--owb-brand-text); font-size: 11px; }
+.canvas-connected-list span { display: inline-flex; align-items: center; gap: 2px; padding-right: 2px; }
+.canvas-disconnect { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; padding: 0; border: none; border-radius: var(--radius-full); background: transparent; color: inherit; cursor: pointer; opacity: .65; }
+.canvas-disconnect:hover, .canvas-disconnect:focus-visible { opacity: 1; color: var(--owb-err-text); background: var(--owb-bg-hover); }
+.canvas-disconnect .i { width: 11px; height: 11px; }
+/* 停在连线上冒出来的那颗 ×（见 canvasBindLinkHover） */
+.canvas-link-remove { fill: var(--owb-bg); stroke: var(--owb-border); stroke-width: 1; }
+.canvas-link-remove-icon { stroke: var(--owb-text-3); stroke-width: 1.6; stroke-linecap: round; }
+.joint-tool:hover .canvas-link-remove { stroke: var(--owb-err-text); }
+.joint-tool:hover .canvas-link-remove-icon { stroke: var(--owb-err-text); }
 .canvas-inspector-hint { margin: 9px 0 0; color: var(--owb-text-3); font-size: 11px; line-height: 1.55; }
 .canvas-provenance { display: grid; gap: 8px; }
 .canvas-provenance-meta, .canvas-provenance-inputs { display: flex; flex-wrap: wrap; gap: 5px; }
@@ -914,7 +927,8 @@ html[data-theme="dark"] .ui-select {
 .canvas-page button.ctl-lack:hover { background: var(--owb-bg-hover); }
 .canvas-page .ctl-actions { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
 .canvas-page .ctl-actions .ui-btn.is-active { background: var(--owb-brand-weak); color: var(--owb-brand-text); }
-.canvas-page .ctl-strip { display: flex; gap: 4px; padding: 4px 8px 8px; overflow-x: auto; overscroll-behavior-x: contain; }
+/* 触屏上只认左右滑（滚时间线）；按住一格拿起来、拖着换顺序靠 canvasTimelineDragStart 截住 touchmove */
+.canvas-page .ctl-strip { display: flex; gap: 4px; padding: 4px 8px 8px; overflow-x: auto; overscroll-behavior-x: contain; touch-action: pan-x; }
 .canvas-page .ctl-cell { position: relative; flex: 0 0 var(--ctl-w, 96px); display: flex; flex-direction: column; gap: 4px; width: var(--ctl-w, 96px); padding: 4px; border: 1px solid var(--owb-border); border-radius: var(--radius-sm); background: var(--owb-bg); color: var(--owb-text); font: inherit; text-align: left; cursor: pointer; }
 .canvas-page .ctl-cell:hover { border-color: color-mix(in srgb, var(--owb-brand-text) 40%, var(--owb-border)); }
 .canvas-page .ctl-cell.is-selected { border-color: var(--owb-brand-text); box-shadow: 0 0 0 2px var(--owb-brand-weak); }
@@ -934,6 +948,15 @@ html[data-theme="dark"] .ui-select {
 .canvas-page .ctl-cell.is-playing { border-color: var(--owb-brand); box-shadow: 0 0 0 2px color-mix(in srgb, var(--owb-brand) 35%, transparent); }
 .canvas-page .ctl-cell.is-playing .ctl-tc { background: var(--owb-brand); }
 .canvas-page .ctl-cell:focus-visible { outline: 2px solid var(--owb-brand); outline-offset: 1px; }
+/* 拖一格换顺序：拖着的那格变淡，松手会插在哪两格中间就亮一道竖线 */
+.canvas-page .ctl-strip.is-reordering, .canvas-page .ctl-strip.is-reordering .ctl-cell { cursor: grabbing; user-select: none; }
+.canvas-page .ctl-cell.is-dragging { opacity: .45; }
+/* 手指按住不动、这一格拿起来了：亮一圈，说明再拖就是换顺序。长按也别弹系统的图片菜单 */
+.canvas-page .ctl-cell { -webkit-touch-callout: none; }
+.canvas-page .ctl-cell.is-armed { border-color: var(--owb-brand); box-shadow: 0 0 0 2px var(--owb-brand-weak); }
+.canvas-page .ctl-cell.is-drop-before::before, .canvas-page .ctl-cell.is-drop-after::after { content: ""; position: absolute; top: 2px; bottom: 2px; width: 2px; border-radius: 1px; background: var(--owb-brand); pointer-events: none; }
+.canvas-page .ctl-cell.is-drop-before::before { left: -4px; }
+.canvas-page .ctl-cell.is-drop-after::after { right: -4px; }
 .canvas-page .ctl-peek { position: absolute; z-index: 2; display: grid; gap: 6px; width: max-content; max-width: 280px; padding: 8px; border: 1px solid var(--owb-border); border-radius: var(--radius-md); background: var(--owb-bg); box-shadow: var(--shadow-menu); color: var(--owb-text); font-size: 12px; pointer-events: none; opacity: 0; transition: opacity .12s var(--owb-ease); }
 .canvas-page .ctl-peek.is-open { opacity: 1; }
 .canvas-page .ctl-peek-media { display: flex; justify-content: center; min-width: 160px; border-radius: 6px; background: var(--owb-bg-hover); overflow: hidden; }
@@ -982,6 +1005,17 @@ html[data-theme="dark"] .ui-select {
 .canvas-page .canvas-find input { flex: 1; min-width: 0; height: 28px; padding: 0 4px; border: 0; outline: none; background: transparent; color: var(--owb-text); font: inherit; font-size: 13px; }
 .canvas-page .canvas-find-count { flex: none; color: var(--owb-text-3); font-size: 12px; white-space: nowrap; }
 .canvas-page .canvas-find-count.is-miss { color: var(--owb-err-text); }
+/* 画布顶上的横幅（Agent 删了一片给「撤销」、没存进项目给「重试保存」）：位置跟 ⌘F 搜索条一样，
+   搜索条开着就排在它下面。底色不透明——底下是一张满是卡片的画布，半透明的字压在卡片上读不清 */
+.canvas-page > .canvas-bars { position: absolute; z-index: 27; top: calc(84px + var(--cp-h, 0px)); left: 50%; display: flex; flex-direction: column; gap: 6px; width: min(560px, calc(100% - 20px)); transform: translateX(-50%); pointer-events: none; }
+.canvas-page > .canvas-bars[hidden] { display: none; }
+.canvas-page > .canvas-find:not([hidden]) ~ .canvas-bars { top: calc(130px + var(--cp-h, 0px)); }
+.canvas-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 7px 8px 7px 10px; border: 1px solid var(--owb-border); border-radius: var(--radius-md); background: var(--owb-bg); box-shadow: var(--shadow-menu); color: var(--owb-text); font-size: 12px; line-height: 1.5; pointer-events: auto; }
+.canvas-bar > .i { width: 14px; height: 14px; flex: none; }
+.canvas-bar-text { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; }
+.canvas-bar.is-warn { border-color: color-mix(in srgb, var(--warning) 40%, var(--owb-border)); background: color-mix(in srgb, var(--warning) 10%, var(--owb-bg)); }
+.canvas-bar.is-warn > .i { color: var(--warning); }
+.canvas-bar.is-err { border-color: color-mix(in srgb, var(--owb-err) 40%, var(--owb-border)); background: color-mix(in srgb, var(--owb-err) 9%, var(--owb-bg)); color: var(--danger-text); }
 /* 连播预览：跟看大图那层一个样子 */
 .canvas-playback { position: fixed; z-index: 1200; inset: 0; display: flex; align-items: center; justify-content: center; padding: 28px; background: rgba(8, 9, 12, .76); opacity: 0; transition: opacity .16s var(--owb-ease); }
 .canvas-playback.is-open { opacity: 1; }

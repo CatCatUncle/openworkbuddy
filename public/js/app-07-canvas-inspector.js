@@ -46,7 +46,8 @@ function canvasDramaModel(p, kind, nodeKind) {
 }
 
 function canvasBindNode(node, root) {
-  root.querySelector("[data-canvas-remove]")?.addEventListener("click", async (evt) => { evt.preventDefault(); evt.stopPropagation(); if (!(await askConfirm({ title: `删掉节点「${canvasNodeLabel(node)}」？`, hint: "挂在它身上的连线也会一起删掉。", ok: "删掉", danger: true }))) return; if (canvasState.selected === node.id) { canvasState.selected = null; canvasRenderInspector(); } node.remove(); canvasPersist(); });
+  // 卡上的 ×：跟 Delete 键一个脾气，不问、直接删这一张，提示上挂「撤销」（见 canvasDeleteSelection）
+  root.querySelector("[data-canvas-remove]")?.addEventListener("click", (evt) => { evt.preventDefault(); evt.stopPropagation(); canvasDeleteSelection(node, true); });
   root.querySelector("[data-canvas-settings]")?.addEventListener("click", (evt) => { evt.preventDefault(); evt.stopPropagation(); canvasState.selectedAll = false; canvasState.selectedIds = new Set([node.id]); canvasState.selected = node.id; canvasState.inspectorOpen = true; canvasRenderInspector(); });
   root.addEventListener("click", (evt) => {
     if (evt.target.closest("button,select,input,textarea,[contenteditable=true]")) return;
@@ -76,6 +77,10 @@ function canvasBindNode(node, root) {
   root.querySelector("[data-canvas-agent]")?.addEventListener("click", (evt) => { evt.preventDefault(); evt.stopPropagation(); canvasRunInternal(node); });
   root.querySelector("[data-canvas-compose]")?.addEventListener("click", (evt) => { evt.preventDefault(); evt.stopPropagation(); canvasComposeOpen(); });
   root.querySelectorAll("[data-canvas-generate]").forEach((button) => button.addEventListener("click", (evt) => { evt.preventDefault(); evt.stopPropagation(); canvasGenerate(node, button.dataset.canvasGenerate); }));
+  // 上一单没收回来那一条（canvasPendingJobsRow）：看结果只查不发，再生成一次才真花钱，忽略只划掉记录
+  root.querySelectorAll("[data-canvas-job-collect]").forEach((button) => button.addEventListener("click", (evt) => { evt.preventDefault(); evt.stopPropagation(); canvasCollectJob(node, button.dataset.canvasJobCollect); }));
+  root.querySelectorAll("[data-canvas-job-again]").forEach((button) => button.addEventListener("click", (evt) => { evt.preventDefault(); evt.stopPropagation(); canvasGenerateAgain(node, button.dataset.canvasJobAgain); }));
+  root.querySelectorAll("[data-canvas-job-dismiss]").forEach((button) => button.addEventListener("click", (evt) => { evt.preventDefault(); evt.stopPropagation(); canvasDismissJob(node, button.dataset.canvasJobDismiss); }));
   root.querySelector("[data-canvas-draft]")?.addEventListener("click", (evt) => { evt.preventDefault(); evt.stopPropagation(); canvasDraftStoryboard(node); });
   root.querySelectorAll("[data-canvas-inline-key]").forEach((field) => field.addEventListener("input", () => { const next = canvasPayload(node); next[field.dataset.canvasInlineKey] = field.value; node.set("canvasPayload", next); canvasPersist(); }));
   root.querySelector("[data-canvas-expand]")?.addEventListener("click", async (evt) => {
@@ -352,11 +357,11 @@ function canvasRenderInspector(focus = true) {
   const defaultTarget = allNodes[0], defaultRelation = defaultTarget ? canvasDefaultRelation(node, defaultTarget) : "input";
   // 每颗「生成」旁边挂一个预估价（异步填，见 canvasFillPrices）：点之前就知道这一下大概多少钱
   const price = (k) => `<small class="canvas-price" data-canvas-price="${k}"></small>`;
-  const generateActions = kind === "shot" ? `<button class="ui-btn ui-btn--sm ui-btn--brand" data-inspect-generate="image">${ic("image")}生成首帧</button>${price("image")}<button class="ui-btn ui-btn--sm ui-btn--outline" data-inspect-generate="video" ${p.first_frame ? "" : "disabled"}>${ic("video")}生成视频</button>${p.first_frame ? price("video") : ""}` : ["image", "video", "audio"].includes(kind) ? `<button class="ui-btn ui-btn--sm ui-btn--brand" data-inspect-generate="${kind}">${ic(kind === "audio" ? "volume-2" : kind)}${kind === "audio" ? "生成配音" : `生成${def.label}`}</button>${price(kind)}` : "";
+  const generateActions = kind === "shot" ? `<button class="ui-btn ui-btn--sm ui-btn--brand" data-inspect-generate="image">${ic("image")}生成首帧</button>${price("image")}<button class="ui-btn ui-btn--sm ui-btn--outline" data-inspect-generate="video" ${p.first_frame ? "" : "disabled"}>${ic("video")}生成视频</button>${p.first_frame ? price("video") : ""}<button class="ui-btn ui-btn--sm ui-btn--outline" data-inspect-generate="audio">${ic("volume-2")}生成配音</button>${price("audio")}` : ["image", "video", "audio"].includes(kind) ? `<button class="ui-btn ui-btn--sm ui-btn--brand" data-inspect-generate="${kind}">${ic(kind === "audio" ? "volume-2" : kind)}${kind === "audio" ? "生成配音" : `生成${def.label}`}</button>${price(kind)}` : "";
   // 「换一版」：同参数默认沿用上次的产物不花钱，真要一张不一样的走这里——版本号 +1、带 no_cache，照价扣费。
   // 只在已经有产物的时候出现：还没生过的，点「生成」就是新的一版
   const rerolls = kind === "shot"
-    ? [p.first_frame ? ["image", "换一版首帧"] : null, p.video ? ["video", "换一版视频"] : null].filter(Boolean)
+    ? [p.first_frame ? ["image", "换一版首帧"] : null, p.video ? ["video", "换一版视频"] : null, p.audio ? ["audio", "换一版配音"] : null].filter(Boolean)
     : ["image", "video", "audio"].includes(kind) && (p.path || p.url) ? [[kind, "换一版"]] : [];
   const rerollRow = rerolls.length ? `<div class="canvas-reroll-row">${rerolls.map(([k, label]) => `<button class="ui-btn ui-btn--sm ui-btn--outline" data-inspect-reroll="${k}">${ic("refresh-cw")}${label}</button>`).join("")}<small>会重新扣费</small></div>` : "";
   // 重画之前他的光标在哪个框里、停在第几个字，重画完放回去。整块 innerHTML 一换，
@@ -364,7 +369,7 @@ function canvasRenderInspector(focus = true) {
   const 原焦点 = document.activeElement;
   const 要放回 = 原焦点 && box.contains(原焦点) && 原焦点.dataset && 原焦点.dataset.inspectKey
     ? { key: 原焦点.dataset.inspectKey, start: 原焦点.selectionStart, end: 原焦点.selectionEnd } : null;
-  box.innerHTML = `<div class="canvas-inspector-head"><div><small>节点属性</small><h3>${esc(unknownKind ? kind : def.label)}</h3></div><button class="canvas-node-remove" data-inspect-close title="关闭设置">${ic("x")}</button></div><div class="canvas-inspector-fields">${fields}</div>${canvasGenerationInspector(p)}${canvasHistoryInspector(node)}<div class="canvas-inspector-section"><span class="canvas-inspector-section-title">工作流连接</span><div class="canvas-connect-row"><select data-connect-target><option value="">连接到下游节点…</option>${allNodes.map((item) => `<option value="${item.id}">${esc(canvasNodeLabel(item))}</option>`).join("")}</select><select data-connect-relation title="这个节点为下游提供什么">${canvasRelationOptions(defaultRelation, node, defaultTarget)}</select><button class="ui-btn ui-btn--sm ui-btn--outline" data-connect>${ic("link")}连接</button></div>${connected.length ? `<div class="canvas-connected-list">${connected.map(({ link, target }) => `<span title="${esc(canvasRelationLabel(canvasLinkRelation(link, node, target)))}">${esc(canvasRelationLabel(canvasLinkRelation(link, node, target)))} · ${esc(canvasNodeLabel(target) || "节点")}</span>`).join("")}</div>` : '<p class="canvas-inspector-hint">选择用途再连线。Agent 会把它当作真实生成输入，而不是一条装饰箭头。</p>'}</div><div class="canvas-inspector-actions">${generateActions}${["agent", "shot", "script", "scene", "storyboard", "timeline"].includes(kind) ? `<button class="ui-btn ui-btn--sm ui-btn--brand" data-inspect-agent>${ic("sparkles")}交给本项目 Agent</button>` : ""}<button class="ui-btn ui-btn--sm ui-btn--ghost canvas-inspector-delete" data-inspect-delete>删除节点</button></div>${rerollRow}`;
+  box.innerHTML = `<div class="canvas-inspector-head"><div><small>节点属性</small><h3>${esc(unknownKind ? kind : def.label)}</h3></div><button class="canvas-node-remove" data-inspect-close title="关闭设置">${ic("x")}</button></div><div class="canvas-inspector-fields">${fields}</div>${canvasGenerationInspector(p)}${canvasHistoryInspector(node)}<div class="canvas-inspector-section"><span class="canvas-inspector-section-title">工作流连接</span><div class="canvas-connect-row"><select data-connect-target><option value="">连接到下游节点…</option>${allNodes.map((item) => `<option value="${item.id}">${esc(canvasNodeLabel(item))}</option>`).join("")}</select><select data-connect-relation title="这个节点为下游提供什么">${canvasRelationOptions(defaultRelation, node, defaultTarget)}</select><button class="ui-btn ui-btn--sm ui-btn--outline" data-connect>${ic("link")}连接</button></div>${connected.length ? `<div class="canvas-connected-list">${connected.map(({ link, target }) => `<span title="${esc(canvasRelationLabel(canvasLinkRelation(link, node, target)))}">${esc(canvasRelationLabel(canvasLinkRelation(link, node, target)))} · ${esc(canvasNodeLabel(target) || "节点")}<button type="button" class="canvas-disconnect" data-canvas-disconnect="${esc(link.id)}" title="断开这条线" aria-label="断开这条线">${ic("x")}</button></span>`).join("")}</div>` : '<p class="canvas-inspector-hint">选择用途再连线。Agent 会把它当作真实生成输入，而不是一条装饰箭头。</p>'}</div><div class="canvas-inspector-actions">${generateActions}${["agent", "shot", "script", "scene", "storyboard", "timeline"].includes(kind) ? `<button class="ui-btn ui-btn--sm ui-btn--brand" data-inspect-agent>${ic("sparkles")}交给本项目 Agent</button>` : ""}<button class="ui-btn ui-btn--sm ui-btn--ghost canvas-inspector-delete" data-inspect-delete>删除节点</button></div>${rerollRow}`;
   box.querySelectorAll("[data-inspect-key]").forEach((field) => {
     const update = () => canvasUpdateSelected(field.dataset.inspectKey, field.value);
     field.addEventListener("input", update); field.addEventListener("change", update);
@@ -394,9 +399,13 @@ function canvasRenderInspector(focus = true) {
   });
   box.querySelector("[data-connect]")?.addEventListener("click", () => { const target = canvasState.graph.getCell(box.querySelector("[data-connect-target]")?.value); canvasConnect(node, target, box.querySelector("[data-connect-relation]")?.value); canvasRenderInspector(false); });
   box.querySelector("[data-inspect-close]")?.addEventListener("click", () => { canvasState.inspectorOpen = false; canvasRenderInspector(false); });
-  box.querySelector("[data-inspect-delete]")?.addEventListener("click", async () => { if (!(await askConfirm({ title: `删掉节点「${canvasNodeLabel(node)}」？`, hint: "挂在它身上的连线也会一起删掉。", ok: "删掉", danger: true }))) return; node.remove(); canvasState.selected = null; canvasState.selectedIds = new Set(); canvasRenderInspector(); canvasPersist(); });
-  box.querySelectorAll("[data-inspect-generate]").forEach((button) => button.addEventListener("click", () => canvasGenerate(node, button.dataset.inspectGenerate)));
-  box.querySelectorAll("[data-inspect-reroll]").forEach((button) => button.addEventListener("click", () => canvasReroll(node, button.dataset.inspectReroll)));
+  box.querySelector("[data-inspect-delete]")?.addEventListener("click", () => canvasDeleteSelection(node, true));
+  // 「已连接」里每条后面那颗 ×：断开这一条，能撤（见 canvasDisconnect）
+  box.querySelectorAll("[data-canvas-disconnect]").forEach((button) => button.addEventListener("click", () => canvasDisconnect(canvasState.graph.getCell(button.dataset.canvasDisconnect))));
+  // 镜头上的两颗配音按钮先报价、等人点头（canvasVoiceGenerate）；其余照旧点了就生成，价写在按钮旁边
+  const voiceOf = (k) => kind === "shot" && k === "audio";
+  box.querySelectorAll("[data-inspect-generate]").forEach((button) => button.addEventListener("click", () => (voiceOf(button.dataset.inspectGenerate) ? canvasVoiceGenerate(node, false) : canvasGenerate(node, button.dataset.inspectGenerate))));
+  box.querySelectorAll("[data-inspect-reroll]").forEach((button) => button.addEventListener("click", () => (voiceOf(button.dataset.inspectReroll) ? canvasVoiceGenerate(node, true) : canvasReroll(node, button.dataset.inspectReroll))));
   canvasFillPrices(box, node).catch(() => {});
   canvasBindHistory(box.querySelector("[data-canvas-history]"), node);
   box.querySelector("[data-inspect-agent]")?.addEventListener("click", () => canvasRunInternal(node)); if (focus) box.querySelector("[data-inspect-key]")?.focus();
@@ -416,7 +425,8 @@ function canvasRenderInspector(focus = true) {
         else if (target === "character-reference") next.reference = name;
         else { next.path = name; next.url = name; }
         node.set("canvasPayload", next); canvasState.selected = node.id; canvasRefreshNode(node); canvasPersist(); canvasRenderInspector(false); canvasLoadLibrary();
-        canvasToast(`${file.name} 已上传到工作区。`, "circle-check");
+        // 工作区里已有同名的：服务端另存成 名字_2，卡上挂的是新名字，说一声
+        canvasToast(name !== file.name ? canvasT("工作区里已有同名文件，这一份存成了 {n}，原来那份没动。", { n: name }) : `${file.name} 已上传到工作区。`, "circle-check");
       } catch (error) { canvasToast(`文件上传失败：${String(error.message || error).slice(0, 140)}`, "circle-x", "err"); }
     };
     choose?.addEventListener("click", () => input?.click()); input?.addEventListener("change", () => { const file = input.files?.[0]; if (file) handle(file); input.value = ""; });
@@ -481,7 +491,7 @@ function canvasRenderLibrary() {
   const missing = (ledger && Array.isArray(ledger.missing) ? ledger.missing : []).slice(0, 8);
   const missingHtml = missing.length ? `<div class="canvas-library-missing"><b>${ic("triangle-alert")}${missing.length} 个引用的文件不在了</b>${missing.map((m) => `<div><span>${esc(m.base)}</span><small>${esc((m.usedBy || []).map((u) => u.title || u.id).join("、") || "有人在引用")} 还指着它</small></div>`).join("")}<small class="canvas-library-missing-tip">重跑对应镜头可重新生成，或改掉引用它的节点。</small></div>` : "";
 
-  const statHtml = ledger && ledger.stat ? `<div class="canvas-library-stat">${ledger.stat.total} 个素材 · 图 ${ledger.stat.byKind.image} / 视频 ${ledger.stat.byKind.video} / 音 ${ledger.stat.byKind.audio}${ledger.stat.orphan ? ` · <b>${ledger.stat.orphan} 个没人用</b>` : ""}${ledger.stat.bytes ? ` · ${canvasBytesText(ledger.stat.bytes)}` : ""}</div>` : "";
+  const statHtml = ledger && ledger.stat ? `<div class="canvas-library-stat">${ledger.stat.total} 个素材 · 图 ${ledger.stat.byKind.image} / 视频 ${ledger.stat.byKind.video} / 音 ${ledger.stat.byKind.audio}${ledger.stat.orphan ? ` · <b>${ledger.stat.orphan} 个没人用</b>` : ""}${ledger.stat.bytes ? ` · ${canvasBytesText(ledger.stat.bytes)}` : ""}${Array.isArray(ledger.boardsUnreadable) && ledger.boardsUnreadable.length ? `<small>${esc(canvasT("有画布读不出来，哪些素材没人用先不标。"))}</small>` : ""}</div>` : "";
 
   const listHtml = shown.length ? shown.map((asset) => {
     const kind = asset.kind, label = kind === "image" ? "图片" : kind === "video" ? "视频" : "音频";

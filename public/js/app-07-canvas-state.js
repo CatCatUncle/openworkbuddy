@@ -19,6 +19,10 @@ function canvasScope(name = canvasState.canvasName) { return `${canvasState.work
 function canvasStorageKey(name = canvasState.canvasName) { return `${CANVAS_STORAGE_KEY}:${canvasScope(name)}`; }
 // 「两边都改了、人还没选」这件事也得记在本机（见 canvasSavePendingConflict）
 function canvasConflictStoreKey(scope = canvasScope()) { return `${CANVAS_STORAGE_KEY}.conflict:${scope}`; }
+// 发出去还没收到结果的那几单也记在本机（见 canvasAdoptLocalJobs）：刷新、重启之后还认得出来
+function canvasJobStoreKey(scope = canvasScope()) { return `${CANVAS_STORAGE_KEY}.jobs:${scope}`; }
+// 最后一次确认跟盘上一样的那份内容的指纹（见 canvasNoteSynced）：打开时拿本机副本跟它比，就知道本机有没有没存进项目的改动
+function canvasSyncedStoreKey(scope = canvasScope()) { return `${CANVAS_STORAGE_KEY}.synced:${scope}`; }
 
 const CANVAS_NODE_DEFS = {
   note: { label: "笔记", icon: "notebook-pen", width: 340, height: 205, subtitle: "自由记录想法与任务", group: "策划" },
@@ -56,6 +60,9 @@ let canvasState = {
   remoteUpdatedAt: 0, remoteContentKey: "", remoteSnapshot: null, remoteTimer: null, remoteWriteTimer: null, remoteWriteArmed: null, remoteWritePending: false, suspendSync: false, castTimer: null,
   // fitting：正在按内容给卡量高、给长高的卡让位。这期间的挪动不存盘（见 canvasFitFlush）
   fitting: false,
+  // bulk：一口气摆一大片（铺快照、展开分镜表、自动排版），这期间每一下都不存盘，摆完存一次（见 canvasPersist）。
+  // dragDirty：手还按着卡在拖，位置变了但还没存；松手存一次（见 renderCanvasPage 里的 element:pointerup）
+  bulk: false, dragDirty: false,
   // 盘上那份画布读不出来时记下原因。有值就等于「这张画布现在不能写」，
   // 界面必须显示错误而不是一张白板——白板 + 自动保存正好把还有救的原件盖掉
   remoteBroken: "", remoteBrokenNotified: false, lostNotified: "",
@@ -68,7 +75,14 @@ let canvasState = {
   // 合成成片：composePlan 是「这次打算怎么拼」（算好了先给人看，不背着人跑），
   // composeJob 是「正在拼到哪了」。两个都是 null 就等于这条带子上只有一颗「合成成片」按钮
   composePlan: null, composeJob: null, composeTimer: null, composeSub: true, composeBgm: true,
-  canvasName: "main", canvasList: [], taskSessionId: null, chatBusy: false, chatStopping: false, chatReferences: new Map(), history: [], historyIndex: -1, historyTimer: null, historyMute: false,
+  // canvasTrash：删掉的画布挪进项目回收站的那几张（见 src/tools/canvas.js canvasTrashPut），画布下拉里列着，点一下放回来。
+  // snapshotSince：这台机器上回看见这张画布的时间，Agent 在那之后清空、连删存的快照才挂「撤销」；
+  // snapshotSeen：挂过的快照，点了「知道了」就别再冒出来
+  canvasTrash: [], snapshotSince: 0, snapshotSeen: new Set(),
+  // proposal：Agent 交上来、正摆在顶上等人点「开跑」/「不要」的那份清单（见 canvasNoteProposal）；
+  // proposalGone：这台机器上点过的清单号，服务端那份还没收掉之前同步一圈也别再冒出来
+  proposal: null, proposalGone: new Set(),
+  canvasName: "main", canvasList: [], taskSessionId: null, chatBusy: false, chatStopping: false, chatReferences: new Map(), history: [], historyIndex: -1, historyTimer: null, historyMute: false, historySeq: 0,
   workspaceProjects: [], workspaceLocked: false, workspaceName: "", workspaceDir: "",
   // 正在生成的节点 id。生一张图几十秒，这期间远端那份每 1.8 秒来一趟、整图重铺——
   // 铺的时候这几个节点留本机这份，不然刚写上的结果被一份旧快照盖回去（见 canvasApplySnapshot）
@@ -77,15 +91,20 @@ let canvasState = {
   // 往上写带 at 当 baseUpdatedAt，盘上已经不是它了就 409；snapshot 用来判「哪边改了哪个节点」。
   // remotePushing 把写入排成一队（两枪并发，第二枪拿着旧 base 必撞 409）；
   // remoteConflict 有值 = 同一个节点两边都改了、正等人选，这期间不写也不拉
-  remoteBase: null, remotePushing: null, remoteConflict: null,
+  // restoreChoice 有值 = 打开时本机有没存进项目的改动、盘上那份又不一样，正等人选留哪份，这期间也不写不拉（见 canvasAskRestoreChoice）
+  // saveFailed：最近一趟往项目里存失败了的那张画布（scope）。存上之前不拉盘上那份——拉回来一铺，没存上的改动就没了
+  remoteBase: null, remotePushing: null, remoteConflict: null, restoreChoice: null, saveFailed: "",
   // 发出去过的版本号（见 canvasNextVersion）和 shot-history 快照的缓存（见 canvasHistoryVersions）
   versionTaken: new Map(), shotHistory: new Map(),
   // 正在出分镜草稿的剧本卡 id（卡上按钮变「生成中…」、不许再点）；
   // seedDrama 是「新建短剧」表单填的那几项，等新画布铺好后塞进那张剧本卡（见 canvasRestoreOrSeed）
   drafting: new Set(), seedDrama: null,
   // 底部时间线（见 canvasRenderTimeline）：timelineOpen 为 null = 按本机记下的开合来；
-  // playback 是正在连播的那一趟，null = 没在放；find 是 ⌘F 那条搜索的命中和走到第几个
-  timelineOpen: null, timelineTimer: null, timelineChatObserver: null, castOpen: false, playback: null, find: null, findHandler: null,
+  // playback 是正在连播的那一趟，null = 没在放；find 是 ⌘F 那条搜索的命中和走到第几个；
+  // timelineDragEndAt 是上一次在时间线上拖完松手的时刻，松手后浏览器补的那个 click 靠它认出来。
+  // timelineDragging：正拖着格子的那条 .ctl-strip；拖着的时候要重画就记 timelineRedrawLater，松手再画
+  timelineOpen: null, timelineTimer: null, timelineChatObserver: null, castOpen: false, playback: null, find: null, findHandler: null, timelineDragEndAt: 0,
+  timelineDragging: null, timelineRedrawLater: false,
 };
 
 // 夹着数字的句子：词条按「{n}」模板收，先查词典再把数塞进去。塞完再交给界面，

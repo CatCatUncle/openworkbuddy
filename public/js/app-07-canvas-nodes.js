@@ -190,17 +190,23 @@ function canvasPreviewRight(value) {
  * 不先问、直接删，删完提示上挂一颗「撤销」。以前右键删要先过一道确认、删了却撤不回来，
  * Delete 键不问、也撤不回来——两条路两个脾气，哪条都兜不住手滑。
  * 右键点的那张不在选中里时只删它：不然框选着一片、右键点另一张删，删掉的是那一片。
+ * onlyThis：卡片右上角的 ×、检查器里的「删除节点」，点的就是这一张，哪怕它正在一片选中里也只删它。
+ * 这两处以前先弹确认框、删了撤不回来，现在跟 Delete 键一样直接删、能撤。没删的那几张照旧选着
  */
-function canvasDeleteSelection(fallbackNode) {
-  const selected = fallbackNode && !canvasState.selectedIds.has(fallbackNode.id) ? [fallbackNode.id]
+function canvasDeleteSelection(fallbackNode, onlyThis = false) {
+  const selected = fallbackNode && (onlyThis || !canvasState.selectedIds.has(fallbackNode.id)) ? [fallbackNode.id]
     : canvasState.selectedIds.size ? [...canvasState.selectedIds] : fallbackNode ? [fallbackNode.id] : [];
   const nodes = selected.map((id) => canvasState.graph?.getCell(id)).filter((node) => node?.isElement?.());
   if (!nodes.length) return;
   // 先把删之前那一步记进撤销栈：刚拖完一张卡紧接着删，那一步还在 260ms 的防抖里，
   // 不先记下来，撤销就直接退到拖之前了
   canvasHistoryFlush();
-  nodes.forEach((node) => node.remove()); canvasState.selected = null; canvasState.selectedIds = new Set(); canvasState.selectedAll = false; canvasRenderInspector(); canvasPersist();
-  canvasToast("节点已删除。", "trash-2", undefined, { label: "撤销", run: canvasUndo });
+  const gone = new Set(nodes.map((node) => node.id));
+  nodes.forEach((node) => node.remove());
+  canvasState.selectedIds = new Set([...canvasState.selectedIds].filter((id) => !gone.has(id)));
+  if (gone.has(canvasState.selected)) canvasState.selected = [...canvasState.selectedIds][0] || null;
+  canvasState.selectedAll = false; canvasRenderInspector(); canvasPersist();
+  canvasToast("节点已删除。", "trash-2", undefined, canvasUndoAction());
 }
 function canvasOpenContextMenu(clientX, clientY, node = null) {
   document.getElementById("canvas-context-menu")?.remove();
@@ -232,13 +238,14 @@ function canvasOpenContextMenu(clientX, clientY, node = null) {
   }));
   window.setTimeout(() => { document.addEventListener("pointerdown", close, true); document.addEventListener("keydown", onKey, true); }, 0);
 }
-function canvasRefreshNode(node) {
+// dupIds：撞号的镜头号，调用方一次算好递进来（整图重铺时一张张各数一遍整图就是 N²）；不递就当场算
+function canvasRefreshNode(node, dupIds) {
   if (!node || !canvasState.paper) return;
   const view = node.findView(canvasState.paper), root = view && view.el && view.el.querySelector(".canvas-joint-node");
   if (!root) return;
   root.innerHTML = canvasNodeHtml(canvasKind(node), canvasPayload(node), node.id); canvasBindNode(node, root);
   root.classList.toggle("is-selected", canvasState.selectedAll || canvasState.selectedIds.has(node.id) || canvasState.selected === node.id);
-  if (canvasKind(node) === "shot" && typeof canvasDupShotIds === "function") root.classList.toggle("is-dup-id", canvasDupShotIds().has(canvasShotFileKey(canvasPayload(node).id)));
+  if (canvasKind(node) === "shot" && typeof canvasDupShotIds === "function") root.classList.toggle("is-dup-id", (dupIds || canvasDupShotIds()).has(canvasShotFileKey(canvasPayload(node).id)));
   canvasWatchAspect(node, root); canvasFitSoon(node);
 }
 
@@ -376,6 +383,7 @@ function canvasHistoryCommit(snapshot) {
   canvasState.history.push(JSON.parse(JSON.stringify(snapshot)));
   if (canvasState.history.length > 60) canvasState.history.shift();
   canvasState.historyIndex = canvasState.history.length - 1;
+  canvasState.historySeq = (canvasState.historySeq || 0) + 1;   // 记了新的一步：之前挂出去的「撤销」按钮作废（见 canvasUndoAction）
 }
 function canvasHistorySchedule(snapshot) {
   if (canvasState.historyMute) return;
@@ -385,11 +393,95 @@ function canvasHistorySchedule(snapshot) {
 function canvasHistoryReset(snapshot) {
   if (canvasState.historyTimer) clearTimeout(canvasState.historyTimer);
   canvasState.historyTimer = null; canvasState.history = snapshot ? [JSON.parse(JSON.stringify(snapshot))] : []; canvasState.historyIndex = snapshot ? 0 : -1;
+  canvasState.historySeq = (canvasState.historySeq || 0) + 1;
 }
 function canvasHistoryFlush() {
   if (canvasState.historyTimer) clearTimeout(canvasState.historyTimer);
   canvasState.historyTimer = null;
   if (!canvasState.historyMute && canvasState.graph) canvasHistoryCommit(canvasSnapshot());
+}
+/**
+ * 别人改的，不进撤销栈。
+ *
+ * 撤销栈里一格是一整张图。远端轮询拉来的、Agent 改完重读的、409 合并进来的那一趟铺上屏幕时，
+ * 栈里每一格都还是它来之前的样子——按 ⌘Z 退回上一格，退掉的不只是人自己那一步，
+ * 还有 Agent 刚改的整片，接着 canvasHistoryWriteback 还会把分镜表那几格一起退回去。
+ *
+ * 做法：铺之前、铺之后各拍一张（before / after），比出这一趟外来的改动碰了哪几张卡的哪几个字段
+ * （payload 按键比，位置、类型各算一项；卡高是量出来的，不算）、哪几条线，再把栈里每一格
+ * （撤销那头、重做那头都算）的这几处都改成 after 的样子。于是外来的改动在每一格里都「一直在」，
+ * ⌘Z / 重做都碰不到它；人自己改的、外来没碰的那些字段照常能退。改完挨着的两格一模一样就并成一格。
+ *
+ * 取舍（写清楚，免得以后当 bug 修回去）：
+ * - 人改了一张卡的某个字段，Agent / 另一台机器紧接着也改了这个字段：人那一步撤不回来了——
+ *   撤回去就是拿人的旧值盖掉对方的新值。只碰同一张卡的别的字段不受影响。
+ * - 外来的那一趟删掉了一张卡：每一格里都没有它，人之前对它做过的那几步跟着作废；
+ *   外来新加的卡、新接的线，每一格里都有（两头都在的那几格），撤销不会把它拿掉。
+ * - 人自己新建的卡被外来改过：撤到建卡之前，卡照样整张拿掉（那一格里本来就没有它），连带对方改的字段一起没；
+ *   再重做回来，对方那几笔还在。
+ */
+function canvasHistoryRebase(before, after) {
+  if (!before || !after || !canvasState.history.length) return;
+  const json = (value) => JSON.stringify(value === undefined ? null : value);
+  const clone = (value) => JSON.parse(JSON.stringify(value));
+  const preNodes = new Map((before.nodes || []).map((item) => [item.id, item]));
+  const postNodes = new Map((after.nodes || []).map((item) => [item.id, item]));
+  // 每张卡外来改了什么：whole = 整张来了 / 整张没了；keys = payload 里变了的键；moved / kind = 挪了、换了类型
+  const touched = new Map();
+  new Set([...preNodes.keys(), ...postNodes.keys()]).forEach((id) => {
+    const a = preNodes.get(id), b = postNodes.get(id);
+    if (!a || !b) { touched.set(id, { whole: true }); return; }
+    const pa = a.payload || {}, pb = b.payload || {};
+    const keys = [...new Set([...Object.keys(pa), ...Object.keys(pb)])].filter((key) => json(pa[key]) !== json(pb[key]));
+    const moved = json(a.position) !== json(b.position), kind = a.kind !== b.kind;
+    if (keys.length || moved || kind) touched.set(id, { keys, moved, kind });
+  });
+  const edgeKey = (edge) => `${canvasEndpointId(edge.source)}\n${canvasEndpointId(edge.target)}`;
+  const preEdges = new Map((before.edges || []).map((edge) => [edgeKey(edge), edge]));
+  const postEdges = new Map((after.edges || []).map((edge) => [edgeKey(edge), edge]));
+  const edgesTouched = new Set([...preEdges.keys(), ...postEdges.keys()].filter((key) =>
+    preEdges.has(key) !== postEdges.has(key) || json(preEdges.get(key)?.relation) !== json(postEdges.get(key)?.relation)));
+  if (!touched.size && !edgesTouched.size) return;
+  const rebaseOne = (entry) => {
+    const nodes = [], seen = new Set();
+    (entry.nodes || []).forEach((item) => {
+      seen.add(item.id);
+      const change = touched.get(item.id), b = postNodes.get(item.id);
+      if (!change) { nodes.push(item); return; }
+      if (!b) return;                                   // 外来那一趟删掉了：这一格里也没有它
+      if (change.whole) { nodes.push(clone(b)); return; }
+      const payload = { ...(item.payload || {}) };
+      change.keys.forEach((key) => { if (b.payload && key in b.payload) payload[key] = clone(b.payload[key]); else delete payload[key]; });
+      nodes.push({ ...item, kind: change.kind ? b.kind : item.kind, payload, position: change.moved ? { ...b.position } : item.position });
+    });
+    touched.forEach((change, id) => { if (change.whole && postNodes.has(id) && !seen.has(id)) nodes.push(clone(postNodes.get(id))); });
+    const ids = new Set(nodes.map((item) => item.id)), edges = new Map();
+    (entry.edges || []).forEach((edge) => { const key = edgeKey(edge); if (!edgesTouched.has(key)) edges.set(key, edge); });
+    edgesTouched.forEach((key) => { if (postEdges.has(key)) edges.set(key, clone(postEdges.get(key))); });
+    // 卡没了的线跟着没：这一格里一头不在的线，铺出来也是一根悬空的
+    return { ...entry, nodes, edges: [...edges.values()].filter((edge) => ids.has(canvasEndpointId(edge.source)) && ids.has(canvasEndpointId(edge.target))) };
+  };
+  // 比「是不是同一格」不看顺序、不看卡高：外来的卡补在末尾，顺序跟屏幕上那份不一样，内容是一样的
+  const stable = (value) => Array.isArray(value) ? `[${value.map(stable).join(",")}]`
+    : value && typeof value === "object" ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stable(value[key])}`).join(",")}}` : json(value);
+  const same = (entry) => stable({
+    nodes: entry.nodes.map((item) => ({ id: item.id, kind: item.kind, payload: item.payload, position: item.position })).sort((x, y) => (String(x.id) < String(y.id) ? -1 : 1)),
+    edges: entry.edges.map((edge) => `${edgeKey(edge)}\n${edge.relation || ""}`).sort(),
+  });
+  const now = canvasState.historyIndex, out = [];
+  let index = now, lastKey = "";
+  canvasState.history.forEach((entry, i) => {
+    // 栈顶那格就是屏幕上这一份：直接拿 after，不拿改出来的（顺序、卡高都跟屏幕上一致，下一次记步才比得准）
+    const next = i === now ? clone(after) : rebaseOne(entry), key = same(next);
+    if (out.length && key === lastKey) {
+      if (i === now) out[out.length - 1] = next;
+      if (i <= now) index--;
+      return;
+    }
+    out.push(next); lastKey = key;
+  });
+  canvasState.history = out;
+  canvasState.historyIndex = Math.max(0, Math.min(index, out.length - 1));
 }
 function canvasUndo() {
   canvasHistoryFlush();
@@ -406,6 +498,28 @@ function canvasRedo() {
   try { canvasApplySnapshot(target); } finally { canvasState.historyMute = false; }
   canvasToast("已恢复下一步操作。", "rotate-ccw");
   canvasHistoryWriteback(before, canvasSnapshot());
+}
+/**
+ * 提示上那颗「撤销」：只撤提示说的那一步。
+ *
+ * 以前挂的是 canvasUndo 本身——提示留 8 秒，这期间又拖了一张卡、改了一句台词（这些不弹提示、按钮还在），
+ * 再点「撤销」退掉的是那一下拖，删掉的卡没回来；接着点还会一格格往回退，退掉更早的事。
+ * 现在挂提示时先把这一步记进撤销栈，记下它在栈顶的「步号」（historySeq，每记一步 +1，换画布 / 重开也 +1）。
+ * 点的时候栈顶还是它（步号没变、也没被 ⌘Z 退过）才撤；不是就原地说一声，⌘Z 照常一步步退。
+ * 不拿栈里那一格对象比：远端改动一来，canvasHistoryRebase 把每一格都换成新对象
+ */
+function canvasUndoAction() {
+  canvasHistoryFlush();
+  const mark = canvasState.historySeq || 0;
+  return { label: "撤销", run: () => {
+    canvasHistoryFlush();
+    const top = canvasState.history.length - 1;
+    if ((canvasState.historySeq || 0) !== mark || canvasState.historyIndex !== top || top <= 0) {
+      const key = accelDisplay("Mod+Z");
+      return canvasToast(canvasT("这之后画布又改过了，没撤。要退回去按 {key} 一步步退", { key }), "rotate-ccw");
+    }
+    canvasUndo();
+  } };
 }
 /**
  * 撤销 / 重做之后，分镜表那边也跟着退。
@@ -441,6 +555,11 @@ async function canvasHistoryWriteback(before, after) {
       const back = await canvasBoardWriteback(p, fields);
       if (back) errors.push(back);
     }
+    // 放映顺序另走一条整批的（时间线上拖一格动的是一串镜头的 order）：这一步里 order 变了的镜头一起回表，
+    // 退回到还没拖过的那一步，order 没了，分镜表那头也拿掉
+    const ord = (q) => String(q && q.order != null ? q.order : "");
+    const reordered = ((after && after.nodes) || []).filter((item) => old.has(item.id) && ord(item.payload) !== ord(old.get(item.id)));
+    if (reordered.length) { const back = await canvasBoardOrderSync(reordered); if (back) errors.push(back); }
     if (errors.length) canvasToast(errors[0], "triangle-alert", "err");
   } catch (e) { console.warn("[canvas] 撤销后回写分镜表出错", e); }
 }

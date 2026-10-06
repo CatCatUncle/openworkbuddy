@@ -109,6 +109,7 @@ function composeProbe(bin, cwd, rel) {
       try {
         const j = JSON.parse(stdout || "{}");
         const v = (j.streams || []).find((s) => s.codec_type === "video") || null;
+        const au = (j.streams || []).find((s) => s.codec_type === "audio") || null;
         const fr = v && String(v.avg_frame_rate || "").split("/");
         const fps = fr && fr.length === 2 && Number(fr[1]) ? Number(fr[0]) / Number(fr[1]) : 0;
         const rot = v ? require("../../platform/media-probe").streamRotation(v) : 0;
@@ -121,6 +122,8 @@ function composeProbe(bin, cwd, rel) {
           pix: v ? String(v.pix_fmt || "") : "",
           // w/h 仍是存储的宽高（短剧直拼要比这个）；手机竖拍转 90° 的另报 rot，按画面横竖挑裁切的地方自己换算
           ...(rot ? { rot } : {}),
+          // 视频带不带声音。短剧合成靠它决定没配音的镜头用原声还是垫静音；纯音频文件也会带上
+          ...(au ? { acodec: String(au.codec_name || "audio") } : {}),
         });
       } catch { resolve(null); }
     });
@@ -248,7 +251,7 @@ async function composeExecute(job, plan, bin, name) {
     job.done = true;
     return;
   }
-  if (job.canceled) { job.error = "你叫停了，已经拼好的片段都留着，下次接着来不用重跑"; job.done = true; return; }
+  if (job.canceled) { job.error = "你叫停了。下次合成会从第一镜重新拼一遍"; job.done = true; return; }
 
   // ── 认账：文件真的在盘上，才敢说成片出来了，才敢写回画布
   const film = path.join(cwd, plan.outputs.film);

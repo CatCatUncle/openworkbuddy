@@ -11,7 +11,7 @@
 function canvasRunInternal(node) {
   const kind = node && String(node.get("canvasKind") || "note"), p = canvasPayload(node);
   const text = kind === "shot"
-    ? `请处理这个短剧镜头：${p.id || p.title || "新镜头"}\n景别：${p.shot_size || "未指定"}\n时长：${p.duration || "4"} 秒\n镜头提示词：${canvasIsPlaceholderPrompt(p.prompt) ? "" : p.prompt}\n对白/旁白：${canvasIsPlaceholderPrompt(p.line) ? "" : p.line}\n读取连线时必须按用途区分人物身份、场景空间、构图、动作与连续性；需要时直接调用 generate_image / generate_video，并用 canvas_manage 更新当前镜头节点的 first_frame 或 video。`
+    ? `请处理这个短剧镜头：${p.id || p.title || "新镜头"}\n景别：${p.shot_size || "未指定"}\n时长：${p.duration || "4"} 秒\n镜头提示词：${canvasIsPlaceholderPrompt(p.prompt) ? "" : p.prompt}\n对白/旁白：${canvasIsPlaceholderPrompt(p.line) ? "" : p.line}\n读取连线时必须按用途区分人物身份、场景空间、构图、动作与连续性；要出首帧或视频时，先用 canvas_manage 把提示词和型号写进这个镜头节点，再用 propose 交待生成清单，等我在画布上点「开跑」。`
     : kind === "script" ? `请使用 /short-drama 把下面剧本拆成角色、场景和可执行镜头，并用 canvas_manage 写入当前项目画布，生成可审核的创作计划：\n${p.text || ""}`
       : kind === "timeline" ? "请检查这部短剧的镜头顺序、配音和字幕有没有问题，指出哪一镜该调。拼成片不用你敲 ffmpeg：画布「最终剪辑」节点上的「合成成片」按钮会按分镜顺序逐镜合轨、拼接、垫配乐、烧字幕，跑的就是 short-drama 那套命令。"
         : kind === "agent" ? `请执行这个本项目 Agent 任务，并把计划、产物和需要我确认的地方写回当前画布：\n角色：${p.role || "导演 Agent"}\n任务：${p.task || ""}\n审批规则：${p.approval || "先给方案，等我确认"}`
@@ -127,10 +127,35 @@ function canvasGenerationInputs(node) {
 
 function canvasGenerationSummary(payload) {
   const run = payload?.generation;
-  if (!run || !run.output) return "";
+  const waiting = canvasPendingJobsRow(payload);
+  if (!run || !run.output) return waiting;
   const model = run.model ? ` · ${run.model}` : "";
   const inputs = Array.isArray(run.inputs) ? run.inputs.length : 0;
-  return `<div class="canvas-generation-lineage" title="${esc(run.output)}">${ic("git-branch")}<span>最近生成${model} · ${inputs} 个输入</span></div>`;
+  return `<div class="canvas-generation-lineage" title="${esc(run.output)}">${ic("git-branch")}<span>最近生成${model} · ${inputs} 个输入</span></div>${waiting}`;
+}
+
+/**
+ * 卡片上「上一单没收回来」那一条：断线、刷新、服务重启之后，这一格可能已经在上游渲染、扣费了。
+ * 摆三颗按钮，不替人决定：看结果（只查不发）/ 再生成一次（会再扣费）/ 忽略（只划掉记录）。
+ * 本页正在等的那一单不摆（卡片上已经是「生成中…」）
+ */
+function canvasPendingJobsRow(payload) {
+  const all = payload && payload.pending_jobs;
+  if (!all || typeof all !== "object") return "";
+  const live = canvasState.liveJobs instanceof Set ? canvasState.liveJobs : null;
+  const names = { image: "图片", video: "视频", audio: "配音" };
+  return ["image", "video", "audio"].map((kind) => {
+    const job = canvasPendingJob(payload, kind);
+    if (!job || (live && live.has(job.id))) return "";
+    const a = canvasT(names[kind]);
+    const text = job.state === "submitted" && job.submitted ? canvasT("上一单{a}上游收过单（任务号 {t}），结果没收回来", { a, t: job.submitted })
+      : job.state === "interrupted" ? canvasT("上一单{a}没收完（服务重启过），没有重发", { a })
+        : canvasT("上一单{a}没收到结果，没有重发", { a });
+    return `<div class="canvas-job-pending" data-canvas-job="${esc(kind)}" title="${esc(job.error || "")}">${ic("triangle-alert")}<span>${esc(text)}</span>`
+      + `<button class="ui-btn ui-btn--sm ui-btn--outline" data-canvas-job-collect="${esc(kind)}">${esc(canvasT("看结果"))}</button>`
+      + `<button class="ui-btn ui-btn--sm ui-btn--ghost" data-canvas-job-again="${esc(kind)}">${esc(canvasT("再生成一次（会再扣费）"))}</button>`
+      + `<button class="ui-btn ui-btn--sm ui-btn--ghost" data-canvas-job-dismiss="${esc(kind)}" title="${esc(canvasT("只划掉这条记录，不发请求"))}">${esc(canvasT("忽略"))}</button></div>`;
+  }).join("");
 }
 
 function canvasGenerationInspector(payload) {
@@ -559,7 +584,7 @@ async function canvasChatRun() {
   if (requestedModel) await fetch(`/api/session/${encodeURIComponent(sessionId)}/model`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: requestedModel }) }).catch(() => {});
   const referenceContext = canvasReferenceContext(references);
   const mode = document.querySelector("[data-canvas-chat-mode]")?.value || "craft";
-  const directive = "你正在控制当前 OpenWorkBuddy 项目的 AI 短剧无限画布。只操作当前项目和当前画布，不连接其他本地项目。先用 canvas_manage 的 get 读取现有画布，再按用户要求 add/update/connect/delete 节点；connect 时必须为真实创作依赖填写 relation（character/background/composition/motion/style/prop/continuity/first_frame/last_frame/audio/reference），不能只画装饰箭头。需要生图、生视频或配音时直接调用对应工具，并把真实产物路径写回当前画布。" + referenceContext + "\n用户指令：" + userText;
+  const directive = "你正在控制当前 OpenWorkBuddy 项目的 AI 短剧无限画布。只操作当前项目和当前画布，不连接其他本地项目。先用 canvas_manage 的 get 读取现有画布，再按用户要求 add/update/connect/delete 节点，只去掉一条线用 disconnect（节点都留着）；connect 时必须为真实创作依赖填写 relation（character/background/composition/motion/style/prop/continuity/first_frame/last_frame/audio/reference），不能只画装饰箭头。生图、生视频、配音都花钱，不要直接调用 generate_image / generate_video / text_to_speech：先把提示词和型号写进节点，再用 canvas_manage 的 propose 交一份待生成清单（节点 + 类型），回复里说清每项用什么型号；画布会摆出清单和报价，我点「开跑」才生成。" + referenceContext + "\n用户指令：" + userText;
   let answer = "", assistant = null, sawDone = false, followed = false;
   const turn = canvasTurnStart(sessionId, directive, mode, userText);
   const write = (value) => {
@@ -755,6 +780,42 @@ async function canvasBoardWriteback(payload, fields) {
 }
 
 /**
+ * 时间线上排好的顺序，回到分镜表里（每一镜的 order）。一份分镜表一趟，服务端整批要么全写要么不写。
+ *
+ * 只认展开时盖过戳、镜头号没在画布上改过的那几镜；手搓的镜头没有真源，顺序只记在画布上。
+ * order 空着（撤销回还没拖过的那一步）发 null：分镜表那头也拿掉，回到按场次、镜头号排。
+ * 镜头号和文件名一个都不碰。
+ * 绝不抛：挂在拖动松手和撤销后面，没人接它的 Promise。回不去就照原话说是哪一句
+ * @param {any[]} items 画布节点，或者快照里的一项（{ payload }）
+ * @returns {Promise<string>} 空串 = 都回去了（或者本来就没有要回的）
+ */
+async function canvasBoardOrderSync(items) {
+  const groups = new Map();
+  for (const item of items || []) {
+    const p = (item && typeof item.get === "function" ? canvasPayload(item) : item && item.payload) || {};
+    const board = String(p.board || "").trim(), shot = String(p.board_shot || "").trim();
+    if (!board || !shot) continue;
+    if (String(p.id || "").trim() && String(p.id).trim() !== shot) continue;
+    const n = Number(p.order);
+    const order = p.order == null || p.order === "" || !Number.isFinite(n) || n < 1 ? null : n;
+    if (!groups.has(board)) groups.set(board, []);
+    groups.get(board).push({ shot, ...(p.board_scene ? { scene: String(p.board_scene) } : {}), order });
+  }
+  for (const [board, shots] of groups) {
+    let why = "";
+    try {
+      const r = await fetch("/api/drama/storyboard/order", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: board, shots }),
+      });
+      const out = await r.json().catch(() => ({}));
+      if (!r.ok || !out.ok) why = String(out.error || r.status);
+    } catch (e) { why = String(e.message || e); }
+    if (why) return canvasT("顺序只排在了画布上，没写回分镜表（{why}）", { why: why.slice(0, 120) });
+  }
+  return "";
+}
+
+/**
  * 视频这一枪的时长 / 画幅 / 分辨率。卡片上写着「5s · 16:9 · 1080p」、新建短剧定了「每镜 5 秒 · 9:16」，
  * 以前一项都没发出去，出来的全是模型默认那一档——说一套做一套。
  * 镜头卡：时长用这一镜自己的（分镜表里改过的也算），没有再用新建短剧定的；画幅用这部戏的
@@ -788,13 +849,29 @@ async function canvasGenerate(node, kind) {
   // 「换一版」是从 canvasReroll 进来的：它先在 reroll 里记一笔再调这里。签名不能加参数（测试按
   // 「canvasGenerate(node, kind)」切源码），所以走这个旁路。先取走再判忙：忙着的时候点了也不该留到下一次
   const fresh = canvasState.reroll instanceof Set ? canvasState.reroll.delete(key) : false;
+  // 「先报价」那一趟也走旁路（canvasVoiceGenerate）：拦得下的照常拦、不花钱的照常做（沿用现成那一版），
+  // 走到真要开枪那一步就停下、不占版本号，交回 needConfirm，让那边先报价、等人点头
+  const priceFirst = canvasState.priceFirst instanceof Set ? canvasState.priceFirst.delete(key) : false;
+  // 「看结果」收回来的那一单也走这个旁路（canvasCollectJob）：结果和当时发出去的参数都在里面，
+  // 这一趟不开枪，只把它放上画布——跟当场生成回来走同一条路，记录、回写、提示都一样
+  const collected = canvasState.collect instanceof Map && canvasState.collect.has(key) ? canvasState.collect.get(key) : null;
+  if (collected) canvasState.collect.delete(key);
   if (canvasState.busy.has(key)) return { ok: false, error: "这个节点正在生成" };
+  // 上一单没收到结果（断线、刷新、服务重启）：这一格可能已经在上游渲染、扣费了。再点「生成」不开枪，
+  // 让人先「看结果」；真要重来点卡片上的「再生成一次」。「换一版」是明说要再花一次钱的，放行
+  const parked = collected || fresh ? null : canvasPendingJob(canvasPayload(node), kind);
+  if (parked) {
+    canvasToast(parked.submitted ? canvasT("上游收过上一单（任务号 {t}），先看结果，没有重发。", { t: parked.submitted })
+      : "上一单还没收到结果，先看结果，没有重发。", "triangle-alert", "err",
+    { label: "看结果", run: () => canvasCollectJob(node, kind) });
+    return { ok: false, error: "上一单状态未知", unknown: true, submitted: String(parked.submitted || "") };
+  }
   const p = canvasPayload(node), upstream = canvasUpstreamImages(node), upstreamInputs = canvasUpstreamInputs(node);
   const nodeKind = canvasKind(node);
   // 角色 / 场景节点生的是定妆照和场景图：它们是后面每一镜的参考图，不是镜头本身，
   // 所以提示词、文件名、写回哪个字段，三样都跟镜头那条不一样。
   const castKind = kind === "image" && (nodeKind === "character" || nodeKind === "location") ? nodeKind : "";
-  if (castKind && canvasIsPlaceholderPrompt(p.description)) {
+  if (!collected && castKind && canvasIsPlaceholderPrompt(p.description)) {
     canvasToast(castKind === "character"
       ? "先写人物设定：只有名字，每次生成的脸都不一样。"
       : "先把场景设定写出来：只有一个地名，生出来的景每次都不一样。", "triangle-alert", "err");
@@ -806,7 +883,7 @@ async function canvasGenerate(node, kind) {
   const frameFrom = upstreamInputs.find((item) => item.relation === "first_frame")
     || upstreamInputs.find((item) => item.kind === "image");
   let firstFrame = p.first_frame || (kind === "video" && frameFrom ? canvasUpstreamImage(frameFrom) : "");
-  if (kind === "video" && !firstFrame && canvasKind(node) === "shot") {
+  if (!collected && kind === "video" && !firstFrame && canvasKind(node) === "shot") {
     canvasToast("这个视频节点还没有首帧，请先生成首帧或连接一个参考图节点。", "triangle-alert", "err"); return { ok: false, error: "缺首帧" };
   }
   // 起手模板里那句占位文字原样没改就开枪，买回来的就是一张「这张图要保持的主体、风格与构图…」。
@@ -815,7 +892,7 @@ async function canvasGenerate(node, kind) {
   const ownPrompt = kind === "audio"
     ? String(p.text || p.line || p.description || "").trim()
     : String(p.prompt || p.description || p.text || "").trim();
-  if (!castKind && ownPrompt && canvasIsPlaceholderPrompt(ownPrompt)) {
+  if (!collected && !castKind && ownPrompt && canvasIsPlaceholderPrompt(ownPrompt)) {
     canvasToast(kind === "audio"
       ? "还是模板占位文字，先写台词或旁白。"
       : "还是模板占位文字，先写提示词。", "triangle-alert", "err");
@@ -824,7 +901,7 @@ async function canvasGenerate(node, kind) {
   // 配音多一道：用谁的嗓子。定不下来就停，不替用户挑（挑错了声音是好声音，只是不是这个人的，
   // 而这种错要等到把成片放出来才听得见）
   let voice = "";
-  if (kind === "audio") {
+  if (kind === "audio" && !collected) {
     const picked = canvasResolveVoice(node, p);
     if (picked.error) { canvasToast(picked.error, "triangle-alert", "err"); return { ok: false, error: picked.error }; }
     voice = picked.voice;
@@ -847,8 +924,9 @@ async function canvasGenerate(node, kind) {
       ? [canvasStyledPrompt(p.motion_prompt || p.prompt || p.description || "保持角色和场景一致，动作自然，镜头运动克制。", style), canvasIsPlaceholderPrompt(p.line) ? "" : `对白/旁白：${p.line}`, context].filter(Boolean).join("\n")
       : String(p.text || p.line || p.description || "").trim();
   const model = kind === "audio" ? "" : canvasDramaModel(p, kind, nodeKind);
-  if (!prompt) { canvasToast(kind === "audio" ? "请先填写对白或音乐说明。" : "请先填写生成提示词。", "triangle-alert", "err"); return { ok: false, error: "缺提示词" }; }
-  const input = kind === "image"
+  if (!prompt && !collected) { canvasToast(kind === "audio" ? "请先填写对白或音乐说明。" : "请先填写生成提示词。", "triangle-alert", "err"); return { ok: false, error: "缺提示词" }; }
+  // 收回来的那一单按当时发出去的参数记（提示词这期间可能改过）；台账里没存参数的老记录才现算
+  const input = collected && collected.input && typeof collected.input === "object" ? { ...collected.input } : kind === "image"
     // 参考图这一栏自己也把一道关：节点上随手填的 reference 也可能不是图，四个位子本来就不够几个角色分
     ? { prompt, reference_images: [...new Set([p.reference, p.first_frame, ...upstream].map((v) => String(v || "").trim()).filter((v) => v && CANVAS_REF_IMAGE_EXT.test(v.split(/[?#]/)[0])))].slice(0, 4), ...(model ? { model } : {}), filename: canvasOutputFilename(p, "image", nodeKind) }
     : kind === "video"
@@ -868,6 +946,9 @@ async function canvasGenerate(node, kind) {
   if (canvasState.inflight) canvasState.inflight.add(id);
   const startedAt = Date.now();   // 真跑过多久要记下来，不然「还要多久」永远只能靠猜
   let placed = false;
+  const sentJobs = [];            // 这一趟发出去的单号：收尾时从「本页在等」里摘掉
+  let sentJob = null;             // 最后发出去的那一单（单号、参数）：没收到结果时原样记到节点上
+  const jobScope = `${project || "?"}::${board || "main"}`;   // 本机那一笔记在发起时这张画布名下，同 canvasScope
   try {
     // 落进「短剧/画布名」：两张画布里都有 S1-01，不分目录就是互相覆盖
     const subdir = canvasOutputSubdir(board);
@@ -885,7 +966,7 @@ async function canvasGenerate(node, kind) {
     // 以前这里写死 no_cache: true，同一张图点几次付几次钱。
     // 指纹不含文件名：带号的文件名每一枪都不一样，算进去就永远对不上
     const sig = canvasInputSig(tool, input, subdir, canvasCurrentOutput(p, kind, castKind || nodeKind));
-    const reuse = fresh ? null : canvasReuseTarget(p, kind, sig, castKind || nodeKind);
+    const reuse = fresh || collected ? null : canvasReuseTarget(p, kind, sig, castKind || nodeKind);
     if (reuse && reuse.current) {
       // 卡片上挂着的就是同参数生的那份：什么都不改、一个请求都不发，只说一声，并把「换一版」递到手边
       canvasToast("参数没变，沿用现在这一版，没扣费。要新的点「换一版」，会重新扣费。", "circle-check", undefined,
@@ -893,17 +974,31 @@ async function canvasGenerate(node, kind) {
       return { ok: true, reused: true };
     }
     let result;
-    if (reuse) {
+    if (collected) {
+      result = { ...collected.result, collected: true };
+    } else if (reuse) {
       // 这一镜以前用同样的参数生过（改了提示词又改回来）：卡片改指那一版，不发请求。
       // 走下面同一条路——记生成记录、换结果卡、回写分镜表，跟真生成回来一模一样
       result = { ok: true, path: reuse.same, cached: true, reusedVersion: true };
     } else {
+      if (priceFirst) return { ok: false, needConfirm: true };
       if (!castKind) input.filename = canvasOutputFilename(p, kind, nodeKind, canvasNextVersion(p, kind, node, board));
       // 「换一版」：版本号照常 +1，再带上 no_cache，服务端就不会拿缓存顶——这一枪是人明确要花的。
       // 定妆照 / 场景图已经有一张却没被上面认作同参数：那个文件可能已被别的参数覆盖过，
       // 服务端缓存只看文件在不在，会把覆盖后的图当「沿用了上次的，没扣费」递回来，所以也绕过
       if (fresh || (castKind && canvasCurrentOutput(p, kind, castKind))) input.no_cache = true;
-      result = await canvasRunTool({ tool, input, ...(subdir ? { subdir } : {}) }, kind === "audio" ? "tts" : kind);
+      // 每发一枪先在本机记一笔「这一单在等」（单号、发出去的参数）：页面刷新、程序重启之后
+      // 这一格还认得出「有一单没收回来」（见 canvasAdoptLocalJobs），一键补齐不会再替它下一单。
+      // 不写进节点：写进去就成了「本机改过这张卡」，生成途中别处改了同一张卡，远端同步就得停下来问人留哪边
+      result = await canvasRunTool({ tool, input, ...(subdir ? { subdir } : {}) }, kind === "audio" ? "tts" : kind, {
+        onSend: (jobId, sent) => {
+          sentJobs.push(jobId);
+          if (!(canvasState.liveJobs instanceof Set)) canvasState.liveJobs = new Set();
+          canvasState.liveJobs.add(jobId);
+          sentJob = { id: jobId, tool, state: "sent", at: Date.now(), model: String((sent.input && sent.input.model) || ""), submitted: "", input: canvasJobInput(sent.input) };
+          canvasLocalJobSet(jobScope, key, sentJob);
+        },
+      });
     }
     // 换了备用模型生出来的不记指纹：指纹是按原来那个模型算的，记上了下次同参数就会把备用模型的图
     // 当成「原模型生过的」沿用下去——等于悄悄降级。不记，下次点生成还先试人家选的那个模型
@@ -923,7 +1018,8 @@ async function canvasGenerate(node, kind) {
       return { ok: false, error: gone };
     }
     node = live;
-    const next = canvasRecordGeneration(node, kind, input, file, result, Date.now() - startedAt);
+    // 这一格收到了：节点上「在等的那一单」划掉
+    const next = canvasDropJob(canvasRecordGeneration(node, kind, input, file, result, Date.now() - startedAt), kind);
     if (nodeKind === "shot") {
       if (kind === "image") next.first_frame = file;
       if (kind === "video") next.video = file;
@@ -944,7 +1040,8 @@ async function canvasGenerate(node, kind) {
     const back = boardKey ? await canvasBoardWriteback(canvasPayload(node), { [boardKey]: file }) : "";
     const shortName = String(file).split(/[\\/]/).pop();
     // 没花钱的两种要说「没扣费」，不然人以为又付了一次；换了备用模型要写明换成了哪个（不静默换）
-    const said = result.reusedVersion ? canvasT("参数跟 {n} 一样，已换回这一版，没扣费", { n: shortName })
+    const said = result.collected ? canvasT("收到上一单的{a}：{n}", { a: canvasT(castLabel), n: shortName })
+      : result.reusedVersion ? canvasT("参数跟 {n} 一样，已换回这一版，没扣费", { n: shortName })
       : result.cached ? canvasT("参数没变，沿用了上次的 {n}，没扣费", { n: shortName })
         : `${castLabel}已生成：${shortName}`;
     const swapped = result.fallbackFrom ? canvasT("（{a} 没成，按设置里的备用顺序换成了 {b}）", { a: result.fallbackFrom, b: String(input.model || "") }) : "";
@@ -961,10 +1058,24 @@ async function canvasGenerate(node, kind) {
     // 文件已经放上画布之后才出的错（回写、预览那几步）：这一格是做好了的，不能按「没成」算——
     // 算成没成，「重试失败的」那颗按钮就会让人为一张已经有了的图再付一次钱。错照样留痕
     if (placed) { console.warn(`[canvas] ${castLabel}已放上画布，之后的步骤出错：${msg}`); return { ok: true }; }
+    // 断了线没收到回执（error.unknown），或者上游收过单之后才出的错（error.submitted）：这一单可能照样
+    // 出片、照样扣费。节点上那一笔留着、标明状态，卡片上给「看结果」「再生成一次」，一键补齐跳过它
+    if (error && (error.unknown || error.submitted)) {
+      canvasMarkJob(id, kind, { ...(sentJob || {}), state: error.unknown ? "unknown" : "submitted", submitted: String(error.submitted || ""), error: msg }, node);
+      if (error.unknown) canvasToast(canvasT("{a}没收到结果，没有重发：{m}", { a: canvasT(castLabel), m: msg }), "triangle-alert", "err", { label: "看结果", run: () => canvasCollectJob(node, kind) });
+      else canvasToast(`${castLabel}生成失败：${msg}`, "circle-x", "err");
+      return { ok: false, error: msg, unknown: !!error.unknown, submitted: String(error.submitted || "") };
+    }
+    // 收回来的那一单没放上去（服务端明说没成、上游也没收单）：这一笔划掉，可以放心重跑。
+    // 「换一版」发的这一枪没成，不动节点上记着的上一单——那一单的下落还没人看过
+    if (collected) canvasMarkJob(id, kind, null, node);
     canvasToast(`${castLabel}生成失败：${msg}`, "circle-x", "err");
     return { ok: false, error: msg };
   } finally {
     canvasState.busy.delete(key);
+    if (canvasState.liveJobs instanceof Set) sentJobs.forEach((j) => canvasState.liveJobs.delete(j));
+    // 收没收到都有了下文（放上了、记到节点上了、服务端明说没成）：本机那一笔划掉
+    if (sentJobs.length) canvasLocalJobSet(jobScope, key, null);
     // 同一个节点可能还有另一枪在跑（图和配音一起点的），那一枪回来前它还算在途
     if (canvasState.inflight && ![...canvasState.busy].some((k) => String(k).startsWith(`${id}:`))) canvasState.inflight.delete(id);
     // 刷的是现在图上的那一张（远端重铺过的话已经是新对象了），不在了就不刷
@@ -980,37 +1091,86 @@ async function canvasGenerate(node, kind) {
  * 换模型等于换了画风 / 音色，价钱也可能不一样。真换了，把原来那个记在 result.fallbackFrom，
  * 并把 body.input.model 改成真用上的那个，生成记录和提示里都写明。
  *
- * 只对「可能是一时的」失败补枪：网络断了、5xx、408、429、工具自己报错（上游超时多半长这样）。
- * 400 / 402 / 403 / 404 是参数、余额、权限的事，再发一遍还是一样，白等一轮。
- * 回执带 submitted 的也不补：上游已经收下那一单（视频等结果超时、下载断了），多半照样扣费，补一枪是再买一次。
+ * 每一枪带一个新的 clientJobId（hooks.onSend 拿到它，记到节点上）。服务端按这个号认「同一单」：
+ * 连接断了它照样跑完、结果记账；同一个号再来只交回那份结果，不再调上游。
+ *
+ * 只对「服务端明说没成、上游也没收单」的失败补枪：5xx（服务端自己的回执，带 job）、408、429、
+ * 工具报错且回执带 retryable（上游回了非 2xx / 任务状态是失败，或者压根没发出去，见 src/tools/media.js refused）。
+ * 400 / 402 / 403 / 404 是参数、余额、权限的事，再发一遍还是一样。
+ * 不补枪的三种：
+ *   · 工具报错却不带 retryable：等超时、下载断了、200 却没给图——请求已经到了上游，那一单可能已经扣了钱，
+ *     补一枪、换备用模型都是再买一次。原话报给人，让他自己决定要不要再生成；
+ *   · 回执带 submitted：上游已经收下那一单（视频等结果超时、下载断了），多半照样扣费，补一枪是再买一次；
+ *   · 没拿到服务端的回执（断网、代理 / 网关回的 5xx）：先拿单号问一次服务端（只查不发）。跑完了就用那份结果；
+ *     服务端压根没收到，用同一个号再递一次（号不变，前一趟万一刚到，服务端认得出是同一单）；
+ *     还在跑、或者查不到，就是「状态未知」——抛出带 unknown 的错，不重发，让人点「看结果」。
  * 一键补齐按了「停下」就不再补枪：停的意思是不再开新的。
  * 成了返回服务端那份结果；最后还是没成就抛错，错误原文照搬，不猜原因
  */
-async function canvasRunTool(body, cap) {
-  const send = async (b) => {
+async function canvasRunTool(body, cap, hooks = {}) {
+  const wait = (ms) => new Promise((done) => setTimeout(done, ms));
+  // 问一次服务端：这个号的单怎么样了。只读台账，不开枪
+  const ask = async (jobId) => {
     try {
-      const response = await fetch("/api/tool/run", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b) });
-      const result = await response.json().catch(() => ({}));
-      return { response, result, ok: !!response.ok && !result.isError && result.ok !== false };
-    } catch (error) { return { error, result: {}, ok: false }; }
+      const r = await fetch(`/api/tool/job?id=${encodeURIComponent(jobId)}`).then((x) => x.json());
+      return r && r.job ? r : null;
+    } catch { return null; }
+  };
+  // 递一趟。回来的是服务端自己的回执，就照它算；不是（断了、读不出来、5xx 却不带 job），先问台账
+  const post = async (b, jobId) => {
+    let why = "";
+    try {
+      const response = await fetch("/api/tool/run", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...b, clientJobId: jobId }) });
+      const result = await response.json().catch(() => null);
+      const st = Number(response.status) || 0;
+      if (result && !(st >= 500 && !result.job)) return { jobId, response, result, ok: !!response.ok && !result.isError && result.ok !== false };
+      why = String((result && (result.error || result.content)) || `HTTP ${st || "?"}`);
+    } catch (error) { why = String((error && error.message) || error || "连接断了"); }
+    const got = await ask(jobId);
+    const job = got && got.job;
+    if (job && job.state === "missing") return { jobId, result: {}, ok: false, unsent: true, why };
+    const back = got && got.response && got.response.body && typeof got.response.body === "object" ? got.response : null;
+    if (job && (job.state === "done" || job.state === "failed") && back) {
+      const status = Number(back.status) || 200;
+      return { jobId, response: { ok: status < 400, status }, result: back.body, ok: status < 400 && !back.body.isError && back.body.ok !== false };
+    }
+    return { jobId, result: {}, ok: false, unknown: true, why, job: job || null };
+  };
+  const send = async (b) => {
+    const jobId = typeof canvasNewJobId === "function" ? canvasNewJobId() : `cj_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+    if (typeof hooks.onSend === "function") { try { hooks.onSend(jobId, b); } catch {} }
+    let r = await post(b, jobId);
+    if (r.unsent) { await wait(1000); r = await post(b, jobId); }
+    return r;
   };
   const transient = (r) => {
-    if (r.error) return true;
+    if (r.unknown) return false;
+    if (r.unsent) return true;
     if (r.result && r.result.submitted) return false;
     const st = Number(r.response && r.response.status) || 0;
-    if (!r.response.ok) return !st || st >= 500 || st === 408 || st === 429;
-    return true;   // 200 但工具报错
+    if (r.response && !r.response.ok) return !st || st >= 500 || st === 408 || st === 429;
+    // 200 但工具报错：只有服务端明说「上游没收 / 没发出去」才再发。以前一律当临时故障补枪还顺着备用模型往下换——
+    // 生图同步接口等满 300 秒超时、出完图下载断了，都长这样，上游那一单早扣了钱，一张图买了三回
+    return !!(r.result && r.result.retryable);
   };
-  const reason = (r) => String((r.error && (r.error.message || r.error)) || r.result.error || r.result.content || "生成失败");
+  const reason = (r) => String(r.why || r.result.error || r.result.content || "生成失败");
+  // 抛出去的错带上这一单的身份：断线不知道结果的标 unknown，上游收过单的标 submitted，canvasGenerate 据此不算「可重跑」
+  const fail = (r) => {
+    const e = new Error(reason(r));
+    e.jobId = r.jobId;
+    if (r.unknown) { e.unknown = true; e.submitted = String((r.job && r.job.submitted) || ""); }
+    else if (r.result && r.result.submitted) e.submitted = String(r.result.submitted);
+    return e;
+  };
   const stopped = () => !!(canvasState.batch && canvasState.batch.stop);
   let r = await send(body);
   if (r.ok) return r.result;
-  if (!transient(r) || stopped()) throw new Error(reason(r));
-  await new Promise((done) => setTimeout(done, 1000));
+  if (!transient(r) || stopped()) throw fail(r);
+  await wait(1000);
   r = await send(body);
   if (r.ok) return r.result;
   const firstError = reason(r);
-  if (!transient(r) || stopped()) throw new Error(firstError);
+  if (!transient(r) || stopped()) throw fail(r);
   const cache = typeof settingsCache !== "undefined" ? settingsCache : null;
   const order = cache && cache.media_fallback && Array.isArray(cache.media_fallback[cap]) ? cache.media_fallback[cap].map((m) => String(m || "").trim()).filter(Boolean) : [];
   const input = body.input || {};
@@ -1021,8 +1181,158 @@ async function canvasRunTool(body, cap) {
     if (model === was || stopped()) continue;
     const tried = await send({ ...body, input: { ...input, model } });
     if (tried.ok) { input.model = model; return { ...tried.result, fallbackFrom: was || "默认模型" }; }
+    // 换上的这一个断了线、或者上游收了单：停在这儿，再往下换就是又下一单
+    if (!transient(tried)) throw fail(tried);
   }
   throw new Error(firstError);
+}
+
+/** 一枪一个单号：时间 + 随机，够服务端分清「同一单」和「又一单」 */
+function canvasNewJobId() {
+  return `cj_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/** 节点上记着的、还没收回来的那一单（按产物分：image / video / audio）。没有就是 null */
+function canvasPendingJob(payload, kind) {
+  const all = payload && payload.pending_jobs;
+  const job = all && typeof all === "object" ? all[kind] : null;
+  return job && typeof job === "object" && job.id ? job : null;
+}
+
+/** 从一份 payload 里划掉某一类的那一单；划空了整个字段都不留 */
+function canvasDropJob(payload, kind) {
+  if (!payload || !payload.pending_jobs || typeof payload.pending_jobs !== "object") return payload;
+  const all = { ...payload.pending_jobs };
+  delete all[kind];
+  const next = { ...payload };
+  if (Object.keys(all).length) next.pending_jobs = all; else delete next.pending_jobs;
+  return next;
+}
+
+/** 记下发出去的参数：「看结果」收回来时按这一份记生成记录。只留生成要的几样，不带 no_cache 这种一次性开关 */
+function canvasJobInput(input) {
+  const out = { ...(input || {}) };
+  delete out.no_cache;
+  return out;
+}
+
+/** 本机记着的、发出去还没下文的那几单：{ "节点id:种类": 单 }。读不出来就当没有 */
+function canvasLocalJobs(scope) {
+  try {
+    const all = JSON.parse(localStorage.getItem(canvasJobStoreKey(scope)) || "{}");
+    return all && typeof all === "object" && !Array.isArray(all) ? all : {};
+  } catch { return {}; }
+}
+function canvasLocalJobSet(scope, key, job) {
+  try {
+    const all = canvasLocalJobs(scope);
+    if (job) all[key] = job; else delete all[key];
+    if (Object.keys(all).length) localStorage.setItem(canvasJobStoreKey(scope), JSON.stringify(all));
+    else localStorage.removeItem(canvasJobStoreKey(scope));
+  } catch {}
+}
+
+/**
+ * 打开画布时：本机记着「发出去了」、这个页面里却没人在等的那几单（刷新、重启前发的），
+ * 挪到节点上标「没收到结果」，卡片上摆出「看结果」。卡已经删了的，那一笔直接划掉
+ */
+function canvasAdoptLocalJobs() {
+  if (!canvasState.graph) return;
+  const scope = canvasScope(), all = canvasLocalJobs(scope);
+  const live = canvasState.liveJobs instanceof Set ? canvasState.liveJobs : new Set();
+  for (const [key, job] of Object.entries(all)) {
+    if (!job || typeof job !== "object" || live.has(job.id)) continue;
+    const cut = key.lastIndexOf(":"), id = key.slice(0, cut), kind = key.slice(cut + 1);
+    if (canvasState.graph.getCell(id) && ["image", "video", "audio"].includes(kind)) canvasMarkJob(id, kind, { ...job, state: "unknown" });
+    canvasLocalJobSet(scope, key, null);
+  }
+}
+
+/**
+ * 改节点上那一单的记录（patch 为 null 就是划掉），顺手存进项目。按 id 现取节点：
+ * 一枪几十秒，手里那个对象可能早被远端同步换成新的了
+ */
+function canvasMarkJob(id, kind, patch, fallback) {
+  const node = canvasState.graph?.getCell?.(id) || (canvasState.graph ? null : fallback);
+  if (!node) return;
+  const p = canvasPayload(node);
+  if (!patch && !canvasPendingJob(p, kind)) return;
+  const next = patch ? { ...p, pending_jobs: { ...(p.pending_jobs && typeof p.pending_jobs === "object" ? p.pending_jobs : {}), [kind]: { ...(canvasPendingJob(p, kind) || {}), ...patch } } } : canvasDropJob(p, kind);
+  node.set("canvasPayload", next);
+  if (typeof canvasPersist === "function") canvasPersist();
+}
+
+/**
+ * 「看结果」：拿节点上记的单号问服务端（GET /api/tool/job，只查不发）。
+ *   跑完了 → 跟当场生成回来一样放上画布（经 canvasGenerate 的 collect 旁路，不开枪）；
+ *   还在跑 → 说一声，过会儿再点；
+ *   服务重启前没收完 → 把上游任务号交给人（媒体层眼下没有按任务号补收的口子）；
+ *   服务端明说没成、上游也没收单 → 划掉，可以放心重跑；服务端没这一单 → 说清楚，划掉
+ */
+async function canvasCollectJob(node, kind) {
+  const id = node && node.id;
+  const live = canvasState.graph?.getCell?.(id) || (canvasState.graph ? null : node);
+  if (!live) { canvasToast("节点已不在画布上。", "triangle-alert", "err"); return { ok: false }; }
+  const job = canvasPendingJob(canvasPayload(live), kind);
+  if (!job) { canvasToast("这一格没有在等的单。", "circle-check"); return { ok: false }; }
+  let got = null, err = "";
+  try {
+    const r = await fetch(`/api/tool/job?id=${encodeURIComponent(job.id)}`);
+    got = await r.json().catch(() => null);
+    if (!r.ok || !got || !got.job) { err = String((got && got.error) || `HTTP ${r.status}`); got = null; }
+  } catch (e) { err = String((e && e.message) || e); }
+  if (!got) { canvasToast(canvasT("没查到这一单：{m}", { m: err }), "circle-x", "err"); return { ok: false }; }
+  const state = String(got.job.state || ""), task = String(got.job.submitted || job.submitted || "");
+  const body = got.response && got.response.body && typeof got.response.body === "object" ? got.response.body : null;
+  if (state === "done" && body) {
+    if (!(canvasState.collect instanceof Map)) canvasState.collect = new Map();
+    canvasState.collect.set(`${id}:${kind}`, { result: body, input: job.input || null });
+    return canvasGenerate(live, kind);
+  }
+  if (state === "running") {
+    canvasToast("这一单还在生成，过一会儿再点「看结果」。", "loader");
+    return { ok: false, running: true };
+  }
+  if (state === "interrupted") {
+    canvasMarkJob(id, kind, { state: "interrupted", submitted: task }, live);
+    canvasToast(task ? canvasT("服务重启前没收完，没有重发。上游任务号 {t}", { t: task }) : "服务重启前没收完，没有重发。", "triangle-alert", "err");
+    return { ok: false, unknown: true, submitted: task };
+  }
+  if (state === "failed") {
+    const said = String((body && (body.error || body.content)) || "生成失败").slice(0, 180);
+    if (task) {
+      canvasMarkJob(id, kind, { state: "submitted", submitted: task, error: said }, live);
+      canvasToast(canvasT("上游收过单（任务号 {t}），结果没收回来：{m}", { t: task, m: said }), "triangle-alert", "err");
+      return { ok: false, submitted: task };
+    }
+    canvasMarkJob(id, kind, null, live);
+    canvasToast(canvasT("这一单没成：{m}", { m: said }), "circle-x", "err");
+    return { ok: false, error: said };
+  }
+  // 服务端没有这一单：要么压根没送到，要么记录过了一天被清掉了。前一种没开过枪，划掉；后一种查不到了，也划掉，但要说清
+  canvasMarkJob(id, kind, null, live);
+  const old = Date.now() - (Number(job.at) || 0) > 24 * 3600 * 1000;
+  canvasToast(old ? "这一单的记录只留一天，已经查不到了。" : "服务端没有这一单的记录，可以重新生成。", "triangle-alert", "err");
+  return { ok: false, missing: true };
+}
+
+/**
+ * 「再生成一次」：明说要再下一单（按钮上写着会再扣费）。先划掉节点上那一笔，再按「换一版」发：
+ * 不拿同参数的旧版本顶——人点的是「再下一单」，顶回去等于按钮说一套、做一套
+ */
+function canvasGenerateAgain(node, kind) {
+  const id = node && node.id;
+  canvasMarkJob(id, kind, null, node);
+  const live = canvasState.graph?.getCell?.(id) || node;
+  if (!(canvasState.reroll instanceof Set)) canvasState.reroll = new Set();
+  canvasState.reroll.add(`${id}:${kind}`);
+  return canvasGenerate(live, kind);
+}
+
+/** 「忽略」：只划掉这一笔记录，不发任何请求。人已经去渠道控制台拿到了，或者不要了 */
+function canvasDismissJob(node, kind) {
+  canvasMarkJob(node && node.id, kind, null, node);
+  canvasToast("已划掉这一单的记录，没发任何请求。", "circle-check");
 }
 
 // 「换一版」：同样的参数也要一张新的。版本号 +1、带 no_cache，所以一定会重新扣费（按钮旁边写着）
@@ -1031,4 +1341,34 @@ function canvasReroll(node, kind) {
   if (!(canvasState.reroll instanceof Set)) canvasState.reroll = new Set();
   canvasState.reroll.add(`${node.id}:${kind}`);
   return canvasGenerate(node, kind);
+}
+
+/**
+ * 镜头检查器上的「生成配音」「换一版配音」：单独一镜也先报价、等人点头再开枪，跟一键补齐同一道确认（canvasConfirmBatch）。
+ * 先让 canvasGenerate 走一趟「先报价」（priceFirst 旁路）：没台词、还是占位文字、不知道用谁的嗓子、
+ * 上一单没收回来，照常拦下来说清楚；参数没变、沿用现成那一版的照常沿用——不花钱的事不弹「确认后开始扣费」。
+ * 只有真要花钱的那一下才报价、弹框，点「先不了」一个请求都不发。
+ * 「换一版」走 canvasReroll：版本号 +1、带 no_cache，照价扣费
+ * @param {any} node 镜头节点
+ * @param {boolean} [again] true = 换一版
+ * @returns {Promise<{ok: boolean, error?: string, cancelled?: boolean, needConfirm?: boolean, reused?: boolean}>}
+ */
+async function canvasVoiceGenerate(node, again) {
+  // 确认框开着的时候再点：不叠第二个框，更不绕过它
+  if (!node || canvasState.confirming) return { ok: false, error: "正在确认" };
+  const key = `${node.id}:audio`;
+  const fire = (n) => (again ? canvasReroll(n, "audio") : canvasGenerate(n, "audio"));
+  if (!(canvasState.priceFirst instanceof Set)) canvasState.priceFirst = new Set();
+  canvasState.priceFirst.add(key);
+  let first;
+  try { first = await fire(node); } finally { canvasState.priceFirst.delete(key); }
+  if (!first || !first.needConfirm) return first || { ok: false, error: "没有生成" };
+  canvasState.confirming = true;
+  let yes = false;
+  try { yes = await canvasConfirmBatch("audio", [node]); } finally { canvasState.confirming = false; }
+  if (!yes) return { ok: false, cancelled: true };
+  // 框开着的这会儿节点可能被删了、整张图被远端重铺了：按 id 重新取，取不到就不开枪——钱花了也没地方放
+  const live = canvasState.graph ? canvasState.graph.getCell(node.id) : node;
+  if (!live) { canvasToast("这一镜已经不在画布上，没有生成。", "triangle-alert", "err"); return { ok: false, error: "节点已不在画布上" }; }
+  return fire(live);
 }

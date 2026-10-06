@@ -266,6 +266,30 @@ async function e2e() {
       eq(r.isError, false, "而且是真出了一张新的", r.content);
       ok(fs.existsSync(outFile("封面.png")), "文件真的回来了（而不是甩回一个指向空气的路径）");
 
+      // ── 画布任务先报价 ──────────────────────────────────────
+      // 画布右栏的会话（s_canvas_ 开头）里三个生成工具一律拦下：Agent 交清单，用户在画布上点「开跑」才花钱。
+      // 数的还是上游被打了几次；命中缓存的那一格也一样拦——拦在缓存、额度之前，回给模型的是该怎么走
+      {
+        const before = { ...up };
+        const canvasCall = (name, input) => tools.executeTool(name, input, { media, security: { gateway: false }, baseDir: OUT, sessionId: "s_canvas_1730000000000_ab12" });
+        const blocked = [
+          await canvasCall("generate_image", { prompt: "画布里的一镜", filename: "画布一镜.png" }),
+          await canvasCall("generate_image", { prompt: "封面：一只猫", filename: "封面.png" }),
+          await canvasCall("generate_video", { prompt: "画布里的一段", filename: "画布一段.mp4" }),
+          await canvasCall("text_to_speech", { text: "画布里的一句", filename: "画布一句.mp3" }),
+        ];
+        ok(blocked.every((x) => x.isError && /^请先报价/.test(x.content) && /propose/.test(x.content)),
+          "★画布任务里调生图 / 生视频 / 配音：一律拦下，回话里说「请先报价」、该用 propose 交清单★", blocked.map((x) => x.content.slice(0, 30)));
+        eq(up, before, "★被拦下的四趟一次上游都没打：一分钱没花★");
+        ok(!fs.existsSync(outFile("画布一镜.png")) && !fs.existsSync(outFile("画布一段.mp4")), "  └ 也没落任何文件");
+        r = await tools.executeTool("generate_image", { prompt: "普通对话里的一张", filename: "普通.png" }, { media, security: { gateway: false }, baseDir: OUT, sessionId: "s_1730000000000_ab12" });
+        ok(!r.isError && up.image === before.image + 1, "反向对照：普通对话（会话号不是 s_canvas_ 开头）照常生成", { err: r.isError, image: up.image });
+        const agentSrc = fs.readFileSync(mod("agent"), "utf8");
+        ok(/canvasStore\.canvasSessionOf\(sessionId\) && canvasStore\.CANVAS_QUOTE_FIRST\.includes\(n\)/.test(agentSrc)
+          && /runViaEngine\(\{[\s\S]{0,300}?lang, sessionId,/.test(agentSrc),
+          "本机 Claude Code / Codex 跑画布任务：生成工具不借过去（桥那头分不出会话，拦不住，只能不借）");
+      }
+
       // ── 配音 ────────────────────────────────────────────────
       r = await call("text_to_speech", { text: "第一句旁白", filename: "旁白.mp3" });
       eq(r.isError, false, "配音：第一次成功", r.content);
@@ -403,6 +427,28 @@ async function e2e() {
     } finally {
       global.fetch = realFetch2;
     }
+
+    // 画布任务压根不摆三个生成工具：数的是模型这一轮真拿到的工具单，不是代码里写了什么
+    const offered = [];
+    const llmSeen = {
+      model: "假模型", provider: "假渠道",
+      chat: async ({ tools: ts }) => {
+        offered.push((ts || []).map((t) => t.name));
+        return { text: "清单交了。", toolCalls: [], stopReason: "end_turn", usage: { prompt: 1, completion: 1 } };
+      },
+    };
+    const rt2 = createAgentRuntime({ config: { ...cfg, agent: { max_steps: 2 } }, llm: llmSeen, mcpManager: { toolDefs: () => [] }, experts: [] });
+    const namesFor = async (sessionId) => {
+      offered.length = 0;
+      await tools.withWorkspace(WS, () => rt2.runTask({ history: [{ role: "user", content: "把空着的格子补齐" }], emit: () => {}, sessionId }));
+      return offered[0] || [];
+    };
+    const onCanvas = await namesFor("s_canvas_1730000000000_ab12");
+    ok(onCanvas.length > 0 && !onCanvas.some((n) => ["generate_image", "generate_video", "text_to_speech"].includes(n)),
+      "★画布任务：模型拿到的工具单里没有生图 / 生视频 / 配音★", onCanvas.filter((n) => /^generate_|speech/.test(n)));
+    ok(onCanvas.includes("canvas_manage"), "  └ 交清单用的 canvas_manage 还在", onCanvas.length);
+    const inChat = await namesFor("s_1730000000000_ab12");
+    ok(["generate_image", "generate_video", "text_to_speech"].every((n) => inChat.includes(n)), "反向对照：普通对话照常摆这三个", inChat.length);
   }
 }
 
