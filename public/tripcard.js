@@ -257,16 +257,33 @@
   const imgUrl = (u) => "/api/geo/img?u=" + encodeURIComponent(u);
 
   // ---------------- 导航链接 ----------------
-  /** 两站之间：国内去高德（GCJ-02），国外去 Google 地图（WGS-84） */
+  // 段间菜单给的四种走法。两家文档上写明了的才给：高德 uri.amap.com/navigation 的 mode=walk/bus/ride/car，
+  // Google 地图 maps/dir 的 travelmode=walking/transit/bicycling/driving。Google 的 two-wheeler（摩托）国内没有对应，不给
+  const NAV_MODES = [["walking", "步行"], ["transit", "公交"], ["bicycling", "骑行"], ["driving", "驾车"]];
+  const AMAP_MODE = { walking: "walk", transit: "bus", bicycling: "ride", driving: "car" };
+  /** 两站之间：国内去高德（GCJ-02），国外去 Google 地图（WGS-84）。mode 不认识的（比如 line 直线）按驾车 */
   function legNavUrl(a, b, mode) {
     const pa = convert(a.lng, a.lat, a.datum, "wgs84"), pb = convert(b.lng, b.lat, b.datum, "wgs84");
     if (inChina(pa[0], pa[1]) && inChina(pb[0], pb[1])) {
       const ga = convert(a.lng, a.lat, a.datum, "gcj02"), gb = convert(b.lng, b.lat, b.datum, "gcj02");
       return `https://uri.amap.com/navigation?from=${fx(ga[0])},${fx(ga[1])},${encodeURIComponent(a.name)}&to=${fx(gb[0])},${fx(gb[1])},${encodeURIComponent(b.name)}`
-        + `&mode=${mode === "walking" ? "walk" : "car"}&coordinate=gaode&callnative=1`;
+        + `&mode=${AMAP_MODE[mode] || "car"}&coordinate=gaode&callnative=1`;
     }
-    return `https://www.google.com/maps/dir/?api=1&origin=${fx(pa[1])},${fx(pa[0])}&destination=${fx(pb[1])},${fx(pb[0])}&travelmode=${mode === "walking" ? "walking" : "driving"}`;
+    return `https://www.google.com/maps/dir/?api=1&origin=${fx(pa[1])},${fx(pa[0])}&destination=${fx(pb[1])},${fx(pb[0])}&travelmode=${AMAP_MODE[mode] ? mode : "driving"}`;
   }
+  /**
+   * 「导航到这」：只给终点。两家都是不给起点就从手机当前位置出发；走法也不给，让人到导航应用里自己选。
+   */
+  function stopNavUrl(p) {
+    const w = convert(p.lng, p.lat, p.datum, "wgs84");
+    if (inChina(w[0], w[1])) {
+      const g = convert(p.lng, p.lat, p.datum, "gcj02");
+      return `https://uri.amap.com/navigation?to=${fx(g[0])},${fx(g[1])},${encodeURIComponent(p.name)}&coordinate=gaode&callnative=1`;
+    }
+    return `https://www.google.com/maps/dir/?api=1&destination=${fx(w[1])},${fx(w[0])}`;
+  }
+  /** 「发到手机」的二维码：服务端只编上面这几个函数生成的链接 */
+  const qrUrl = (u) => "/api/geo/qr?u=" + encodeURIComponent(u);
   /**
    * 一整天的路线：国外交给 Google 地图（途经点最多 8 个）；国内高德的网页导航只认一个途经点，
    * 所以三站以内给链接，再多就不给了（每两站之间那条「导航」还在）。国内外混着的也不给。
@@ -427,7 +444,8 @@
       + `<div class="tc-tiles"></div><svg class="tc-route" aria-hidden="true"></svg><div class="tc-pins"></div>`
       + `<div class="tc-zoom"><button type="button" data-z="1" aria-label="放大" title="放大">+</button><button type="button" data-z="-1" aria-label="缩小" title="缩小">−</button>`
       + `<button type="button" class="tc-reset" aria-label="回到全览" title="回到全览"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button></div>`
-      + `<div class="tc-attr"></div><div class="tc-msg" hidden></div></div>`
+      + `<div class="tc-attr"></div><div class="tc-msg" hidden></div>`
+      + `<div class="tc-pop" role="dialog" tabindex="-1" hidden></div></div>`
       + `<div class="tc-split" role="separator" aria-orientation="vertical" tabindex="0" aria-label="拖动调整地图和列表的宽窄">`
       + `<button type="button" class="tc-fold"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></button></div>`
       + `<div class="tc-panel"></div>`
@@ -437,7 +455,7 @@
     const map = $(".tc-map"), tilesEl = $(".tc-tiles"), routeEl = $(".tc-route"), pinsEl = $(".tc-pins"),
       panel = $(".tc-panel"), tl = $(".tc-tl"), body = $(".tc-body"), msg = $(".tc-msg"), attr = $(".tc-attr"),
       found = $(".tc-found"), list = $(".tc-list"), split = $(".tc-split"), grip = $(".tc-grip"), foldBtn = $(".tc-fold"),
-      alertEl = $(".tc-alert");
+      alertEl = $(".tc-alert"), pop = $(".tc-pop");
 
     const st = {
       day: 0, view: "map", userView: false,
@@ -449,6 +467,9 @@
       alert: "",                         // 高德今天停了：它回的原话，卡片上说一次
       visible: false,                    // 在不在视野里：不在就不往下查后面几天
       cfg: null, src: "", z: 12, cx: 0, cy: 0, fitted: -1, started: false, active: -1,
+      pop: -1,                           // 地图上弹着小卡的那一站（当天第几站），-1 没弹
+      nav: -1,                           // 列表里展开了「导航」菜单的那一段，-1 没展开
+      qr: null,                          // 「发到手机」的二维码开在哪：{ at: "leg"|"day"|"pop", i, mode }
     };
     const tiles = new Map();
 
@@ -478,12 +499,14 @@
       if (byUser) st.userView = true;
       body.hidden = v !== "map";
       tl.hidden = v !== "timeline";
+      if (v !== "map") closePop(false);
       el.querySelectorAll(".tc-views button").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.v === v)));
       if (v === "map") { fit(false); draw(); }
     }
     function setDay(d, byUser) {
       st.day = d;
       st.active = -1;
+      st.pop = -1; st.nav = -1; st.qr = null;   // 小卡、导航菜单、二维码都是这一天的，换天就收起来
       el.querySelectorAll(".tc-tabs button").forEach((b) => b.setAttribute("aria-selected", String(+b.dataset.d === d)));
       renderPanel();
       renderTimeline();
@@ -497,13 +520,21 @@
 
     // ---- 右侧卡片 ----
     function stopPlace(d, i) { const p = st.places[d]; return p ? p[i] : undefined; }
+    /** 整天的「打开路线」：每站都找到了才给 */
+    function dayNav(d) {
+      const day = it.days[d];
+      const located = day.stops.map((s, i) => { const p = stopPlace(d, i); return p ? { ...p, name: s.name } : null; }).filter(Boolean);
+      return located.length === day.stops.length ? dayNavUrl(located) : "";
+    }
     function renderPanel() {
       const d = st.day, day = it.days[d];
-      const located = day.stops.map((s, i) => { const p = stopPlace(d, i); return p ? { ...p, name: s.name } : null; }).filter(Boolean);
-      const nav = located.length === day.stops.length ? dayNavUrl(located) : "";
+      const nav = dayNav(d);
+      const dayQr = !!nav && !!st.qr && st.qr.at === "day";
       let h = `<div class="tc-dh"><div class="tc-dl">${esc(dayLabel(day, d))}</div>${day.title ? `<div class="tc-dt">${esc(day.title)}</div>` : ""}`
         + (day.summary ? `<div class="tc-ds">${esc(day.summary)}</div>` : "")
-        + (nav ? `<a class="tc-open" href="${esc(nav)}" target="_blank" rel="noopener">打开路线 ↗</a>` : "") + `</div>`;
+        + (nav ? `<div class="tc-dact"><a class="tc-open" href="${esc(nav)}" target="_blank" rel="noopener">打开路线 ↗</a>`
+          + `<button type="button" class="tc-open tc-qr" data-at="day" aria-expanded="${dayQr}">发到手机</button></div>` : "")
+        + (dayQr ? qrHtml(nav) : "") + `</div>`;
       let seg = null;
       day.stops.forEach((s, i) => {
         if (i > 0) h += legHtml(d, i - 1);
@@ -525,6 +556,8 @@
       if (day.more) h += `<div class="tc-more">${esc(moreText("站", day.more))}</div>`;
       panel.innerHTML = h;
       panel.querySelectorAll(".tc-ph img").forEach((img) => img.addEventListener("error", () => img.remove(), { once: true }));
+      wireQr(panel);
+      renderPop();   // 地点、照片、路段变了，小卡跟着变
     }
     /** 这一站查自哪一家；地图上那个点的名字跟行程里写的对不上，把查到的名字露出来，好让人核对是不是这儿 */
     function srcLine(p, name) {
@@ -546,15 +579,52 @@
       return /[\u4e00-\u9fff]/.test(it.city || "");
     }
     const keyBtn = (text) => `<button type="button" class="tc-setkey">${esc(text)}</button>`;
+    const legBits = (leg) => [MODE[leg.mode] || "", fmtDist(leg.distance), fmtDur(leg.duration)].filter(Boolean).join(" · ");
+    /** 这一段默认按哪种走法：查到了步行 / 驾车就照着；只有直线的，两公里以内算步行（跟服务端挑路线同一条线） */
+    const legMode = (leg) => (leg.mode === "walking" || leg.mode === "driving" ? leg.mode : leg.distance < 2000 ? "walking" : "driving");
+    function legUrl(d, i, mode) {
+      const s = it.days[d].stops;
+      return legNavUrl({ ...stopPlace(d, i), name: s[i].name }, { ...stopPlace(d, i + 1), name: s[i + 1].name }, mode);
+    }
+    /**
+     * 两站之间那一行：路程用时 +「导航 ▾」。点开是四种走法（各自一条链接，新窗口打开）和「发到手机」。
+     * 菜单就地展开在这一行底下，不浮在列表上——列表自己会滚，浮层会被它切掉。
+     */
     function legHtml(d, i) {
       const leg = st.legs[d][i];
       const a = stopPlace(d, i), b = stopPlace(d, i + 1);
       if (!leg || !a || !b) return `<div class="tc-leg"><span class="tc-legline"></span></div>`;
-      const s = it.days[d].stops;
-      const bits = [MODE[leg.mode] || "", fmtDist(leg.distance), fmtDur(leg.duration)].filter(Boolean).join(" · ");
-      const url = legNavUrl({ ...a, name: s[i].name }, { ...b, name: s[i + 1].name }, leg.mode);
-      return `<div class="tc-leg"><span class="tc-legline"></span><span class="tc-legt">${esc(bits)}</span>`
-        + `<a href="${esc(url)}" target="_blank" rel="noopener">导航 ›</a></div>`;
+      const open = st.nav === i, qr = open && !!st.qr && st.qr.at === "leg" && st.qr.i === i, def = legMode(leg);
+      return `<div class="tc-leg" data-leg="${i}"><span class="tc-legline"></span><span class="tc-legt">${esc(legBits(leg))}</span>`
+        + `<button type="button" class="tc-navb" aria-expanded="${open}" title="选走法，在地图应用里导航">导航 ▾</button>`
+        + `<div class="tc-navm"${open ? "" : " hidden"}>`
+        + NAV_MODES.map(([m, t]) => `<a href="${esc(legUrl(d, i, m))}" target="_blank" rel="noopener"${m === def ? ' class="on"' : ""}>${t} ↗</a>`).join("")
+        + `<button type="button" class="tc-qr" data-at="leg" aria-expanded="${qr}">发到手机</button></div>`
+        + (qr ? qrHtml(legUrl(d, i, st.qr.mode), st.qr.mode) : "") + `</div>`;
+    }
+    /**
+     * 「发到手机」：二维码就地展开。段间的那个能换走法（换了重新编）。
+     * 二维码图是服务端编的（/api/geo/qr），扫出来就是旁边「在这台电脑上打开」那条链接。
+     */
+    function qrHtml(u, mode) {
+      const modes = mode ? `<div class="tc-qrms" role="group" aria-label="走法">${NAV_MODES.map(([m, t]) =>
+        `<button type="button" class="tc-qrm" data-m="${m}" aria-pressed="${m === mode}">${t}</button>`).join("")}</div>` : "";
+      return `<div class="tc-qrbox">${modes}<img class="tc-qrimg" alt="导航链接的二维码" width="148" height="148" src="${esc(qrUrl(u))}">`
+        + `<div class="tc-qrt">用手机扫一下，在手机上接着导航</div>`
+        + `<div class="tc-qract"><a href="${esc(u)}" target="_blank" rel="noopener">在这台电脑上打开 ↗</a><button type="button" class="tc-qrx">收起</button></div></div>`;
+    }
+    /** 二维码没出来：再要一次那个地址，把服务端回的原话写上，不替人猜为什么 */
+    function wireQr(scope) {
+      scope.querySelectorAll(".tc-qrimg").forEach((img) => img.addEventListener("error", () => {
+        const say = (m) => {
+          const d = document.createElement("div");
+          d.className = "tc-qrerr";
+          d.textContent = `二维码没生成出来：${m}`;
+          img.replaceWith(d);
+        };
+        fetch(img.src).then((r) => r.text().then((t) => (r.ok ? "图片没加载出来" : t || `HTTP ${r.status}`)))
+          .catch((e) => (e && e.message) || String(e)).then(say);
+      }, { once: true }));
     }
 
     // ---- 时间线 ----
@@ -565,11 +635,13 @@
       const none = dayNone(st.day);
       tl.innerHTML = (none ? `<div class="tc-tlmsg">${esc(none)}</div>` : "")
         + (day.title ? `<div class="tc-tlh">${esc(dayLabel(day, st.day))} · ${esc(day.title)}</div>` : "")
-        + day.stops.map((s) => {
+        + day.stops.map((s, i) => {
           const lab = s.time || segmentOf(s.time);
           const show = lab && lab !== last;
           last = lab || last;
-          return `<div class="tc-tlr"><div class="tc-tls">${show ? esc(lab) : ""}</div><div class="tc-tld"></div>`
+          // 地图上有这一站的：点一下（或回车）切到地图、弹出它的小卡
+          const go = !!stopPlace(st.day, i);
+          return `<div class="tc-tlr${go ? " go" : ""}" data-i="${i}"${go ? ' role="button" tabindex="0" title="在地图上看这一站"' : ""}><div class="tc-tls">${show ? esc(lab) : ""}</div><div class="tc-tld"></div>`
             + `<div class="tc-tlt"><b>${esc(s.name)}</b>${s.note ? `<span>${esc(s.note)}</span>` : ""}</div></div>`;
         }).join("")
         + (day.more ? `<div class="tc-more">${esc(moreText("站", day.more))}</div>` : "");
@@ -847,6 +919,7 @@
         b.style.transform = `translate(${Math.round(px)}px, ${Math.round(py)}px)`;
         b.classList.toggle("on", +b.dataset.i === st.active);
       });
+      placePop(W, H, z, ox, oy);
     }
     let pinsKey = "";
     function syncPins() {
@@ -873,8 +946,8 @@
       st.cy = latY(lat, nz) - py + H / 2;
       draw();
     }
-    // 点过地点、拖过、缩放过之后一键回到刚打开时那样：当天的地点全在框里，高亮清掉
-    function resetView() { fit(true); focusStop(-1, false); }
+    // 点过地点、拖过、缩放过之后一键回到刚打开时那样：当天的地点全在框里，高亮清掉，小卡收起
+    function resetView() { closePop(false); fit(true); focusStop(-1, false); }
     function focusStop(i, pan) {
       st.active = i;
       panel.querySelectorAll(".tc-card").forEach((c) => c.classList.toggle("on", +c.dataset.i === i));
@@ -886,10 +959,190 @@
       draw();
     }
 
+    // ---- 地图上的小卡：点钉子弹出来。列表收起了、窄屏列表在下面看不见时，就靠它看这一站 ----
+    let popLast = "";     // 上回画进去的内容：没变就不重画（重画会把焦点弄丢）
+    let popSize = null;   // 量过的宽高：draw() 拖动时每帧都要摆，不每帧量
+    /** 地图窄（手机竖屏、窄窗口）：小卡贴着地图底边摆，不跟着钉子跑——跟着跑总有一半出了地图 */
+    const POP_DOCK = 440;
+    function popHtml(i, p) {
+      const d = st.day, stops = it.days[d].stops, s = stops[i], ps = st.places[d] || [];
+      const kind = s.kind || p.kind || "";
+      const meta = [s.time ? esc(s.time) : "", p.rating ? `<span class="tc-star">★ ${p.rating}</span>` : "", kind ? esc(kind) : ""].filter(Boolean).join(" · ");
+      const ini = [...String(s.name || "").trim()][0] || "";
+      const row = (k, v) => `<div class="tc-prow"><span class="tc-pk">${k}</span><span class="tc-pv">${v}</span></div>`;
+      let h = `<button type="button" class="tc-px" aria-label="关闭" title="关闭（Esc）">×</button>`
+        + `<div class="tc-ptop"><div class="tc-ph"><span class="tc-ini" aria-hidden="true">${esc(ini.toUpperCase())}</span>`
+        + (p.photo ? `<img alt="" src="${esc(imgUrl(p.photo))}">` : "") + `<span class="tc-no">${i + 1}</span></div>`
+        + `<div class="tc-info"><div class="tc-nm">${esc(s.name)}</div>${meta ? `<div class="tc-meta">${meta}</div>` : ""}</div></div>`
+        + (s.note ? `<div class="tc-note">${esc(s.note)}</div>` : "");
+      // 地址先用地图上查到的；没有才用行程里写的，并说明是行程里写的（那是 AI 写的，没核对过）
+      if (p.addr) h += row("地址", esc(p.addr));
+      else if (s.addr) h += row("地址", `${esc(s.addr)}<span class="tc-by">（行程里写的）</span>`);
+      // 营业时间、电话、人均、特色：高德给什么写什么，不改写；老缓存里没有这几项就不出这几行
+      if (p.src === "amap") {
+        const by = `<span class="tc-by"> · 高德</span>`;
+        if (p.hours) h += row("营业时间", esc(p.hours) + by);
+        if (p.tel) {
+          const dial = String(p.tel).split(/[;,；，]/)[0].replace(/[^\d+-]/g, "");
+          h += row("电话", (dial ? `<a href="tel:${esc(dial)}">${esc(p.tel)}</a>` : esc(p.tel)) + by);
+        }
+        if (p.cost) h += row("人均", `¥${esc(p.cost)}` + by);
+        if (p.tag) h += row("特色", esc(p.tag) + by);
+      }
+      h += `<div class="tc-src">${esc(srcLine(p, s.name))}</div>`;
+      const qr = !!st.qr && st.qr.at === "pop";
+      h += `<div class="tc-pact"><a class="tc-go" href="${esc(stopNavUrl({ ...p, name: s.name }))}" target="_blank" rel="noopener" title="从你现在的位置出发">导航到这 ↗</a>`
+        + `<button type="button" class="tc-qr" data-at="pop" aria-expanded="${qr}">发到手机</button></div>`
+        + (qr ? qrHtml(stopNavUrl({ ...p, name: s.name })) : "");
+      // 上一站 / 下一站：跳过地图上没找到的站。紧挨着的写上这一段怎么走、多远
+      let pv = i - 1, nx = i + 1;
+      while (pv >= 0 && !ps[pv]) pv--;
+      while (nx < ps.length && !ps[nx]) nx++;
+      const go = (j, prev) => (j < 0 || j >= ps.length ? `<span></span>`
+        : `<button type="button" class="tc-pgo${prev ? "" : " nx"}" data-go="${j}"><span>${prev ? "‹ 上一站" : "下一站 ›"}</span><b>${j + 1}. ${esc(stops[j].name)}</b></button>`);
+      if (pv >= 0 || nx < ps.length) {
+        const leg = nx === i + 1 ? (st.legs[d] || [])[i] : null;
+        h += `<div class="tc-pnav">${go(pv, true)}${go(nx, false)}</div>`
+          + (leg && legBits(leg) ? `<div class="tc-pleg">到下一站：${esc(legBits(leg))}</div>` : "");
+      }
+      return h;
+    }
+    /** 照 st.pop 画小卡（位置在 draw() 里摆）。focus：true 焦点进小卡；字符串是小卡里要放焦点的那颗按钮 */
+    function renderPop(focus) {
+      const i = st.pop, p = i >= 0 ? stopPlace(st.day, i) : null;
+      if (!p || st.view !== "map") {
+        st.pop = -1;
+        if (st.qr && st.qr.at === "pop") st.qr = null;
+        pop.hidden = true;
+        popLast = "";
+        return;
+      }
+      const h = popHtml(i, p);
+      pop.hidden = false;
+      if (h !== popLast) {
+        const had = pop.contains(document.activeElement);
+        popLast = h;
+        pop.innerHTML = h;
+        pop.setAttribute("aria-label", `${i + 1}. ${it.days[st.day].stops[i].name}`);
+        pop.querySelectorAll(".tc-ph img").forEach((img) => img.addEventListener("error", () => img.remove(), { once: true }));
+        wireQr(pop);
+        popSize = null;
+        if (had && !focus) focus = true;   // 照片补上了之类的重画：焦点原来在小卡里，还放回小卡
+      }
+      const f = typeof focus === "string" ? pop.querySelector(focus) || pop : focus ? pop : null;
+      if (f) f.focus({ preventScroll: true });
+    }
+    function openPop(i, focus) {
+      const p = stopPlace(st.day, i);
+      if (!p || st.view !== "map") return;
+      if (st.pop !== i && st.qr && st.qr.at === "pop") st.qr = null;
+      st.pop = i;
+      renderPop();
+      if (st.src) {
+        // 钉子不在地图里（从列表、时间线、上一站下一站跳过来的）：挪过去。贴底的小卡会盖住地图下半截，钉子得露在小卡上面
+        const W = map.clientWidth, H = map.clientHeight;
+        const [x, y] = ptOf(p);
+        const px = lngX(x, st.z) - (st.cx - W / 2), py = latY(y, st.z) - (st.cy - H / 2);
+        const dock = W < POP_DOCK;
+        if (pop.classList.contains("dock") !== dock) { pop.classList.toggle("dock", dock); popSize = null; }
+        const bottom = dock ? Math.max(0, H - pop.offsetHeight - 20) : H;   // 贴底的小卡离底边 20px（tripcard.css .tc-pop.dock）
+        if (py < 24 || py > bottom - 24) st.cy += py - bottom / 2;
+        if (px < 24 || px > W - 24) st.cx += px - W / 2;
+      }
+      draw();
+      renderPop(focus);
+    }
+    /** 收起小卡。back：焦点放回它那颗钉子（Esc、点 × 时），点空白处收起就不动焦点 */
+    function closePop(back) {
+      if (st.pop < 0) return false;
+      const i = st.pop;
+      st.pop = -1;
+      renderPop();
+      if (back) {
+        const b = pinsEl.querySelector(`.tc-pin[data-i="${i}"]`);
+        (b && !b.hidden ? b : map).focus({ preventScroll: true });
+      }
+      return true;
+    }
+    /** 小卡摆在钉子上方；上方放不下放下方，再放不下放左右；地图窄就贴底。钉子拖出地图了小卡先藏起来 */
+    function placePop(W, H, z, ox, oy) {
+      if (st.pop < 0 || pop.hidden) return;
+      const p = stopPlace(st.day, st.pop);
+      if (!p) return;
+      const dock = W < POP_DOCK;
+      if (pop.classList.contains("dock") !== dock) { pop.classList.toggle("dock", dock); popSize = null; }
+      if (dock) { pop.classList.remove("off"); pop.style.transform = ""; return; }
+      const [x, y] = ptOf(p);
+      const px = lngX(x, z) - ox, py = latY(y, z) - oy;
+      const off = px < 0 || py < 0 || px > W || py > H;
+      pop.classList.toggle("off", off);
+      if (off) return;
+      if (!popSize) popSize = { w: pop.offsetWidth, h: pop.offsetHeight };
+      const { w, h } = popSize, M = 8, R = 26;   // 离地图边 8px；离钉子中心 26px（钉子半径 18 再空 8）
+      let left = px - w / 2, top;
+      if (py - R - h >= M) top = py - R - h;
+      else if (py + R + h <= H - M) top = py + R;
+      else { top = py - h / 2; left = px + R + w <= W - M ? px + R : px - R - w; }
+      left = Math.max(M, Math.min(W - M - w, left));
+      top = Math.max(M, Math.min(H - M - h, top));
+      pop.style.transform = `translate(${Math.round(left)}px, ${Math.round(top)}px)`;
+    }
+
+    // ---- 导航菜单、发到手机：就地开关，不重画整个列表（重画会让列表里的照片闪一下） ----
+    function setNav(i) {
+      st.nav = i;
+      if (st.qr && st.qr.at === "leg") showQr(null);
+      panel.querySelectorAll(".tc-leg[data-leg]").forEach((l) => {
+        const on = +l.dataset.leg === i;
+        l.querySelector(".tc-navb").setAttribute("aria-expanded", String(on));
+        l.querySelector(".tc-navm").hidden = !on;
+      });
+    }
+    const qrHost = (q) => (q.at === "leg" ? panel.querySelector(`.tc-leg[data-leg="${q.i}"]`) : q.at === "day" ? panel.querySelector(".tc-dh") : pop);
+    function qrLink(q) {
+      if (q.at === "day") return dayNav(st.day);
+      if (q.at === "leg") return stopPlace(st.day, q.i) && stopPlace(st.day, q.i + 1) ? legUrl(st.day, q.i, q.mode) : "";
+      const p = stopPlace(st.day, st.pop);
+      return p ? stopNavUrl({ ...p, name: it.days[st.day].stops[st.pop].name }) : "";
+    }
+    /** 开 / 换 / 收「发到手机」的二维码，同一时间只开一个 */
+    function showQr(q) {
+      el.querySelectorAll(".tc-qrbox").forEach((b) => b.remove());
+      el.querySelectorAll(".tc-qr").forEach((b) => b.setAttribute("aria-expanded", "false"));
+      const host = q && qrHost(q), u = q ? qrLink(q) : "";
+      st.qr = host && u ? q : null;
+      if (!st.qr) return;
+      const after = host.querySelector(q.at === "leg" ? ".tc-navm" : q.at === "day" ? ".tc-dact" : ".tc-pact");
+      after.insertAdjacentHTML("afterend", qrHtml(u, q.at === "leg" ? q.mode : ""));
+      after.querySelector(".tc-qr").setAttribute("aria-expanded", "true");
+      wireQr(host);
+      if (q.at === "pop") popSize = null;
+      redraw();
+    }
+    /** Esc 收起焦点所在那一处最里层弹开的东西：二维码 → 导航菜单 → 地图小卡。什么都没开就不管，全局的 Esc 照常 */
+    function escClose(t) {
+      const inPop = pop.contains(t), inPanel = panel.contains(t);
+      if (st.qr && (inPop ? st.qr.at === "pop" : inPanel && st.qr.at !== "pop")) {
+        const host = qrHost(st.qr);
+        showQr(null);
+        const b = host && host.querySelector(".tc-qr");
+        if (b) b.focus({ preventScroll: true });
+        return true;
+      }
+      if (inPanel && st.nav >= 0) {
+        const b = panel.querySelector(`.tc-leg[data-leg="${st.nav}"] .tc-navb`);
+        setNav(-1);
+        if (b) b.focus({ preventScroll: true });
+        return true;
+      }
+      return closePop(!inPanel);
+    }
+
     // ---- 交互 ----
     el.addEventListener("click", (e) => {
-      const t = e.target.closest("button, .tc-card");
+      const t = e.target.closest("button, .tc-card, .tc-tlr.go");
       if (!t || !el.contains(t)) return;
+      const qrAt = (b) => { const at = b.dataset.at, l = b.closest(".tc-leg"); return { at, i: at === "leg" && l ? +l.dataset.leg : -1 }; };
       if (t.dataset.v) setView(t.dataset.v, true);
       else if (t.dataset.d != null) setDay(+t.dataset.d, true);
       else if (t.dataset.z) zoomAt(+t.dataset.z);
@@ -902,15 +1155,73 @@
         found.setAttribute("aria-expanded", String(!list.hidden));
         renderFound();
       } else if (t.classList.contains("tc-pin")) {
+        // 点钉子：钉子旁边弹小卡（焦点进小卡，键盘接着 Tab），列表也滚到这一站
         const i = +t.dataset.i;
         focusStop(i, false);
+        openPop(i, true);
         const card = panel.querySelector(`.tc-card[data-i="${i}"]`);
         if (card) panel.scrollTo({ top: card.offsetTop - panel.offsetTop - 8, behavior: "smooth" });
-      } else if (t.classList.contains("tc-card") && !e.target.closest("a")) focusStop(+t.dataset.i, true);
+      } else if (t.classList.contains("tc-px")) closePop(true);
+      else if (t.classList.contains("tc-pgo")) {
+        const j = +t.dataset.go;
+        focusStop(j, false);
+        openPop(j, t.classList.contains("nx") ? ".tc-pgo.nx" : ".tc-pgo:not(.nx)");
+      } else if (t.classList.contains("tc-navb")) {
+        const i = +t.closest(".tc-leg").dataset.leg;
+        setNav(st.nav === i ? -1 : i);
+      } else if (t.classList.contains("tc-qr")) {
+        const q = qrAt(t);
+        const same = st.qr && st.qr.at === q.at && st.qr.i === q.i;
+        const leg = q.at === "leg" ? st.legs[st.day][q.i] : null;
+        showQr(same ? null : { ...q, mode: leg ? legMode(leg) : "" });
+      } else if (t.classList.contains("tc-qrm") && st.qr) {
+        showQr({ ...st.qr, mode: t.dataset.m });
+        const b = qrHost(st.qr).querySelector(`.tc-qrm[data-m="${t.dataset.m}"]`);
+        if (b) b.focus({ preventScroll: true });
+      } else if (t.classList.contains("tc-qrx") && st.qr) {
+        const host = qrHost(st.qr);
+        showQr(null);
+        const b = host && host.querySelector(".tc-qr");
+        if (b) b.focus({ preventScroll: true });
+      } else if (t.classList.contains("tc-tlr")) {
+        // 时间线上点一站：切回地图，弹出这一站的小卡
+        const i = +t.dataset.i;
+        setView("map", true);
+        focusStop(i, false);
+        openPop(i, true);
+      } else if (t.classList.contains("tc-card") && !e.target.closest("a")) {
+        const i = +t.dataset.i;
+        focusStop(i, true);
+        if (st.pop >= 0) openPop(i, false);   // 小卡开着就跟着换到这一站；没开着不替人弹
+      }
     });
+    // 点地图空白处收起小卡；拖过地图松手时浏览器也会补一个 click，那个不算（见下面 dragged）
+    map.addEventListener("click", (e) => {
+      if (dragged(e)) { e.stopImmediatePropagation(); e.preventDefault(); }
+    }, true);
+    map.addEventListener("click", (e) => {
+      if (!e.target.closest(".tc-pop, .tc-zoom, .tc-msg, button, a")) closePop(false);
+    });
+    // 点卡片外面也收起；监听挂在 document 上，dispose() 里摘掉
+    const onDocClick = (e) => {
+      if (st.pop < 0 || dragged(e) || el.contains(e.target)) return;
+      closePop(false);
+    };
+    document.addEventListener("click", onDocClick);
     el.addEventListener("keydown", (e) => {
+      // Esc：先收这张卡上弹开的东西，并且不再往上传——全局的 Esc 是「让我停下」，会把正在跑的任务叫停
+      if (e.key === "Escape" && !e.isComposing) {
+        if (escClose(e.target)) { e.preventDefault(); e.stopPropagation(); }
+        return;
+      }
       const card = e.target.closest && !e.target.closest("button, a") && e.target.closest(".tc-card");
-      if (card && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); focusStop(+card.dataset.i, true); }
+      if (card && (e.key === "Enter" || e.key === " ")) {
+        e.preventDefault();
+        focusStop(+card.dataset.i, true);
+        if (st.pop >= 0) openPop(+card.dataset.i, false);
+      }
+      const row = e.target.classList && e.target.classList.contains("tc-tlr") && e.target.classList.contains("go") ? e.target : null;
+      if (row && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); row.click(); }
       if (e.target === split || e.target === grip) {
         const wide = e.target === split && !narrow();
         const k = e.key;
@@ -932,14 +1243,13 @@
       if (e.target === map && e.key === "0") resetView();
     });
     // 拖动：move/up 挂在 window 上——流式输出时整块卡片每 100ms 会被搬一次家，挂在元素上的指针捕获会丢
-    let drag = null;
-    let rs = null;   // 正在拖分隔条 / 底边
+    let rs = null;   // 正在拖分隔条 / 底边（只认按下去的那根手指 / 那个鼠标）
     const panelPct = () => { const w = body.clientWidth; return w ? Math.round((panel.offsetWidth / w) * 1000) / 10 : 41; };
     function rsStart(e, bar) {
-      if (e.button !== 0 || e.target.closest(".tc-fold")) return;
+      if (e.button !== 0 || e.target.closest(".tc-fold") || rs) return;
       e.preventDefault();
       const b = body.getBoundingClientRect();
-      rs = { bar, kind: bar === split && !narrow() ? "w" : "h", right: b.right, width: b.width, y0: e.clientY, h0: map.clientHeight };
+      rs = { id: e.pointerId, bar, kind: bar === split && !narrow() ? "w" : "h", right: b.right, width: b.width, y0: e.clientY, h0: map.clientHeight };
       bar.classList.add("drag");
       el.classList.add("tc-resizing");
     }
@@ -960,27 +1270,68 @@
     }
     split.addEventListener("pointerdown", (e) => rsStart(e, split));
     grip.addEventListener("pointerdown", (e) => rsStart(e, grip));
+    /*
+     * 地图上的手势：按 pointerId 记每根手指（鼠标就一个）。一指拖着平移；两指按两指中点平移、按两指距离缩放。
+     * 每多按下一根、每抬起一根，都拿当下的位置重新记起点——不然第二根手指一落下，地图就跳到两指中间去。
+     * 缩放只有整数级（瓦片是整级的），两指张开到 √2 倍放大一级、收拢到 1/√2 缩小一级，然后重新记起点接着捏。
+     */
+    const ptrs = new Map();   // pointerId → { x, y, x0, y0 }
+    let gest = null;          // 起点：两指（一指）中点、两指距离、当时的地图中心
+    let moved = false;        // 这一下动过：松手时浏览器补的那个 click 不当「点钉子」「点空白」
+    const mid = () => { const ps = [...ptrs.values()]; return [ps.reduce((a, p) => a + p.x, 0) / ps.length, ps.reduce((a, p) => a + p.y, 0) / ps.length]; };
+    const spread = () => { const [a, b] = [...ptrs.values()]; return b ? Math.hypot(a.x - b.x, a.y - b.y) : 0; };
+    function rebase() {
+      if (!ptrs.size) { gest = null; return; }
+      const [mx, my] = mid();
+      gest = { mx, my, d: spread(), cx: st.cx, cy: st.cy };
+    }
+    /** 松手补的 click 是不是拖动的尾巴：是就吃掉。键盘按出来的 click（detail 为 0）从来不算 */
+    function dragged(e) {
+      if (!moved || !e.detail) return false;
+      moved = false;
+      return true;
+    }
+    const onDownAny = () => { moved = false; };   // 每一下新按下都从「没动过」算起
     map.addEventListener("pointerdown", (e) => {
-      if (e.button !== 0 || e.target.closest("button, a")) return;
-      drag = { x: e.clientX, y: e.clientY, cx: st.cx, cy: st.cy };
+      // 小卡里、缩放按钮、链接上按下去是要点它们，不是拖地图；钉子上按下去可以拖（手机上钉子密，躲不开）
+      if (e.button !== 0 || e.target.closest(".tc-pop, .tc-zoom, a, button:not(.tc-pin)")) return;
+      if (e.isPrimary) ptrs.clear();   // 头一根手指：上一下没收到抬起的残留清掉
+      if (ptrs.size >= 2) return;      // 第三根手指不管
+      ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY });
+      rebase();
       map.classList.add("grab");
     });
     const onMove = (e) => {
-      if (rs) return rsMove(e);
-      if (!drag) return;
-      st.cx = drag.cx - (e.clientX - drag.x);
-      st.cy = drag.cy - (e.clientY - drag.y);
+      if (rs) { if (e.pointerId === rs.id) rsMove(e); return; }
+      const p = ptrs.get(e.pointerId);
+      if (!p || !gest) return;
+      // 鼠标在窗口外松的手、没收到抬起：键都没按着了还在动，当已经松手，不让地图跟着鼠标跑
+      if (e.pointerType === "mouse" && !e.buttons) return onUp(e);
+      p.x = e.clientX; p.y = e.clientY;
+      if (ptrs.size > 1 || Math.abs(p.x - p.x0) > 4 || Math.abs(p.y - p.y0) > 4) moved = true;
+      const [mx, my] = mid();
+      st.cx = gest.cx - (mx - gest.mx);
+      st.cy = gest.cy - (my - gest.my);
+      const r = gest.d ? spread() / gest.d : 1;
+      if (r >= Math.SQRT2 || r <= Math.SQRT1_2) {
+        const b = map.getBoundingClientRect();
+        zoomAt(r > 1 ? 1 : -1, mx - b.left, my - b.top);
+        rebase();
+      }
       redraw();
     };
-    const onUp = () => {
-      if (rs) rsEnd();
-      if (drag) { drag = null; map.classList.remove("grab"); }
+    const onUp = (e) => {
+      if (rs && e.pointerId === rs.id) rsEnd();
+      if (!ptrs.delete(e.pointerId)) return;
+      rebase();   // 两指抬起一指：剩下那根从它现在的位置接着拖，不跳
+      if (!ptrs.size) map.classList.remove("grab");
     };
+    window.addEventListener("pointerdown", onDownAny, true);
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
     window.addEventListener("pointercancel", onUp);
     map.addEventListener("dblclick", (e) => {
-      if (e.target.closest("button, a")) return;
+      if (e.target.closest(".tc-pop, button, a")) return;
       const r = map.getBoundingClientRect();
       zoomAt(1, e.clientX - r.left, e.clientY - r.top);
     });
@@ -1000,8 +1351,14 @@
       pinsEl.querySelectorAll(".tc-pin").forEach((p) => p.classList.toggle("hot", !!c && p.dataset.i === c.dataset.i));
     });
     panel.addEventListener("mouseleave", () => pinsEl.querySelectorAll(".tc-pin.hot").forEach((p) => p.classList.remove("hot")));
+    // 反过来也一样：鼠标停在钉子上，列表里那张卡片亮
+    map.addEventListener("mouseover", (e) => {
+      const b = e.target.closest(".tc-pin");
+      panel.querySelectorAll(".tc-card").forEach((c) => c.classList.toggle("hot", !!b && c.dataset.i === b.dataset.i));
+    });
+    map.addEventListener("mouseleave", () => panel.querySelectorAll(".tc-card.hot").forEach((c) => c.classList.remove("hot")));
 
-    const ro = typeof ResizeObserver === "function" ? new ResizeObserver(() => { if (st.fitted !== st.day) fit(false); redraw(); }) : null;
+    const ro = typeof ResizeObserver === "function" ? new ResizeObserver(() => { if (st.fitted !== st.day) fit(false); popSize = null; redraw(); }) : null;
     if (ro) ro.observe(map);
     function start() {
       if (st.started) return;
@@ -1043,6 +1400,8 @@
       dispose() {
         if (io) io.disconnect();
         if (ro) ro.disconnect();
+        window.removeEventListener("pointerdown", onDownAny, true);
+        document.removeEventListener("click", onDocClick);
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
         window.removeEventListener("pointercancel", onUp);
@@ -1116,7 +1475,7 @@
 
   root.TripCard = {
     parse, normalize, whyBad, moreText, segmentOf, dayLabel, cardHtml, staticHtml, staticOf, unescHtml, hashKey,
-    wgsToGcj, gcjToWgs, convert, inChina, distance, legNavUrl, dayNavUrl, fmtDist, fmtDur,
+    wgsToGcj, gcjToWgs, convert, inChina, distance, legNavUrl, dayNavUrl, stopNavUrl, NAV_MODES, fmtDist, fmtDur,
     hydrate, hydrateAll, resetConfig, LIMIT, _live: live,
   };
 })(window);

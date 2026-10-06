@@ -6312,6 +6312,8 @@ window.__geo = { calls: [] };
   // 名字 → [经度, 纬度（GCJ-02）, 照片, 评分, 地图上叫的名字（跟行程里写的不一样时才填）]；不在表里的就是地图上找不到
   const PTS = { "翠湖公园": [102.703, 25.048, "https://aos-comment.amap.com/a.jpg", 4.7], "南强街": [102.711, 25.036, "https://aos-comment.amap.com/broken.jpg", 4.5],
     "云南大学": [102.701, 25.057, "", null, "云南大学东陆校区"], "海埂大坝": [102.668, 24.958, "", 4.6], "西山龙门": [102.625, 24.958, "", null] };
+  // 高德现成给的营业时间、电话（走 OpenStreetMap 时没有）
+  const BIZ = { "翠湖公园": { hours: "周一至周日 06:30-22:00", tel: "0871-65318406" } };
   window.fetch = async (url, init) => {
     const body = init && init.body ? JSON.parse(init.body) : null;
     window.__geo.calls.push({ url: String(url), body: body });
@@ -6326,7 +6328,7 @@ window.__geo = { calls: [] };
       if (down) return { ok: false, failed: true, error: down };
       const p = PTS[x.name], src = window.__noKey ? "osm" : "amap";
       return p ? { ok: true, name: p[4] || x.name, lng: p[0], lat: p[1], datum: "gcj02", addr: "五华区", kind: "", rating: p[3], photo: p[2],
-        photoSrc: p[2] ? (window.__noKey ? "wikimedia" : "amap") : "", src: src } : { ok: false, tried: window.__noKey ? ["osm"] : ["amap", "osm"] };
+        photoSrc: p[2] ? (window.__noKey ? "wikimedia" : "amap") : "", src: src, ...(src === "amap" ? BIZ[x.name] : {}) } : { ok: false, tried: window.__noKey ? ["osm"] : ["amap", "osm"] };
     }) });
     if (url === "/api/geo/legs") return res({ notes: [], items: body.pairs.map((pr) => ({ mode: "walking", src: "amap", datum: "gcj02",
       distance: 1180, duration: 900, line: [[pr.a.lng, pr.a.lat], [pr.b.lng, pr.b.lat]] })) });
@@ -6398,8 +6400,8 @@ const TRIP_CHECKS = `
   const phBox = c0.querySelector(".tc-ph").getBoundingClientRect(), imBox = c0.querySelector(".tc-ph img").getBoundingClientRect();
   ok("有照片：照片铺满方块，把那个字盖住", ["left", "top", "width", "height"].every((k) => Math.abs(phBox[k] - imBox[k]) < 1), [phBox, imBox]);
   const legs = [...panel.querySelectorAll(".tc-leg")];
-  ok("两站之间：步行 · 1.2 公里 · 约 15 分钟，带「导航 ›」", legs.length === 3 && txt(legs[0], ".tc-legt") === "步行 · 1.2 公里 · 约 15 分钟"
-    && /^https:\\/\\/uri\\.amap\\.com\\/navigation\\?/.test(legs[0].querySelector("a").href) && !legs[2].querySelector("a"),
+  ok("两站之间：步行 · 1.2 公里 · 约 15 分钟，带「导航 ▾」；找不到的那站前后没有", legs.length === 3 && txt(legs[0], ".tc-legt") === "步行 · 1.2 公里 · 约 15 分钟"
+    && txt(legs[0], ".tc-navb") === "导航 ▾" && /^https:\\/\\/uri\\.amap\\.com\\/navigation\\?/.test(legs[0].querySelector("a").href) && !legs[2].querySelector("a, .tc-navb"),
     legs.map((l) => l.textContent).join(" | "));
   ok("有一站没找到：不给整天路线（缺一站的路线是错的）", !panel.querySelector(".tc-open"));
 
@@ -6469,6 +6471,146 @@ const TRIP_CHECKS = `
   ok("时间线顶上写着第几天 · 主题", txt(tl, ".tc-tlh") === "第2天 · 滇池");
   w.querySelector('[data-v="map"]').click();
   ok("切回地图", !w.querySelector(".tc-body").hidden && tl.hidden);
+
+  // ---------- 地图上的小卡：点钉子弹出来（列表收起、窄屏看不到列表时就靠它） ----------
+  w.querySelector('.tc-tabs [data-d="0"]').click();
+  await tick();
+  const popEl = w.querySelector(".tc-pop");
+  ok("小卡平时不出来", !!popEl && popEl.hidden);
+  const pinAt = (i) => w.querySelector('.tc-pin[data-i="' + i + '"]');
+  pinAt(0).click();
+  await tick();
+  const mapR = () => map.getBoundingClientRect();
+  const inMap = (n) => { const r = n.getBoundingClientRect(), m = mapR(); return r.width > 0 && r.left >= m.left - 1 && r.right <= m.right + 1 && r.top >= m.top - 1 && r.bottom <= m.bottom + 1; };
+  ok("点第 1 颗钉子：地图上弹出它的小卡，整个在地图框里，焦点进小卡", !popEl.hidden && inMap(popEl) && document.activeElement === popEl
+    && popEl.getAttribute("role") === "dialog" && popEl.getAttribute("aria-label") === "1. 翠湖公园", popEl.outerHTML.slice(0, 200));
+  ok("小卡上：照片、名字、时间 · 评分 · 类别、备注", txt(popEl, ".tc-nm") === "翠湖公园" && txt(popEl, ".tc-meta") === "上午 · ★ 4.7 · 公园" && txt(popEl, ".tc-note") === "湖边散步"
+    && !!popEl.querySelector(".tc-ph img") && txt(popEl, ".tc-no") === "1");
+  const prow = (k) => { const r = [...popEl.querySelectorAll(".tc-prow")].find((n) => txt(n, ".tc-pk") === k); return r ? txt(r, ".tc-pv") : ""; };
+  ok("地址、高德给的营业时间和电话原样写上，标「· 高德」；高德没给的人均不出这一行", prow("地址") === "五华区" && prow("营业时间") === "周一至周日 06:30-22:00 · 高德"
+    && prow("电话") === "0871-65318406 · 高德" && !!popEl.querySelector('.tc-pv a[href="tel:0871-65318406"]') && prow("人均") === "",
+    [...popEl.querySelectorAll(".tc-prow")].map((n) => n.textContent).join(" | "));
+  ok("来源照样写", txt(popEl, ".tc-src") === "来源：高德地图 · 照片 高德地图");
+  const go = popEl.querySelector(".tc-go");
+  ok("「导航到这」：高德，只给终点（导航应用从手机当前位置出发），新窗口打开", !!go && txt(popEl, ".tc-go") === "导航到这 ↗"
+    && go.href.indexOf("https://uri.amap.com/navigation?to=102.703,25.048,") === 0 && go.href.indexOf("from=") < 0 && go.target === "_blank", go && go.href);
+  const pgo = () => [...popEl.querySelectorAll(".tc-pgo")];
+  ok("第一站：只有「下一站 ›」，写着下一站叫什么、这一段怎么走", pgo().length === 1 && pgo()[0].classList.contains("nx") && txt(pgo()[0], "b") === "2. 南强街"
+    && txt(popEl, ".tc-pleg") === "到下一站：步行 · 1.2 公里 · 约 15 分钟", pgo().map((b) => b.textContent).join(" | "));
+  pgo()[0].click();
+  await tick();
+  ok("点「下一站」：小卡换成第 2 站，焦点还在「下一站」上（键盘一路按下去）", popEl.getAttribute("aria-label") === "2. 南强街" && pgo().length === 2
+    && document.activeElement === popEl.querySelector(".tc-pgo.nx") && w.querySelector('.tc-card[data-i="1"]').classList.contains("on") && pinAt(1).classList.contains("on"));
+  ok("第 2 站没有营业时间、电话（这一站高德没给）：不出那几行", prow("营业时间") === "" && prow("电话") === "" && prow("地址") === "五华区");
+  popEl.querySelector(".tc-pgo.nx").click();
+  await tick();
+  ok("第 3 站后面那站地图上没找到：跳过，没有「下一站」，只有「上一站」", popEl.getAttribute("aria-label") === "3. 云南大学" && pgo().length === 1 && !pgo()[0].classList.contains("nx")
+    && !popEl.querySelector(".tc-pleg"), pgo().map((b) => b.textContent).join(" | "));
+  let escUp = 0;
+  const onEsc = (e) => { if (e.key === "Escape") escUp++; };
+  document.addEventListener("keydown", onEsc);
+  document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  ok("Esc：小卡收起，焦点回到它那颗钉子；这下 Esc 不往上传（全局 Esc 是叫停任务）", popEl.hidden && document.activeElement === pinAt(2) && escUp === 0, escUp);
+  pinAt(2).dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  ok("什么都没开着时按 Esc：卡片不拦，照常往上传", escUp === 1, escUp);
+  pinAt(0).click();
+  await tick();
+  const c1 = w.querySelector('.tc-card[data-i="1"]');
+  c1.click();
+  ok("小卡开着时点右边第 2 张卡片：小卡跟着换到第 2 站", !popEl.hidden && popEl.getAttribute("aria-label") === "2. 南强街");
+  map.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1, clientX: mapR().left + 5, clientY: mapR().top + 5 }));
+  ok("点地图空白处：小卡收起", popEl.hidden);
+  pinAt(0).click();
+  await tick();
+  document.body.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
+  ok("点卡片外面：小卡也收起", popEl.hidden);
+  // 拖地图：松手时浏览器补的那个 click 不算「点空白处」
+  pinAt(0).click();
+  await tick();
+  const pd = (type, target, id, x, y, prim) => target.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, button: 0, buttons: type === "pointerup" ? 0 : 1,
+    clientX: x, clientY: y, pointerId: id, isPrimary: prim !== false }));
+  const mx0 = mapR().left + 40, my0 = mapR().top + 60, cxA = st.cx;
+  pd("pointerdown", map, 1, mx0, my0);
+  pd("pointermove", window, 1, mx0 + 30, my0);
+  pd("pointerup", window, 1, mx0 + 30, my0);
+  map.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1, clientX: mx0 + 30, clientY: my0 }));
+  ok("拖一下地图：地图跟着走，小卡不收（松手补的那个 click 不算点空白）", Math.abs(st.cx - (cxA - 30)) < 0.5 && !popEl.hidden
+    && (popEl.classList.contains("off") || inMap(popEl)), st.cx + " vs " + cxA);
+  // 两指：第二根落下不跳；张开到 √2 倍放大一级
+  const z0 = st.z;
+  pd("pointerdown", map, 11, mx0, my0);
+  const at1 = [st.cx, st.cy];
+  pd("pointerdown", map, 12, mx0 + 60, my0, false);
+  pd("pointermove", window, 12, mx0 + 60, my0, false);
+  ok("两指：第二根手指落下、还没动，地图不跳", st.cx === at1[0] && st.cy === at1[1] && st.z === z0, JSON.stringify([st.cx, st.cy, at1]));
+  pd("pointermove", window, 12, mx0 + 140, my0, false);
+  ok("两指张开：放大一级", st.z === z0 + 1, st.z + " vs " + z0);
+  pd("pointerup", window, 12, mx0 + 140, my0, false);
+  const at2 = [st.cx, st.cy];
+  pd("pointermove", window, 11, mx0 + 10, my0);
+  ok("抬起一根：剩下那根从它自己的位置接着拖，不跳到两指中间", st.cx === at2[0] - 10 && st.cy === at2[1], JSON.stringify([st.cx, st.cy, at2]));
+  pd("pointerup", window, 11, mx0 + 10, my0);
+  ok("都抬起：不再是拖着的样子", !map.classList.contains("grab"));
+  w.querySelector(".tc-zoom .tc-reset").click();
+  ok("「回到全览」也把小卡收起", popEl.hidden && st.z === view0[0], st.z);
+
+  // 段间「导航 ▾」：四种走法 +「发到手机」
+  const leg0 = panel.querySelector('.tc-leg[data-leg="0"]');
+  const navm = leg0.querySelector(".tc-navm");
+  ok("导航菜单平时收着", navm.hidden && leg0.querySelector(".tc-navb").getAttribute("aria-expanded") === "false");
+  leg0.querySelector(".tc-navb").click();
+  const modeLinks = [...navm.querySelectorAll("a")];
+  const modeOf = (a) => (a.href.split("&mode=")[1] || "").split("&")[0];
+  ok("点「导航 ▾」：展开步行 / 公交 / 骑行 / 驾车，各是一条高德链接（新窗口），这段查到的是步行就标步行", !navm.hidden && leg0.querySelector(".tc-navb").getAttribute("aria-expanded") === "true"
+    && modeLinks.map((a) => a.textContent).join("/") === "步行 ↗/公交 ↗/骑行 ↗/驾车 ↗" && modeLinks.map(modeOf).join("/") === "walk/bus/ride/car"
+    && modeLinks.every((a) => a.target === "_blank" && a.href.indexOf("from=") > 0) && txt(navm, "a.on") === "步行 ↗", modeLinks.map((a) => a.href).join(" "));
+  navm.querySelector(".tc-qr").click();
+  const qrImg = () => w.querySelector(".tc-qrbox .tc-qrimg");
+  const qrOf = (img) => decodeURIComponent((img.getAttribute("src") || "").split("/api/geo/qr?u=")[1] || "");
+  ok("点「发到手机」：就地出二维码（本机服务端编的），扫出来就是步行那条链接；能换走法", !!qrImg() && leg0.contains(qrImg()) && qrOf(qrImg()) === modeLinks[0].getAttribute("href")
+    && leg0.querySelector('.tc-qrm[aria-pressed="true"]').dataset.m === "walking" && txt(leg0, ".tc-qrt") === "用手机扫一下，在手机上接着导航", qrImg() && qrImg().getAttribute("src"));
+  await until(() => qrImg() && imgOk(qrImg()));
+  ok("二维码图真取到了", !!qrImg() && imgOk(qrImg()));
+  leg0.querySelector('.tc-qrm[data-m="transit"]').click();
+  ok("换成「公交」：二维码重新编成公交那条，焦点还在「公交」上", qrOf(qrImg()) === modeLinks[1].getAttribute("href") && document.activeElement === leg0.querySelector('.tc-qrm[data-m="transit"]')
+    && w.querySelectorAll(".tc-qrbox").length === 1);
+  document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  ok("Esc 先收二维码，焦点回到「发到手机」，菜单还开着", !w.querySelector(".tc-qrbox") && !navm.hidden && document.activeElement === navm.querySelector(".tc-qr") && escUp === 1);
+  document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  ok("再按 Esc 收菜单，焦点回到「导航 ▾」", navm.hidden && document.activeElement === leg0.querySelector(".tc-navb") && escUp === 1, escUp);
+  // 小卡里的「发到手机」
+  pinAt(0).click();
+  await tick();
+  popEl.querySelector(".tc-pact .tc-qr").click();
+  ok("小卡里「发到手机」：二维码扫出来就是「导航到这」那条，没有走法可选", !!qrImg() && popEl.contains(qrImg()) && qrOf(qrImg()) === popEl.querySelector(".tc-go").getAttribute("href") && !popEl.querySelector(".tc-qrms"));
+  popEl.querySelector(".tc-qrx").click();
+  ok("点「收起」：二维码收起，焦点回到「发到手机」", !w.querySelector(".tc-qrbox") && document.activeElement === popEl.querySelector(".tc-qr") && !popEl.hidden);
+  popEl.querySelector(".tc-px").click();
+  ok("点 ×：小卡收起，焦点回到钉子", popEl.hidden && document.activeElement === pinAt(0));
+  // 整天的「发到手机」（第 2 天每站都找到了）
+  w.querySelector('.tc-tabs [data-d="1"]').click();
+  await tick();
+  panel.querySelector(".tc-dact .tc-qr").click();
+  ok("整天「打开路线」旁边的「发到手机」：二维码就是那条整天路线", !!qrImg() && panel.querySelector(".tc-dh").contains(qrImg()) && qrOf(qrImg()) === panel.querySelector(".tc-dact a.tc-open").getAttribute("href"));
+  ok("二维码只跟本机要（/api/geo/qr）", [...w.querySelectorAll(".tc-qrimg")].every((i) => i.getAttribute("src").indexOf("/api/geo/qr?u=") === 0));
+  panel.querySelector(".tc-dact .tc-qr").click();
+  ok("再点一下「发到手机」收起", !w.querySelector(".tc-qrbox"));
+  // 时间线上点一站：切回地图、弹它的小卡
+  w.querySelector('[data-v="timeline"]').click();
+  const tlRow = tl.querySelector('.tc-tlr.go[data-i="1"]');
+  ok("时间线上找到了的站能点（键盘也能到）", !!tlRow && tlRow.getAttribute("role") === "button" && tlRow.tabIndex === 0);
+  tlRow.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+  await tick();
+  ok("在时间线上一站按回车：切回地图，弹出那一站的小卡", !w.querySelector(".tc-body").hidden && !popEl.hidden && popEl.getAttribute("aria-label") === "2. 西山龙门");
+  w.querySelector('[data-v="timeline"]').click();
+  ok("切到时间线：小卡跟着收起", popEl.hidden);
+  w.querySelector('[data-v="map"]').click();
+  // 鼠标停在钉子上：列表里那张亮
+  pinAt(0).dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+  ok("鼠标停在钉子上：右边那张卡片跟着亮", panel.querySelector('.tc-card[data-i="0"]').classList.contains("hot") && !panel.querySelector('.tc-card[data-i="1"]').classList.contains("hot"));
+  map.dispatchEvent(new MouseEvent("mouseleave"));
+  ok("移开就灭", !panel.querySelector(".tc-card.hot"));
+  document.removeEventListener("keydown", onEsc);
 
   // 复制回答：卡片换成按天排好的文字
   const copied = renderedCopy([ref]);
@@ -6755,6 +6897,20 @@ const TRIP_CHECKS = `
   await tick();
   ok("窄的时候按住交界往下拖：地图变高（上下摆时拖的是高矮，不是宽窄）", Math.abs(nw.querySelector(".tc-map").offsetHeight - nh0 - 60) <= 1, nh0 + " → " + nw.querySelector(".tc-map").offsetHeight);
   ok("拖完照样不出横向滚动条", nw.scrollWidth <= nw.clientWidth + 1);
+  // 窄的地图上点钉子：小卡贴着地图底边（离底 20px，不盖底图署名），钉子挪到小卡上面露着；列表收起了小卡照样在
+  const nmap = nw.querySelector(".tc-map"), npop = nw.querySelector(".tc-pop"), npin = nw.querySelector('.tc-pin[data-i="0"]');
+  npin.click();
+  await tick();
+  await new Promise((r) => requestAnimationFrame(r));
+  ok("窄的地图上点钉子：小卡贴底、整个在地图框里，钉子露在小卡上面", !npop.hidden && npop.classList.contains("dock") && Math.abs(R(nmap).bottom - 20 - R(npop).bottom) < 1.5
+    && R(npop).top >= R(nmap).top && R(npop).left >= R(nmap).left && R(npop).right <= R(nmap).right && (R(npin).top + R(npin).bottom) / 2 < R(npop).top,
+    JSON.stringify([R(nmap).top, R(nmap).bottom, R(npop).top, R(npop).bottom, R(npin).top]));
+  nfold.click();
+  await tick();
+  ok("列表收起时小卡还在（列表看不见就靠它）", !npop.hidden && npop.getAttribute("aria-label") === "1. 翠湖公园" && getComputedStyle(nw.querySelector(".tc-panel")).display === "none");
+  nfold.click();
+  npop.querySelector(".tc-px").click();
+  ok("点 × 收起", npop.hidden && document.activeElement === npin);
   localStorage.removeItem("owb.tripcard.layout");
 
   return { names, fails };
@@ -15694,7 +15850,7 @@ app.whenReady().then(async () => {
     // 行程卡：页面、底图瓦片、地点照片都从这个本机小服务器拿；照片地址里带 broken 的回 404（看裂图收没收掉）。
     // 窗口用自己的会话，往别处去的请求全拦下记账，跑完一个都不许有
     const tripPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
-    const tripHits = { tile: 0, img: 0, out: [] };
+    const tripHits = { tile: 0, img: 0, qr: 0, out: [] };
     const tripSrv = await new Promise((resolve) => {
       const sv = require("http").createServer((req, res) => {
         const u = new URL(req.url || "/", "http://127.0.0.1");
@@ -15705,6 +15861,12 @@ app.whenReady().then(async () => {
           tripHits.img++;
           if (/broken/.test(u.searchParams.get("u") || "")) { res.statusCode = 404; return res.end("nope"); }
           return png();
+        }
+        // 「发到手机」：真服务端只编卡片那几种导航链接（test/trip-card.js 验），这里照同一条线挡一下
+        if (u.pathname === "/api/geo/qr") {
+          tripHits.qr++;
+          if (/^https:\/\/(uri\.amap\.com\/navigation\?|www\.google\.com\/maps\/dir\/\?)/.test(u.searchParams.get("u") || "")) return png();
+          res.statusCode = 400; res.setHeader("Content-Type", "text/plain; charset=utf-8"); return res.end("只给行程卡里的导航链接生成二维码");
         }
         res.statusCode = 404; res.end("nope");
       });
@@ -15723,11 +15885,11 @@ app.whenReady().then(async () => {
         + "\n" + STREAM_SRC + "\n" + srcBlock("function renderedCopy(") + "\n" + TRIP_CHECKS, true)
         .catch((e) => { throw new Error("[行程卡] " + ((e && (e.stack || e.message)) || String(e))); });
       if (tripHits.out.length) tr.fails.push("✗ 页面往本机以外发了请求：" + tripHits.out.slice(0, 5).join(" "));
-      else if (!tripHits.tile || !tripHits.img) tr.fails.push("✗ 瓦片 / 照片一张都没跟本机服务端要（" + JSON.stringify(tripHits) + "）：上面那几条「真取到了」量的不是这条路");
-      else tr.names.push("网络层：页面只跟本机服务端要东西（瓦片 " + tripHits.tile + " 次、照片 " + tripHits.img + " 次），往外的请求 0 个");
+      else if (!tripHits.tile || !tripHits.img || !tripHits.qr) tr.fails.push("✗ 瓦片 / 照片 / 二维码一张都没跟本机服务端要（" + JSON.stringify(tripHits) + "）：上面那几条「真取到了」量的不是这条路");
+      else tr.names.push("网络层：页面只跟本机服务端要东西（瓦片 " + tripHits.tile + " 次、照片 " + tripHits.img + " 次、二维码 " + tripHits.qr + " 次），往外的请求 0 个");
       if (tr.fails.length) throw new Error("[行程卡]\n" + tr.fails.join("\n"));
       for (const n of tr.names) console.log("  ✓ " + n);
-      console.log(`✅ 前端：行程卡（点活成地图+地点卡片+时间线·切天·流式重画不换元素不重查·停笔不丢状态·解不开说第几行不对·没查成能再查·窄了上下叠）${tr.names.length} 项通过`);
+      console.log(`✅ 前端：行程卡（点活成地图+地点卡片+时间线·点钉子弹小卡·Esc 只收卡上的·两指捏合·导航走法菜单·发到手机二维码·切天·流式重画不换元素不重查·停笔不丢状态·解不开说第几行不对·没查成能再查·窄了上下叠、小卡贴底）${tr.names.length} 项通过`);
     } finally { if (!winTRIP.isDestroyed()) winTRIP.destroy(); tripSrv.close(); }
 
     const winEP = mkWin({ show: false, width: 520, height: 600, webPreferences: { offscreen: true } });

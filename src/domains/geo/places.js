@@ -290,7 +290,25 @@ async function amapPlace(st, name, city) {
     kind: type[type.length - 1] || "",
     rating: Number.isFinite(rating) && rating > 0 ? Math.round(rating * 10) / 10 : null,
     photo, photoSrc: photo ? "amap" : "", src: "amap",
+    ...amapBiz(biz),
   };
+}
+/**
+ * 营业时间、电话、人均、特色：高德 show_fields=business 现成给的，原样存、原样给前端（卡片上标「· 高德」）。
+ * 没给的不带这个键：老缓存里的地点也就是没有，不为了补这几项回头再打高德。
+ * @param {any} biz
+ */
+function amapBiz(biz) {
+  /** @type {Record<string, string>} */
+  const o = {};
+  const hours = s(biz.opentime_week) || s(biz.opentime_today);
+  if (hours) o.hours = hours.slice(0, 120);
+  if (s(biz.tel)) o.tel = s(biz.tel).slice(0, 60);
+  // 高德给的是 "45.00" 这种：去掉小数点后的零，别的照原样
+  const cost = s(biz.cost).replace(/\.0+$/, "");
+  if (cost && cost !== "0") o.cost = cost.slice(0, 12);
+  if (s(biz.tag)) o.tag = s(biz.tag).slice(0, 60);
+  return o;
 }
 
 const OSM_KIND = /** @type {Record<string,string>} */ ({

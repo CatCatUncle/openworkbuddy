@@ -17,6 +17,7 @@
  *   4. 每天打高德的上限到了就不再打；查过的地方第二次不打外部接口。
  *   5. 图片代理只认名单里的图床，每一跳跳转都重新对名单——不然它就是一个替任何人请求任意地址的代理。
  *   6. 飞书 / 微信 / 命令行看不了卡片：围栏换成按天排好的文字；解不开的原样留着，不吞内容。
+ *   7. 「发到手机」的二维码只编卡片自己生成的那几种导航链接——不然它就是一台替任何人把任意网址做成二维码的机器。
  */
 
 const HOME = require("./lib/own-home")("trip-card");
@@ -33,7 +34,7 @@ const itinerary = require(mod("itinerary"));
 const coords = require(mod("geo-coords"));
 const places = require(mod("places"));
 const tiles = require(mod("tiles"));
-const { createGeoRouter } = require(mod("routes/geo"));
+const { createGeoRouter, navLink } = require(mod("routes/geo"));
 const imReply = require(mod("im-reply"));
 const mdTty = require(mod("md-tty"));
 const ROOT = path.join(__dirname, "..");
@@ -228,6 +229,17 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
     const g = TC.legNavUrl(P1, P2, "walking");
     ok(g.startsWith("https://www.google.com/maps/dir/?api=1&origin=48.8584,2.2945&destination=48.8606,2.3376") && g.includes("travelmode=walking"),
       "国外：Google 地图，纬度在前", g);
+    // 段间菜单的四种走法：高德 mode 只认 car / bus / walk / ride，Google travelmode 只认 driving / walking / bicycling / transit
+    eq(TC.NAV_MODES.map(([m, t]) => m + t), ["walking步行", "transit公交", "bicycling骑行", "driving驾车"], "段间菜单：步行、公交、骑行、驾车四种");
+    eq(TC.NAV_MODES.map(([m]) => /&mode=(\w+)&/.exec(TC.legNavUrl(A, B, m))[1]), ["walk", "bus", "ride", "car"], "国内：四种走法对上高德的 mode");
+    eq(TC.NAV_MODES.map(([m]) => /travelmode=(\w+)$/.exec(TC.legNavUrl(P1, P2, m))[1]), ["walking", "transit", "bicycling", "driving"], "国外：四种走法对上 Google 的 travelmode");
+    ok(TC.legNavUrl(A, B, "line").includes("&mode=car&") && TC.legNavUrl(P1, P2, "line").endsWith("travelmode=driving"), "不认识的走法（只画了直线的）按驾车");
+    // 每站「导航到这」：只给终点，不给起点，导航应用从手机当前位置出发
+    const sa = TC.stopNavUrl(A);
+    eq(sa, "https://uri.amap.com/navigation?to=102.703,25.048," + encodeURIComponent("翠湖公园") + "&coordinate=gaode&callnative=1", "国内一站：高德，只有 to，坐标原样（GCJ-02）");
+    const saW = TC.stopNavUrl({ ...A, datum: "wgs84" });
+    ok(saW.startsWith("https://uri.amap.com/navigation?to=") && !saW.includes("to=102.703,25.048,") && !/from=|mode=/.test(saW), "给的是 WGS-84 的点：换成 GCJ-02 再交给高德，不带 from、不带走法", saW);
+    eq(TC.stopNavUrl(P1), "https://www.google.com/maps/dir/?api=1&destination=48.8584,2.2945", "国外一站：Google，只有 destination，没有 origin、没有走法");
     ok(TC.dayNavUrl([A]) === "", "一天只有一站：不给整天路线");
     ok(/^https:\/\/uri\.amap\.com\/navigation\?/.test(TC.dayNavUrl([A, B])) && !TC.dayNavUrl([A, B]).includes("via="), "国内两站：高德，没有途经点");
     ok(TC.dayNavUrl([A, B, C]).includes("&via=102.71,25.04," + encodeURIComponent("南强街")), "国内三站：中间那站当途经点");
@@ -286,11 +298,13 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
   const JPG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(200, 3)]);
   const POIS = {
     "翠湖公园": [{ name: "翠湖公园", location: "102.703,25.048", cityname: "昆明市", pname: "云南省", adname: "五华区", address: "翠湖南路67号",
-      type: "风景名胜;公园广场;公园", business: { rating: "4.7" }, photos: [{ url: "https://aos-comment.amap.com/a.jpg" }] }],
+      type: "风景名胜;公园广场;公园", business: { rating: "4.7", opentime_today: "06:30-22:00", opentime_week: "周一至周日 06:30-22:00", tel: "0871-65318406", cost: [], tag: [] },
+      photos: [{ url: "https://aos-comment.amap.com/a.jpg" }] }],
     // 不限定城市的话高德会给杭州那座仿建的
     "埃菲尔铁塔": [{ name: "埃菲尔铁塔", location: "120.30,30.40", cityname: "杭州市", pname: "浙江省", adname: "余杭区", address: "天都城", type: "风景名胜", business: {}, photos: [] }],
     "天安门": [{ name: "天安门", location: "116.397469,39.908821", cityname: "北京市", pname: "北京市", adname: "东城区", address: "长安街", type: "风景名胜;风景名胜;国家级景点", business: { rating: [] }, photos: [] }],
-    "南强街": [{ name: "南强街巷", location: "102.711,25.036", cityname: "昆明市", pname: "云南省", adname: "五华区", address: "南强街", type: "购物服务;特色商业街;步行街", business: { rating: "4.5" }, photos: [] }],
+    "南强街": [{ name: "南强街巷", location: "102.711,25.036", cityname: "昆明市", pname: "云南省", adname: "五华区", address: "南强街", type: "购物服务;特色商业街;步行街",
+      business: { rating: "4.5", opentime_today: "10:00-22:00", cost: "35.00", tag: "过桥米线;鲜花饼" }, photos: [] }],
     "金马碧鸡坊": [{ name: "金马碧鸡坊", location: "102.709,25.034", cityname: "昆明市", pname: "云南省", adname: "五华区", address: "三市街", type: "风景名胜", business: {}, photos: [] }],
   };
   const OSM = {
@@ -393,8 +407,9 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
   {
     const r = await places.lookup(withKey, [{ name: "翠湖公园", city: "昆明" }]);
     const p = r.items[0];
-    eq(p, { ok: true, name: "翠湖公园", lng: 102.703, lat: 25.048, datum: "gcj02", addr: "五华区 翠湖南路67号", kind: "公园", rating: 4.7, photo: "https://aos-comment.amap.com/a.jpg", photoSrc: "amap", src: "amap" },
-      "有 Key：高德 POI 给坐标（GCJ-02）、地址、类别、评分、照片；地点和照片各标来自哪");
+    eq(p, { ok: true, name: "翠湖公园", lng: 102.703, lat: 25.048, datum: "gcj02", addr: "五华区 翠湖南路67号", kind: "公园", rating: 4.7, photo: "https://aos-comment.amap.com/a.jpg", photoSrc: "amap", src: "amap",
+      hours: "周一至周日 06:30-22:00", tel: "0871-65318406" },
+      "有 Key：高德 POI 给坐标（GCJ-02）、地址、类别、评分、照片；地点和照片各标来自哪；营业时间、电话原样带上，高德给的空数组（人均、特色）不带");
     const h = last("/v5/place/text");
     ok(h && h.q.key === KEY && h.q.keywords === "翠湖公园" && h.q.region === "昆明" && h.q.city_limit === "true" && h.q.show_fields === "business,photos",
       "请求带 Key、限定城市（region + city_limit）、要了评分和照片", h && h.q);
@@ -407,6 +422,8 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
 
     const south = await places.lookup(withKey, [{ name: "南强街", city: "昆明市" }]);
     ok(south.items[0].name === "南强街巷" && south.items[0].rating === 4.5 && south.items[0].kind === "步行街", "名字对不上整名就拿同城第一个；城市写「昆明市」也认", south.items[0]);
+    const sb = south.items[0];
+    eq([sb.hours, sb.tel, sb.cost, sb.tag], ["10:00-22:00", undefined, "35", "过桥米线;鲜花饼"], "没有一周的营业时间就用今天的；人均「35.00」写成 35；特色原样；没给电话就不带");
 
     const nSearch = count("/search");
     const paris = await places.lookup(withKey, [{ name: "埃菲尔铁塔", city: "巴黎" }]);
@@ -537,6 +554,15 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
       await places.lookup(withKey, [{ name: "翠湖公园", city: "昆明" }]);
       ok(count("/v5/place/text") === n1, `  ${what}缓存里查过的地点照用`);
     }
+    // 加营业时间、电话这几项之前记的缓存：照用，没有就不显示，不为补这几项回头再打高德
+    const oldItems = JSON.parse(JSON.stringify(items));
+    for (const f of ["hours", "tel", "cost", "tag"]) delete oldItems["a|昆明|翠湖公园"].r[f];
+    fs.writeFileSync(ctl.cacheFile, JSON.stringify({ month: dj.month, used: dj.used, items: oldItems }));
+    places._testing({ reset: true });
+    const n3 = count("/v5/place/text");
+    const oldP = (await places.lookup(withKey, [{ name: "翠湖公园", city: "昆明" }])).items[0];
+    ok(count("/v5/place/text") === n3 && oldP.ok && oldP.rating === 4.7 && !("hours" in oldP) && !("tel" in oldP),
+      "老缓存里没有营业时间、电话：地点照用，这几项就不带，一次高德也不多打", oldP);
   }
 
   console.log("\n八、两站之间的路");
@@ -718,6 +744,51 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
     const te = await post("/api/geo/test", { key: "sk-test-badkey-4" });
     const tej = await te.json();
     ok(te.status === 502 && tej.error === "高德：INVALID_USER_KEY（10001）", "test Key 不对：502 + 高德原话", tej);
+
+    // 「发到手机」的二维码：只编卡片自己生成的导航链接
+    const QR_OPTS = { type: "svg", margin: 2, errorCorrectionLevel: "M" };
+    const A = { lng: 102.703, lat: 25.048, datum: "gcj02", name: "翠湖公园" }, B = { lng: 102.71, lat: 25.04, datum: "gcj02", name: "南强街" };
+    const C = { lng: 102.72, lat: 25.03, datum: "gcj02", name: "金马碧鸡坊" };
+    const P1 = { lng: 2.2945, lat: 48.8584, datum: "wgs84", name: "埃菲尔铁塔" }, P2 = { lng: 2.3376, lat: 48.8606, datum: "wgs84", name: "卢浮宫" };
+    const links = [...TC.NAV_MODES.flatMap(([m]) => [TC.legNavUrl(A, B, m), TC.legNavUrl(P1, P2, m)]), TC.legNavUrl(A, B, "line"),
+      TC.dayNavUrl([A, B]), TC.dayNavUrl([A, B, C]), TC.dayNavUrl([P1, P2, P1, P2]), TC.stopNavUrl(A), TC.stopNavUrl({ ...A, datum: "wgs84" }), TC.stopNavUrl(P1)];
+    const nh = hits.length;
+    const qrBad = [];
+    for (const u of links) {
+      const r = await fetch(API + "/api/geo/qr?u=" + encodeURIComponent(u));
+      const body = await r.text();
+      const want = await require("qrcode").toString(u, QR_OPTS);
+      if (r.status !== 200 || r.headers.get("content-type") !== "image/svg+xml; charset=utf-8" || body !== want || /<script/i.test(body) || navLink(u) !== u) qrBad.push([u, r.status, body.slice(0, 80)]);
+    }
+    ok(links.length === 15 && qrBad.length === 0, `卡片生成的 ${links.length} 种导航链接（段间四种走法、整天路线、导航到这；国内高德、国外 Google）都编得出二维码，编进去的就是那条链接本身`, qrBad);
+    const q1 = await fetch(API + "/api/geo/qr?u=" + encodeURIComponent(links[0]));
+    ok(/private/.test(q1.headers.get("cache-control") || "") && q1.headers.get("x-content-type-options") === "nosniff", "二维码：private 缓存，nosniff");
+    const nope = [
+      ["没给", ""],
+      ["http 的", "http://uri.amap.com/navigation?to=102.7,25.04,x"],
+      ["别的网站", "https://evil.example/navigation?to=1,2"],
+      ["长得像的域名", "https://uri.amap.com.evil.example/navigation?to=1,2"],
+      ["带端口", "https://uri.amap.com:8443/navigation?to=1,2"],
+      ["带用户名", "https://someone@uri.amap.com/navigation?to=1,2"],
+      ["高德别的页面", "https://uri.amap.com/marker?position=1,2"],
+      ["Google 别的页面", "https://www.google.com/search?q=x"],
+      ["Google 别的子域名", "https://maps.google.com/maps/dir/?api=1&destination=1,2"],
+      ["javascript:", "javascript:alert(1)"],
+      ["不是链接", "随便写的字"],
+      ["太长", "https://uri.amap.com/navigation?to=1,2," + "x".repeat(2100)],
+    ];
+    const nopeBad = [];
+    for (const [why, u] of nope) {
+      const r = await fetch(API + "/api/geo/qr" + (u ? "?u=" + encodeURIComponent(u) : ""));
+      const t = await r.text();
+      if (r.status !== 400 || /svg/.test(r.headers.get("content-type") || "") || !t) nopeBad.push([why, r.status, t]);
+    }
+    ok(nopeBad.length === 0, `不是卡片那几种导航链接的一律 400，回一句原因（${nope.map((x) => x[0]).join("、")}）`, nopeBad);
+    const twice = await fetch(API + "/api/geo/qr?u=" + encodeURIComponent(links[0]) + "&u=" + encodeURIComponent(links[1]));
+    ok(twice.status === 400, "u 给了两个：400", twice.status);
+    const why = await (await fetch(API + "/api/geo/qr?u=" + encodeURIComponent("https://evil.example/x"))).text();
+    ok(why === "只给行程卡里的导航链接生成二维码", "原因照实写", why);
+    ok(hits.length === nh, "编二维码一次都没往外发请求（不碰高德）", hits.slice(nh));
     s2.close();
   }
 
@@ -791,6 +862,23 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
       "天数标签放不下时露出滚动条（不再藏起来）");
     const newRules = css.split("\n").filter((l) => /^(\.tc-w |\.tc-bad |\.tc-panel |\.a-text )?\.(tc-alert|tc-bad|tc-badh|tc-raw|tc-redo|tc-ai|tc-src|tc-retry|tc-more|tc-smore|tc-tlmsg)\b/.test(l));
     ok(newRules.length >= 10 && newRules.every((l) => !/#[0-9a-f]{3,8}\b|rgba?\(/i.test(l)), "新加的样式只用现成的颜色变量", newRules.filter((l) => /#[0-9a-f]{3,8}\b|rgba?\(/i.test(l)));
+    // 地图上的小卡、导航菜单、二维码
+    const popRules = css.split("\n").filter((l) => /^(\.tc-w |\.tc-pop |\.tc-leg |\.tc-ptop )?\.(tc-pop|tc-px|tc-ptop|tc-prow|tc-pk|tc-pv|tc-by|tc-pact|tc-go|tc-pnav|tc-pgo|tc-pleg|tc-navb|tc-navm|tc-dact|tc-qrbox|tc-qrms|tc-qrm|tc-qrt|tc-qract|tc-qrx|tc-qrerr|tc-tlr\.go)\b/.test(l));
+    ok(popRules.length >= 20 && popRules.every((l) => !/#[0-9a-f]{3,8}\b|rgba?\(/i.test(l)), "小卡、导航菜单、二维码的样式只用现成的颜色变量", popRules.filter((l) => /#[0-9a-f]{3,8}\b|rgba?\(/i.test(l)));
+    ok(/^\.tc-qrimg \{[^}]*background: #fff;/m.test(css), "  二维码图本身白底（深色模式也是，不然有的手机扫不出来）");
+    ok(/function draw\(\)[\s\S]*?placePop\(W, H, z, ox, oy\);\n {4}\}/.test(tcSrc), "小卡的位置在 draw() 里跟着地图一起摆（拖、缩放时不掉队）");
+    ok(/const ptrs = new Map\(\);/.test(tcSrc) && tcSrc.includes("ptrs.set(e.pointerId,") && tcSrc.includes("ptrs.get(e.pointerId)") && tcSrc.includes("ptrs.delete(e.pointerId)"),
+      "地图手势按 pointerId 记每根手指（两指捏合、不乱跳）");
+    ok(/if \(rs\) \{ if \(e\.pointerId === rs\.id\) rsMove\(e\); return; \}/.test(tcSrc), "拖分隔条也只认按下去的那根手指");
+    ok(/e\.key === "Escape" && !e\.isComposing\) \{\n\s+if \(escClose\(e\.target\)\) \{ e\.preventDefault\(\); e\.stopPropagation\(\); \}/.test(tcSrc),
+      "Esc 收起小卡 / 菜单 / 二维码时不往上传（全局 Esc 是叫停任务）；输入法选字时的 Esc 不算");
+    ok(tcSrc.includes('document.removeEventListener("click", onDocClick)') && tcSrc.includes('window.removeEventListener("pointerdown", onDownAny, true)'), "挂在 document / window 上的监听，dispose() 里都摘掉");
+    const narrowCss = css.slice(css.indexOf("@container (max-width: 620px)"), css.indexOf("\n}\n", css.indexOf("@container (max-width: 620px)")));
+    ok(/\.tc-map \{ height: min\(var\(--tc-h, 300px\), 55vh\); \}/.test(narrowCss) && /\.tc-panel \{[^}]*overscroll-behavior: auto;/.test(narrowCss),
+      "手机上：地图最高占屏幕 55%（总留一截能滑页面），列表滚到头带动页面");
+    ok(/^\.tc-map \{[^}]*touch-action: none;/m.test(css) && /^\.tc-pop \{[^}]*touch-action: pan-y;/m.test(css), "  地图上单指拖地图、两指捏合；小卡上竖着滑是滚动");
+    ok(!/fetch\(|post\(/.test(tcSrc.slice(tcSrc.indexOf("// ---- 地图上的小卡"), tcSrc.indexOf("// ---- 交互 ----")).replace(/fetch\(img\.src\)/g, "")),
+      "小卡、导航菜单、二维码一个地点 / 路线请求都不发（二维码图只问本机）");
     ok(require(mod("config-lint")).KNOWN_EXTRA[""].includes("map"), "配置体检认得 map 这一节");
     const server = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
     ok(/app\.use\(createGeoRouter\(\{ getConfig: \(\) => config \}\)\)/.test(server), "server.js 挂上了 /api/geo/*");
