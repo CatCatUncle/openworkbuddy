@@ -104,6 +104,9 @@ function canvasTimelineThumb(s) {
 function canvasRenderTimeline() {
   const box = document.getElementById("canvas-timeline");
   if (!box) return;
+  // 正拖着一格：这会儿整条重画（生成完一镜、远端同步一趟都会画），手里那排格子就成了摘下来的旧节点，
+  // 量出来宽高全是 0，松手一律落到最后一镜。先记一笔，松手再画（见 canvasTimelineDragStart）
+  if (canvasState.timelineDragging && canvasState.timelineDragging.isConnected) { canvasState.timelineRedrawLater = true; return; }
   const shots = canvasTimelineShots();
   if (!shots.length) { box.hidden = true; box.innerHTML = ""; return; }
   const open = canvasTimelineIsOpen();
@@ -226,12 +229,25 @@ function canvasTimelineMove(nodeId, to) {
  * 按住一格拖到别处松手，就插到那里。挪过 6px 才算拖：不然点一下、双击连播都会被当成拖。
  * 拖着的时候两格之间亮一道竖线，说清楚松手会插在哪；拖到时间线左右边上自己往那头滚。
  * 用 pointer 事件自己算落点，不用浏览器自带的拖放：那套拖起来是一张半透明截图，落点也画不出来
+ *
+ * 手指、触控笔：一按就滑是在左右滚时间线，照旧滚；按住不动 0.35 秒这一格才拿起来（亮一圈），再拖才是换顺序。
+ * 拿起来之后 touchmove 一律截住——不截的话浏览器接着把这一下当成滚动，发一个 pointercancel，拖到一半就断了。
+ * 以前没分这两种：手指一按一滑，要么滚、要么半路被掐断，触屏上根本换不了顺序
  */
+const CANVAS_TIMELINE_HOLD_MS = 350;
 function canvasTimelineDragStart(e, box, strip) {
   const cell = e.target && e.target.closest ? e.target.closest("[data-ctl-shot]") : null;
   if (!cell || e.button !== 0 || canvasState.playback) return;
   const x0 = e.clientX, y0 = e.clientY, from = Number(cell.dataset.ctlI), id = cell.dataset.ctlShot;
   let slot = -1, dragging = false;
+  const touch = !!e.pointerType && e.pointerType !== "mouse";
+  let armed = !touch, hold = 0;
+  const holdOn = (ev) => { if (armed && ev.cancelable) ev.preventDefault(); };   // 拿起来以后：不滚、不弹长按菜单
+  if (touch) {
+    hold = window.setTimeout(() => { armed = true; cell.classList.add("is-armed"); }, CANVAS_TIMELINE_HOLD_MS);
+    strip.addEventListener("touchmove", holdOn, { passive: false });
+    cell.addEventListener("contextmenu", holdOn);
+  }
   const cells = () => [...strip.querySelectorAll("[data-ctl-shot]")];
   const mark = (k) => cells().forEach((el, i, all) => {
     el.classList.toggle("is-drop-before", i === k);
@@ -240,7 +256,8 @@ function canvasTimelineDragStart(e, box, strip) {
   const move = (ev) => {
     if (!dragging) {
       if (Math.abs(ev.clientX - x0) < 6 && Math.abs(ev.clientY - y0) < 6) return;
-      dragging = true;
+      if (!armed) return end({ type: "pointercancel" });   // 手指没按稳就滑了：是在滚时间线，这一下不拖
+      dragging = true; canvasState.timelineDragging = strip;
       cell.classList.add("is-dragging"); strip.classList.add("is-reordering");
       canvasTimelinePeekHide(box);
     }
@@ -257,12 +274,26 @@ function canvasTimelineDragStart(e, box, strip) {
     window.removeEventListener("pointermove", move, true);
     window.removeEventListener("pointerup", end, true);
     window.removeEventListener("pointercancel", end, true);
+    if (touch) {
+      window.clearTimeout(hold); cell.classList.remove("is-armed");
+      strip.removeEventListener("touchmove", holdOn); cell.removeEventListener("contextmenu", holdOn);
+    }
     if (!dragging) return;
     canvasState.timelineDragEndAt = Date.now();
+    if (canvasState.timelineDragging === strip) canvasState.timelineDragging = null;
+    const later = canvasState.timelineRedrawLater; canvasState.timelineRedrawLater = false;
+    const all = cells();
     cell.classList.remove("is-dragging"); strip.classList.remove("is-reordering"); mark(-1);
-    if (ev.type === "pointercancel" || slot < 0) return;
-    // 插在第 slot 格前面：往右挪的时候，自己原来那一格让出来了，要扣掉
-    canvasTimelineMove(id, slot > from ? slot - 1 : slot);
+    const redraw = () => { if (later) canvasRenderTimeline(); };   // 拖着的时候攒下的那次重画
+    // 整个画布页重铺过（换画布、重开），手里这排格子已经不在页面上：落点量不出来，不挪
+    if (ev.type === "pointercancel" || slot < 0 || !strip.isConnected) return redraw();
+    // 落点记成「插在哪一镜前面」，再到现在的顺序里找它：拖着的工夫远端同步改过顺序、加减过镜头，
+    // 按格子序号挪就挪错地方。插在自己前面、紧后面那一格前面，都是原地不动
+    const before = slot < all.length ? all[slot].dataset.ctlShot : "";
+    const rest = canvasTimelineShots().map((s) => String(s.nodeId)).filter((x) => x !== String(id));
+    let to = before ? rest.indexOf(before) : rest.length;
+    if (to < 0) to = slot > from ? slot - 1 : slot;   // 插在自己前面（before 就是它自己），或者那一镜已经没了
+    if (!canvasTimelineMove(id, to)) redraw();
   };
   window.addEventListener("pointermove", move, true);
   window.addEventListener("pointerup", end, true);

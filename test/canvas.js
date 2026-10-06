@@ -3780,7 +3780,57 @@ app.whenReady().then(async () => {
       canvasTimelineMove("t1", 0); ${等(200)}
       const 回不去 = { 顺序: 顺序(), 提示: 字() };
       window.__orderFail = "";
-      return { 起, 点一下, 拖着, 拖后, 键后, 走格, 撤一, 撤二, 回不去 };
+
+      // ⑥ 拖着的时候来了一趟整条重画（生成完一镜、远端同步一趟都会画）：先不画，松手落在指着的那格；
+      // 以前手里那排格子被换成摘下来的旧节点，量出来全是 0，松手一律落到最后一镜
+      const 格们 = () => [...box.querySelectorAll("[data-ctl-shot]")];
+      const 原序 = 顺序(), 原条 = box.querySelector(".ctl-strip");
+      const 末 = 格们()[格们().length - 1], a末 = 中(末), 第二 = 格们()[1].getBoundingClientRect();
+      const 落2 = { x: 第二.left + 4, y: a末.y };
+      按(末, "pointerdown", a末);
+      按(null, "pointermove", { x: a末.x - 20, y: a末.y });
+      canvasRenderTimeline();
+      const 拖中同一条 = box.querySelector(".ctl-strip") === 原条;
+      按(null, "pointermove", 落2);
+      按(null, "pointerup", 落2);
+      ${等(100)}
+      const 重画中 = { 拖中同一条, 顺序: 顺序(), 期望: [原序[0], 原序[原序.length - 1], ...原序.slice(1, -1)],
+        松手后换了条: box.querySelector(".ctl-strip") !== 原条, 标记: !!canvasState.timelineDragging, 攒着: canvasState.timelineRedrawLater };
+      // 反向对照：拖着来一趟重画、拖回原处松手（没挪）——攒下的那次照样补画，顺序不变
+      const 条2 = box.querySelector(".ctl-strip"), 序2 = 顺序(), 头格 = 格们()[0], a头 = 中(头格);
+      按(头格, "pointerdown", a头);
+      按(null, "pointermove", { x: a头.x + 10, y: a头.y });
+      canvasRenderTimeline();
+      按(null, "pointermove", a头);
+      按(null, "pointerup", a头);
+      ${等(100)}
+      const 原地 = { 顺序: 顺序(), 序2, 补画: box.querySelector(".ctl-strip") !== 条2, 标记: !!canvasState.timelineDragging, 攒着: canvasState.timelineRedrawLater };
+
+      // ⑦ 触屏：一按就滑是滚时间线，不拿起格子；按住 0.35 秒拿起来，再拖才换顺序，拖的时候 touchmove 被截住（不滚、不断）
+      const 摸 = (el, type, at) => (el || window).dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, clientX: at.x, clientY: at.y, button: 0, pointerId: 7, pointerType: "touch", isPrimary: true }));
+      const 滑 = (el) => { const t = new Event("touchmove", { bubbles: true, cancelable: true }); el.dispatchEvent(t); return t.defaultPrevented; };
+      const 触条 = box.querySelector(".ctl-strip");
+      const 触 = { 只认左右滑: getComputedStyle(触条).touchAction };
+      const 序3 = 顺序(), 尾 = 格们()[格们().length - 1], a尾 = 中(尾), 二格 = 格们()[1].getBoundingClientRect();
+      摸(尾, "pointerdown", a尾);
+      触.没按稳截没截 = 滑(尾);
+      摸(null, "pointermove", { x: a尾.x - 20, y: a尾.y });
+      摸(null, "pointermove", { x: 二格.left + 4, y: a尾.y });
+      摸(null, "pointerup", { x: 二格.left + 4, y: a尾.y });
+      ${等(50)}
+      触.一按就滑 = { 顺序: 顺序(), 拿起: !!box.querySelector(".is-armed, .is-dragging"), 标记: !!canvasState.timelineDragging };
+      const 尾2 = 格们()[格们().length - 1], a尾2 = 中(尾2);
+      摸(尾2, "pointerdown", a尾2);
+      ${等(450)}
+      触.拿起 = 尾2.classList.contains("is-armed");
+      触.拿起后截住 = 滑(尾2);
+      摸(null, "pointermove", { x: a尾2.x - 20, y: a尾2.y });
+      摸(null, "pointermove", { x: 二格.left + 4, y: a尾2.y });
+      摸(null, "pointerup", { x: 二格.left + 4, y: a尾2.y });
+      ${等(100)}
+      触.按住再拖 = { 顺序: 顺序(), 期望: [序3[0], 序3[序3.length - 1], ...序3.slice(1, -1)], 残留: box.querySelectorAll(".is-armed, .is-dragging, .is-drop-before, .is-drop-after").length };
+      触.松手后不截 = 滑(box.querySelector(".ctl-strip"));
+      return { 起, 点一下, 拖着, 拖后, 键后, 走格, 撤一, 撤二, 回不去, 重画中, 原地, 触, 序3 };
     })()`);
   ok(JSON.stringify(排.起.顺序) === JSON.stringify(["S1-01", "S1-02", "S2-01", "S2-02"]), "先验料：没拖过的时候按镜头号排", 排.起.顺序);
   ok(JSON.stringify(排.点一下.顺序) === JSON.stringify(排.起.顺序) && 排.点一下.回表 === 0 && JSON.stringify(排.点一下.选中) === JSON.stringify(["t3"]),
@@ -3809,6 +3859,15 @@ app.whenReady().then(async () => {
      "★再撤一下回到没拖过：order 整个拿掉，分镜表那头也发 null 拿掉★ 不然下次展开又按旧 order 排回去", 排.撤二);
   ok(JSON.stringify(排.回不去.顺序) === JSON.stringify(["S2-02", "S1-01", "S1-02", "S2-01"]) && /没写回分镜表/.test(排.回不去.提示) && /（分镜表里没有镜头 S2-02）/.test(排.回不去.提示),
      "分镜表退回来：画布上照样排好，提示照原话说没写回去", 排.回不去.提示);
+  ok(排.重画中.拖中同一条 && JSON.stringify(排.重画中.顺序) === JSON.stringify(排.重画中.期望) && 排.重画中.松手后换了条 && !排.重画中.标记 && !排.重画中.攒着,
+     "★拖着的时候来了一趟重画：先不画，松手落在指着的第二格，不是一律落到最后一镜★ 松手后照常重画、拖着的标记收干净", 排.重画中);
+  ok(JSON.stringify(排.原地.顺序) === JSON.stringify(排.原地.序2) && 排.原地.补画 && !排.原地.标记 && !排.原地.攒着,
+     "反向对照：拖着来一趟重画、拖回原处松手：顺序不变，攒下的那次重画松手补上（不是吞了）", 排.原地);
+  ok(排.触.只认左右滑 === "pan-x", "时间线在触屏上只认左右滑（touch-action: pan-x）", 排.触.只认左右滑);
+  ok(!排.触.没按稳截没截 && JSON.stringify(排.触.一按就滑.顺序) === JSON.stringify(排.序3) && !排.触.一按就滑.拿起 && !排.触.一按就滑.标记,
+     "★手指一按就滑：是在滚时间线，不截 touchmove、不拿起格子、顺序不动★", 排.触.一按就滑);
+  ok(排.触.拿起 && 排.触.拿起后截住 && JSON.stringify(排.触.按住再拖.顺序) === JSON.stringify(排.触.按住再拖.期望) && 排.触.按住再拖.残留 === 0 && !排.触.松手后不截,
+     "★手指按住 0.35 秒拿起一格（亮一圈），touchmove 截住不让滚，拖到第二格松手就插到那儿★ 以前触屏上一滑就被当滚动掐断，换不了顺序", 排.触);
 
   console.log("\n— 四十九、镜头检查器「生成配音」「换一版配音」：先报价、等点头；换一版带 no_cache、版本号 +1 —");
   const 配 = await run(`

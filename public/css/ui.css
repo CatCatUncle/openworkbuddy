@@ -927,7 +927,8 @@ html[data-theme="dark"] .ui-select {
 .canvas-page button.ctl-lack:hover { background: var(--owb-bg-hover); }
 .canvas-page .ctl-actions { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
 .canvas-page .ctl-actions .ui-btn.is-active { background: var(--owb-brand-weak); color: var(--owb-brand-text); }
-.canvas-page .ctl-strip { display: flex; gap: 4px; padding: 4px 8px 8px; overflow-x: auto; overscroll-behavior-x: contain; }
+/* 触屏上只认左右滑（滚时间线）；按住一格拿起来、拖着换顺序靠 canvasTimelineDragStart 截住 touchmove */
+.canvas-page .ctl-strip { display: flex; gap: 4px; padding: 4px 8px 8px; overflow-x: auto; overscroll-behavior-x: contain; touch-action: pan-x; }
 .canvas-page .ctl-cell { position: relative; flex: 0 0 var(--ctl-w, 96px); display: flex; flex-direction: column; gap: 4px; width: var(--ctl-w, 96px); padding: 4px; border: 1px solid var(--owb-border); border-radius: var(--radius-sm); background: var(--owb-bg); color: var(--owb-text); font: inherit; text-align: left; cursor: pointer; }
 .canvas-page .ctl-cell:hover { border-color: color-mix(in srgb, var(--owb-brand-text) 40%, var(--owb-border)); }
 .canvas-page .ctl-cell.is-selected { border-color: var(--owb-brand-text); box-shadow: 0 0 0 2px var(--owb-brand-weak); }
@@ -950,6 +951,9 @@ html[data-theme="dark"] .ui-select {
 /* 拖一格换顺序：拖着的那格变淡，松手会插在哪两格中间就亮一道竖线 */
 .canvas-page .ctl-strip.is-reordering, .canvas-page .ctl-strip.is-reordering .ctl-cell { cursor: grabbing; user-select: none; }
 .canvas-page .ctl-cell.is-dragging { opacity: .45; }
+/* 手指按住不动、这一格拿起来了：亮一圈，说明再拖就是换顺序。长按也别弹系统的图片菜单 */
+.canvas-page .ctl-cell { -webkit-touch-callout: none; }
+.canvas-page .ctl-cell.is-armed { border-color: var(--owb-brand); box-shadow: 0 0 0 2px var(--owb-brand-weak); }
 .canvas-page .ctl-cell.is-drop-before::before, .canvas-page .ctl-cell.is-drop-after::after { content: ""; position: absolute; top: 2px; bottom: 2px; width: 2px; border-radius: 1px; background: var(--owb-brand); pointer-events: none; }
 .canvas-page .ctl-cell.is-drop-before::before { left: -4px; }
 .canvas-page .ctl-cell.is-drop-after::after { right: -4px; }
