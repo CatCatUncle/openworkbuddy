@@ -85,7 +85,8 @@
 /**
  * 查到的那一行价。src 是哪一层给的，key 是最后命中的那个型号名（可能是退化后的）。
  * @template R
- * @typedef {{ row: R, key: string, src: string }} PriceHit
+ * rest 只有最长前缀族那一步才有：型号名在族名后面多出来的那截（gpt-5.2-pro 对上 gpt-5.2 时是 "-pro"）。
+ * @typedef {{ row: R, key: string, src: string, rest?: string }} PriceHit
  */
 
 /** 内置价目是哪天抄的。后台会把这个日期印出来——「三个月前抄的」本身就是一条信息 */
@@ -529,7 +530,24 @@ function lookup({ table, from }, model, family) {
   for (const k of Object.keys(table)) {
     if (k.length >= 4 && tail.startsWith(k) && (!best || k.length > best.length)) best = k;
   }
-  return best ? { row: table[best], key: best, src: from[best] } : null;
+  return best ? { row: table[best], key: best, src: from[best], rest: tail.slice(best.length) } : null;
+}
+
+// 族名后面跟这些，价不会比族里那一行贵：日期快照、预览 / 最新这类别名、更便宜的小号档。
+const SAME_OR_CHEAPER = new Set(["latest", "preview", "exp", "beta", "mini", "nano", "lite", "flash"]);
+/**
+ * 前缀族命中算不算「其实不知道价」。-pro、-audio、-realtime、-thinking、版本号这类尾巴，
+ * 在各家都可能是另一档价（gpt-5.2-pro 比 gpt-5.2 贵十倍以上）；拿族里那一行去估，
+ * 设了预算上限的人就能用便宜档的价调贵档，上限形同虚设。账本照旧记这个近似价，
+ * 只有额度闸门（budget.unpricedOf）把它当没价目——跟查不到的一个待遇：补一行就放行。
+ * @param {string|undefined} rest
+ * @returns {boolean}
+ */
+function looseRest(rest) {
+  if (!rest) return false;
+  if (rest[0] !== "-") return true; // gpt-5.25 / glm-4.6v：前缀只对上半截名字，不是同一个型号
+  const r = rest.replace(/-\d{4}-\d{2}-\d{2}(?=-|$)/g, "").replace(/-\d{2}-\d{2}(?=-|$)/g, "");
+  return r.split("-").filter(Boolean).some((t) => !SAME_OR_CHEAPER.has(t) && !/^(?:\d{4}|\d{6}|\d{8})$/.test(t));
 }
 
 /**
@@ -538,8 +556,10 @@ function lookup({ table, from }, model, family) {
  * @param {{ model?: string, prompt?: number, cached?: number, completion?: number, provider?: string }} [usage]
  *   跟 account.js 的 chargeRun 同一个形状
  * @param {PriceOpts} [opts] 看 config / provider / discount / local
- * @returns {{ yuan: number, unknown: boolean, model: string, key: string, src: string,
+ * @returns {{ yuan: number, unknown: boolean, loose: boolean, model: string, key: string, src: string,
  *   detail: { in_yuan: number, cached_yuan: number, out_yuan: number }, discount: number }}
+ *
+ * loose = 只靠前缀族对上、族名后面的尾巴可能是另一档价（见 looseRest）。yuan 照算，额度闸门看它。
  *
  * yuan 保留 6 位小数：单次调用常常是几厘钱，四舍五入到分的话，一万次调用里
  * 每次丢掉的不到半分钱加起来就是一大笔——而且是系统性地少算，不是随机误差。
@@ -552,7 +572,7 @@ function costOf(usage = {}, opts = {}) {
   // 记账那几处（account.chargeRun、飞书卡片）手里的 usage 带着模型条目名，借它找这一趟的地址
   const hit = priceOf(usage.model, opts.name || !usage.provider ? opts : { ...opts, name: String(usage.provider) });
   if (!hit) {
-    return { yuan: 0, unknown: true, model: usage.model || "", key: "", src: "",
+    return { yuan: 0, unknown: true, loose: false, model: usage.model || "", key: "", src: "",
              detail: { in_yuan: 0, cached_yuan: 0, out_yuan: 0 }, discount: 1 };
   }
   const p = hit.row;
@@ -569,7 +589,7 @@ function costOf(usage = {}, opts = {}) {
   };
   return {
     yuan: r6(detail.in_yuan + detail.cached_yuan + detail.out_yuan),
-    unknown: false, model: usage.model || "", key: hit.key, src: hit.src, detail, discount: d,
+    unknown: false, loose: looseRest(hit.rest), model: usage.model || "", key: hit.key, src: hit.src, detail, discount: d,
   };
 }
 
@@ -657,5 +677,5 @@ module.exports = {
   costOfUnits, unitPriceOf, unitTableFor,
   PRICES_AS_OF, USD_CNY, BUILTIN, BUILTIN_UNIT, UNITS, UNIT_CAPS,
   isPrivateBase,
-  _internals: { candidates, normalizeRow, normalizeUnitRow, discountOf, r6, localOf },
+  _internals: { candidates, looseRest, normalizeRow, normalizeUnitRow, discountOf, r6, localOf },
 };

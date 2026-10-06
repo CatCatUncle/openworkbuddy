@@ -322,6 +322,25 @@ console.log("\n【3】额度闸门：预扣、并发、0 = 不限、算不出钱
 
   const ucap = threw(() => budget.reserve({ ...capped, usage: { cap: "image", model: "our-diffusion-v9", units: 1 } }));
   ok(ucap && ucap.code === "model_unpriced" && /单价/.test(ucap.message), "按量那几路（生图这种）没单价，有上限时一样拦", ucap && ucap.message);
+
+  // ③ 的第四半：只靠「最长前缀族」认出来的型号。gpt-5.2-pro 落到 gpt-5.2 那一行，价差十倍，
+  // 有上限的人点名它，预算按便宜那档扣——等于打了个一折。前缀后面只是日期、或更便宜的档（mini / flash 这种）才认。
+  for (const [m, why] of [["gpt-5.2-pro", "pro 档"], ["gpt-4o-realtime-preview", "实时语音档"], ["claude-opus-5-deep-research", "深度研究档"], ["kimi-k2-thinking", "思考档"], ["glm-4.6v", "名字只前缀对上半截的视觉版"]]) {
+    const hit = budget.unpriced({ ...capped, usage: { model: m } });
+    ok(hit && hit.level === "org" && hit.message.includes(m) && /价目表/.test(hit.message),
+       `★有上限、${m} 只认得出前缀族★ 当没价目拦（${why}的价不一定跟族里那行一样）`, hit);
+    const e = threw(() => budget.reserve({ ...capped, usage: { model: m, prompt: 10, max_tokens: 10 } }));
+    ok(e && e.code === "model_unpriced", `中转站预扣那一步也拦 ${m}`, e && e.message);
+  }
+  for (const m of ["gpt-4o-2026-05-13", "gpt-4o-mini", "doubao-seed-1-6-flash-250715", "claude-haiku-4-5-20251001"]) {
+    ok(budget.unpriced({ ...capped, usage: { model: m } }) === null, `反向对照：${m}（日期 / 更便宜的档）照常放行`);
+  }
+  ok(budget.unpriced({ ...capped, org: {}, usage: { model: "gpt-5.2-pro" } }) === null,
+     "反向对照：没上限的照旧按族里的价估，不拦");
+  ok(pricing.costOf({ model: "gpt-5.2-pro", prompt: 1e6, completion: 0 }).unknown === false,
+     "反向对照：账本照旧记一个近似价（只有设了上限的闸门从严）");
+  ok(budget.unpriced({ ...capped, usage: { model: "gpt-5.2-pro" }, price: { config: { prices: { "gpt-5.2-pro": { in: 100, out: 800 } } } } }) === null,
+     "管理员给 gpt-5.2-pro 单独补一行价，同一趟就放行");
 }
 
 /* ============================================================

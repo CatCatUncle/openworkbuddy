@@ -133,7 +133,7 @@ function estimate(call = {}, opts = {}) {
   const { model, prompt = 0, max_tokens = 0 } = call || {};
   const out = Math.max(0, +max_tokens || 0) || 1024;
   const c = pricing.costOf({ model, prompt, cached: 0, completion: out }, opts);
-  return { yuan: c.yuan, unknown: c.unknown };
+  return { yuan: c.yuan, unknown: c.unknown, loose: c.loose, key: c.key };
 }
 
 /**
@@ -211,7 +211,9 @@ function unpriced(ctx = {}) {
 }
 
 function unpricedOf(ctx, limits, est) {
-  if (!est.unknown) return null;
+  // loose：只靠前缀族对上（gpt-5.2-pro → gpt-5.2），尾巴可能是贵得多的另一档。有上限时按族价估
+  // 等于让贵档按便宜档扣额度，所以跟查不到一样拦；没上限的照旧按族价记账（见 pricing.looseRest）
+  if (!est.unknown && !est.loose) return null;
   // 跟 reserve 同一个口径：哪一级认不出是谁（没有 Key、没登录），那一级的上限就管不到这一趟
   const ids = { key: ctx.vkey && ctx.vkey.id, user: ctx.user && ctx.user.username, org: ctx.orgId || "default" };
   const level = LEVELS.find((lv) => limits[lv] > 0 && ids[lv]);
@@ -222,7 +224,9 @@ function unpricedOf(ctx, limits, est) {
   const meta = cap ? pricing.UNITS[cap] : null;
   const message = meta
     ? `${meta.cn}${model ? `「${model}」` : ""}还没有单价，先在「企业管理 → API 中转站 → 按量计价」补上。`
-    : `型号「${model || "（没写）"}」还没有价目，先在「企业管理 → API 中转站 → 价目表」补上。`;
+    : est.unknown
+      ? `型号「${model || "（没写）"}」还没有价目，先在「企业管理 → API 中转站 → 价目表」补上。`
+      : `型号「${model}」没有自己的价目（「${est.key}」那行不算），先在「企业管理 → API 中转站 → 价目表」补上。`;
   return { level, model, cap, message };
 }
 
