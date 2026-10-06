@@ -245,7 +245,7 @@ const TOOL_DEFS = [
     name: "canvas_manage",
     description:
       "控制当前 OpenWorkBuddy 项目的 AI 短剧无限画布。画布不是普通白板：节点可以是 note/script/agent/character/location/storyboard/scene/shot/image/video/audio/timeline，连线表示输入关系。" +
-      "用 list 查看当前项目的多张画布；用 get 读取当前画布；用 add 创建节点；用 update 修改节点 payload 或位置；用 connect 建立输入关系（可声明 relation，如 character/background/motion/style/first_frame）；用 delete 删除节点；用 clear 清空画布。" +
+      "用 list 查看当前项目的多张画布；用 get 读取当前画布；用 add 创建节点；用 update 修改节点 payload 或位置；用 connect 建立输入关系（可声明 relation，如 character/background/motion/style/first_frame）；用 disconnect 断开一条连线（source_id + target_id，两头的节点都留着）；用 delete 删除节点（连带它身上的线）；用 clear 清空画布。" +
       "短剧制作建议按 script → character/location → storyboard/scene → shot → image/video/audio → timeline 建图。先调用 get，不要凭空覆盖用户已经摆好的节点。" +
       "角色节点的 payload 里可以写 voice（这个角色全程用的音色名），镜头节点可以写 speaker（这一镜的台词是谁说的，写角色名或角色 id）。配音就按这两项决定用谁的嗓子：不写的话整部戏所有角色都是同一个默认音色，而且要等成片放出来才听得出。" +
       "镜头节点的提示词分两格：prompt 是首帧画面长什么样，motion_prompt 只写怎么动。生视频只递 motion_prompt——画面内容已经在首帧里了，把首帧提示词再递一遍，模型会照着它重画一遍，生出来的片子跟已经确认过的首帧对不上。" +
@@ -256,11 +256,11 @@ const TOOL_DEFS = [
     input_schema: {
       type: "object",
       properties: {
-        operation: { type: "string", enum: ["list", "get", "add", "update", "connect", "delete", "clear", "propose"], description: "要执行的画布操作；propose = 交待生成清单，等用户点「开跑」" },
+        operation: { type: "string", enum: ["list", "get", "add", "update", "connect", "disconnect", "delete", "clear", "propose"], description: "要执行的画布操作；propose = 交待生成清单，等用户点「开跑」" },
         canvas_name: { type: "string", description: "可选的画布名称；不填则操作用户当前选中的画布" },
         node_id: { type: "string", description: "update/delete 时的节点 id" },
-        source_id: { type: "string", description: "connect 时的上游节点 id" },
-        target_id: { type: "string", description: "connect 时的下游节点 id" },
+        source_id: { type: "string", description: "connect/disconnect 时的上游节点 id" },
+        target_id: { type: "string", description: "connect/disconnect 时的下游节点 id" },
         relation: { type: "string", enum: ["input", "split", "generate", "character", "background", "composition", "motion", "style", "prop", "continuity", "first_frame", "last_frame", "audio", "reference"], description: "connect 时这条输入的用途；例如 character=人物身份，background=场景空间，motion=动作参考，first_frame=首帧。省略则按节点类型推断" },
         kind: { type: "string", enum: ["note", "script", "agent", "character", "location", "storyboard", "scene", "shot", "image", "video", "audio", "timeline"], description: "add 时的节点类型" },
         payload: { type: "object", description: "add 时的节点数据；update 时是要合并的字段，如 {prompt, first_frame, video}" },

@@ -701,6 +701,15 @@ html[data-theme="dark"] .ui-select {
 .canvas-connect-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(76px, 96px) auto; gap: 6px; }
 .canvas-connected-list { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
 .canvas-connected-list span { padding: 3px 6px; border-radius: var(--radius-full); background: var(--owb-brand-weak); color: var(--owb-brand-text); font-size: 11px; }
+.canvas-connected-list span { display: inline-flex; align-items: center; gap: 2px; padding-right: 2px; }
+.canvas-disconnect { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; padding: 0; border: none; border-radius: var(--radius-full); background: transparent; color: inherit; cursor: pointer; opacity: .65; }
+.canvas-disconnect:hover, .canvas-disconnect:focus-visible { opacity: 1; color: var(--owb-err-text); background: var(--owb-bg-hover); }
+.canvas-disconnect .i { width: 11px; height: 11px; }
+/* 停在连线上冒出来的那颗 ×（见 canvasBindLinkHover） */
+.canvas-link-remove { fill: var(--owb-bg); stroke: var(--owb-border); stroke-width: 1; }
+.canvas-link-remove-icon { stroke: var(--owb-text-3); stroke-width: 1.6; stroke-linecap: round; }
+.joint-tool:hover .canvas-link-remove { stroke: var(--owb-err-text); }
+.joint-tool:hover .canvas-link-remove-icon { stroke: var(--owb-err-text); }
 .canvas-inspector-hint { margin: 9px 0 0; color: var(--owb-text-3); font-size: 11px; line-height: 1.55; }
 .canvas-provenance { display: grid; gap: 8px; }
 .canvas-provenance-meta, .canvas-provenance-inputs { display: flex; flex-wrap: wrap; gap: 5px; }

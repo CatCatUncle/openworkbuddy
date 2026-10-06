@@ -823,7 +823,8 @@ async function canvasResolveRemoteConflict(armed, base, diskState, depth) {
 function canvasApplyMerged(snapshot, disk) {
   const same = canvasMergeSameKey(snapshot) === canvasMergeSameKey(disk);
   const onScreen = canvasState.graph && canvasMergeSameKey(canvasSnapshot()) === canvasMergeSameKey(snapshot);
-  if (!onScreen) canvasApplySnapshot(snapshot, { fromRemote: same });
+  // 合进来的是盘上那边（别人、Agent）的改动：铺上去不进撤销，栈里已有的几步跟着对齐（见 canvasHistoryRebase）
+  if (!onScreen) canvasApplySnapshot(snapshot, { fromRemote: same, external: true });
   else if (same) { canvasState.remoteContentKey = canvasHistoryKey(canvasSnapshot()); canvasNoteSynced(canvasScope(), canvasState.remoteContentKey); }
   return !same;
 }
@@ -908,6 +909,8 @@ function canvasClearPendingConflict(scope = canvasScope()) {
 
 /** 切画布、切项目之前，先把欠着的那一趟写完 —— 走了再写就寄不到原来那张了 */
 async function canvasFlushRemoteWrite() {
+  // 拖到一半攒着没存的位置也算欠着的（见 change:position 那条监听）：先存上，下面跟着一起交
+  if (canvasState.dragDirty) { canvasState.dragDirty = false; canvasPersist(); }
   const armed = canvasState.remoteWriteArmed;
   // 没有欠着的，也得等在路上那趟回来：它撞了 409 还要合并、再交一次，这期间画布不能拆
   if (!armed) { if (canvasState.remotePushing) await canvasState.remotePushing.catch(() => {}); return; }
@@ -958,6 +961,43 @@ function canvasConnect(source, target, relation = "") {
   canvasDecorateLink(link, normalizedRelation);
   canvasState.graph.addCell(link); canvasPersist();
   return link;
+}
+
+/**
+ * 断开一条线：两头的节点都留着。跟删节点一样不问、直接断，提示上挂「撤销」。
+ * 进撤销之前先把手上攒着没记的那步记掉，免得「断开」跟前一下改字并成一步、一撤全回去
+ */
+function canvasDisconnect(link) {
+  if (!canvasState.graph || !link || !link.isLink || !link.isLink() || !link.graph) return false;
+  canvasHistoryFlush();
+  link.remove();
+  canvasPersist();
+  canvasRenderInspector(false);
+  canvasToast("连线已断开。", "scissors", undefined, { label: "撤销", run: canvasUndo });
+  return true;
+}
+
+/**
+ * 鼠标停在一条线上，线上冒一颗 ×，点了就断开（见 canvasDisconnect）。
+ * 只在停着的时候挂、移开就摘：两百条线常驻两百颗按钮，拖画布会肉眼可见地卡
+ */
+function canvasBindLinkHover(paper) {
+  const J = typeof joint !== "undefined" ? joint : null;
+  if (!paper || !J || !J.linkTools || !J.linkTools.Remove || !J.dia.ToolsView) return;
+  paper.on("link:mouseenter", (view) => {
+    if (view.hasTools()) return;
+    const remove = new J.linkTools.Remove({
+      distance: "75%",
+      markup: [
+        { tagName: "circle", selector: "button", className: "canvas-link-remove", attributes: { r: 8, cursor: "pointer" } },
+        { tagName: "path", selector: "icon", className: "canvas-link-remove-icon", attributes: { d: "M -3 -3 3 3 M -3 3 3 -3", fill: "none", "pointer-events": "none" } },
+        { tagName: "title", textContent: canvasT("断开这条线") },
+      ],
+      action: (evt, linkView) => canvasDisconnect(linkView.model),
+    });
+    view.addTools(new J.dia.ToolsView({ name: "canvas-disconnect", tools: [remove] }));
+  });
+  paper.on("link:mouseleave", (view) => view.removeTools());
 }
 
 async function canvasLoadRemote() {
@@ -1029,9 +1069,24 @@ function canvasInferLegacyEdges(snapshot) {
  * 连着的线也一起扔。本意大概是清掉模板起始卡片，可代码里从来没有谁造过这两个标题的节点，
  * 于是它能撞上的只有用户自己写的那张卡——而「开始工作」恰好是人给第一张卡起的名字。
  * 删完还顺手存一次盘，本机那份、服务器那份一起变瘦。整句拿掉了。
+ *
+ * external：这一趟是不是「别人的改动」——远端轮询拉来的、Agent 改完重读的、409 合并进来的。
+ * 默认跟 fromRemote 一样；合并那条路要写回去（fromRemote 是 false）但同样是外来的，单独点名。
+ * 外来的不进撤销栈，铺完把栈里每一格对齐成「这些改动一直在」（见 canvasHistoryRebase）：
+ * 不然按一下 ⌘Z 退回上一格，就是把 Agent 刚改的整个抹掉，再经 canvasHistoryWriteback 连分镜表一起退。
+ *
+ * 整图重铺收成一批：graph.clear() 每拆一个、canvasConnect 每接一条线都会来一次存盘
+ * （整图序列化 + 写 localStorage + 判撞号），两百张卡就是好几百趟。这期间 bulk 挡住存盘、
+ * 画纸冻住只排队不画，铺完一起画、一起量、存一次。冻结和 bulk 都在 finally 里放开：
+ * 铺到一半抛了，画纸要是一直冻着，之后的改动全都画不出来
  */
-function canvasApplySnapshot(snapshot, { fromRemote = false } = {}) {
+function canvasApplySnapshot(snapshot, { fromRemote = false, external = fromRemote } = {}) {
   if (!canvasState.graph || !snapshot || !Array.isArray(snapshot.nodes)) return;
+  // 撤销 / 重做自己就是在铺栈里的格子，historyMute 开着，不用对齐
+  const rebase = external && !canvasState.historyMute;
+  // 人手上那一步还在 260ms 防抖里：先记进栈，不然它晚一拍落下来，记的是铺之前那份，成了栈顶
+  if (rebase) canvasHistoryFlush();
+  const before = rebase ? canvasSnapshot() : null;
   const previousSelection = canvasState.selected;
   const previousIds = [...(canvasState.selectedIds || [])];
   const currentEdges = canvasState.graph.getLinks().length ? canvasSnapshot().edges : [];
@@ -1044,11 +1099,22 @@ function canvasApplySnapshot(snapshot, { fromRemote = false } = {}) {
   // 生成期间人在本机改的字就被盖回去了；结果回来时写的也是这张卡（按 id 重新取）
   const keep = new Map();
   if (fromRemote && canvasState.inflight && canvasState.inflight.size) canvasState.inflight.forEach((id) => { const cur = canvasState.graph.getCell(id); if (cur) keep.set(id, canvasPayload(cur)); });
+  const graph = canvasState.graph, paper = canvasState.paper;
   canvasState.suspendSync = true;
   try {
-    canvasState.graph.clear(); const byId = new Map();
-    restoredSnapshot.nodes.forEach((item) => { const node = canvasAddNode(item.kind, keep.has(item.id) ? keep.get(item.id) : item.payload, item.position, { persist: false, skipSelect: true, id: item.id }); if (node) { if (item.size) node.resize(Number(item.size.width) || node.size().width, Number(item.size.height) || node.size().height); byId.set(item.id, node); } });
-    (restoredSnapshot.edges || []).forEach((edge) => canvasConnect(byId.get(canvasEndpointId(edge.source)), byId.get(canvasEndpointId(edge.target)), edge.relation));
+    const byId = new Map();
+    canvasState.bulk = true; graph.startBatch("canvas-apply"); if (paper) paper.freeze({ key: "canvas-apply" });
+    try {
+      graph.clear();
+      restoredSnapshot.nodes.forEach((item) => { const node = canvasAddNode(item.kind, keep.has(item.id) ? keep.get(item.id) : item.payload, item.position, { persist: false, skipSelect: true, id: item.id }); if (node) { if (item.size) node.resize(Number(item.size.width) || node.size().width, Number(item.size.height) || node.size().height); byId.set(item.id, node); } });
+      (restoredSnapshot.edges || []).forEach((edge) => canvasConnect(byId.get(canvasEndpointId(edge.source)), byId.get(canvasEndpointId(edge.target)), edge.relation));
+    } finally {
+      canvasState.bulk = false; graph.stopBatch("canvas-apply"); if (paper) paper.unfreeze({ key: "canvas-apply" });
+    }
+    // 冻着的时候卡片的壳还没画出来，canvasAddNode 里填内容那一下是空跑：解冻后统一填一遍。
+    // 撞号的那几张一次算好，不让每张卡各自把整张图数一遍
+    const dup = canvasDupShotIds();
+    byId.forEach((node) => canvasRefreshNode(node, dup));
     // 卡高当场量完，别等下一拍：底下记服务器那份指纹要的是量完的样子，
     // 不然量完的那一下跟服务器那份对不上，就成了一次「本机改动」被写回去
     canvasFitFlush();
@@ -1070,7 +1136,11 @@ function canvasApplySnapshot(snapshot, { fromRemote = false } = {}) {
     // 生成中的卡在屏幕上留的是本机版本，拿屏幕当 base，本机那几笔改动就认不出来了
     canvasState.remoteBase = { scope: canvasScope(), at: Number(snapshot.updatedAt) || 0, snapshot };
   }
-  canvasPersist();
+  if (!rebase) return canvasPersist();
+  canvasHistoryRebase(before, canvasSnapshot());
+  // 末尾这趟存盘只存本机、该交就交，不再记一条撤销：栈顶已经对齐成屏幕上这份了
+  canvasState.historyMute = true;
+  try { canvasPersist(); } finally { canvasState.historyMute = false; }
 }
 
 // 手上有活：正在输入框里打字，或者按着一张卡在拖。这两件事都经不起一次 graph.clear()。
@@ -1097,6 +1167,8 @@ function canvasStartRemoteSync() {
     // 落在打字中间是刚敲的半句被盖掉、光标掉回 body；落在拖动中间是那张卡被拆掉、
     // 当场弹回原处，手里还按着。手一停就补上
     if (canvasBusyNow()) return;
+    // 拖完那一下松手没被接住（撒手在窗外），攒着的位置还没存：先存上，这一圈不拉——拉回来一铺，那张卡就弹回去了
+    if (canvasState.dragDirty) { canvasState.dragDirty = false; canvasPersist(); return; }
     const previous = Number(canvasState.remoteUpdatedAt || 0);
     const state = await canvasLoadRemote();
     // 拉的这一趟在路上时本机又改了一笔（已经挂上写），拉回来的这份就是旧的了，别铺

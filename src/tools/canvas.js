@@ -518,6 +518,19 @@ function canvasManage(input = {}, ctx = {}) {
     else state.edges.push({ source: { id: source }, target: { id: target }, ...(relation ? { relation } : {}) });
     state = canvasWriteState(state, canvasName); return { content: `已连接 ${source} → ${target}。`, isError: false };
   }
+  // 只断一条线，两头的节点都留着。以前想去掉一条线只能 delete 掉一头的节点再重建
+  if (op === "disconnect") {
+    const source = String(input.source_id || ""), target = String(input.target_id || "");
+    if (!source || !target) return { content: "disconnect 需要 source_id 和 target_id。", isError: true };
+    const before = state.edges.length;
+    state.edges = state.edges.filter((edge) => !(edge.source.id === source && edge.target.id === target));
+    if (state.edges.length === before) {
+      // 线是有方向的：反过来那条在的话点出来，别让 agent 以为两个节点之间没线
+      const reverse = state.edges.some((edge) => edge.source.id === target && edge.target.id === source);
+      return { content: `没有 ${source} → ${target} 这条连线。` + (reverse ? `有一条反方向的 ${target} → ${source}，要断它就把 source_id 和 target_id 对调。` : ""), isError: true };
+    }
+    state = canvasWriteState(state, canvasName); return { content: `已断开 ${source} → ${target}，两个节点都还在。`, isError: false };
+  }
   if (op === "delete") {
     const id = String(input.node_id || "");
     if (!state.nodes.some((node) => node.id === id)) return { content: `找不到节点：${id}`, isError: true };

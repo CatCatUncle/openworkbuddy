@@ -821,7 +821,6 @@
       "全部恢复默认快捷键？": "Reset every shortcut?",
       "你改过的每一组都会退回出厂的那一套。": "Every combination you changed goes back to the factory set.",
       "下架这条规则？": "Retire this rule?",
-      "挂在它身上的连线也会一起删掉。": "The edges attached to it get deleted too.",
       "画布挪进回收站，随时能放回来；素材文件不动。": "The canvas goes to the trash and can be put back any time; media files stay.",
       "用本机这份覆盖项目里那份读不出来的画布？": "Overwrite the unreadable canvas in the project with this local copy?",
       "覆盖": "Overwrite",
@@ -2414,6 +2413,8 @@
       // 画布：删节点后的撤销、一键补齐后的重试、生成回来时节点已经不在了
       "撤销": "Undo",
       "节点已删除。": "Node(s) deleted.",
+      "连线已断开。": "Edge disconnected.",
+      "断开这条线": "Disconnect this edge",
       "重试失败的 {n} 条": "Retry {n} failed",
       "失败的节点都已不在画布上。": "None of the failed nodes are on the canvas anymore.",
       "还有一批在跑，跑完再点重试。": "A batch is still running. Retry after it finishes.",

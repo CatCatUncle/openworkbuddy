@@ -273,6 +273,25 @@ async function main() {
     store.canvasTrashPut("报价测");
     store.canvasWriteState(board([node("s1", "shot", { id: "s1", prompt: "新的一镜" })]), "报价测");
     ok(store.canvasProposalRead("报价测") === null, "删画布时清单一起作废：再建一张同名的，不冒出上一张的横幅");
+
+    console.log("\n【10】Agent 断开一条连线：只去掉这一条，两头的节点、别的线都留着");
+    store.canvasWriteState({ version: 2, nodes: [node("d1", "character", { name: "阿青" }), node("d2", "shot", { id: "d2" }), node("d3", "shot", { id: "d3" })],
+      edges: [{ source: { id: "d1" }, target: { id: "d2" }, relation: "character" }, { source: { id: "d1" }, target: { id: "d3" }, relation: "character" }] }, "断线测");
+    const dc = (source_id, target_id) => store.canvasManage({ operation: "disconnect", canvas_name: "断线测", source_id, target_id });
+    out = dc("d1", "d2");
+    let ds2 = store.canvasReadState("断线测");
+    ok(!out.isError && /已断开 d1 → d2/.test(out.content) && ds2.nodes.length === 3 && ds2.edges.length === 1 && ds2.edges[0].target.id === "d3",
+      "★断开 d1 → d2：三个节点都在，d1 → d3 那条还在★", { out: out.content, nodes: ds2.nodes.length, edges: ds2.edges });
+    const stamp = ds2.updatedAt;
+    out = dc("d1", "d2");
+    ok(out.isError && /没有 d1 → d2/.test(out.content) && store.canvasReadState("断线测").updatedAt === stamp, "再断一次：报没有这条线，不白写一趟盘", out.content);
+    out = dc("d3", "d1");
+    ok(out.isError && /反方向的 d1 → d3/.test(out.content) && store.canvasReadState("断线测").edges.length === 1, "★方向写反了：点出反方向那条在，不替它断★", out.content);
+    out = dc("d1", "");
+    ok(out.isError && /source_id 和 target_id/.test(out.content), "少一头：直说要两头", out.content);
+    // 只读源码，不 require：tools.js 一加载就要绑工作区、起一串别的模块
+    const toolSrc = fs.readFileSync(mod("tools"), "utf8");
+    ok(/"connect", "disconnect", "delete"/.test(toolSrc) && /用 disconnect 断开一条连线/.test(toolSrc), "工具说明里有 disconnect，Agent 才知道能只断线不删节点");
   } finally {
     server.close();
   }

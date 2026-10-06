@@ -584,7 +584,7 @@ async function canvasChatRun() {
   if (requestedModel) await fetch(`/api/session/${encodeURIComponent(sessionId)}/model`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: requestedModel }) }).catch(() => {});
   const referenceContext = canvasReferenceContext(references);
   const mode = document.querySelector("[data-canvas-chat-mode]")?.value || "craft";
-  const directive = "你正在控制当前 OpenWorkBuddy 项目的 AI 短剧无限画布。只操作当前项目和当前画布，不连接其他本地项目。先用 canvas_manage 的 get 读取现有画布，再按用户要求 add/update/connect/delete 节点；connect 时必须为真实创作依赖填写 relation（character/background/composition/motion/style/prop/continuity/first_frame/last_frame/audio/reference），不能只画装饰箭头。生图、生视频、配音都花钱，不要直接调用 generate_image / generate_video / text_to_speech：先把提示词和型号写进节点，再用 canvas_manage 的 propose 交一份待生成清单（节点 + 类型），回复里说清每项用什么型号；画布会摆出清单和报价，我点「开跑」才生成。" + referenceContext + "\n用户指令：" + userText;
+  const directive = "你正在控制当前 OpenWorkBuddy 项目的 AI 短剧无限画布。只操作当前项目和当前画布，不连接其他本地项目。先用 canvas_manage 的 get 读取现有画布，再按用户要求 add/update/connect/delete 节点，只去掉一条线用 disconnect（节点都留着）；connect 时必须为真实创作依赖填写 relation（character/background/composition/motion/style/prop/continuity/first_frame/last_frame/audio/reference），不能只画装饰箭头。生图、生视频、配音都花钱，不要直接调用 generate_image / generate_video / text_to_speech：先把提示词和型号写进节点，再用 canvas_manage 的 propose 交一份待生成清单（节点 + 类型），回复里说清每项用什么型号；画布会摆出清单和报价，我点「开跑」才生成。" + referenceContext + "\n用户指令：" + userText;
   let answer = "", assistant = null, sawDone = false, followed = false;
   const turn = canvasTurnStart(sessionId, directive, mode, userText);
   const write = (value) => {

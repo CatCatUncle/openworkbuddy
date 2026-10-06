@@ -60,6 +60,9 @@ let canvasState = {
   remoteUpdatedAt: 0, remoteContentKey: "", remoteSnapshot: null, remoteTimer: null, remoteWriteTimer: null, remoteWriteArmed: null, remoteWritePending: false, suspendSync: false, castTimer: null,
   // fitting：正在按内容给卡量高、给长高的卡让位。这期间的挪动不存盘（见 canvasFitFlush）
   fitting: false,
+  // bulk：一口气摆一大片（铺快照、展开分镜表、自动排版），这期间每一下都不存盘，摆完存一次（见 canvasPersist）。
+  // dragDirty：手还按着卡在拖，位置变了但还没存；松手存一次（见 renderCanvasPage 里的 element:pointerup）
+  bulk: false, dragDirty: false,
   // 盘上那份画布读不出来时记下原因。有值就等于「这张画布现在不能写」，
   // 界面必须显示错误而不是一张白板——白板 + 自动保存正好把还有救的原件盖掉
   remoteBroken: "", remoteBrokenNotified: false, lostNotified: "",

@@ -105,10 +105,11 @@ function canvasAutoLayout(page) {
     if (layoutGraph.hasNode(source) && layoutGraph.hasNode(target) && source !== target) layoutGraph.setEdge(source, target, {}, `edge-${index}`);
   });
   D.layout(layoutGraph);
-  canvasState.historyMute = true;
+  // 每挪一张都会来一次 change:position：bulk 挡住，挪完下面存一次
+  canvasState.historyMute = true; canvasState.bulk = true;
   try {
     nodes.forEach((node) => { const point = layoutGraph.node(node.id), size = node.size(); if (point) node.position(Math.round(point.x - size.width / 2), Math.round(point.y - size.height / 2)); });
-  } finally { canvasState.historyMute = false; }
+  } finally { canvasState.historyMute = false; canvasState.bulk = false; }
   canvasPersist(); canvasFitAll(page); canvasToast("已按生成关系紧凑排版并居中。", "git-branch");
 }
 
