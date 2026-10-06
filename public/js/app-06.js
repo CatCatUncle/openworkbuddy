@@ -94,6 +94,14 @@ function renderSecurityPane(pane, s) {
       ${chk("sec-py", sec.runtime_python !== false, "Python（run_shell 里的 python/pip）", "关闭后 python/pip 命令直接拒绝")}
     </div>
     <div class="card-item">
+      <div class="t">${ic("terminal")} 命令能看到的环境变量</div>
+      <div class="d">AI 跑的命令只拿系统基础变量，像 Key 的默认不给。每行一个变量名。</div>
+      ${listCol("额外放行的变量名", "sec-envpass", joinLines(sec.env_passthrough), 3)}
+      <div class="d" style="margin-top:6px">${s.env_keys_pass
+        ? "只有你一个账号：像 Key 的写进来也会给。"
+        : "<b>有多个账号：像 Key 的写进来也不给。</b>Key 请在 设置 → 模型 里配。"}</div>
+    </div>
+    <div class="card-item">
       <div class="t">${ic("shield-check")} 技能与连接器体检 · 第二把尺子</div>
       <div class="d">装技能、存连接器前，内置检查之外再用 <a class="link" href="https://github.com/CatCatUncle/toolward" target="_blank" rel="noopener">toolward</a> 扫一遍（注入、投毒、供应链、密钥外传）。</div>
       <div id="sec-tw" style="margin-top:10px;font-size: 13px">检测中…</div>
@@ -135,6 +143,7 @@ function renderSecurityPane(pane, s) {
       url_blacklist: linesOf("#sec-ubl"),
       runtime_node: pane.querySelector("#sec-node").checked,
       runtime_python: pane.querySelector("#sec-py").checked,
+      env_passthrough: linesOf("#sec-envpass"),
       // 这张卡片没装 toolward 时只画一行说明，没有这两个控件——取不到就别往后端塞空值，
       // 那会把用户原来填好的路径洗掉
       ...(pane.querySelector("#sec-tw-mode") ? {

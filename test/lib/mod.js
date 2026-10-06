@@ -54,6 +54,7 @@ const TABLE = Object.freeze({
   cdp: "src/platform/render/cdp.js",
   "chat-models": "src/core/model/chat-models.js",
   checkpoints: "src/agent/checkpoints.js",
+  "child-env": "src/platform/child-env.js",
   "cli-approve": "src/cli/cli-approve.js",
   "cli-args": "src/cli/cli-args.js",
   "cli-ask": "src/cli/cli-ask.js",

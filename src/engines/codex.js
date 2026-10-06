@@ -29,6 +29,7 @@ const os = require("os");
 const path = require("path");
 const { execFile } = require("../platform/win"); // 不直接用 child_process 的：Windows 上 .cmd 垫片起不来、还闪黑窗
 const { dataPath } = require("../platform/paths");
+const { buildChildEnv } = require("../platform/child-env");
 
 const ID = "codex";
 
@@ -114,7 +115,8 @@ function accountModels(bin, env) {
   const hit = accountModelsCache.get(key);
   if (hit && Date.now() - hit.at < ACCOUNT_MODELS_TTL) return Promise.resolve(hit.list);
   return new Promise((resolve) => {
-    execFile(bin, ["debug", "models"], { env, timeout: 10000, maxBuffer: 16 * 1024 * 1024 }, (err, stdout) => {
+    // 只带 CODEX_HOME 过去：env 是整份环境（找登录目录要用），原样给子进程就把里面的 Key 一起送出去了
+    execFile(bin, ["debug", "models"], { env: buildChildEnv({ CODEX_HOME: env.CODEX_HOME }), timeout: 10000, maxBuffer: 16 * 1024 * 1024 }, (err, stdout) => {
       let list = null;
       if (!err) {
         try {
@@ -435,7 +437,9 @@ async function run({
     }
   };
 
-  const r = await runJsonl({ bin: exe, args, cwd, env: isolated.env, stdin: instr.prefix + prompt, onLine, deadline, stopSignal });
+  // isolated.env 是整份环境（openWorkBuddyCodexHome 要从里面找原来的登录目录），只把调用方给的和 CODEX_HOME 交下去；
+  // 其余的由 runJsonl 按白名单挑，环境里的 Key 不跟着进 codex 和它起的 shell
+  const r = await runJsonl({ bin: exe, args, cwd, env: { ...(env || {}), CODEX_HOME: isolated.env.CODEX_HOME }, stdin: instr.prefix + prompt, onLine, deadline, stopSignal });
   usage.elapsed_ms = Date.now() - startedAt;
   // 停了、超时了、报错了也捡：出了的图是真出了，订阅额度已经用掉了。onWrite 报上去，收尾那次扫描就认得是这条对话的
   const picked = pickupImages({ codexHome: isolated.env.CODEX_HOME, threadId: sessionId, cwd, since: startedAt });

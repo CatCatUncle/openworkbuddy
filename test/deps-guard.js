@@ -289,9 +289,9 @@ console.log("status " + r.status + " " + r.stderr);`, 120000, N.task);
   {
     const t = src("tools");
     const sites = [
-      ["run_shell", /function runShell\([\s\S]*?env: \{[^}]*\.\.\.depsGuardEnv\(cwd, command,/],
-      ["后台命令", /function startBackground\([\s\S]*?env: \{[^}]*\.\.\.depsGuardEnv\(cwd, cmd,/],
-      ["run_node", /function runNode\([\s\S]*?env: \{[^}]*\.\.\.depsGuardEnv\(cwd, code,/],
+      ["run_shell", /function runShell\([\s\S]*?env: buildChildEnv\(\{[^}]*\.\.\.depsGuardEnv\(cwd, command,/],
+      ["后台命令", /function startBackground\([\s\S]*?env: buildChildEnv\(\{[^}]*\.\.\.depsGuardEnv\(cwd, cmd,/],
+      ["run_node", /function runNode\([\s\S]*?env: buildChildEnv\(\{[^}]*\.\.\.depsGuardEnv\(cwd, code,/],
     ];
     for (const [what, re] of sites) ok(re.test(t), `${what} 的子进程环境并进了 depsGuardEnv`);
     const cut = t.replace(/, \.\.\.depsGuardEnv\(cwd, command, shellPath\(\)\)/, "");

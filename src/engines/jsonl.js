@@ -20,6 +20,7 @@
 const { spawn } = require("child_process");
 const { augmentedPath } = require("../platform/which");
 const win = require("../platform/win");
+const { buildChildEnv } = require("../platform/child-env");
 
 /** stderr 只留尾巴：CLI 报错前可能刷了几万行日志，全留住等于把内存喂给一次失败 */
 const STDERR_KEEP = 8000;
@@ -58,8 +59,10 @@ function runJsonl({ bin, args, cwd, env, stdin, onLine, deadline, stopSignal }) 
       child = spawn(plan.bin, plan.args, {
         cwd,
         // PATH 得补全：CLI 自己还要去调 node / git / ripgrep，双击启动的 GUI 进程
-        // 那份残废 PATH 传下去，claude 起来了照样在第一个工具调用上死掉
-        env: { ...process.env, PATH: augmentedPath(), ...plan.env, ...(env || {}) },
+        // 那份残废 PATH 传下去，claude 起来了照样在第一个工具调用上死掉。
+        // 别的变量只给白名单里的：引擎自带 shell，环境里的 Key 它一句 echo 就拿走了。
+        // 属主清单照样生效——单人用「环境变量 Key」登 claude / codex 的，把那个名字写进清单
+        env: buildChildEnv({ PATH: augmentedPath(), ...plan.env, ...(env || {}) }),
         stdio: ["pipe", "pipe", "pipe"],
         ...plan.opts,
       });
@@ -158,7 +161,7 @@ function probeVersion(bin, args = ["--version"], timeoutMs = 8000) {
   return new Promise((resolve) => {
     let child;
     const p = win.launchPlan(bin, args);
-    try { child = spawn(p.bin, p.args, { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, PATH: augmentedPath(), ...p.env }, ...p.opts }); }
+    try { child = spawn(p.bin, p.args, { stdio: ["ignore", "pipe", "pipe"], env: buildChildEnv({ PATH: augmentedPath(), ...p.env }), ...p.opts }); }
     catch { return resolve({ installed: false, version: "" }); }
     let out = "";
     const done = (ok) => { try { child.kill("SIGKILL"); } catch {} resolve({ installed: ok, version: firstVersionLine(out) }); };
@@ -186,7 +189,7 @@ function probeOption(bin, flag, bogus = "__owb_probe__", timeoutMs = 8000) {
   return new Promise((resolve) => {
     let child;
     const p = win.launchPlan(bin, [flag, bogus, "--version"]);
-    try { child = spawn(p.bin, p.args, { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, PATH: augmentedPath(), ...p.env }, ...p.opts }); }
+    try { child = spawn(p.bin, p.args, { stdio: ["ignore", "pipe", "pipe"], env: buildChildEnv({ PATH: augmentedPath(), ...p.env }), ...p.opts }); }
     catch { return resolve(false); }
     let out = "";
     const done = (v) => { try { child.kill("SIGKILL"); } catch {} resolve(v); };
@@ -208,7 +211,7 @@ function probeHelp(bin, needle, timeoutMs = 8000) {
   return new Promise((resolve) => {
     let child;
     const p = win.launchPlan(bin, ["--help"]);
-    try { child = spawn(p.bin, p.args, { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, PATH: augmentedPath(), ...p.env }, ...p.opts }); }
+    try { child = spawn(p.bin, p.args, { stdio: ["ignore", "pipe", "pipe"], env: buildChildEnv({ PATH: augmentedPath(), ...p.env }), ...p.opts }); }
     catch { return resolve(false); }
     let out = "";
     const done = (v) => { try { child.kill("SIGKILL"); } catch {} resolve(v); };

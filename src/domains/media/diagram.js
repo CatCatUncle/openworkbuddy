@@ -20,6 +20,7 @@ const zlib = require("zlib");
 const vm = require("vm");
 const { spawnSync, spawn } = require("child_process");
 const browserRender = require("../../platform/render/browser-render");
+const { buildChildEnv } = require("../../platform/child-env");
 
 function diagramCfg() {
   try {
@@ -75,8 +76,9 @@ async function renderDot(source) {
 // ---------- plantuml：本机命令 → 配置的服务器 → kroki ----------
 async function renderPlantuml(source, fmt) {
   const src = /^\s*@start/.test(source) ? source : `@startuml\n${source}\n@enduml`;
+  // 图源是 AI 写的，plantuml 的预处理能读环境变量印进图里：跟 run_shell 一样只给最小环境
   const local = spawnSync("plantuml", [`-t${fmt}`, "-pipe", "-charset", "UTF-8"], {
-    input: src, timeout: 30000, maxBuffer: 32 * 1024 * 1024, windowsHide: true,
+    input: src, timeout: 30000, maxBuffer: 32 * 1024 * 1024, windowsHide: true, env: buildChildEnv(),
   });
   if (!local.error && local.status === 0 && local.stdout && local.stdout.length > 100) return local.stdout;
   const cfg = diagramCfg();

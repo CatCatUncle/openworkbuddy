@@ -311,6 +311,13 @@ const config = store.readJson(CONFIG_PATH, {});
 // 不补的话 gateway 是 undefined → 闸门当成关着，删除保护、黑名单、高危拦截全都不生效。
 // 只补内存里这份，不回写文件
 security.getSecurity(config);
+// AI 起的子进程只拿最小环境变量，跟网页服务同一套策略（见 src/platform/child-env.js）：
+// 属主清单照 config 走；像 Key 的名字只在一个账号时给，读账号库出错按「多个」算
+require("./src/platform/child-env").setPolicy(() => {
+  let solo = false;
+  try { solo = account.userCount() <= 1; } catch {}
+  return { allow: security.getSecurity(config).env_passthrough, keys: solo };
+});
 
 // ---------- --perm：这一趟放多少权 ----------
 // 网页那边四档是点得到的（设置里一个下拉），命令行原来只能改 config.json —— 而 config.json 是

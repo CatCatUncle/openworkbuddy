@@ -24,6 +24,7 @@ const jev = require("../core/judge/jev"); // 判断模型：上面那一问就�
 const HK = require("./hooks"); // config.json 里 agent.hooks 配的命令：跑命令前、改完文件后
 const CT = require("./code-tools"); // 写代码那几样：按名找文件、后台命令、进度清单、改前查有没有被动过
 const depsGuard = require("../platform/deps-guard"); // 工作空间嵌在应用目录里时，npm/pnpm 别往上找到应用自己的 package.json
+const { buildChildEnv } = require("../platform/child-env"); // AI 跑的命令/脚本只拿最小环境变量：用户 shell 里的 Key 不跟着下去
 const winname = require("../util/winname"); // Windows 不认的文件名（a:b 会悄悄写进备用数据流）
 // 媒体那几样（生图 / 生视频 / 配音 / 转写 / 看图 / 截图 + 生成缓存）和画布状态拆到 src/tools/ 下了，这里只是转手。
 // 它们要用的工作目录根还在本文件（下面那套 ALS），递过去的是取值函数、用到时才读，按请求切换的根照样生效
@@ -1164,7 +1165,8 @@ function runNode(code, timeoutMs, cwd, stopSignal, session = "") {
       // 子进程要用同一个数据根才不会各写各的
       // PATH 跟 run_shell 同一份（shellPath）：脚本里 execSync("ffmpeg …") 也得找得到刚装的东西，
       // 不然 Windows 上拿的还是应用启动那一刻的 PATH，run_shell 找得到、run_node 里找不到
-      env: { ...process.env, NODE_PATH: appPath("node_modules"), OPENWORKBUDDY_HOME: DATA_DIR, ELECTRON_RUN_AS_NODE: "1", PATH: shellPath(), ...depsGuardEnv(cwd, code, shellPath()) },
+      // 其余环境变量只给白名单里的：process.env 整份传下去，脚本一句 process.env 就把 Key 全读走了（见 child-env.js）
+      env: buildChildEnv({ NODE_PATH: appPath("node_modules"), OPENWORKBUDDY_HOME: DATA_DIR, ELECTRON_RUN_AS_NODE: "1", PATH: shellPath(), ...depsGuardEnv(cwd, code, shellPath()) }),
       // 同 runShell：脚本里读 stdin 就当场读到结尾，别空等到超时
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
@@ -1444,7 +1446,7 @@ function runShell(command, timeoutMs, cwd, stopSignal, session = "") {
       cwd: cwd || ws(),
       // 同 runNode：整组一起杀，否则 `npm install` 那一窝会活过「让我停下」。超时也一样，见 armTimeout
       detached: process.platform !== "win32",
-      env: { ...process.env, ...winTextEnv(), PATH: shellPath(), OPENWORKBUDDY_HOME: DATA_DIR, ...depsGuardEnv(cwd, command, shellPath()) },
+      env: buildChildEnv({ ...winTextEnv(), PATH: shellPath(), OPENWORKBUDDY_HOME: DATA_DIR, ...depsGuardEnv(cwd, command, shellPath()) }),
       // stdin 不给：留着一根没人写的管道，`read`、python 的 input()、npm init 这种等输入的命令
       // 会一直等到超时才回来。给 /dev/null，它当场读到结尾，要么走默认值要么报错退出
       stdio: ["ignore", "pipe", "pipe"],
@@ -2279,7 +2281,7 @@ function startBackground(cmd, cwd, opts, keep = false) {
         cwd: cwd || ws(),
         detached: process.platform !== "win32",
         stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env, ...winTextEnv(), PATH: shellPath(), OPENWORKBUDDY_HOME: DATA_DIR, ...depsGuardEnv(cwd, cmd, shellPath()) },
+        env: buildChildEnv({ ...winTextEnv(), PATH: shellPath(), OPENWORKBUDDY_HOME: DATA_DIR, ...depsGuardEnv(cwd, cmd, shellPath()) }),
         ...sh.opts,
       });
     },

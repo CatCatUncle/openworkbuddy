@@ -123,6 +123,9 @@ const DEFAULTS = {
   // 为什么它不在 package.json 的依赖里：PolyForm Noncommercial 授权，公司用要单独授权。见 toolward.js 顶上那三条边界。
   toolward: "auto",
   toolward_bin: "", // 留空 = 在 PATH 和几个常见全局 bin 目录里找；填了就只认这一个，不回退
+  // AI 跑的命令、脚本、外部引擎、钩子只拿最小环境变量（platform/child-env.js），这里是属主额外放行的变量名。
+  // 像 Key 的名字（*_API_KEY、*_TOKEN……）只在这台机器只有一个账号时才给；只有平台属主能改
+  env_passthrough: [],
 };
 
 /** 给 config.security 补默认值（保留用户已改项），返回引用 */

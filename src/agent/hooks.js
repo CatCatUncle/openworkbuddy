@@ -24,6 +24,7 @@
  * 文件名里带个 `;` 或 `$()` 就能变成第二条命令。
  */
 const { spawn } = require("child_process");
+const { buildChildEnv } = require("../platform/child-env");
 
 const KINDS = ["before_shell", "after_edit", "done"];
 const DEFAULT_TIMEOUT = 60;   // 秒
@@ -76,7 +77,9 @@ function runOne(hook, { cwd, env, stopSignal } = {}) {
     try {
       child = spawn(hook.run, {
         shell: true, cwd, detached: process.platform !== "win32", windowsHide: true,
-        env: { ...process.env, ...(env || {}) },
+        // 钩子是属主写在 config.json 里的，可它跑的时候 agent 正在干活、能改工作区里的脚本：
+        // 跟 run_shell 一样只拿最小环境，属主清单照样生效
+        env: buildChildEnv(env || {}),
         stdio: ["ignore", "pipe", "pipe"],
       });
     } catch (e) { resolve({ code: null, out: e.message, timedOut: false }); return; }

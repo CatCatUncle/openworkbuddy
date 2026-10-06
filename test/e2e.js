@@ -14011,7 +14011,7 @@ async function testWindowsChildProcess() {
   assert.deepStrictEqual(winTextEnv({ PYTHONIOENCODING: "gbk" }, "win32").PYTHONIOENCODING, "gbk", "用户自己设的 PYTHONIOENCODING 被盖掉了");
   assert.deepStrictEqual(winTextEnv({}, "darwin"), {}, "macOS 上也塞了 Python 编码变量");
   const toolsSrc = fs.readFileSync(modPath("tools"), "utf8");
-  assert((toolsSrc.match(/\.\.\.process\.env, \.\.\.winTextEnv\(\)/g) || []).length >= 2, "run_shell / 后台命令的 env 里没接上 winTextEnv");
+  assert((toolsSrc.match(/buildChildEnv\(\{ \.\.\.winTextEnv\(\)/g) || []).length >= 2, "run_shell / 后台命令的 env 里没接上 winTextEnv（现在整份 env 由 buildChildEnv 挑过再叠）");
 
   // ③ 输出解码：中文 Windows 上 cmd 自带命令写 GBK；一个字被切成好几块也不能出 �
   const feed = (buf, opt) => { const d = outDecoder(opt); let s = ""; for (const b of buf) s += d.write(Buffer.from([b])); return { s: s + d.end(), enc: d.encoding() }; };

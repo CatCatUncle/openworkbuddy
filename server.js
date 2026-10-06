@@ -55,6 +55,7 @@ const lanes = require("./src/core/config/lanes"); // 两条工作线：办公（
 const cliLive = require("./src/core/obs/cli-live"); // 终端里起的任务挂在盘上的那个目录，网页/手机靠它看见并插话
 const thinking = require("./src/core/model/thinking"); // 思考模式档位表（各家参数名都不一样，集中在那儿）
 const security = require("./src/core/safety/security");
+const childEnv = require("./src/platform/child-env"); // AI 起的子进程只拿最小环境变量；属主清单和「几个账号」从这里注册进去
 const toolward = require("./src/core/safety/toolward");
 const sweep = require("./src/agent/sweep");
 const modes = require("./src/core/config/modes"); // 执行模式的唯一真源（craft/goal/plan/ask）
@@ -126,6 +127,9 @@ const rawConfig = store.readJson(CONFIG_PATH, JSON.parse(JSON.stringify(CONFIG_D
 // 0.2 之前的老配置压根没有 models 表（只有 provider / openai / anthropic 三块）——要在模板补缺之前认出来
 const legacyNoModels = !Array.isArray(rawConfig.models);
 const config = fillDefaults(rawConfig, CONFIG_DEFAULTS);
+// 子进程环境的策略：每次起子进程现问，设置页改了清单不用重启。
+// 像 Key 的名字只在一个账号时给——账号多了，成员的任务也跑在这台机器上（见 platform/child-env.js 顶上）
+childEnv.setPolicy(() => ({ allow: security.getSecurity(config).env_passthrough, keys: !admin.multiUser() }));
 // 助理的名字和头像：想叫它「小秘」就叫「小秘」。界面（气泡头像/侧栏/品牌位）和系统提示词都跟着这里走
 // "@cat" 是内置猫标的哨兵值，跟应用图标同一只猫；前端 avatarBits 认它，account.normalizeAvatar 放行
 const ASSISTANT_DEFAULT = { name: "OpenWorkBuddy", avatar: "@cat" };
@@ -1867,6 +1871,8 @@ app.get("/api/settings", (req, res) => {
     // 启动时替用户改挂过的媒体模型，只回一次。只给平台管理员：改的是整台机器的配置
     moved_on_boot: isPlatformOwner(req) ? takeMovedOnBoot() : [],
     security: config.security,
+    // 安全中心「命令能看到的环境变量」那张卡要照实说：像 Key 的名字现在写进清单给不给，看的是账号数
+    env_keys_pass: !admin.multiUser(),
     shortcuts: prefs.shortcutsCfg(config),
     // 执行追踪。私钥跟别的 Key 一个待遇：只有平台管理员看得见原文，其余人拿到八个星号。
     // stats 是**实打实的上报账本**（发出去多少、丢了多少、上一次为什么失败）——
@@ -2284,6 +2290,8 @@ app.post("/api/settings", (req, res) => {
       }
       // 指死一个可执行文件的路径。这是条会被执行的路径，长度掐住，别让它变成往配置里塞东西的口子
       if (b.security.toolward_bin !== undefined) sec.toolward_bin = String(b.security.toolward_bin || "").trim().slice(0, 500);
+      // 子进程额外放行的环境变量名。只收合法变量名、最多 50 条；像 Key 的照收，给不给由账号数在起子进程时判
+      if (Array.isArray(b.security.env_passthrough)) sec.env_passthrough = childEnv.cleanNames(b.security.env_passthrough);
     }
     if (b.langfuse && typeof b.langfuse === "object") {
       const cur = config.langfuse || (config.langfuse = { enabled: false, host: "https://cloud.langfuse.com", public_key: "", secret_key: "" });

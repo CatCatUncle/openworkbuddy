@@ -198,6 +198,19 @@ function setDeployment({ host, shell } = {}) {
 function isSoloDesktop() {
   return desktopShell && soloAccounts();
 }
+/**
+ * 是不是不止一个账号了。子进程环境（platform/child-env.js）拿它决定属主清单里像 Key 的变量名给不给。
+ * 跟 soloAccounts 共一份「只会从一个走到多个」的缓存；不同的是读账号库出错时按「多个」算——
+ * 这里判错了，就是把属主的 Key 交给成员的任务
+ */
+function multiUser() {
+  if (!soloCount.solo) return true;
+  try {
+    if (account.userCount() <= 1) return false;
+  } catch { return true; }
+  soloCount = { at: Date.now(), solo: false };
+  return true;
+}
 
 /** 平台管理员 = 默认组织的管理员。全局工作目录、密钥、引擎这些只有他能动 */
 function ownsGlobalWorkspace(user) {
@@ -983,4 +996,4 @@ function safeCall(fn, arg) {
   try { return fn(arg); } catch { return null; }
 }
 
-module.exports = { createAdminRouter, platformAdmin, ownsGlobalWorkspace, platformGuard, redactGuard, tenantScope, redactSecrets, setDeployment, isSoloDesktop, PLATFORM_WRITE, PLATFORM_READ, PERSONAL_WRITE, PERSONAL_WRITE_PREFIX, PERSONAL_READ };
+module.exports = { createAdminRouter, platformAdmin, ownsGlobalWorkspace, platformGuard, redactGuard, tenantScope, redactSecrets, setDeployment, isSoloDesktop, multiUser, PLATFORM_WRITE, PLATFORM_READ, PERSONAL_WRITE, PERSONAL_WRITE_PREFIX, PERSONAL_READ };

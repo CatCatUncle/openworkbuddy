@@ -31,6 +31,7 @@ const { execFile } = require("../platform/win"); // 不直接用 child_process �
 const { runJsonl, probeVersion, probeOption, probeHelp } = require("./jsonl");
 const thinking = require("../core/model/thinking");
 const { resolveBin } = require("../platform/which");
+const { buildChildEnv } = require("../platform/child-env");
 
 const ID = "claude-code";
 
@@ -95,7 +96,7 @@ const modelLists = new Map();
 function localModels(bin) {
   if (modelLists.has(bin)) return modelLists.get(bin);
   const p = new Promise((resolve) => {
-    execFile(bin, ["--help"], { timeout: 10000 }, (_err, stdout) => {
+    execFile(bin, ["--help"], { env: buildChildEnv(), timeout: 10000 }, (_err, stdout) => {
       const seg = (/--model <model>([\s\S]*?)(?:\n\s*-{1,2}[a-z]|$)/.exec(String(stdout || "")) || [])[1] || "";
       const aliases = [...seg.matchAll(/'([a-z][a-z0-9.\-\[\]]*)'/g)].map((m) => m[1]).filter((a) => !/^claude-/.test(a));
       const set = [...aliases, ...ALIAS_FALLBACK];
