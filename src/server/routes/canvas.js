@@ -287,12 +287,17 @@ app.get("/api/canvas", (req, res) => {
     // 两样内容不一样，拿同一个 ETag 回 304 会让前端留着另一张的缓存。
     // 带 lost 的那一回也不回 304：lost 只在这一次响应里说，缓存里那份没有它
     const stamp = Number(state.updatedAt) || 0;
+    // Agent 交的待生成清单（canvas_manage propose）住在旁边那个文件里，跟着这一趟一起给：画布轮询本来就在问这条，
+    // 不用另开一路。清单不改画布，版本号不变——所以 ETag 要把清单号也算进去，不然交了清单回的还是 304，横幅出不来
+    let proposal = null;
+    try { proposal = canvasStore.canvasProposalRead(name || canvasStore.canvasCurrentName()); } catch {}
+    const tag = proposal ? `${stamp}-${proposal.id}` : String(stamp);
     if (stamp > 0 && !Object.keys(lost).length) {
-      res.set("ETag", `"${stamp}"`);
+      res.set("ETag", `"${tag}"`);
       res.set("Cache-Control", "no-cache");
-      if (canvasEtagHit(req.headers["if-none-match"], stamp)) return res.status(304).end();
+      if (canvasEtagHit(req.headers["if-none-match"], tag)) return res.status(304).end();
     }
-    res.json({ name: name || undefined, ...state, ...(Object.keys(lost).length ? { lost } : {}) });
+    res.json({ name: name || undefined, ...state, ...(Object.keys(lost).length ? { lost } : {}), ...(proposal ? { proposal } : {}) });
   } catch (e) {
     // 读不出来就明说读不出来。以前这一层拿到的是一张空画布（tools 里一个 catch 全吞了），
     // 界面照着画成白板，用户在白板上随手一动、自动保存一回，原文件就没了
@@ -381,6 +386,16 @@ app.post("/api/canvas/trash/restore", (req, res) => {
   try {
     const r = canvasStore.canvasTrashRestore(String(req.body && req.body.id || ""));
     res.json({ ok: true, name: r.name, canvases: canvasList(), trash: canvasStore.canvasTrashList() });
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+// 用户在画布上点了「开跑」或「不要」：收掉那份清单。带 id 只收那一份，Agent 这期间又交了新的就不动
+app.post("/api/canvas/proposal/dismiss", (req, res) => {
+  try {
+    const body = req.body || {};
+    const name = String(body.name || "").trim() || "main";
+    if (canvasSafeName(name) !== name) return res.status(400).json({ ok: false, error: "画布名称不合法" });
+    if (!body.id) return res.status(400).json({ ok: false, error: "缺清单号 id" });
+    res.json({ ok: true, dropped: canvasStore.canvasProposalDrop(name, String(body.id)) });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
 /**

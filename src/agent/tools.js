@@ -249,13 +249,14 @@ const TOOL_DEFS = [
       "短剧制作建议按 script → character/location → storyboard/scene → shot → image/video/audio → timeline 建图。先调用 get，不要凭空覆盖用户已经摆好的节点。" +
       "角色节点的 payload 里可以写 voice（这个角色全程用的音色名），镜头节点可以写 speaker（这一镜的台词是谁说的，写角色名或角色 id）。配音就按这两项决定用谁的嗓子：不写的话整部戏所有角色都是同一个默认音色，而且要等成片放出来才听得出。" +
       "镜头节点的提示词分两格：prompt 是首帧画面长什么样，motion_prompt 只写怎么动。生视频只递 motion_prompt——画面内容已经在首帧里了，把首帧提示词再递一遍，模型会照着它重画一遍，生出来的片子跟已经确认过的首帧对不上。" +
-      "生成图片/视频时先调用 generate_image 或 generate_video，拿到真实 file 路径后再用 update 把 first_frame/video/path 写回节点；这样画布会自动显示结果。" +
+      "从画布右栏发起的画布任务里不直接调用 generate_image / generate_video / text_to_speech：先用 update 把提示词（和要指定的 model）写进节点，再用 propose 交一份待生成清单（items: [{node_id, kind: image|video|audio}]），画布会摆出清单和报价，用户点「开跑」才生成、扣费。" +
+      "其他对话里生成图片/视频时先调用 generate_image 或 generate_video，拿到真实 file 路径后再用 update 把 first_frame/video/path 写回节点；这样画布会自动显示结果。" +
       "写回节点只让画布显示得出来，不会动分镜表（用户在界面上改字段是自动回表的，这条工具不是）。分镜表是唯一真源（「改一镜只重算一镜」读的是它），所以同一条路径还要自己写进 分镜表.json 里对应那一镜的 first_frame/video/audio、或角色的 ref——漏了这一步，下次重跑会把已经买过的镜头再买一遍。"
       + "（用户在界面上点生成是自动回写的，Agent 这条路没有。）所有操作只作用于当前项目，不连接其他本地项目。",
     input_schema: {
       type: "object",
       properties: {
-        operation: { type: "string", enum: ["list", "get", "add", "update", "connect", "delete", "clear"], description: "要执行的画布操作" },
+        operation: { type: "string", enum: ["list", "get", "add", "update", "connect", "delete", "clear", "propose"], description: "要执行的画布操作；propose = 交待生成清单，等用户点「开跑」" },
         canvas_name: { type: "string", description: "可选的画布名称；不填则操作用户当前选中的画布" },
         node_id: { type: "string", description: "update/delete 时的节点 id" },
         source_id: { type: "string", description: "connect 时的上游节点 id" },
@@ -264,6 +265,19 @@ const TOOL_DEFS = [
         kind: { type: "string", enum: ["note", "script", "agent", "character", "location", "storyboard", "scene", "shot", "image", "video", "audio", "timeline"], description: "add 时的节点类型" },
         payload: { type: "object", description: "add 时的节点数据；update 时是要合并的字段，如 {prompt, first_frame, video}" },
         position: { type: "object", description: "add/update 时的位置，如 {x: 100, y: 200}" },
+        items: {
+          type: "array",
+          description: "propose 时的待生成清单：每项一个节点 + 生成类型。型号按节点 payload.model 走，写了 model 就必须跟节点上的一致",
+          items: {
+            type: "object",
+            properties: {
+              node_id: { type: "string" },
+              kind: { type: "string", enum: ["image", "video", "audio"] },
+              model: { type: "string", description: "可选，只用来核对；要换型号先 update 节点的 payload.model" },
+            },
+            required: ["node_id", "kind"],
+          },
+        },
       },
       required: ["operation"],
     },
@@ -4086,6 +4100,11 @@ async function executeToolCore(name, input, opts = {}) {
     // 模型看了以为自己漏填字段，于是把同样的东西原样再发一遍，接着再坏一次。
     if (input && typeof input === "object" && typeof input._raw === "string") {
       return { content: badToolArgs(name, input._raw, input._parseError, input._rawLen), isError: true };
+    }
+    // 画布任务里不直接开枪花钱：先交清单，用户在画布上点「开跑」才生成（见 src/tools/canvas.js CANVAS_QUOTE_FIRST）。
+    // 拦在额度、缓存、上游之前：一个字节都没发出去
+    if (CANVAS.CANVAS_QUOTE_FIRST.includes(name) && CANVAS.canvasSessionOf(opts.sessionId)) {
+      return { content: CANVAS.CANVAS_QUOTE_FIRST_NOTE, isError: true };
     }
     switch (name) {
       case "canvas_manage":

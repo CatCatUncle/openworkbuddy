@@ -23,6 +23,7 @@ const connectorsLendOff = () => {
 const awake = require("../platform/awake"); // 睡眠治理：任务期间防睡 + 睡了顺延时限
 const engines = require("../engines"); // 底层引擎：内置循环 / 本机 Claude Code / 本机 Codex
 const bridge = require("../engines/bridge"); // 把本项目的工具借给那两个 CLI（MCP）
+const canvasStore = require("../tools/canvas"); // 画布任务先报价：哪些会话、哪几个工具不借（CANVAS_QUOTE_FIRST）
 const prefs = require("../core/config/prefs"); // 底层引擎 / 思考档是按账号存的，跑任务时得看**发起人**的那份
 const HK = require("./hooks"); // 用户配的钩子：done 没过不许收尾
 const callout = require("../util/callout"); // 正文里的提示条：网页画图标，终端/IM 换文字标签
@@ -2328,7 +2329,7 @@ function modePrompt(mode) {
    * 「已达最大步数 / 已达最大运行时间 / 已手动停止」这三种收尾原样报出去——
    * task-verdict 那层认的就是这几个词，翻译对了，假绿判定在 CLI 引擎上照样生效。
    */
-  async function runViaEngine({ backend, opts = {}, history, emit = () => {}, mode, deadline, stopSignal, baseDir, engineSession, user, projectContext, lang }) {
+  async function runViaEngine({ backend, opts = {}, history, emit = () => {}, mode, deadline, stopSignal, baseDir, engineSession, user, projectContext, lang, sessionId }) {
     const cwd = safeWorkspaceDir(baseDir);
     try { fs.mkdirSync(cwd, { recursive: true }); } catch {}
     if (!deadline) deadline = Date.now() + (config.agent.max_runtime_ms || 1800000);
@@ -2369,9 +2370,12 @@ function modePrompt(mode) {
         home: DATA_DIR,
         baseDir: baseDir || "",
         user: user || "",
-        // 桥是个单独的子进程，组织策略（ALS）跟不过去：不该有的工具在这儿就别借出去
-        tools: skillsWriteOff() || connectorsLendOff()
-          ? require("../engines/tool-bridge").LENDABLE.filter((n) => !(skillsWriteOff() && n === "install_skill") && !(connectorsLendOff() && n === "add_connector"))
+        // 桥是个单独的子进程，组织策略（ALS）跟不过去：不该有的工具在这儿就别借出去。
+        // 画布任务也不借生图 / 生视频 / 配音：那边要先交清单、用户点「开跑」才生成（src/tools/canvas.js CANVAS_QUOTE_FIRST），
+        // 桥那头不知道是哪条会话，拦不住，只能不借
+        tools: skillsWriteOff() || connectorsLendOff() || canvasStore.canvasSessionOf(sessionId)
+          ? require("../engines/tool-bridge").LENDABLE.filter((n) => !(skillsWriteOff() && n === "install_skill") && !(connectorsLendOff() && n === "add_connector")
+            && !(canvasStore.canvasSessionOf(sessionId) && canvasStore.CANVAS_QUOTE_FIRST.includes(n)))
           : undefined,
         extraServers: config.mcp_servers || [],
       });
@@ -2708,7 +2712,7 @@ function modePrompt(mode) {
         try {
           const out = await runViaEngine({
             backend: picked.backend, opts: picked.opts,
-            history, emit, mode, deadline, stopSignal, baseDir, engineSession, user, projectContext, lang,
+            history, emit, mode, deadline, stopSignal, baseDir, engineSession, user, projectContext, lang, sessionId,
           });
           sp.end({ output: out.finalText || "", usage: out.usage, metadata: { stopped: out.stopped || "", engine_session: out.sessionId || "" } });
           if (ownsTrace) tr.end({ output: out.finalText || "", usage: out.usage, metadata: { engine: picked.backend.id } });
@@ -2737,7 +2741,10 @@ function modePrompt(mode) {
     const stableSystem = (systemPrompt || (await coordinatorSystemPrompt(user, memHint, baseDir))) + langBlock(lang) + modePrompt(mode);
     const system = stableSystem + (await volatileSystemBlock({ user, memHint, projBlock: projBlock + brandBlock, mediaReopened }));
     const systemStableLen = stableSystem.length;
-    const tools = toolList(depth, mode);
+    // 画布任务（s_canvas_ 会话）不摆生图 / 生视频 / 配音：那边先交清单、用户点「开跑」才生成。
+    // 摆着就是让模型先调一次、吃一条「请先报价」再改道；硬调了也照样拦（tools.js executeToolCore）
+    const quoteFirst = canvasStore.canvasSessionOf(sessionId);
+    const tools = toolList(depth, mode).filter((t) => !(quoteFirst && canvasStore.CANVAS_QUOTE_FIRST.includes(t.name)));
     // 这一轮真摆给模型的工具名。只读档（ask/plan）清单外的一律不执行（见 runOne）：以前全靠「不摆写工具」，
     // 模型硬编一个 write_file 照样写成功；探索子智能体跑的就是 ask 档，不拦它的只读是一句空话
     const readOnlyMode = mode === "ask" || mode === "plan";

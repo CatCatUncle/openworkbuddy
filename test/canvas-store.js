@@ -3,7 +3,8 @@
 "use strict";
 /**
  * 画布存盘这一侧的安全网 —— 素材台账别把在用的标成「没人用」；
- * 删画布进回收站、Agent 清空和连删之前存快照、.bak 按时间也留。
+ * 删画布进回收站、Agent 清空和连删之前存快照、.bak 按时间也留；
+ * 画布 Agent 交的待生成清单（propose）：只记不生成、随画布一起给、按号收。
  *
  *   node test/canvas-store.js
  *
@@ -57,12 +58,12 @@ app.use(routes.createCanvasRouter({
 }));
 
 let port = 0;
-function call(method, url, body) {
+function call(method, url, body, headers = {}) {
   return new Promise((resolve) => {
     const data = body === undefined ? null : Buffer.from(JSON.stringify(body));
-    const req = http.request({ host: "127.0.0.1", port, path: encodeURI(url), method, headers: data ? { "Content-Type": "application/json", "Content-Length": data.length } : {} }, (res) => {
+    const req = http.request({ host: "127.0.0.1", port, path: encodeURI(url), method, headers: { ...(data ? { "Content-Type": "application/json", "Content-Length": data.length } : {}), ...headers } }, (res) => {
       let b = ""; res.on("data", (c) => (b += c));
-      res.on("end", () => { let json = null; try { json = JSON.parse(b); } catch {} resolve({ code: res.statusCode, json, body: b }); });
+      res.on("end", () => { let json = null; try { json = JSON.parse(b); } catch {} resolve({ code: res.statusCode, json, body: b, etag: res.headers.etag || "" }); });
     });
     req.on("error", (e) => resolve({ code: 0, json: null, body: e.message }));
     if (data) req.write(data);
@@ -221,6 +222,57 @@ async function main() {
     ok(store.canvasSnapshotBeforeDelete("连删", st, k0 + 60e3) === null, "一分钟后接着删：还是同一串，不存");
     for (let i = 0; i < store.CANVAS_SNAP_KEEP + 5; i++) store.canvasSnapshotSave("连删", "删节点前", st, k0 + (i + 10) * 3600e3);
     ok(fs.readdirSync(path.join(OWB, "canvas-snapshots", "连删")).length === store.CANVAS_SNAP_KEEP, `快照一张画布封顶 ${store.CANVAS_SNAP_KEEP} 份`);
+
+    console.log("\n【9】画布 Agent 先报价：propose 只交清单、不生成；清单随画布一起给，点了按号收掉");
+    store.canvasWriteState(board([
+      node("s1", "shot", { id: "s1", prompt: "一号镜头", model: "假图模型" }), node("s2", "shot", { id: "s2", prompt: "二号镜头" }),
+      node("c1", "character", { name: "阿青", description: "短发" }), node("t1", "note", { title: "备注" }),
+    ]), "报价测");
+    const before = JSON.stringify(store.canvasReadState("报价测"));
+    const propose = (items) => store.canvasManage({ operation: "propose", canvas_name: "报价测", items });
+    out = propose([{ node_id: "s1", kind: "image" }, { node_id: "s1", kind: "image" }, { node_id: "s2", kind: "video" }, { node_id: "c1", kind: "image" }]);
+    const pr = store.canvasProposalRead("报价测");
+    ok(!out.isError && /2 张图、1 段视频/.test(out.content) && /没有扣费/.test(out.content) && /开跑/.test(out.content), "★交清单：回话说清几张图几段视频、还没生成没扣费、等用户点「开跑」★", out.content);
+    ok(pr && /^p_/.test(pr.id) && JSON.stringify(pr.items) === JSON.stringify([{ node_id: "s1", kind: "image" }, { node_id: "s2", kind: "video" }, { node_id: "c1", kind: "image" }]),
+      "清单落在画布旁边，同一节点同一类只记一次", pr);
+    ok(JSON.stringify(store.canvasReadState("报价测")) === before && outputFiles().every((f) => !/一号镜头|s1/.test(f.name)), "交清单不碰画布、不出任何文件");
+    const bad = [
+      [[], /items/], [[{ node_id: "不存在", kind: "image" }], /找不到节点/], [[{ node_id: "s1", kind: "music" }], /只能是 image/],
+      [[{ node_id: "t1", kind: "image" }], /note 节点 t1 不能生成 image/], [[{ node_id: "c1", kind: "video" }], /不能生成 video/],
+      [[{ node_id: "s1", kind: "image", model: "别的模型" }], /先用 update 把 payload\.model 改成「别的模型」/],
+      [[{ node_id: "s2", kind: "audio", model: "某型号" }], /别写 model/],
+      [Array.from({ length: 61 }, () => ({ node_id: "s1", kind: "image" })), /最多 60 项/],
+    ].map(([items, re]) => { const o = propose(items); return { ok: o.isError && re.test(o.content), why: o.content }; });
+    ok(bad.every((b) => b.ok) && store.canvasProposalRead("报价测").id === pr.id,
+      "★不对的清单一律退回、说清哪里不对；型号跟节点上写的不一样也退回（用户看到的要跟真跑的一样）★ 退回的不顶掉上一份", bad.filter((b) => !b.ok));
+    ok(!propose([{ node_id: "s1", kind: "image", model: "假图模型" }]).isError, "  └ 反向对照：型号跟节点上写的一样就收");
+    const p2 = store.canvasProposalRead("报价测");
+    ok(p2 && p2.id !== pr.id && p2.items.length === 1, "新交的一份顶掉旧的（一张画布只摆一份）", p2);
+
+    r = await call("GET", "/api/canvas?name=报价测");
+    ok(r.code === 200 && r.json.proposal && r.json.proposal.id === p2.id && r.json.nodes.length === 4, "★GET /api/canvas 带上清单：画布轮询一趟就拿到★", r.json && r.json.proposal);
+    const tagWith = r.etag;
+    r = await call("GET", "/api/canvas?name=报价测", undefined, { "If-None-Match": tagWith });
+    ok(r.code === 304, "同一份清单再问：304", r.code);
+    propose([{ node_id: "s2", kind: "image" }]);
+    const p3 = store.canvasProposalRead("报价测");
+    r = await call("GET", "/api/canvas?name=报价测", undefined, { "If-None-Match": tagWith });
+    ok(r.code === 200 && r.json.proposal && r.json.proposal.id === p3.id && r.etag !== tagWith,
+      "★画布没变、Agent 又交了一份：不回 304，新清单带得出来★ ETag 不算清单号的话横幅永远出不来", { code: r.code, etag: r.etag, was: tagWith });
+
+    r = await call("POST", "/api/canvas/proposal/dismiss", { name: "报价测", id: p2.id });
+    ok(r.code === 200 && r.json.dropped === false && store.canvasProposalRead("报价测").id === p3.id, "★点的是旧横幅（号对不上）：Agent 刚交的那份不动★", r.json);
+    r = await call("POST", "/api/canvas/proposal/dismiss", { name: "报价测", id: p3.id });
+    ok(r.code === 200 && r.json.dropped === true && store.canvasProposalRead("报价测") === null, "按号收掉", r.json);
+    r = await call("GET", "/api/canvas?name=报价测");
+    ok(r.code === 200 && !("proposal" in r.json), "收掉之后 GET 不再带清单", r.json && r.json.proposal);
+    r = await call("POST", "/api/canvas/proposal/dismiss", { name: "报价测" });
+    const r2 = await call("POST", "/api/canvas/proposal/dismiss", { name: "../报价测", id: "p_x" });
+    ok(r.code === 400 && r2.code === 400, "反向对照：不带清单号、画布名带 ../，都不收", [r.body, r2.body]);
+    propose([{ node_id: "s1", kind: "image" }]);
+    store.canvasTrashPut("报价测");
+    store.canvasWriteState(board([node("s1", "shot", { id: "s1", prompt: "新的一镜" })]), "报价测");
+    ok(store.canvasProposalRead("报价测") === null, "删画布时清单一起作废：再建一张同名的，不冒出上一张的横幅");
   } finally {
     server.close();
   }

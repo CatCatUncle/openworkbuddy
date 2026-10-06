@@ -203,6 +203,8 @@ function canvasTrashPut(name, now = Date.now()) {
   let id = `${safe}@${stamp}.json`;
   for (let n = 2; fs.existsSync(path.join(dir, id)); n++) id = `${safe}@${stamp}-${n}.json`;
   fs.renameSync(src, path.join(dir, id));
+  // 这张画布上没点的待生成清单一起作废：以后再建一张同名的，不能冒出一条上一张的横幅
+  canvasProposalDrop(safe);
   // 删的正是 Agent 认的「当前画布」：指回主画布，免得它接着往一张已经不在的画布上写
   if (canvasCurrentName() === safe) canvasSetCurrentName("main");
   return { id, name: safe, file: path.join(dir, id), deletedAt: now };
@@ -322,6 +324,69 @@ function canvasSnapshotBeforeDelete(name, state, now = Date.now()) {
   if (now - last < CANVAS_DELETE_QUIET_MS) return null;
   try { return canvasSnapshotSave(name, "删节点前", state, now); } catch { return null; }
 }
+/**
+ * 画布任务里的 Agent 不自己花钱：先交清单，用户点「开跑」才生成。
+ *
+ * 画布右栏发出去的对话，会话号是 s_canvas_ 开头（public/js/app-07-canvas-generate.js canvasTaskSessionId）。
+ * 以前提示词写着「需要时直接调用」生成工具：Agent 一句话就能连发十几单，没报价、不带任务号，
+ * 断线了也不知道哪单收过——画布按钮那条路上的扣费确认、台账、版本号它一样都不过。
+ * 现在这类会话里这三个工具一律拦下（tools.js executeToolCore；借给本机引擎的那份也摘掉，见 agent.js runViaEngine），
+ * Agent 改用 propose 交一份「哪几个节点、生什么」的清单，画布摆成横幅，用户点「开跑」走画布自己那条路。
+ */
+const CANVAS_QUOTE_FIRST = ["generate_image", "generate_video", "text_to_speech"];
+function canvasSessionOf(sessionId) { return /^s_canvas_/.test(String(sessionId || "")); }
+// 拦下时回给模型的话：说清该怎么走，它照着改就是，不会原样再撞一次
+const CANVAS_QUOTE_FIRST_NOTE = "请先报价：画布任务里不直接生成，这一单没发出去，也没扣费。" +
+  "先用 canvas_manage 的 update 把提示词（要指定型号就写 payload.model）写进节点，再用 operation \"propose\" 交待生成清单" +
+  "（items: [{node_id, kind: image|video|audio}]）。画布上会摆出清单、型号和报价，用户点「开跑」才生成、扣费。";
+
+// 每类节点能生什么：跟画布上的生成按钮一致（canvasGenerate）。图：镜头首帧、图片、定妆照、场景图；视频：镜头、视频；配音：镜头、音频
+const CANVAS_PROPOSE_KINDS = { image: ["shot", "image", "character", "location"], video: ["shot", "video"], audio: ["shot", "audio"] };
+const CANVAS_PROPOSE_MAX = 60;
+/** 每张画布至多一份待开跑的清单，住在画布文件旁边；新交的顶掉旧的 */
+function canvasProposalPath(name) { return path.join(ws(), ".openworkbuddy", "canvas-proposals", canvasSafeName(name) + ".json"); }
+function canvasProposalRead(name) {
+  try {
+    const p = JSON.parse(fs.readFileSync(canvasProposalPath(name), "utf8"));
+    return p && p.id && Array.isArray(p.items) && p.items.length ? p : null;
+  } catch { return null; }
+}
+/** 收掉一份清单（用户点了「开跑」或「不要」）。带 id 时只收那一份：点的是旧横幅，不能把 Agent 刚交的新清单一起扔了 */
+function canvasProposalDrop(name, id) {
+  const cur = canvasProposalRead(name);
+  if (!cur || (id && cur.id !== String(id))) return false;
+  try { fs.unlinkSync(canvasProposalPath(name)); } catch {}
+  return true;
+}
+/** canvas_manage propose：核对清单、落盘。不碰节点、不发任何生成请求 */
+function canvasPropose(input, state, canvasName) {
+  const raw = Array.isArray(input.items) ? input.items : [];
+  if (!raw.length) return { content: "propose 要带 items：[{node_id, kind}]，kind 是 image / video / audio。", isError: true };
+  if (raw.length > CANVAS_PROPOSE_MAX) return { content: `一份清单最多 ${CANVAS_PROPOSE_MAX} 项，这次是 ${raw.length} 项。分几批交。`, isError: true };
+  const items = [], seen = new Set();
+  for (const it of raw) {
+    const id = String((it && it.node_id) || ""), kind = String((it && it.kind) || "");
+    const node = state.nodes.find((n) => n.id === id);
+    if (!node) return { content: `找不到节点：${id || "（空）"}`, isError: true };
+    if (!CANVAS_PROPOSE_KINDS[kind]) return { content: `不支持的生成类型：${kind || "（空）"}，只能是 image / video / audio。`, isError: true };
+    if (!CANVAS_PROPOSE_KINDS[kind].includes(node.kind)) return { content: `${node.kind} 节点 ${id} 不能生成 ${kind}。图：shot/image/character/location；视频：shot/video；配音：shot/audio。`, isError: true };
+    // 型号以节点上写的为准：开跑时画布按节点上的 model 生成。清单里另写一个，用户看到的和真跑的就对不上
+    const model = String((it && it.model) || "").trim(), on = String((node.payload && node.payload.model) || "");
+    if (model && kind === "audio") return { content: `配音按角色音色走，不按型号选：节点 ${id} 这一项别写 model。`, isError: true };
+    if (model && model !== on) return { content: `节点 ${id} 上写的型号是「${on || "没写（用短剧默认）"}」，清单里是「${model}」。先用 update 把 payload.model 改成「${model}」，再交清单。`, isError: true };
+    if (seen.has(id + "\n" + kind)) continue;
+    seen.add(id + "\n" + kind);
+    items.push({ node_id: id, kind });
+  }
+  const proposal = { id: `p_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`, at: Date.now(), items };
+  const file = canvasProposalPath(canvasName);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(proposal), "utf8");
+  const count = (k) => items.filter((x) => x.kind === k).length;
+  const sum = [["image", "张图"], ["video", "段视频"], ["audio", "条配音"]].filter(([k]) => count(k)).map(([k, w]) => count(k) + " " + w).join("、");
+  return { content: `待生成清单已摆到画布 ${canvasName} 上：${sum}。还没有生成，也没有扣费：用户在画布上看过型号和报价、点「开跑」才开始，点「不要」就作废。` +
+    "回复里把清单和每项用的型号说给用户，别再调用生成工具。", isError: false };
+}
 function canvasList() {
   const dir = path.join(ws(), ".openworkbuddy", "canvases"), out = [], add = (name, file) => {
     let stat = null, state = canvasEmptyState(), broken = "";
@@ -408,6 +473,7 @@ function canvasManage(input = {}, ctx = {}) {
   // 重新建一遍节点，一存就把原文件盖了
   try { state = canvasReadState(canvasName); } catch (e) { return { content: e.message, isError: true }; }
   if (op === "get") return { content: JSON.stringify({ canvas_name: canvasName, version: state.version, updatedAt: state.updatedAt, nodes: state.nodes, edges: state.edges }), isError: false };
+  if (op === "propose") return canvasPropose(input, state, canvasName);
   if (op === "clear") {
     // 先存快照再清：存不下来就不清——清掉了却没留底，用户那一下「撤销」就是空的
     let snap = null;
@@ -469,5 +535,6 @@ module.exports = {
   canvasCurrentName, canvasSetCurrentName, canvasNormalizeState, canvasBackup, canvasReadState, canvasWriteState, canvasRotateBackups,
   canvasList, canvasManage, canvasRebasePaths, canvasStamp,
   canvasTrashPut, canvasTrashList, canvasTrashRead, canvasTrashRestore,
-  CANVAS_SNAP_KEEP, canvasSnapshotSave, canvasSnapshotList, canvasSnapshotRestore, canvasSnapshotBeforeDelete
+  CANVAS_SNAP_KEEP, canvasSnapshotSave, canvasSnapshotList, canvasSnapshotRestore, canvasSnapshotBeforeDelete,
+  CANVAS_QUOTE_FIRST, CANVAS_QUOTE_FIRST_NOTE, canvasSessionOf, canvasProposalRead, canvasProposalDrop
 };
