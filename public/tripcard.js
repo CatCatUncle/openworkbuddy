@@ -586,10 +586,16 @@
     function viewBox() {
       const W = map.clientWidth, H = map.clientHeight;
       const occ = !narrow() && !lay.fold ? panel.offsetWidth + INSET : 0;
-      const v = { L: 50, T: multi ? 62 : 32, R: W - occ - 30, B: H - 44 };
+      const v = { L: 50, T: multi ? 62 : 32, R: W - occ - 30, B: H - 44, occ };
       if (v.R - v.L < 80) { v.L = 24; v.R = Math.max(v.L + 40, W - occ - 24); }
       if (v.B - v.T < 80) { v.T = 24; v.B = Math.max(v.T + 40, H - 24); }
       return v;
+    }
+    // 看得见的那块的正中间（右边那栏挡住的不算）。不拿 viewBox 的中点：它两边留白不一样宽
+    // （左边让开缩放钮），中点会往右偏 10px，滑过去的那一站看着就不在正中
+    function visMid() {
+      const v = viewBox();
+      return [(map.clientWidth - v.occ) / 2, (v.T + v.B) / 2];
     }
     function fit(force) {
       const W = map.clientWidth, H = map.clientHeight;
@@ -710,7 +716,7 @@
       const nz = Math.max(3, Math.min(srcInfo().maxZoom, st.z + dz));
       if (nz === st.z || !st.src) return;
       stopFly();
-      if (px == null) { const v = viewBox(); px = (v.L + v.R) / 2; py = (v.T + v.B) / 2; }
+      if (px == null) [px, py] = visMid();
       const wx = st.cx - W / 2 + px, wy = st.cy - H / 2 + py;
       const lng = xLng(wx, st.z), lat = yLat(wy, st.z);
       st.z = nz;
@@ -729,9 +735,9 @@
       if (pan && p && st.src) {
         // 挪到看得见的那块正中间（不是整张地图正中间——那儿可能被右边那栏挡着）；滑过去，不是一下跳过去
         const [x, y] = ptOf(p);
-        const W = map.clientWidth, H = map.clientHeight, v = viewBox();
+        const W = map.clientWidth, H = map.clientHeight, [mx, my] = visMid();
         st.moved = true;
-        flyTo(lngX(x, st.z) - ((v.L + v.R) / 2 - W / 2), latY(y, st.z) - ((v.T + v.B) / 2 - H / 2));
+        flyTo(lngX(x, st.z) - (mx - W / 2), latY(y, st.z) - (my - H / 2));
       }
     }
     let fly = 0;

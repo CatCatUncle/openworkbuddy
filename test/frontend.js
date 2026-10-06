@@ -6557,7 +6557,13 @@ const TRIP_CHECKS = `
   w.querySelector('.tc-zoom [data-z="1"]').click();
   cards[0].click();
   const vis = () => { const m = map.getBoundingClientRect(); return { x: (m.left + panel.getBoundingClientRect().left) / 2, m }; };
-  const slid = await until(() => { const r = pins[0].getBoundingClientRect(); return !pins[0].hidden && Math.abs(r.left + r.width / 2 - vis().x) < 8; }, 1500);
+  // 停稳了再量：只看「离中间近」的话，滑的半路上路过那一下就会被当成到了（2026-10-07 CI 慢机上就这样露馅：停下来其实偏了 10px）
+  let lastX = NaN;
+  const slid = await until(() => {
+    const r = pins[0].getBoundingClientRect(), x = r.left + r.width / 2, still = Math.abs(x - lastX) < 0.5;
+    lastX = x;
+    return !pins[0].hidden && still && Math.abs(x - vis().x) < 3;
+  }, 2500);
   const p0 = pins[0].getBoundingClientRect();
   ok("放大后点第 1 张卡片：地图滑到这一站，停在没被挡住那块的中间", slid && p0.right <= panel.getBoundingClientRect().left, Math.round(p0.left + p0.width / 2) + " vs " + Math.round(vis().x));
   w.querySelector(".tc-zoom .tc-reset").click();
