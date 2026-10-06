@@ -1143,6 +1143,100 @@ console.log("\n【6】离职：停用账号关的是他本人的路，中转站�
   ok(/unpricedChat\(user, runLLM\)/.test(dramaSrc) && /unpricedWhy\) return res\.status\(402\)/.test(dramaSrc),
      "短剧草稿那条真调模型的路也接上了");
 
+  // ---- ⑥ 主渠道挂了换备用渠道：换道前同一道价目闸再量一次；换过道的两段各按各的价记账 ----
+  // 入口那道闸只看主渠道。以前有限额的人主渠道一挂，就换到一条没价目的备用渠道上接着跑，
+  // 后半截一分不进预算；记账又拿主渠道的价算整趟——备用那条贵十倍，预算也只扣便宜那份。
+  {
+    const quotaMod = require(mod("quota"));
+    const { createAgentRuntime } = require(mod("agent"));
+    const { McpManager } = require(mod("mcp"));
+    const NEWB = "某个没登记价目的备用型号-x1";
+    const foCfg = (backupModel) => ({
+      agent: { max_steps: 4, tool_timeout_ms: 30000, failover_model: "备" },
+      active_model: "主",
+      models: [
+        { name: "主", provider: "openai", model: "deepseek-chat", base_url: "https://api.example.invalid/v1", api_key: "sk-test-xxxx" },
+        { name: "备", provider: "openai", model: backupModel, base_url: "https://api.example.invalid/v1", api_key: "sk-test-xxxx" },
+      ],
+    });
+    // 主渠道：第一步正常回一个工具调用（花了钱），第二步起服务端持续报错
+    const primary = () => {
+      let n = 0;
+      return {
+        provider: "主", model: "deepseek-chat",
+        async chat({ tools: ts, toolChoice }) {
+          if (!ts || !ts.length || toolChoice === "none") return { text: "（收尾）", toolCalls: [], stopReason: "end_turn", usage: { prompt: 1, completion: 1 } };
+          if (n++ === 0) return { text: "", toolCalls: [{ id: "c1", name: "read_file", input: { path: "没有这个文件.txt" } }], stopReason: "tool_use", usage: { prompt: 2000, completion: 100 } };
+          throw new Error("Service is too busy");
+        },
+      };
+    };
+    // 备用渠道的假工厂：记下有没有真的发出过请求
+    const factory = (hits) => (cfg) => {
+      const row = cfg.models.find((m) => m.name === cfg.active_model);
+      return {
+        provider: row.name, model: row.model,
+        async chat() { hits.push(row.model); return { text: "备用渠道答完了", toolCalls: [], stopReason: "end_turn", usage: { prompt: 3000, completion: 1000 } }; },
+      };
+    };
+    const foDir = path.join(HOME, "failover-ws"); // 建在本套件的临时家里，跟着它一起收
+    fs.mkdirSync(foDir, { recursive: true });
+    const foRun = async (cfg, actor) => {
+      const hits = [], events = [];
+      const rt = createAgentRuntime({ config: cfg, llm: primary(), mcpManager: new McpManager(), experts: [], llmFactory: factory(hits) });
+      const go = () => tools.withWorkspace(foDir, () => rt.runTask({ history: [{ role: "user", content: "看一眼那个文件" }], emit: (e) => events.push(e) }));
+      let r = null, err = null;
+      try { r = await (actor ? quotaMod.withActor(actor, go) : go()); } catch (e) { err = e; }
+      return { r, err, hits, events, fo: events.filter((e) => e.type === "failover") };
+    };
+    const capped = (cfg) => ({
+      org: org.DEFAULT_ORG, user: "xiaoyuan", dept: "", source: "web", quota: null,
+      budget: { orgId: org.DEFAULT_ORG, org: { budget: { org_yuan: 500 } }, user: { username: "xiaoyuan" } },
+      price: { config: cfg },
+    });
+
+    const cfgA = foCfg(NEWB);
+    const A = await foRun(cfgA, capped(cfgA));
+    ok(A.hits.length === 0, "★有限额、备用渠道没价目★ 不换道：备用那条一次请求都没发", A.hits);
+    ok(A.fo.length === 1 && A.fo[0].blocked === true && /价目表/.test(A.fo[0].note) && /没换到备用渠道「备」/.test(A.fo[0].note),
+       "照实说没换、卡在没价目、去哪补", A.fo.map((e) => e.note));
+    ok(A.err && /too busy/.test(A.err.message), "主渠道的错原样报出来，任务如实失败（不是悄悄跑完）", A.err && A.err.message);
+    const A0 = await foRun(cfgA, null);
+    ok(A0.hits.length === 1 && A0.r && A0.r.provider === "备" && A0.fo.length === 1 && !A0.fo[0].blocked,
+       "反向对照：没设任何限额，同一条备用渠道照常换过去（单机用户的老行为不变）", { hits: A0.hits, fo: A0.fo, err: A0.err && A0.err.message });
+
+    const cfgB = foCfg("claude-opus-5");
+    const B = await foRun(cfgB, capped(cfgB));
+    ok(B.hits.length === 1 && B.r && B.r.provider === "备" && B.r.model === "claude-opus-5",
+       "反向对照：备用渠道有价目，有限额也照常换；交回的是真在跑的那条", B.r && { provider: B.r.provider, model: B.r.model, err: B.err && B.err.message });
+    const by = (B.r && B.r.usageBy) || [];
+    const seg = (p) => by.find((x) => x.provider === p) || { usage: {} };
+    ok(by.length === 2 && seg("主").usage.prompt === 2000 && seg("备").usage.prompt === 3000 && seg("备").model === "claude-opus-5",
+       "用量按渠道拆开交回：主渠道那一步、备用渠道那几步各是各的", by);
+    const ev = B.events.find((e) => e.type === "usage");
+    ok(ev && Array.isArray(ev.usageBy) && ev.usageBy.length === 2, "usage 事件也带着拆开的那份（命令行记账读的是它）", ev);
+
+    const sid = "failover-split-1";
+    account.chargeRun({ username: "xiaoyuan" }, { ...B.r.usage, model: B.r.model, provider: B.r.provider, source: "web", sessionId: sid, usageBy: B.r.usageBy });
+    const rows = usageStore.read({}).filter((x) => x.kind === "run" && x.sessionId === sid);
+    // 折扣跟记账同一个口径：前面【5】给默认组织设过折扣
+    const disc = org.settingsOf(org.getOrg(org.DEFAULT_ORG)).price_discount;
+    const want = (m, u) => pricing.costOf({ model: m, prompt: u.prompt, completion: u.completion }, { config: cfgB, discount: disc }).yuan;
+    const rowOf = (m) => rows.find((x) => x.model === m);
+    ok(rows.length === 2 && rowOf("deepseek-chat") && rowOf("claude-opus-5"), "★记账两段各一行★ 型号各是各的", rows.map((x) => [x.model, x.cost]));
+    const total = rows.reduce((t, x) => t + x.cost, 0);
+    const right = want("deepseek-chat", seg("主").usage) + want("claude-opus-5", seg("备").usage);
+    ok(Math.abs(total - right) < 1e-6, "两段的钱加起来 = 主渠道价 × 主渠道用量 + 备用价 × 备用用量", { total, right });
+    const allAtPrimary = want("deepseek-chat", B.r.usage);
+    ok(total > allAtPrimary * 2, "反向对照：整趟按主渠道的价记会少算一大截（这把尺子量得出差别）", { total, allAtPrimary });
+    ok(rows.reduce((t, x) => t + x.prompt, 0) === B.r.usage.prompt && rows.reduce((t, x) => t + x.calls, 0) === B.r.usage.calls,
+       "拆开后 token、调用次数的合计跟整趟对得上，不多记也不漏记", rows.map((x) => [x.prompt, x.calls]));
+
+    ok(/spentBy\.push\(\.\.\.r\.usageBy\)/.test(SRC9) && /usageBy: spentBy/.test(SRC9),
+       "网页对话那条路把拆开的用量交给记账");
+    ok(/usageBy: r\.usageBy/.test(SRC9), "定时任务 / IM 那条路也交了");
+  }
+
   /* ============================================================
      【11】中转站只转登记过的型号
      ============================================================

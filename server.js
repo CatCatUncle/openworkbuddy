@@ -7172,6 +7172,10 @@ app.post("/api/chat", async (req, res) => {
   // 这一轮真正干活的模型。本机引擎接管时它不是 sessLLM：以前账本和健康账本都记到 config 里那个
   // 云模型头上——跑的是 Claude Code，账本写 deepseek-chat，DeepSeek 的健康分还替别人挨了刀
   let ranLLM = { model: sessLLM.model, provider: sessLLM.provider };
+  // 每一轮按真实跑的渠道记一笔。中途换过备用渠道的那轮，agent 把用量按渠道拆开交回来（usageBy），
+  // 记账时各按各的价；没换过道就照旧按 ranLLM 记整趟（mixed 为假时不传 usageBy）
+  const spentBy = [];
+  let spentMixed = false;
   // 首轮对话：并行起一个真正的短标题（拿消息前 24 个字截断当标题太丑）。
   // 跟任务并行跑，任务收尾时基本已就绪，不给任务加等待；花的 token 记进同一笔账
   let titleP = null;
@@ -7272,6 +7276,8 @@ app.post("/api/chat", async (req, res) => {
         mediaReopened = [];   // 只报给这一轮：后面的目标轮/插队不是「人又说了一次话」
         addUsage(total, r && r.usage);
         if (r && r.provider) ranLLM = { model: r.model || r.provider, provider: r.provider };
+        if (r && Array.isArray(r.usageBy)) { spentBy.push(...r.usageBy); spentMixed = true; }
+        else if (r && r.usage) spentBy.push({ provider: ranLLM.provider, model: ranLLM.model, usage: r.usage });
         if (r && r.sessionId) lanes.rememberEngineSession(sess, r.engine || laneEngine, r.sessionId);
         if (r && r.finalText) lastFinal = r.finalText;
         if (r && r.stopped) roundStopped = r.stopped;
@@ -7357,7 +7363,7 @@ app.post("/api/chat", async (req, res) => {
 
   // 记账：按整个任务（含插队追加轮）的总 tokens 扣积分
   if (user && total.calls > 0) {
-    const spent = account.chargeRun(user, { ...total, model: ranLLM.model, provider: ranLLM.provider, source: "web", sessionId });
+    const spent = account.chargeRun(user, { ...total, model: ranLLM.model, provider: ranLLM.provider, source: "web", sessionId, ...(spentMixed ? { usageBy: spentBy } : {}) });
     // 不限额时 spent 是 0，就别在结果下面挂一行「扣 0 积分」了，那只是噪声
     if (spent > 0) emitFn({ type: "credits", spent, balance: user.credits });
   }
@@ -8311,7 +8317,7 @@ function accountedRuntime(baseRuntime, source) {
       if (owner && r && r.usage && r.usage.calls > 0) {
         const ran = r.provider ? { model: r.model || r.provider, provider: r.provider } : runLLM;
         // 带上会话：定时任务那一趟的用量要能对回运行记录上那段回放（不带的话账本里只剩一行没来由的数）
-        account.chargeRun(owner, { ...r.usage, model: ran.model, provider: ran.provider, source, sessionId: rest.sessionId || "" });
+        account.chargeRun(owner, { ...r.usage, model: ran.model, provider: ran.provider, source, sessionId: rest.sessionId || "", ...(Array.isArray(r.usageBy) ? { usageBy: r.usageBy } : {}) });
       }
       return r;
     },

@@ -736,7 +736,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
           history,
           sessionId: sessionKey, // 改文件留的检查点记在这个 IM 会话名下
           emit: (ev) => {
-            if (ev.type === "failover") spendMixed = true;
+            if (ev.type === "failover" && !ev.blocked) spendMixed = true; // blocked：价目闸没让换，还是那一条渠道
             if (ev.type === "tool_result") runSpend.noteTool(ev.name); // 直连付费接口、自己不记账的工具（看图）：记一项单价未知
             if (ev.type === "usage") noteChat(ev);
             if (ev.type === "files" && Array.isArray(ev.changed)) for (const n of ev.changed) changedNames.add(n);

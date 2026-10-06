@@ -38,6 +38,8 @@ const continueGate = require("./gates/continue-gate"); // 续跑之前那道闸�
 const askGate = require("./gates/ask-gate");   // 弹给用户那一问之前那道闸的纯判据（同上，不发网络）
 const skillGate = require("./gates/skill-gate"); // 开工之前「该照哪个技能做」的纯判据，以及已加载技能挂进系统提示词那一段（同上，不发网络）
 const recipes = require("../domains/content/recipes"); // 内容配方：开头一张表单定岔路、答案钉进系统提示词、按配方放宽上限
+const quotaMod = require("../core/billing/quota");   // 这趟任务记在谁的额度上（网页请求 / IM / 定时任务进门时挂好的那份）
+const budgetMod = require("../core/billing/budget"); // 价目闸：有限额的人不许跑没价目的远端型号
 
 const DELEGATE_TOOL = {
   name: "delegate_to_expert",
@@ -857,6 +859,56 @@ const IMPLIED_BASE = {
   gemini: "https://generativelanguage.googleapis.com/v1beta",
   ollama: "http://localhost:11434",
 };
+
+/**
+ * 备用渠道能不能接手：跟入口那道价目闸（server.js unpricedChat）同一个判据，只是换成备用那条。
+ * 这趟任务没挂额度主体（单机、没配任何限额）就不拦，跟入口一致。返回拦下的那句话，放行回 ""。
+ * 预算模块自己坏了不拦正事，跟入口同一个选择：放行，但喊一声。
+ */
+function backupUnpriced(next, name) {
+  const who = quotaMod.currentActor();
+  if (!who || !who.budget || !next || !next.model) return "";
+  try {
+    const hit = budgetMod.unpriced({
+      ...who.budget,
+      usage: { model: next.model },
+      price: { ...(who.price || {}), name: next.provider || name },
+    });
+    return hit ? hit.message : "";
+  } catch (e) {
+    console.warn("[预算] 备用渠道的价目闸没能判（本次放行）：" + (e && e.message));
+    return "";
+  }
+}
+
+/**
+ * 一次模型调用的用量记进这趟任务的账：总数一份，再按渠道分开记一份。
+ * 中途换过备用渠道的，两段各按各的价目记账——全按主渠道的价算，备用那条更贵时预算就少扣了。
+ */
+function tallyUsage(stats, u, lm) {
+  if (!stats || !u) return;
+  stats.prompt += u.prompt || 0;
+  stats.completion += u.completion || 0;
+  stats.cached = (stats.cached || 0) + (u.cached || 0);
+  stats.calls++;
+  const provider = (lm && lm.provider) || "";
+  const model = (lm && lm.model) || "";
+  const by = stats.byChannel || (stats.byChannel = new Map());
+  const k = provider + "\u0000" + model;
+  const row = by.get(k) || { provider, model, prompt: 0, completion: 0, cached: 0, calls: 0 };
+  row.prompt += u.prompt || 0;
+  row.completion += u.completion || 0;
+  row.cached += u.cached || 0;
+  row.calls++;
+  by.set(k, row);
+}
+
+/** 用过不止一条渠道时，按渠道拆开的用量（给记账用）；只用过一条就回 null，老调用方照旧按总数记 */
+function usageByChannel(stats) {
+  const by = stats && stats.byChannel;
+  if (!by || by.size < 2) return null;
+  return [...by.values()].map(({ provider, model, ...u }) => ({ provider, model, usage: u }));
+}
 
 /**
  * 当前生效的模型渠道（base_url / api_key / model / provider / caps），给「拿主模型看图」用。
@@ -2112,12 +2164,7 @@ function modePrompt(mode) {
         onTextDelta: (delta) => emit({ type: "text", delta, depth }),
       });
       gen.end({ output: result.text || "", usage: result.usage });
-      if (result.usage) {
-        stats.prompt += result.usage.prompt;
-        stats.completion += result.usage.completion;
-        stats.cached = (stats.cached || 0) + (result.usage.cached || 0);
-        stats.calls++;
-      }
+      tallyUsage(stats, result.usage, L2);
       // 不认 tool_choice 的中转可能还是回了 tool_use 块：没人执行，留在 raw 里就是一条配不上对的调用
       const raw = Array.isArray(result.raw) ? result.raw.filter((b) => !b || b.type !== "tool_use") : result.raw;
       history.push({ role: "assistant", text: result.text, toolCalls: [], raw });
@@ -2276,7 +2323,7 @@ function modePrompt(mode) {
       throw e;
     }
     gen.end({ output: result.text || "", usage: result.usage });
-    if (result.usage && stats) { stats.prompt += result.usage.prompt; stats.completion += result.usage.completion; stats.cached = (stats.cached || 0) + (result.usage.cached || 0); stats.calls++; }
+    tallyUsage(stats, result.usage, lm);
     const summary = String(result.text || "").trim();
     if (!summary) { emit({ type: "compact", removed: 0, failed: "模型没吐出摘要，这一次没压成" }); return; }
     // 先归档再动刀：压缩只做搬家不做销毁，真要翻旧账去 data/compact-archive 找
@@ -2857,8 +2904,18 @@ function modePrompt(mode) {
       if (!name || failedOver) return false;
       if ((L.provider || "") === name) return false; // 当前就跑在这条渠道上（主选=备用），没有道可换
       if (!(config.models || []).some((m) => m.name === name)) return false; // 渠道已被删掉，配置过期
-      try { L = makeLLM({ ...config, active_model: name }); }
+      let next;
+      try { next = makeLLM({ ...config, active_model: name }); }
       catch (e) { console.warn("[agent] 备用渠道创建失败:", e.message); return false; }
+      // 入口那道价目闸只看了主渠道。有限额的人换到一条没价目的备用渠道，后半截记不进预算，
+      // 限额就成了摆设——所以换道前同一把尺子再量一次，量不过就不换，照实说卡在哪儿
+      const why = backupUnpriced(next, name);
+      if (why) {
+        failedOver = true; // 这趟不再试第二次：同一条渠道、同一张价目表，结论不会变
+        emit({ type: "failover", blocked: true, note: `${reason}。没换到备用渠道「${name}」：${why}`, channel: name, depth });
+        return false;
+      }
+      L = next;
       failedOver = true;
       emit({ type: "failover", note: `${reason}，已切换到备用渠道「${name}」继续本任务`, channel: name, depth });
       return true;
@@ -3102,10 +3159,7 @@ function modePrompt(mode) {
       }
 
       if (result.usage) {
-        stats.prompt += result.usage.prompt;
-        stats.completion += result.usage.completion;
-        stats.cached = (stats.cached || 0) + (result.usage.cached || 0);
-        stats.calls++;
+        tallyUsage(stats, result.usage, L);
         // 累计到这一步为止用了多少：终端那行「· 12s · 8.4k tokens」靠它走字，不用等到整趟跑完的 usage
         if (depth === 0) emit({ type: "step_usage", prompt: stats.prompt, completion: stats.completion, calls: stats.calls });
       }
@@ -3521,8 +3575,10 @@ function modePrompt(mode) {
       calls: stats.calls,
       elapsed_ms: Date.now() - stats.startedAt,
     };
+    // 换过备用渠道的，用量按渠道拆开交回去：记账两段各按各的价，不拿最后那条的价算整趟
+    const usageBy = usageByChannel(stats);
     if (depth === 0) {
-      emit({ type: "usage", model: L.model, provider: L.provider, ...usage });
+      emit({ type: "usage", model: L.model, provider: L.provider, ...usage, ...(usageBy ? { usageBy } : {}) });
     }
     if (ownsTrace) {
       tr.end({
@@ -3532,7 +3588,8 @@ function modePrompt(mode) {
       });
       tracer.flush(); // 任务刚结束正是用户点开链接的时刻，别让最后几条在队列里压两秒
     }
-    return { finalText, usage, stopped: stopNote || null };
+    // provider / model 是收尾时真在跑的那条（换过道就是备用那条），server 那边的健康账本、记账都认它
+    return { finalText, usage, stopped: stopNote || null, provider: L.provider || "", model: L.model || "", ...(usageBy ? { usageBy } : {}) };
     } finally {
       // 最后一批产出必须在这一轮结束前发出去，不能等尾随定时器。
       // 出错路径上也要发：半截产出照样是用户的东西，不能因为任务栽了就藏起来
