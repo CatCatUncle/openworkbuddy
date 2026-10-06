@@ -365,7 +365,7 @@ OpenWorkBuddy 是独立开源项目，跟上面这些公司都没有关联。
 
 官方发布只有 GitHub 上的 CatCatUncle/openworkbuddy 及其 Releases。非官方渠道的安装包不由作者提供更新和支持，使用者的授权以 PolyForm Noncommercial 1.0.0 的条件和商业授权为准。
 
-KylinWork 等项目未经作者许可拿本项目代码二次开发，还擅自改了开源协议，作者已要求其全网下架。
+**KylinWork 等项目未经作者许可拿本项目代码二次开发，还擅自改了开源协议，作者已要求其全网下架。**
 
 Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle)
 

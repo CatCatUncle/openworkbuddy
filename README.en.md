@@ -354,7 +354,7 @@ Anyone who copies or redistributes any part of this software must keep the licen
 
 Official releases are published only at CatCatUncle/openworkbuddy on GitHub and its Releases. Installers from other sources get no updates or support from the author; users' rights are those under the PolyForm Noncommercial License 1.0.0 and any commercial license.
 
-KylinWork and others built on this project's code without the author's permission and changed its license; the author has demanded they be taken down everywhere.
+**KylinWork and others built on this project's code without the author's permission and changed its license; the author has demanded they be taken down everywhere.**
 
 Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle)
 
