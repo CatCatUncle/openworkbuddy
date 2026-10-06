@@ -13,7 +13,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { DATA_DIR, dataPath } = require("../../platform/paths");
+const { APP_DIR, DATA_DIR, dataPath } = require("../../platform/paths");
 const os = require("os");
 const { spawn } = require("child_process");
 
@@ -241,6 +241,55 @@ function realOf(p) {
 }
 
 /**
+ * 硬链接：跟黑名单里的文件共用同一份数据，路径上却看不出任何关系，符号链接那套追不到它。
+ * 只有链接数大于 1 的普通文件才可能是这种情况，这时拿 设备号+inode 去跟黑名单比一遍。
+ * 绝大多数文件链接数是 1，不多花一次比对。
+ */
+function linkedFile(real) {
+  try {
+    const st = fs.statSync(real, { bigint: true }); // Windows 的文件号可能超过 2^53，按 bigint 比才不会撞
+    return st.isFile() && st.nlink > 1n ? st : null;
+  } catch { return null; }
+}
+const INODE_TTL_MS = 5000;
+const INODE_WALK_MAX = 5000;
+const inodeCache = new Map(); // 黑名单目录 -> { at, keys: Set<"dev:ino"> }
+function sameInodeAsBlacklisted(st, bp) {
+  let bst;
+  try { bst = fs.statSync(bp, { bigint: true }); } catch { return false; }
+  if (bst.isFile()) return bst.dev === st.dev && bst.ino === st.ino;
+  if (!bst.isDirectory()) return false;
+  return inodesUnder(bp).has(`${st.dev}:${st.ino}`);
+}
+/**
+ * 黑名单目录里所有文件的 设备号+inode。只在碰到链接数大于 1 的文件时才走一遍，
+ * 走过的缓存几秒（同一轮里连读几个文件不用反复扫）；目录大到走不完就按走到的算——
+ * 黑名单本来就是 ~/.ssh 这种小目录，真填了个大目录，宁可漏判也不让每次读文件都卡住。
+ */
+function inodesUnder(dir) {
+  const now = Date.now();
+  const hit = inodeCache.get(dir);
+  if (hit && now - hit.at < INODE_TTL_MS) return hit.keys;
+  const keys = new Set();
+  let left = INODE_WALK_MAX;
+  const walk = (d, depth) => {
+    let ents;
+    try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      if (--left < 0) return;
+      const f = path.join(d, e.name);
+      if (e.isDirectory()) { if (depth < 6) walk(f, depth + 1); continue; }
+      if (!e.isFile()) continue;
+      try { const s = fs.statSync(f, { bigint: true }); keys.add(`${s.dev}:${s.ino}`); } catch {}
+    }
+  };
+  walk(dir, 0);
+  if (inodeCache.size > 64) inodeCache.clear();
+  inodeCache.set(dir, { at: now, keys });
+  return keys;
+}
+
+/**
  * 按文件安全策略解析路径。workspace 内默认放行（黑名单除外）；
  * workspace 外仅白名单前缀放行 —— 这也让文件工具获得受控的越界能力。
  *
@@ -256,9 +305,10 @@ function resolvePathWithPolicy(sec, rel, workspaceDir, base, platform = process.
   // platform 只管「怎么比」（Windows 不分大小写），测试里传 win32 在别的系统上验这条
   const under = (a, b) => underPrefix(a, b, platform);
   if (sec.gateway) {
+    const st = linkedFile(real);
     for (const b of sec.file_blacklist || []) {
       const bp = expandPath(b, platform);
-      if (under(p, bp) || under(real, bp) || under(real, realOf(bp) || bp)) {
+      if (under(p, bp) || under(real, bp) || under(real, realOf(bp) || bp) || (st && sameInodeAsBlacklisted(st, bp))) {
         return { path: p, allowed: false, reason: `路径在文件黑名单内（${b}）` };
       }
     }
@@ -1116,12 +1166,100 @@ function checkCommand(sec, command, platform = process.platform) {
   return { action: "allow" };
 }
 
+const escRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/** 相邻两个字符串字面量中间的 `+` 去掉："conf"+"ig.json" 按 "config.json" 看 */
+function joinLiterals(s) {
+  return String(s).replace(/(["'`])\s*\+\s*(["'`])/g, "");
+}
+/** 往上一级目录走、或者从脚本自己的位置往上推的写法 */
+const UPWARD_HINTS = [/(?:^|[^.])\.\.(?:[/"'`]|$)/, /\bdirname\s*\(\s*(?:process\.cwd|__dirname|__filename|process\.env|require\.)/, /\bchdir\b/];
+/** 能落到数据根上的线索（环境变量、应用自己 paths 模块里的名字、数据根的目录名） */
+function dataRootHints() {
+  const out = [/openworkbuddy/, /node_path/, /\bdatapath\b|\bdata_dir\b|\bapp_dir\b|\bapppath\b/, ...UPWARD_HINTS];
+  const base = path.basename(DATA_DIR).toLowerCase();
+  if (base.length >= 5) out.push(new RegExp(escRe(base)));
+  return out;
+}
+const HOME_HINTS = [/homedir/, /\benv\s*(?:\.\s*home\b|\[\s*["'`]home["'`])/, /\$home\b|%userprofile%|userprofile/, /["'`]~\//, /\/(?:users|home)\//, ...UPWARD_HINTS];
+/**
+ * 代码里没写出完整路径、却在拼一个指向黑名单的路径：黑名单那项的文件名（或目录名）作为一截路径出现，
+ * 同时又有能定位到它所在位置（数据根 / 家目录）的线索。光有文件名不算——工作区里自己的
+ * config.json 是用户的东西，不能一碰就弹卡。认不全，只是纵深；根治靠系统沙箱。
+ */
+function pointsAtBlacklisted(raw, joined, platform) {
+  if (!raw) return false;
+  const exp = expandPath(raw, platform);
+  const isData = underPrefix(exp, DATA_DIR, platform);
+  const isHome = !isData && underPrefix(exp, os.homedir(), platform);
+  if (!isData && !isHome) return false; // 别处的绝对路径只认字面量
+  const leaf = String(raw).replace(/[\\/]+$/, "").split(/[\\/]/).pop().toLowerCase();
+  const stem = leaf.replace(/\*+$/, "");
+  if (stem.length < 4) return false;
+  // 得是一截路径：前面贴着 / 或引号，后面是 /、引号或备份后缀（.bak、~）；带 * 的按前缀认。
+  // 只认 /：Windows 上传进来的已经按 foldWin 把反斜杠折成了 /，别的系统上反斜杠本来就不是分隔符
+  const tail = leaf.endsWith("*") ? "" : "(?=[/\"'`.~]|$)";
+  const re = new RegExp(`(?<=[/"'\`])${escRe(stem)}${tail}`);
+  const text = dropWorkspacePaths(joined); // 工作区里同名的文件是用户自己的
+  if (!re.test(text)) return false;
+  return (isData ? dataRootHints() : HOME_HINTS).some((h) => h.test(text));
+}
+/** 能找到应用自己代码在哪儿的线索 */
+function appRootLocators() {
+  const out = [/node_path/, /openworkbuddy_home|openworkbuddy\.app/, /require\s*\.\s*resolve|resolve\s*\.\s*paths|module\s*\.\s*paths/, /node_modules/, /execpath|resourcespath|\.asar\b/, ...UPWARD_HINTS];
+  const lit = foldWin(APP_DIR).replace(/\/$/, "");
+  if (lit.length > 1) out.push(new RegExp(escRe(lit) + "(?:[\\/\\\\\"'`]|$)"));
+  return out;
+}
+/** 默认工作区里的绝对路径去掉再看：那底下同名的文件是用户自己的，开发态下它又正好在应用目录底下 */
+function dropWorkspacePaths(joined) {
+  const ws = escRe(foldWin(path.join(DATA_DIR, "workspace")));
+  return joined.replace(new RegExp(ws + "(?:[\\/\\\\](?:(?!\\.\\.)[^\"'`\\s])*)?", "g"), "");
+}
+/** 应用里能改账号、组织、额度、数据根位置的那些模块 */
+const APP_MODULE_RE = /(?:^|["'`\/\\])(?:src[\/\\](?:domains|core|platform|agent|engines|tools|server|cli|im|desktop|util)(?=[\/\\"'`])|(?:accounts?|orgs?|admin|vkeys|budget|quota|pricing|usage-store|paths|security|tenant|cli|server|tool-bridge)(?:\.c?js)?(?=["'`]|$))/;
+/** 命令行入口：起一个子进程跑它，跟 require 进来一样能改账号和额度 */
+const APP_CLI_RE = /(?:^|["'`\/\\\s])(?:cli|tool-bridge)\.js(?=["'`\s]|$)|src[\/\\](?:cli|engines)[\/\\]/;
+const LOAD_CALL_RE = /\b(require|import|createrequire|_load|fork|spawn|spawnsync|exec|execsync|execfile|execfilesync)\s*\(/g;
+/** 从左括号往后取到配对的右括号（最多看 300 个字） */
+function callArg(s, open) {
+  let depth = 0;
+  for (let i = open; i < s.length && i < open + 300; i++) {
+    if (s[i] === "(") depth++;
+    else if (s[i] === ")" && --depth === 0) return s.slice(open + 1, i);
+  }
+  return s.slice(open + 1, open + 300);
+}
+/**
+ * 代码要直接加载应用自己的模块：那等于不经过任何闸调「改组织预算」「给谁签登录令牌」这类函数，
+ * 代码里一个黑名单文件名都不会出现。认法是「找得到应用代码在哪」+「加载的是应用模块、
+ * 加载路径是算出来的、或者起子进程跑应用的命令行入口」同时出现。
+ * 返回命中的那一小段（给审批卡看），没命中返回 ""。
+ */
+function loadsAppModule(joined) {
+  const loc = appRootLocators().map((r) => r.exec(dropWorkspacePaths(joined))).find(Boolean);
+  if (!loc) return "";
+  LOAD_CALL_RE.lastIndex = 0;
+  for (let m; (m = LOAD_CALL_RE.exec(joined)); ) {
+    const fn = m[1];
+    const arg = callArg(joined, m.index + m[0].length - 1);
+    if (fn === "require" || fn === "import") {
+      const literal = /^\s*(["'`])[^"'`$]*\1\s*(?:,[^()]*)?$/.test(arg);
+      if (!literal || APP_MODULE_RE.test(arg)) return loc[0].trim().slice(0, 80);
+    } else if (fn === "createrequire" || fn === "_load") {
+      return loc[0].trim().slice(0, 80);
+    } else if (APP_CLI_RE.test(arg)) {
+      return loc[0].trim().slice(0, 80);
+    }
+  }
+  return "";
+}
+
 /**
  * 代码闸（run_node / 未来的其它运行时）。
  *
  * 命令闸拦得再严，一句 `require("child_process").execSync("rm -rf ~")` 就全绕过去了——
  * 代码是从同一个 agent 嘴里出来的，不能只看 run_shell 那扇门。
- * 这里不做沙箱（做不到），只做一件事：**代码要开子进程、或者伸手去碰文件黑名单，就得你点头**。
+ * 这里不做沙箱（做不到），只做一件事：**代码要开子进程、伸手去碰文件黑名单、或者直接加载应用自己的模块，就得你点头**。
  */
 function checkCode(sec, code, platform = process.platform) {
   const src = String(code || "");
@@ -1134,13 +1272,21 @@ function checkCode(sec, code, platform = process.platform) {
   }
   // Windows 上代码里的路径常写成 "C:\\Users\\Me\\.ssh"，折完跟黑名单比（同 checkCommand）
   const low = platform === "win32" ? foldWin(src) : src.toLowerCase();
+  // 拆成几截再用 + 接起来的字符串，按接好的样子再看一遍
+  const joined = joinLiterals(low);
+  // 黑名单排最前：下面这几条在任何档位下都拦（全自动也不例外），它们挡的是 ~/.ssh、config.json、账号额度这些
   for (const b of sec.file_blacklist || []) {
     const raw = String(b).trim();
-    // 黑名单排最前：这条在任何档位下都拦（全自动也不例外），它挡的是 ~/.ssh、config.json 这些
-    if (pathNeedles(b, platform).some((n) => n && low.includes(n))) {
+    const needles = pathNeedles(b, platform);
+    if (needles.some((n) => n && (low.includes(n) || joined.includes(n)))) {
       return blacklistVerdict(`代码碰到了文件黑名单（${raw}）`, raw);
     }
+    if (pointsAtBlacklisted(raw, joined, platform)) {
+      return blacklistVerdict(`代码在拼文件黑名单里的路径（${raw}）`, raw);
+    }
   }
+  const appMod = loadsAppModule(joined);
+  if (appMod) return blacklistVerdict("代码要直接加载应用自己的模块（能改账号、组织和额度）", appMod);
   if (mode === "full") return { action: "allow" };
   const shellOut = /child_process|execSync|execFileSync|spawnSync|process\.binding|node:child_process/.exec(src);
   if (shellOut) {
