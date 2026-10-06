@@ -145,8 +145,9 @@ const winDeletes = [
   "pwsh -c \"gci x | % { ri $_ }\"", "\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -c \"Remove-Item x\"",
   "powershell /c \"Remove-Item x\"", "powershell -ExecutionPolicy Bypass -WindowStyle Hidden -Command \"Remove-Item x\"",
   "powershell -c \"if (Test-Path x) { Remove-Item x }\"",
-  // 转义符、前缀、条件、循环
-  "powershell -c \"R`emove-Item x\"", "r^d /s /q build", "@del x", "if exist build rd /s /q build",
+  // 转义符、前缀、条件、循环（\u0060 就是 PowerShell 的反引号转义符。源码里落一个孤零零的反引号，
+  // repo-hygiene 剥模板串时会错配对，后面整段测试数据都被当成代码去查 require）
+  "powershell -c \"R\u0060emove-Item x\"", "r^d /s /q build", "@del x", "if exist build rd /s /q build",
   "if /i \"%a%\"==\"y\" del x", "if %n% GEQ 3 del x", "if not errorlevel 1 del x", "call del x",
   "for %i in (*.tmp) do @del %i", "forfiles /m *.tmp /c \"cmd /c del @path\"",
   "$null = Remove-Item x", "Microsoft.PowerShell.Management\\Remove-Item x",
