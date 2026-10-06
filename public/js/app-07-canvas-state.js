@@ -21,6 +21,8 @@ function canvasStorageKey(name = canvasState.canvasName) { return `${CANVAS_STOR
 function canvasConflictStoreKey(scope = canvasScope()) { return `${CANVAS_STORAGE_KEY}.conflict:${scope}`; }
 // 发出去还没收到结果的那几单也记在本机（见 canvasAdoptLocalJobs）：刷新、重启之后还认得出来
 function canvasJobStoreKey(scope = canvasScope()) { return `${CANVAS_STORAGE_KEY}.jobs:${scope}`; }
+// 最后一次确认跟盘上一样的那份内容的指纹（见 canvasNoteSynced）：打开时拿本机副本跟它比，就知道本机有没有没存进项目的改动
+function canvasSyncedStoreKey(scope = canvasScope()) { return `${CANVAS_STORAGE_KEY}.synced:${scope}`; }
 
 const CANVAS_NODE_DEFS = {
   note: { label: "笔记", icon: "notebook-pen", width: 340, height: 205, subtitle: "自由记录想法与任务", group: "策划" },
@@ -83,7 +85,9 @@ let canvasState = {
   // 往上写带 at 当 baseUpdatedAt，盘上已经不是它了就 409；snapshot 用来判「哪边改了哪个节点」。
   // remotePushing 把写入排成一队（两枪并发，第二枪拿着旧 base 必撞 409）；
   // remoteConflict 有值 = 同一个节点两边都改了、正等人选，这期间不写也不拉
-  remoteBase: null, remotePushing: null, remoteConflict: null,
+  // restoreChoice 有值 = 打开时本机有没存进项目的改动、盘上那份又不一样，正等人选留哪份，这期间也不写不拉（见 canvasAskRestoreChoice）
+  // saveFailed：最近一趟往项目里存失败了的那张画布（scope）。存上之前不拉盘上那份——拉回来一铺，没存上的改动就没了
+  remoteBase: null, remotePushing: null, remoteConflict: null, restoreChoice: null, saveFailed: "",
   // 发出去过的版本号（见 canvasNextVersion）和 shot-history 快照的缓存（见 canvasHistoryVersions）
   versionTaken: new Map(), shotHistory: new Map(),
   // 正在出分镜草稿的剧本卡 id（卡上按钮变「生成中…」、不许再点）；

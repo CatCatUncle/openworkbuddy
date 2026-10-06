@@ -655,6 +655,7 @@ async function canvasPushRemoteOnce(armed, depth = 0) {
   // 写了就等于替他选了「用我的」
   if (canvasScope() !== armed.scope) return;
   if (canvasState.remoteConflict && canvasState.remoteConflict.scope === armed.scope) return;
+  if (canvasState.restoreChoice && canvasState.restoreChoice.scope === armed.scope) return;
   const base = canvasState.remoteBase && canvasState.remoteBase.scope === armed.scope ? canvasState.remoteBase : null;
   try {
     // baseUpdatedAt：我是照着盘上哪一版改的。盘上已经不是那一版（别的标签页、Agent 写过），服务端回 409，
@@ -677,8 +678,53 @@ async function canvasPushRemoteOnce(armed, depth = 0) {
       canvasState.remoteContentKey = armed.contentKey;   // 存上去了，这会儿两边一样
       if (canvasScope() === armed.scope) canvasState.remoteBase = { scope: armed.scope, at, snapshot: result.state };
       canvasClearPendingConflict(armed.scope);   // 交上了：盘上已是合好的那份，挂着的旧冲突作废
+      canvasNoteSynced(armed.scope, armed.contentKey);
+      if (canvasState.saveFailed === armed.scope) { canvasState.saveFailed = ""; canvasHideBar("save"); }
+    } else if (!response.ok) {
+      canvasShowSaveError(armed, result.error || `HTTP ${response.status}`);
     }
-  } catch {}
+  } catch (e) {
+    // 以前这儿是空的：服务没起、断网、写盘报错，界面上一个字没有，人以为一直在存
+    canvasShowSaveError(armed, (e && e.message) || String(e));
+  }
+}
+
+/**
+ * 没存进项目：顶上挂一条红的，带服务端的原话，给一颗「重试保存」。本机副本照存，
+ * 下一趟存上了自己消失（见上面 ok 那支）。存上之前不拉盘上那份（见 canvasStartRemoteSync）
+ */
+function canvasShowSaveError(armed, why) {
+  if (canvasScope() !== armed.scope) return;
+  canvasState.saveFailed = armed.scope;
+  canvasShowBar("save", {
+    kind: "err", icon: "circle-x", text: canvasT("没存进项目：{why}", { why: String(why || "").slice(0, 200) }),
+    actions: [{ label: "重试保存", run: (button) => { button.disabled = true; canvasRetrySave(armed); } }],
+  });
+}
+// 重试交的是屏幕上现在这份，不是失败那一趟的旧内容：失败之后人可能又改了几笔
+function canvasRetrySave(armed) {
+  if (!canvasState.graph || canvasScope() !== armed.scope) return Promise.resolve();
+  if (canvasState.remoteWriteTimer) { clearTimeout(canvasState.remoteWriteTimer); canvasState.remoteWriteTimer = null; }
+  canvasState.remoteWriteArmed = null;
+  const snapshot = canvasSnapshot();
+  return canvasPushRemote({ scope: armed.scope, name: armed.name, snapshot, contentKey: canvasHistoryKey(snapshot) });
+}
+
+/**
+ * 记下「这份内容跟盘上一样」：存上了、从盘上拉回来铺好了，都记一笔（只记指纹，不记整份）。
+ * 下回打开时本机副本的指纹跟它不一样，就是本机有没存进项目的改动——存盘失败了，或者没等存完就关了
+ */
+function canvasContentHash(text) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) { h ^= text.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return `${text.length}:${h.toString(16)}`;
+}
+function canvasNoteSynced(scope, contentKey) {
+  try { localStorage.setItem(canvasSyncedStoreKey(scope), canvasContentHash(String(contentKey || ""))); } catch {}
+}
+// null = 这台机器上从没记过（升级上来的老副本），这时分不出本机有没有没存的改动
+function canvasLoadSynced(scope = canvasScope()) {
+  try { return localStorage.getItem(canvasSyncedStoreKey(scope)); } catch { return null; }
 }
 
 // 比内容用的指纹：键排好序，缺省字段按 canvasAddNode 的口径补齐。
@@ -778,7 +824,7 @@ function canvasApplyMerged(snapshot, disk) {
   const same = canvasMergeSameKey(snapshot) === canvasMergeSameKey(disk);
   const onScreen = canvasState.graph && canvasMergeSameKey(canvasSnapshot()) === canvasMergeSameKey(snapshot);
   if (!onScreen) canvasApplySnapshot(snapshot, { fromRemote: same });
-  else if (same) canvasState.remoteContentKey = canvasHistoryKey(canvasSnapshot());
+  else if (same) { canvasState.remoteContentKey = canvasHistoryKey(canvasSnapshot()); canvasNoteSynced(canvasScope(), canvasState.remoteContentKey); }
   return !same;
 }
 
@@ -1017,6 +1063,7 @@ function canvasApplySnapshot(snapshot, { fromRemote = false } = {}) {
   // 只存本机，不再往上顶（见 canvasPersist）
   if (fromRemote) {
     canvasState.remoteContentKey = canvasHistoryKey(canvasSnapshot());
+    canvasNoteSynced(canvasScope(), canvasState.remoteContentKey);
     // 这份就是盘上那份：下一趟往上交就照着它（baseUpdatedAt）。存的是远端原样，不是屏幕上这份——
     // 生成中的卡在屏幕上留的是本机版本，拿屏幕当 base，本机那几笔改动就认不出来了
     canvasState.remoteBase = { scope: canvasScope(), at: Number(snapshot.updatedAt) || 0, snapshot };
@@ -1040,7 +1087,10 @@ function canvasStartRemoteSync() {
     // 挂着一趟还没发出去的写也算：这时候拉回来的是改之前的那份，铺上去等于把刚改的抹掉
     if (!canvasState.graph || canvasState.remoteWritePending || canvasState.remoteWriteArmed) return;
     // 两边都改了、正等人选的时候也不拉：拉回来一铺，人还没选，本机那几张卡就被盖掉了
-    if (canvasState.remotePushing || canvasState.remoteConflict) return;
+    if (canvasState.remotePushing || canvasState.remoteConflict || canvasState.restoreChoice) return;
+    // 上一趟没存进项目：屏幕上这份比盘上新，拉回来一铺就没了。等重试或下一笔改动交上去
+    // （盘上真变了会撞 409，按节点合并），存上了再接着拉
+    if (canvasState.saveFailed && canvasState.saveFailed === canvasScope()) return;
     // 他手上正有活，这一圈先放着：铺快照是 graph.clear() 整图重来、属性面板整块重画。
     // 落在打字中间是刚敲的半句被盖掉、光标掉回 body；落在拖动中间是那张卡被拆掉、
     // 当场弹回原处，手里还按着。手一停就补上
@@ -1048,7 +1098,8 @@ function canvasStartRemoteSync() {
     const previous = Number(canvasState.remoteUpdatedAt || 0);
     const state = await canvasLoadRemote();
     // 拉的这一趟在路上时本机又改了一笔（已经挂上写），拉回来的这份就是旧的了，别铺
-    if (canvasState.remoteWritePending || canvasState.remoteWriteArmed || canvasState.remoteConflict) return;
+    if (canvasState.remoteWritePending || canvasState.remoteWriteArmed || canvasState.remoteConflict || canvasState.restoreChoice) return;
+    if (canvasState.saveFailed && canvasState.saveFailed === canvasScope()) return;
     if (!(state && Number(state.updatedAt) > previous)) return;
     const before = canvasState.graph.getElements().length;
     canvasApplySnapshot(state, { fromRemote: true });

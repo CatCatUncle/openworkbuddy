@@ -646,6 +646,44 @@ function canvasRenderBroken(page, world) {
   if (select) select.onchange = async (event) => { await canvasFlushRemoteWrite(); canvasState.canvasName = event.target.value || "main"; try { localStorage.setItem("openworkbuddy.canvas.name", canvasState.canvasName); } catch {} renderCanvasPage(); };
 }
 
+/**
+ * 留哪份：本机这份（没存进项目的那份）还是项目里那份。不给默认、不替人选；
+ * 选之前屏幕上铺本机这份，改动照存本机，不往项目里写也不拉。横幅一直挂着，切走再回来还问
+ */
+function canvasAskRestoreChoice(local, remote) {
+  const scope = canvasScope();
+  canvasState.restoreChoice = { scope, local, remote };
+  canvasApplySnapshot(local);
+  canvasShowBar("restore", {
+    kind: "warn", icon: "triangle-alert", text: canvasT("本机有改动没存进项目，跟项目里那份不一样。留哪份？"),
+    actions: [
+      { label: "用本机的", run: () => canvasSettleRestore("mine") },
+      { label: "用项目里的", run: () => canvasSettleRestore("disk") },
+    ],
+  });
+}
+async function canvasSettleRestore(side) {
+  const choice = canvasState.restoreChoice;
+  canvasHideBar("restore");
+  canvasState.restoreChoice = null;
+  if (!choice || choice.scope !== canvasScope() || !canvasState.graph) return;
+  if (canvasState.remoteWriteTimer) { clearTimeout(canvasState.remoteWriteTimer); canvasState.remoteWriteTimer = null; }
+  canvasState.remoteWriteArmed = null;
+  const mine = canvasSnapshot();
+  if (side === "mine") {
+    // base 还是打开时盘上那份（canvasRestoreOrSeed 记的）：这期间盘上没变就直接存上去，变了撞 409 按节点合并
+    await canvasPushRemote({ scope: choice.scope, name: canvasState.canvasName, snapshot: mine, contentKey: canvasHistoryKey(mine) });
+    return;
+  }
+  // 拉最新的一份：等人选的这会儿 Agent 可能又写过
+  const disk = (await canvasLoadRemote()) || choice.remote;
+  if (canvasScope() !== choice.scope) return;
+  canvasApplySnapshot(disk, { fromRemote: true });
+  canvasToast(canvasT("已换成项目里那份。"), "circle-check", "", {
+    label: "换回本机的", run: () => { if (canvasScope() === choice.scope) canvasApplySnapshot(mine); },
+  });
+}
+
 /** 拿本机副本盖掉那份读不出来的文件。只有用户自己点了才会走到这儿，且原件已经备份过。 */
 async function canvasRestoreFromLocal(local) {
   if (!local || !local.nodes.length) return;
@@ -678,6 +716,18 @@ function canvasRestoreOrSeed(remote = null) {
     canvasApplySnapshot(local); return;
   }
   if (pending) canvasClearPendingConflict();
+  // 本机副本里有没存进项目的改动（上回存盘失败、或者没等存完就关了），盘上那份又跟它不一样：问人留哪份。
+  // 以前这儿是「盘上有节点铺盘上的，没有铺本机的」——前者把本机没存上的活一声不吭盖掉，
+  // 后者把 Agent 清空的画布又顶回去。没记过指纹的老副本分不出来，照老规矩走
+  const synced = canvasLoadSynced();
+  const written = !!(remote && Array.isArray(remote.nodes) && (Number(remote.updatedAt) > 0 || remote.nodes.length));
+  const dirty = !!(local && synced !== null && canvasContentHash(canvasHistoryKey(local)) !== synced);
+  if (dirty && written && canvasMergeSameKey(local) !== canvasMergeSameKey(remote)) { canvasAskRestoreChoice(local, remote); return; }
+  // 本机没有没存的改动、盘上那份是本机上回存完之后清空的（Agent 清空画布）：照铺空的，不拿本机这份顶回去。
+  // 「撤销」见 canvasOfferSnapshotUndo
+  if (synced !== null && written && local && !remote.nodes.length && Number(remote.updatedAt) > Number(local.savedAt || 0)) {
+    canvasApplySnapshot(remote, { fromRemote: true }); return;
+  }
   const saved = remote && remote.nodes.length ? remote : local;
   if (saved && saved.nodes.length) {
     // 服务器那份直接铺、不回写；本机那份铺完要往上顶一次（这台机器上有、服务器上没有的改动）

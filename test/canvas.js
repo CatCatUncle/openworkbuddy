@@ -145,7 +145,8 @@ const PLAIN = {
 
 // 第二台假服务器：两个项目各一套画布。真实现里 /api/canvas 只收画布名，落到哪个文件是服务端
 // 按「当前打开的项目」自己定的，所以这儿照那样——PUT 一律落到「当前项目 + 请求里的画布名」那一格。
-// __delay 是给「等回包的工夫切走了」那条用的
+// __delay 是给「等回包的工夫切走了」那条用的；__putFail 有值时 PUT 存不进去：
+// "断线" = fetch 直接抛错（服务没起、断网），{ status, error } = 服务端回这个状态码和这句原话
 const STUB2 = `
 (() => {
   window.__store = {
@@ -175,6 +176,11 @@ const STUB2 = `
     }
     if (s.startsWith("/api/canvas") && m === "PUT") {
       const b = JSON.parse(o.body);
+      if (window.__putFail) {
+        (window.__putFails = window.__putFails || []).push((b.state.nodes || []).map((n) => (n.payload || {}).title));
+        if (window.__putFail === "断线") return Promise.reject(new TypeError("Failed to fetch"));
+        return Promise.resolve({ ok: false, status: window.__putFail.status, json: async () => ({ ok: false, error: window.__putFail.error }) });
+      }
       // 乐观并发（server.js PUT /api/canvas 的口径）：带了 baseUpdatedAt、盘上已经不是那一版就回 409 + 盘上那份。
       // 只在 __cas 打开时这么判——前面几节是直接改 __store 来冒充「别处写过」的，那几节量的不是这件事
       const disk = mine[b.name] || { version: 1, nodes: [], edges: [], updatedAt: 0 };
@@ -3164,6 +3170,104 @@ app.whenReady().then(async () => {
      "回收站列在画布下拉里：名字 + 什么时候删的", 回收.己.行);
   ok(回收.己.发的.length === 1 && 回收.己.发的[0].id === "第3集@2026-10-06T12-00-00.json" && 回收.己.现在 === "第3集" && 回收.己.节点 === 2 && /放回来了/.test(回收.己.提示),
      "★下拉里选回收站那一行：放回来并切过去，上面的卡都在★", 回收.己);
+
+  console.log("\n— 四十一、没存进项目要看得见；本机有没存上的改动、盘上又不一样，打开时问留哪份 —");
+  const 存盘 = await run(`
+    (async () => {
+      const 两张 = [{ id: "r1", kind: "note", payload: { title: "原来的" }, position: { x: 40, y: 40 }, size: { width: 280, height: 180 } },
+        { id: "r2", kind: "note", payload: { title: "第二张" }, position: { x: 400, y: 40 }, size: { width: 280, height: 180 } }];
+      window.__putFail = null; window.__putFails = []; window.__cas = false;
+      ${摆画布([{ id: "r1", kind: "note", payload: { title: "原来的" }, position: { x: 40, y: 40 }, size: { width: 280, height: 180 } },
+        { id: "r2", kind: "note", payload: { title: "第二张" }, position: { x: 400, y: 40 }, size: { width: 280, height: 180 } }])}
+      const 条 = (k) => document.querySelector('[data-canvas-bar="' + k + '"]');
+      const 条况 = (k) => 条(k) ? { 字: 条(k).querySelector(".canvas-bar-text").textContent, 钮: [...条(k).querySelectorAll("button")].map((b) => b.textContent.trim()).join("|"), role: 条(k).getAttribute("role") } : null;
+      const 改 = (title) => { const c = canvasState.graph.getCell("r1"); c.set("canvasPayload", { ...c.get("canvasPayload"), title }); canvasPersist(); };
+      const 屏 = () => canvasState.graph.getElements().map((n) => (n.get("canvasPayload") || {}).title).sort().join("、");
+      const 盘 = () => (window.__store.jia.main.nodes || []).map((n) => (n.payload || {}).title).sort().join("、");
+      const 字 = () => ((document.querySelector("#owb-toast span") || {}).textContent) || "";
+      const 同步一圈 = async () => { canvasStartRemoteSync(); ${等(2100)} clearInterval(canvasState.remoteTimer); canvasState.remoteTimer = null; };
+      const 重开 = async () => { await canvasFlushRemoteWrite(); ${等(200)} await renderCanvasPage(); ${等(400)} if (canvasState.remoteTimer) { clearInterval(canvasState.remoteTimer); canvasState.remoteTimer = null; } };
+      // ① 服务端回 500 + 原话：顶上一条红的，照抄原话，给「重试保存」
+      window.__putFail = { status: 500, error: "写画布失败：ENOSPC: no space left on device" };
+      改("断电前写的"); ${等(500)}
+      const 甲 = { 条: 条况("save"), 盘: 盘(), 试过: window.__putFails.length };
+      // ② 存不上的这段时间不拉盘上那份：Agent 在盘上写了一笔，拉下来一铺，「断电前写的」就没了
+      window.__store.jia.main = { version: 2, updatedAt: Date.now() + 1000, edges: [], nodes: [{ ...两张[0], payload: { title: "Agent 写的" } }, 两张[1]] };
+      await 同步一圈();
+      const 乙 = { 屏: 屏() };
+      // ③ 点「重试保存」：存上了，条自己没了
+      window.__putFail = null;
+      if (条("save")) 条("save").querySelector("button").click();
+      ${等(400)}
+      const 丙 = { 条: 条况("save"), 盘: 盘() };
+      // ④ 断线（fetch 直接抛错）也一样挂条，照抄错误原话；下一笔改动存上了条就收掉
+      window.__putFail = "断线";
+      改("断线时写的"); ${等(500)}
+      const 丁一 = 条况("save");
+      window.__putFail = null;
+      改("连上后写的"); ${等(500)}
+      const 丁 = { 断线时: 丁一, 存上后: 条况("save"), 盘: 盘() };
+      // ⑤ 存不上就关了（本机副本里有没存上的改动）、盘上没变：重开问留哪份，屏幕上先铺本机这份，选之前一笔不写
+      window.__putFail = { status: 500, error: "写不进去" };
+      改("没存上就关了"); ${等(500)}
+      window.__putFail = null; window.__puts = [];
+      await 重开();
+      const 戊一 = { 条: 条况("restore"), 屏: 屏(), 写了: window.__puts.length };
+      await 同步一圈();
+      const 戊二 = { 屏: 屏(), 写了: window.__puts.length };
+      if (条("restore")) [...条("restore").querySelectorAll("button")][0].click();
+      ${等(400)}
+      const 戊 = { 一: 戊一, 拉了一圈: 戊二, 选后条: 条况("restore"), 盘: 盘() };
+      // ⑥ 本机没存上、盘上又被 Agent 改了：照样问；选「用项目里的」铺盘上那份，toast 上能「换回本机的」
+      window.__putFail = { status: 500, error: "写不进去" };
+      改("本机这份"); ${等(500)}
+      window.__putFail = null; window.__puts = [];
+      window.__store.jia.main = { version: 2, updatedAt: Date.now() + 2000, edges: [], nodes: [{ ...两张[0], payload: { title: "Agent 后来写的" } }, 两张[1]] };
+      await 重开();
+      const 己一 = { 条: !!条("restore"), 屏: 屏() };
+      if (条("restore")) [...条("restore").querySelectorAll("button")][1].click();
+      ${等(400)}
+      const 己二 = { 屏: 屏(), 条: !!条("restore"), 提示: 字(), 钮: ((document.querySelector("#owb-toast .owb-toast-act") || {}).textContent || "").trim(), 写了: window.__puts.length };
+      const 换回 = document.querySelector("#owb-toast .owb-toast-act"); if (换回) 换回.click();
+      ${等(500)}
+      const 己 = { 一: 己一, 二: 己二, 换回后屏: 屏(), 换回后盘: 盘() };
+      // ⑦ 反向对照：本机存上了、Agent 后来在盘上改了：重开不问，铺盘上的
+      window.__store.jia.main = { version: 2, updatedAt: Date.now() + 3000, edges: [], nodes: [{ ...两张[0], payload: { title: "Agent 又写的" } }, 两张[1]] };
+      await 重开();
+      const 庚 = { 条: !!条("restore"), 屏: 屏() };
+      // ⑧ 本机存上了、Agent 后来清空了画布：铺空的，不拿本机这份顶回去
+      window.__puts = [];
+      window.__store.jia.main = { version: 1, updatedAt: Date.now() + 4000, edges: [], nodes: [] };
+      await 重开(); ${等(400)}
+      const 辛 = { 条: !!条("restore"), 节点: canvasState.graph.getElements().length, 写了: window.__puts.length, 盘: (window.__store.jia.main.nodes || []).length };
+      // ⑨ 老副本（这台机器上从没记过指纹）：分不出有没有没存的，照老规矩，不问
+      ${摆画布([{ id: "r1", kind: "note", payload: { title: "原来的" }, position: { x: 40, y: 40 }, size: { width: 280, height: 180 } }])}
+      window.__putFail = { status: 500, error: "写不进去" };
+      改("老副本"); ${等(500)}
+      window.__putFail = null;
+      Object.keys(localStorage).filter((k) => k.includes(".synced:")).forEach((k) => localStorage.removeItem(k));
+      await 重开();
+      const 壬 = { 条: !!条("restore") };
+      return { 甲, 乙, 丙, 丁, 戊, 己, 庚, 辛, 壬 };
+    })()`);
+  ok(存盘.甲.条 && 存盘.甲.条.字 === "没存进项目：写画布失败：ENOSPC: no space left on device" && 存盘.甲.条.钮 === "重试保存" && 存盘.甲.条.role === "alert" && 存盘.甲.试过 === 1 && !/断电前/.test(存盘.甲.盘),
+     "★服务端没存上：顶上挂红条，照抄服务端原话，给「重试保存」★ 以前回 500 什么都不说，人以为一直在存；也不自己一遍遍重发", 存盘.甲);
+  ok(/断电前写的/.test(存盘.乙.屏), "★存不上的这段时间不拉盘上那份★ 拉下来一铺，没存上的那笔就被盖掉了", 存盘.乙);
+  ok(!存盘.丙.条 && /断电前写的/.test(存盘.丙.盘), "★点「重试保存」：屏幕上这份存进项目，红条自己没了★", 存盘.丙);
+  ok(存盘.丁.断线时 && 存盘.丁.断线时.字 === "没存进项目：Failed to fetch" && !存盘.丁.存上后 && /连上后写的/.test(存盘.丁.盘),
+     "★断网 / 服务没起（fetch 直接抛错）也挂条、照抄原话；下一笔存上了条就收掉★ 以前是 catch {} 一声不吭", 存盘.丁);
+  ok(存盘.戊.一.条 && /没存进项目/.test(存盘.戊.一.条.字) && 存盘.戊.一.条.钮 === "用本机的|用项目里的" && /没存上就关了/.test(存盘.戊.一.屏) && 存盘.戊.一.写了 === 0,
+     "★本机有没存上的改动：重开时问留哪份，屏幕上先铺本机这份，选之前不往项目里写★", 存盘.戊.一);
+  ok(/没存上就关了/.test(存盘.戊.拉了一圈.屏) && 存盘.戊.拉了一圈.写了 === 0, "等人选的时候同步也不拉、不写", 存盘.戊.拉了一圈);
+  ok(!存盘.戊.选后条 && /没存上就关了/.test(存盘.戊.盘), "★选「用本机的」：本机这份存进项目，条收掉★", 存盘.戊);
+  ok(存盘.己.一.条 && /本机这份/.test(存盘.己.一.屏) && /Agent 后来写的/.test(存盘.己.二.屏) && !/本机这份/.test(存盘.己.二.屏) && !存盘.己.二.条
+     && /换成项目里那份/.test(存盘.己.二.提示) && 存盘.己.二.钮 === "换回本机的" && 存盘.己.二.写了 === 0,
+     "★盘上被 Agent 改过也照样问；选「用项目里的」铺盘上那份、不回写，toast 上留「换回本机的」★", 存盘.己);
+  ok(/本机这份/.test(存盘.己.换回后屏) && /本机这份/.test(存盘.己.换回后盘), "点「换回本机的」：本机那份回到屏幕上，并存进项目", 存盘.己);
+  ok(!存盘.庚.条 && /Agent 又写的/.test(存盘.庚.屏), "反向对照：本机都存上了、盘上后来又改了：不问，铺盘上的", 存盘.庚);
+  ok(!存盘.辛.条 && 存盘.辛.节点 === 0 && 存盘.辛.写了 === 0 && 存盘.辛.盘 === 0,
+     "★本机都存上了、Agent 后来清空了画布：铺空的，不拿本机那份写回去★ 以前盘上空就铺本机的，清空当场被顶回去", 存盘.辛);
+  ok(!存盘.壬.条, "反向对照：老副本没记过指纹，分不出来就不问，照老规矩", 存盘.壬);
 
   srv.close();
   console.log(fail ? `\n有失败：${pass} 过 / ${fail} 挂` : `\n全部通过：${pass} 过 / 0 挂`);
