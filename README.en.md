@@ -283,7 +283,7 @@ The diagram doubles as a reading order: start at `server.js`, then see how `src/
 - **Oct 6** Quota gate gaps closed: fallback channels, vision and image generation are priced first; pricier tiers matched only by prefix are refused too
 - **Oct 6** Keys stay out of the AI's reach: child processes get no Key variables by default; network tools can't reach localhost, the LAN or cloud metadata
 - **Oct 6** External engines must name a model and are off by default for multi-user setups; Codex runs offline and writes only to the workspace by default
-- **Oct 6** Trip cards: itineraries in answers become a map you can drag and click, with per-day tabs, place cards and photos; works without a Key
+- **Oct 6** Trip cards: itineraries in answers become a map you can drag and click, with per-day tabs, place cards and photos; Navigate opens Google Maps abroad and AMap in China; works without a Key
 - **Oct 6** The README now has two trip-card screenshots from a three-day Beijing plan: the map with each day's stops, and the timeline from morning to evening
 - **Oct 6** Images made by local Codex land in the conversation folder and preview in the output panel
 - **Oct 6** The commercial license now spells out the three cases where a license code is revoked and how to appeal; the app has no analytics or telemetry

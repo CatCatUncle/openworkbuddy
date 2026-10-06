@@ -207,6 +207,11 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
     const g = TC.legNavUrl(P1, P2, "walking");
     ok(g.startsWith("https://www.google.com/maps/dir/?api=1&origin=48.8584,2.2945&destination=48.8606,2.3376") && g.includes("travelmode=walking"),
       "国外：Google 地图，纬度在前", g);
+    // 只有直线（国外、没填 Key）时按直线距离定：两公里内步行，再远开车
+    const P3 = { lng: 2.2950, lat: 48.8738, datum: "wgs84", name: "凯旋门" };
+    ok(TC.legNavUrl(P1, P3, "line").includes("travelmode=walking"), "国外只有直线、两站 1.7 公里：步行", TC.legNavUrl(P1, P3, "line"));
+    ok(TC.legNavUrl(P1, P2, "line").includes("travelmode=driving"), "国外只有直线、两站 3 公里多：开车（反向对照）", TC.legNavUrl(P1, P2, "line"));
+    ok(TC.legNavUrl(A, B, "line").includes("&mode=walk") && TC.legNavUrl(A, D, "line").includes("&mode=car"), "国内没 Key 只有直线：一样按两公里分步行和开车");
     ok(TC.dayNavUrl([A]) === "", "一天只有一站：不给整天路线");
     ok(/^https:\/\/uri\.amap\.com\/navigation\?/.test(TC.dayNavUrl([A, B])) && !TC.dayNavUrl([A, B]).includes("via="), "国内两站：高德，没有途经点");
     ok(TC.dayNavUrl([A, B, C]).includes("&via=102.71,25.04," + encodeURIComponent("南强街")), "国内三站：中间那站当途经点");

@@ -196,6 +196,8 @@
   /** 两站之间：国内去高德（GCJ-02），国外去 Google 地图（WGS-84） */
   function legNavUrl(a, b, mode) {
     const pa = convert(a.lng, a.lat, a.datum, "wgs84"), pb = convert(b.lng, b.lat, b.datum, "wgs84");
+    // 没查到路线（国外、没填 Key）只有直线：跟查路线时一样，两公里内按步行，别让几百米也去开车
+    if (mode !== "walking" && mode !== "driving") mode = distance(pa[0], pa[1], pb[0], pb[1]) < 2000 ? "walking" : "driving";
     if (inChina(pa[0], pa[1]) && inChina(pb[0], pb[1])) {
       const ga = convert(a.lng, a.lat, a.datum, "gcj02"), gb = convert(b.lng, b.lat, b.datum, "gcj02");
       return `https://uri.amap.com/navigation?from=${fx(ga[0])},${fx(ga[1])},${encodeURIComponent(a.name)}&to=${fx(gb[0])},${fx(gb[1])},${encodeURIComponent(b.name)}`
