@@ -431,6 +431,7 @@
       "这次合成的进度找不到了": "This build's progress is lost",
       "这次合成的进度找不到了，可以重新合成。": "This build's progress is lost. You can rebuild.",
       "正在停…下次合成要从头再拼一遍。": "Stopping… The next build starts from the first shot.",
+      "用视频原声": "Video's own sound",
       // 画布底部时间线 / 连播预览 / 角色面板 / ⌘F / 合成完成通知
       "时间线": "Timeline",
       "收起时间线": "Collapse timeline",

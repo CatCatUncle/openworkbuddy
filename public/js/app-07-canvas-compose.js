@@ -94,7 +94,8 @@ function canvasComposeHtml(p) {
     const rows = (plan.shots || []).map((r, i) => `<li${r.why ? ' class="is-bad"' : ""}>`
       + `<span class="cp-ord">${i + 1}</span><b>${esc(r.id)}</b>`
       + `<span>${r.seconds ? r.seconds + "s" : "时长探不到"}</span>`
-      + `<span>${r.audio ? "有配音" : r.line ? "缺配音" : "无人声"}${r.pad ? `（画面补 ${r.pad}s）` : ""}</span>`
+      // 没配音但视频自带声音的，成片里用的是原声——写成「缺配音」「无人声」都不对，它是有声音的
+      + `<span>${r.audio ? "有配音" : r.origAudio ? "用视频原声" : r.line ? "缺配音" : "无人声"}${r.pad ? `（画面补 ${r.pad}s）` : ""}</span>`
       + `<span class="cp-why">${esc(r.why || "")}</span></li>`).join("");
     const eta = canvasEtaText(plan.etaMs);
     // 「烧不了」有三种不一样的原因，混成一句「做不了」等于没说：

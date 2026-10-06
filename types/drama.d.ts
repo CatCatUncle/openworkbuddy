@@ -462,6 +462,8 @@ export interface ComposeRow {
   fps?: number;
   vcodec?: string;
   pix?: string;
+  /** 没写配音、视频自己带音轨：这一镜用视频原声（没有这个字段 = 配音或静音） */
+  origAudio?: boolean;
   /** 这一镜的中间片段 */
   clip?: string;
 }

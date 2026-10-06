@@ -21,6 +21,7 @@
  *   【3】排片（timelinePlan）：时长、偏移、帧数、转场、画幅、logo、字幕烧不烧
  *   【4】字幕：断行、时间轴、ASS 样式、禁用词
  *   【4b】字体名读取、片头片尾卡
+ *   【4d】短剧一键合成：没配音的镜头用视频原声（真 ffmpeg 量声音的在【5s】）
  */
 
 const fs = require("fs");
@@ -708,6 +709,58 @@ section("【4b】字体名、片头片尾卡");
   ok(cards.contrastFg("#1a2b3c") === "#FFFFFF" && cards.contrastFg("#FFEE00") === "#111111", "深底白字、浅底黑字");
 }
 
+// ════════════════════════════════════════════════════════════════════════
+// 【4d】短剧一键合成：没配音的镜头，视频自己带声音就用原声；有配音的照旧只用配音
+// 以前没配音的一律垫静音：连播预览里听得见（视频不静音），成片里却哑了，两边对不上。
+// golden 那几张画布的探针都没有 acodec，这里的改动不该动它们一个字节（【1】管着）
+// ════════════════════════════════════════════════════════════════════════
+section("【4d】短剧合成：没配音的镜头用视频原声");
+{
+  const C = require(mod("drama-compose"));
+  const withSound = (dur, w, h, more) => V(dur, w, h, { acodec: "aac", ...(more || {}) });
+  const plan = (nodes, disk, opts) => { const w = world(disk); return C.composePlan({ nodes, edges: [] }, { files: w.files, onDisk: w.onDisk, probes: w.probes, ...BINS, ...(opts || {}) }); };
+  const stepOf = (p, id) => p.steps.find((s) => s.key === "clip:" + id) || { argv: [], label: "" };
+  const disk = { "o.mp4": withSound(2, 1080, 1920), "m.mp4": V(2, 1080, 1920), "t.mp4": withSound(2, 1080, 1920), "t.m4a": A(1.5) };
+  const p1 = plan([
+    shot("S1-01", { video: "o.mp4" }),
+    shot("S1-02", { video: "m.mp4" }),
+    shot("S1-03", { video: "t.mp4", audio: "t.m4a", line: "有配音的这一镜" }),
+  ], disk);
+  const [r1, r2, r3] = p1.shots;
+  ok(p1.ready && p1.mode === "copy", "三镜同规格：直拼", { ready: p1.ready, mode: p1.mode, blockers: p1.blockers });
+  const a1 = stepOf(p1, "S1-01").argv.join(" ");
+  ok(r1.origAudio === true && /-map 0:v:0 -map 0:a:0/.test(a1) && /-af apad/.test(a1) && /-shortest/.test(a1) && !/anullsrc/.test(a1),
+     "★没配音、视频带音轨：map 视频自己的 0:a:0，apad 补齐、-shortest 让画面说了算，不垫静音★", a1);
+  ok(/用视频原声/.test(stepOf(p1, "S1-01").label), "步骤名写「用视频原声」，不写「画面接配音」", stepOf(p1, "S1-01").label);
+  const a2 = stepOf(p1, "S1-02").argv.join(" ");
+  ok(!("origAudio" in r2) && /anullsrc/.test(a2) && !/0:a:0/.test(a2), "反向对照：视频没音轨（探针没 acodec）照旧垫静音", a2);
+  const a3 = stepOf(p1, "S1-03").argv.join(" ");
+  ok(!("origAudio" in r3) && /-i 素材\/t\.mp4 -i 素材\/t\.m4a/.test(a3) && /-map 1:a:0/.test(a3) && !/0:a:0/.test(a3),
+     "反向对照：有配音的镜头照旧只用配音，视频原声不混进来", a3);
+  // 写了配音、文件却丢了：这一镜要的是配音，不拿原声顶
+  const p2 = plan([shot("S1-01", { video: "o.mp4", audio: "gone.m4a", line: "台词" })], { "o.mp4": withSound(2, 1080, 1920) });
+  ok(!("origAudio" in p2.shots[0]) && /不在盘上了/.test(p2.shots[0].why), "写了配音但文件丢了：不拿视频原声顶替，照旧报配音丢了", p2.shots[0]);
+  // 探不到（没 ffprobe）就当没有音轨
+  const p3 = plan([shot("S1-01", { video: "o.mp4" })], { "o.mp4": null }, { ffprobe: "" });
+  ok(!("origAudio" in p3.shots[0]) && /anullsrc/.test((p3.steps[0] || { argv: [] }).argv.join(" ")), "反向对照：探不到这个视频（不知道有没有音轨）就垫静音，不去 map 一条可能不存在的音轨", p3.steps[0] && p3.steps[0].argv);
+  // 有台词没配音：带原声的不说「会是静音的」
+  const p4 = plan([shot("S1-01", { video: "o.mp4", line: "第一句" }), shot("S1-02", { video: "m.mp4", line: "第二句" })], disk);
+  const texts = p4.blockers.map((b) => b.text);
+  ok(texts.some((t) => /1 个镜头有台词但没有配音，这几镜用视频自带的声音/.test(t)) && texts.some((t) => /1 个镜头有台词但没有配音，这几镜会是静音的/.test(t)),
+     "有台词没配音分两种说：带原声的说「用视频自带的声音」，真没声的才说「会是静音的」", texts);
+  const mute = p4.blockers.find((b) => /会是静音的/.test(b.text)), orig = p4.blockers.find((b) => /自带的声音/.test(b.text));
+  ok(mute && orig && JSON.stringify(mute.ids) === JSON.stringify(["n_S1-02"]) && JSON.stringify(orig.ids) === JSON.stringify(["n_S1-01"]), "两条提醒各自点得到自己那几镜", { mute, orig });
+  // 重新编码那条路：滤镜图里画面和原声各走各的，原声同样 apad
+  const p5 = plan([shot("S1-01", { video: "o.mp4" }), shot("S1-02", { video: "w.mp4" })], { "o.mp4": withSound(2, 1080, 1920), "w.mp4": V(2, 720, 1280) });
+  const a5 = stepOf(p5, "S1-01").argv;
+  const fc5 = a5[a5.indexOf("-filter_complex") + 1] || "";
+  ok(p5.mode === "reencode" && /\[0:a:0\]apad\[a\]/.test(fc5) && a5.join(" ").includes("-map [v] -map [a]") && a5.includes("-shortest") && !a5.join(" ").includes("anullsrc"),
+     "画幅不一样要重新编码：滤镜图里原声 [0:a:0]apad[a]，跟画面一起 map", { mode: p5.mode, fc5 });
+  // 配乐压低那条提醒：原声也是「说话」，没有 sidechaincompress 时照样要说
+  const p6 = plan([shot("S1-01", { video: "o.mp4" }), audioNode("bgm", { role: "配乐", title: "雨夜", url: "bgm.mp3" })], { "o.mp4": withSound(2, 1080, 1920), "bgm.mp3": A(30) }, { duck: false });
+  ok(p6.blockers.some((b) => /sidechaincompress/.test(b.text)), "只有原声、没有配音、本机不能压低配乐：照样提醒配乐是固定音量", p6.blockers.map((b) => b.text));
+}
+
 // 【5】【6】（真 ffmpeg / 工具接线）。要真跑子进程、要等，所以是 async 的；再往后加的节接在 runtimeSections 里
 
 const { execFileSync, spawnSync } = require("child_process");
@@ -777,6 +830,14 @@ async function runtimeSections() {
   }
 
   // ════════════════════════════════════════════════════════════════════════
+  // 【5s】短剧一键合成真跑：没配音的镜头成片里有原声、位置对得上；有配音的只听得到配音。
+  // 只比命令行是不够的：-map 写对了、apad 漏了，片子照样能播，只是后面每一镜的声音都提前了半截
+  // ════════════════════════════════════════════════════════════════════════
+  section("【5s】短剧合成真跑：原声进了成片，跟画面对得上");
+  if (!hasFf) console.log("  跳过：本机没有 ffmpeg");
+  else await dramaOrigAudio(jobs, FF, FP);
+
+  // ════════════════════════════════════════════════════════════════════════
   // 【6】compose_video 工具：dry_run、卡点、开跑 + 任务号、查、停、别的对话看不见
   // ════════════════════════════════════════════════════════════════════════
   section("【6】compose_video 工具接线");
@@ -787,6 +848,69 @@ async function runtimeSections() {
   // ════════════════════════════════════════════════════════════════════════
   section("【7】从 executeTool 进去（真分派、真权限门、进度到得了）");
   await dispatchSmoke(hasFf ? FF : "");
+}
+
+/**
+ * 【5s】：三镜短剧，各 2 秒。
+ *   S1-01 视频自带原声（440Hz，只响前 1 秒，48k 单声道——量 apad 和统一采样率）
+ *   S1-02 视频没音轨
+ *   S1-03 视频自带很响的原声，另配了一段很轻的配音——成片里只该听到轻的那段
+ * 直拼、重新编码两条路各跑一遍（重新编码靠 S1-02 换个画幅逼出来）。按计划里的命令一条条真跑，
+ * 再拿 ffprobe / volumedetect 量成片：有没有音轨、每一镜那几秒响不响
+ */
+async function dramaOrigAudio(jobs, FF, FP) {
+  const C = require(mod("drama-compose"));
+  const shotNode = (id, p) => ({ id: "n_" + id, kind: "shot", payload: { id, prompt: "p", ...p }, position: { x: 0, y: 0 } });
+  for (const mode of ["copy", "reencode"]) {
+    const cwd = path.join(TMP, "orig-" + mode);
+    fs.mkdirSync(path.join(cwd, "素材"), { recursive: true });
+    const ff = (...args) => execFileSync(FF, ["-v", "error", "-y", ...args], { stdio: ["ignore", "ignore", "pipe"] });
+    const pic = (sz) => ["-f", "lavfi", "-i", `testsrc2=size=${sz}:rate=25`];
+    const enc = ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p"];
+    ff(...pic("320x240"), "-f", "lavfi", "-i", "sine=frequency=440:duration=1", "-t", "2", ...enc, "-c:a", "aac", "-ar", "48000", "-ac", "1", path.join(cwd, "素材/own.mp4"));
+    ff(...pic(mode === "reencode" ? "160x120" : "320x240"), "-t", "2", ...enc, path.join(cwd, "素材/mute.mp4"));
+    ff(...pic("320x240"), "-f", "lavfi", "-i", "sine=frequency=440:duration=2", "-t", "2", ...enc, "-c:a", "aac", "-ar", "44100", "-ac", "2", path.join(cwd, "素材/talk.mp4"));
+    ff("-f", "lavfi", "-i", "sine=frequency=880:duration=1.5", "-af", "volume=0.05", "-c:a", "aac", path.join(cwd, "素材/talk.m4a"));
+    const rels = ["素材/own.mp4", "素材/mute.mp4", "素材/talk.mp4", "素材/talk.m4a"];
+    const probes = {};
+    for (const r of rels) { const pr = await jobs.composeProbe(FP, cwd, r); if (pr) probes[r] = pr; }
+    if (mode === "copy") {
+      ok(probes["素材/own.mp4"] && probes["素材/own.mp4"].acodec === "aac" && probes["素材/talk.m4a"] && probes["素材/talk.m4a"].acodec === "aac",
+         "composeProbe 报出音轨编码（acodec）", probes);
+      ok(probes["素材/mute.mp4"] && !("acodec" in probes["素材/mute.mp4"]), "反向对照：没音轨的视频不带 acodec", probes["素材/mute.mp4"]);
+    }
+    const files = new Map(rels.map((r) => [path.basename(r), r]));
+    const plan = C.composePlan({ nodes: [
+      shotNode("S1-01", { video: "own.mp4" }),
+      shotNode("S1-02", { video: "mute.mp4" }),
+      shotNode("S1-03", { video: "talk.mp4", audio: "talk.m4a", line: "轻轻的一句" }),
+    ], edges: [] }, { files, onDisk: new Set(files.keys()), probes, ffmpeg: FF, ffprobe: FP, burn: false, duck: false, limiter: false, subtitles: false });
+    ok(plan.ready && plan.mode === mode, `${mode}：计划排得出来，走${mode === "copy" ? "直拼" : "重新编码"}`, { ready: plan.ready, mode: plan.mode, blockers: plan.blockers });
+    if (!plan.ready) continue;
+    let broke = "";
+    fs.mkdirSync(path.join(cwd, plan.outputs.dir), { recursive: true });   // composeExecute 开跑前也是先建这个目录
+    for (const st of plan.steps) {
+      if (st.key === "concat") fs.writeFileSync(path.join(cwd, plan.outputs.list), plan.listText, "utf8");
+      let r = spawnSync(FF, ["-nostdin", "-v", "error", ...st.argv], { cwd, encoding: "utf8" });
+      if (r.status !== 0 && st.fallback) r = spawnSync(FF, ["-nostdin", "-v", "error", ...st.fallback], { cwd, encoding: "utf8" });
+      if (r.status !== 0) { broke = `${st.label}：${String(r.stderr || "").trim().split("\n").slice(-2).join(" ")}`; break; }
+    }
+    ok(!broke, `${mode}：计划里的每一条 ffmpeg 命令都真跑成了`, broke);
+    if (broke) continue;
+    const film = path.join(cwd, plan.outputs.film);
+    const aStream = (abs) => JSON.parse(execFileSync(FP, ["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_name,sample_rate,channels,duration", "-of", "json", abs], { encoding: "utf8" })).streams[0] || null;
+    const clip1 = aStream(path.join(cwd, plan.outputs.clips[0]));
+    ok(clip1 && clip1.sample_rate === "44100" && clip1.channels === 2 && Math.abs(Number(clip1.duration) - 2) < 0.1,
+       `${mode}：第一镜的片段带音轨，统一成 44.1k 双声道，原声只有 1 秒也补到了画面那 2 秒`, clip1);
+    const fa = aStream(film);
+    ok(!!fa, `${mode}：成片有音轨`, fa);
+    const own = meanDb(FF, film, 0.1, 0.7), ownTail = meanDb(FF, film, 1.25, 0.6), mute = meanDb(FF, film, 2.2, 1.6), voice = meanDb(FF, film, 4.1, 1.2);
+    ok(Number.isFinite(own) && own > -35, `${mode}：★第一镜（没配音、视频带声音）成片里响着原声★`, { own });
+    ok(!(ownTail > -60), `${mode}：第一镜原声停了以后到这一镜结束是安静的（补的静音，后面几镜的声音没被提前）`, { ownTail });
+    ok(!(mute > -60), `${mode}：反向对照：第二镜视频没音轨，成片里这两秒没声`, { mute });
+    ok(Number.isFinite(voice) && Number.isFinite(own) && voice < own - 15,
+       `${mode}：第三镜有配音：只听到那段轻的配音，视频里很响的原声没混进来`, { voice, own });
+  }
 }
 
 /** 盘上造素材：全用 lavfi 现生成，不带任何二进制 fixture */
