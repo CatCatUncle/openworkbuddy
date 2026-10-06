@@ -278,6 +278,9 @@ The diagram doubles as a reading order: start at `server.js`, then see how `src/
 
 ## What's new
 
+- **Oct 7** Trip-card pins open a small place card you can page through stop by stop; "Navigate ▾" between two stops picks walking, transit, cycling or driving, and a QR code sends it to your phone
+- **Oct 7** Safer canvas spending: the Agent only hands over a to-generate list and nothing is charged until you click "Run"; a dropped connection no longer charges twice, and anything that may already be paid for is never re-bought automatically
+- **Oct 7** Deleted or cleared canvases can be brought back; Undo only undoes your own step; drag timeline cells to reorder shots, and one-click compose follows that order
 - **Oct 7** Lighter when idle: with nothing running, the server wakes about 2 times a second instead of 40; an unfocused window stops watching for stalls
 - **Oct 7** Trip cards redesigned: the map fills the card with the stops floating in a panel on the right; pins show photos and names, and clicking a stop glides the map to it; China days with four or more stops can open the whole route too
 - **Oct 6** System sandbox: commands and scripts the AI runs on macOS and Windows can't read your Keys or ledger or modify the app; switch it in Settings → Security; it adds 7–16 ms per command
