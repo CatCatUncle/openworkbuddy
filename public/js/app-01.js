@@ -3457,7 +3457,8 @@ async function refreshImStatus() {
   if (imStatusBusy) return;
   imStatusBusy = true;
   try {
-    const s = await fetch("/im/status", { signal: typeof AbortSignal.timeout === "function" ? AbortSignal.timeout(10000) : undefined }).then(r => r.json());
+    // X-OWB-Poll：后台轮询，服务端不把它当「有人在用」（见 server.js 里叫 metrics.wake 的那条）
+    const s = await fetch("/im/status", { headers: { "X-OWB-Poll": "1" }, signal: typeof AbortSignal.timeout === "function" ? AbortSignal.timeout(10000) : undefined }).then(r => r.json());
     // 只数真在线的：飞书/QQ/微信长连接 connected，企微应用/公众号回调配置齐，企微群推送已配
     let n = 0;
     if (s.feishu.configured && s.feishu.ws.state === "connected") n++;

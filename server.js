@@ -1098,6 +1098,13 @@ app.use((req, res, next) => {
   res.setHeader("Content-Security-Policy", "base-uri 'self'; form-action 'self'; frame-ancestors 'self'; object-src 'none'");
   next();
 });
+// 来了请求就把卡顿表打开（闲着时它是关的，见 metrics.js 的 wake）。
+// 页面开着时自己隔十几秒问一次的那几条（连接器状态、待审批、终端在跑的活）带 X-OWB-Poll，不算有事——
+// 算的话窗口一开着，表就永远关不掉（2026-10-07 实测：三条轮询把它一直顶着，空转照样每秒醒 40 次）
+app.use((req, res, next) => {
+  if (!req.headers["x-owb-poll"]) metrics.wake();
+  next();
+});
 /**
  * /api 的 GET 默认 no-store，别让 Chromium 往盘上的 HTTP 缓存里写。
  * 这些回应本来就不复用（下一次一定回来重新要），可不写头的话 Chromium 照样把它们落进
@@ -7128,6 +7135,7 @@ app.post("/api/chat", async (req, res) => {
 
   runState.events = asstEvents; // 续流端点靠它补发已记录的事件
   activeRuns.set(sessionId, runState);
+  metrics.wake(); // 定时任务、IM 进来的任务不走上面那条请求，这里再叫一声
   runState.rid = Date.now().toString(36) + "." + (++liveRunSeq).toString(36); // 同一条对话前后两趟靠它分开
   lastRuns.set(sessionId, runState);
   persistRunning();
