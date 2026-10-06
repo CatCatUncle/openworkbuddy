@@ -104,7 +104,8 @@ function renderSecurityPane(pane, s) {
         ].map(([v, t]) => `<option value="${v}"${(sec.sandbox || "default") === v ? " selected" : ""}>${t}</option>`).join("")}</select>
       </div>
       ${sbxOs === "win" ? `
-      <div class="d">命令和 run_node 降到低权限跑：读不到 Key 和账本，只能写工作区和临时目录。</div>` : `
+      <div class="d">命令和 run_node 降到低权限跑：读不到 Key 和账本，只能写工作区和临时目录。</div>
+      <div class="d">挡不住连本机端口；多人共用时，各组织的工作区彼此读得到。</div>` : `
       <div class="d">命令和 run_node 由 macOS 按真实路径隔离：读不到 Key 和账本，改不了应用本身。</div>
       ${chk("sec-sbx-strict", sec.sandbox_level !== "basic", "严格隔离", "不许命令打开别的 App、发 Apple 事件、连没放行的本机 socket。某个工具因此不正常再关")}`}
       <div class="d" id="sec-sbx-st">${sandboxLine(s.sandbox_status)}</div>` : ""}

@@ -1178,7 +1178,7 @@ function tenantRoots() {
 function sandboxOpts(sec) {
   const root = sandbox.real(ws());
   let hide = [];
-  // Windows 那层是完整性级别，没有「藏哪几个目录」这一说：多人用时各组织的工作区不互相藏（设置页写明了）
+  // Windows 那层是完整性级别，没有「藏哪几个目录」这一说：多人用时各组织的工作区不互相藏（设置页和 docs/安全.md 写明了）
   if (security.isMultiUser() && process.platform !== "win32") {
     const roots = tenantRoots().map((r) => sandbox.real(r));
     // 成员的任务：别家组织、属主的工作区和项目都藏；属主的任务：只藏各组织的

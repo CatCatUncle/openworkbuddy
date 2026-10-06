@@ -203,7 +203,10 @@ async function wiring() {
   ok(/\.\.\.\(pane\.querySelector\("#sec-sbx-strict"\) \?/.test(ui), "Windows 没有「严格隔离」那个勾：保存时不乱塞");
   const winDesc = "命令和 run_node 降到低权限跑：读不到 Key 和账本，只能写工作区和临时目录。";
   ok(ui.includes(winDesc) && winDesc.length <= 70, "Windows 那句说明在、不超长");
-  ok(new RegExp('"' + winDesc.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + '":\\s*"[A-Z]').test(src("public/js/i18n.js")), "英文有译文");
+  const winLimit = "挡不住连本机端口；多人共用时，各组织的工作区彼此读得到。";
+  ok(ui.includes(winLimit), "Windows 做不到的两件事也写在开关旁边");
+  const i18nSrc = src("public/js/i18n.js");
+  ok([winDesc, winLimit].every((t) => i18nSrc.includes('"' + t + '": "')), "英文有译文");
 
   // 打包：缺小助手当场红，另一个架构那份删掉，只给 Windows 包带
   const ebcSrc = src("electron-builder.config.js");

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle) · 商业使用需授权：COMMERCIAL-LICENSE.md
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle)
 "use strict";
 /**
  * 编 Windows 沙箱小助手（native/owb-sandbox）→ native/bin/owb-sandbox-<x64|arm64>.exe。

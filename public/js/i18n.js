@@ -1560,6 +1560,7 @@
       "关闭：不隔离": "Off: no isolation",
       "命令和 run_node 由 macOS 按真实路径隔离：读不到 Key 和账本，改不了应用本身。": "macOS isolates commands and run_node by real path: they can't read keys or ledgers, or change the app itself.",
       "命令和 run_node 降到低权限跑：读不到 Key 和账本，只能写工作区和临时目录。": "Commands and run_node run at low integrity: they can't read keys or ledgers, and can only write to the workspace and temp folder.",
+      "挡不住连本机端口；多人共用时，各组织的工作区彼此读得到。": "Local ports aren't blocked; with several orgs on one server, their workspaces can read each other.",
       "严格隔离": "Strict isolation",
       "— 不许命令打开别的 App、发 Apple 事件、连没放行的本机 socket。某个工具因此不正常再关": "— Commands can't open other apps, send Apple events, or use local sockets you haven't allowed. Turn off only if a tool breaks",
       "现在：已关闭，命令不隔离。": "Now: off, commands aren't isolated.",
