@@ -1377,6 +1377,15 @@ const ENG_CHECKS = `
   await wait(60);
   window.SAVE_FAIL = "";
   ok("存失败：勾退回去，原样说服务端那句", !en.checked && box.querySelector("#ag-eng-msg").textContent === "只有平台管理员能改这一项", box.querySelector("#ag-eng-msg").textContent);
+  // 存完会停 600ms 再补画一遍。中间已经重画过的话，补画那次得作废——
+  // 2026-10-06 CI 慢机上它晚到，把上面那句「存失败」连同整张卡盖成了空的
+  card("codex").querySelector('.eng-x [data-act="save"]').click();
+  await wait(10);
+  await renderGate("codex", { multiUser: true }, { codex: CX });
+  const keep = box.querySelector("#ag-eng-msg");
+  keep.textContent = "刚写上去的话";
+  await wait(750);
+  ok("★存完补画那次：中间重画过就作废，不盖掉新画的这版★", keep.isConnected && keep.textContent === "刚写上去的话", [keep.isConnected, box.querySelector("#ag-eng-msg").textContent]);
   const xo = card("codex").querySelector(".eng-x");
   ok("属主：展开区有「成员可选的型号」（不含钉的那个）和「命令能联网」（默认不勾）",
     xo.querySelector('input[data-k="models"]').value === "gpt-5.4-mini" && xo.querySelector('input[data-k="network"]').checked === false);

@@ -2986,9 +2986,12 @@ function engVerdictHtml(v, on) {
  */
 async function renderEngineCard(box, force) {
   if (!box) return;
+  // 每画一次记个号：晚到的那次（存完 600ms 后补画的、慢的那次请求）不许盖掉已经画好的新一版
+  const seq = box._engSeq = (box._engSeq || 0) + 1;
   box.innerHTML = '<div class="eng-msg">正在找本机装了哪些…</div>';
   // 平时读服务端缓存（探测要给每个 CLI 起子进程，开个设置页不该等）；点「重新检测本机」才真去重探
   const d = await fetch("/api/engines" + (force ? "?force=1" : "")).then((r) => r.json()).catch(() => null);
+  if (seq !== box._engSeq) return;
   if (!d) { box.innerHTML = '<div class="eng-msg">检测失败：拿不到引擎列表</div>'; return; }
   const cur = d.current || "builtin";
   const all = [d.builtin, ...(d.engines || [])];
@@ -3152,7 +3155,8 @@ function bindEngineExtra(card, id, box) {
     m.textContent = "保存中…";
     const ok = await saveSettings({ agent: { engine_options: { [id]: readOpts() } } }, null);
     m.textContent = ok ? "✓ 已保存" : (lastSaveError || "保存失败");
-    if (ok) setTimeout(() => renderEngineCard(box), 600);
+    // 停 600ms 让「✓ 已保存」看得见再重画；这期间已经重画过（切了引擎、点了重新检测）就不再补这一遍
+    if (ok) { const seq = box._engSeq; setTimeout(() => { if (box._engSeq === seq) renderEngineCard(box); }, 600); }
   };
 }
 
