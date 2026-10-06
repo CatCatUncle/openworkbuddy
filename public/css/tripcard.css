@@ -42,15 +42,46 @@
 .tc-lsrc { margin-top: 8px; color: var(--owb-text-3); font-size: 12px; }
 .tc-note-err { color: var(--owb-warn); margin-top: 2px; }
 
-/* 地图 + 右侧卡片：宽的时候左右，窄的时候上下 */
-.tc-body { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); border-top: 1px solid var(--owb-border); }
+/* 地图 + 右侧卡片：宽的时候左右，窄的时候上下。
+ * 中间那条分隔条能拖（宽时调列表宽窄，窄时调地图高矮），条上那颗按钮把列表收起来让地图占满；
+ * 底边也能拖，调地图高矮。拖出来的数写在 .tc-w 的 --tc-pw / --tc-h 上（tripcard.js 记在本机）。 */
+.tc-body { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 0 var(--tc-pw, 41%); border-top: 1px solid var(--owb-border); }
+.tc-w.tc-folded .tc-body { grid-template-columns: minmax(0, 1fr) 0; }
+.tc-w.tc-folded .tc-panel { display: none; }
+.tc-w.tc-resizing { user-select: none; -webkit-user-select: none; }
+.tc-w.tc-resizing .tc-map { cursor: inherit; }
+
+.tc-split { position: relative; z-index: 3; outline: none; }
+.tc-split::before { content: ""; position: absolute; top: 0; bottom: 0; left: -5px; width: 10px; cursor: col-resize; touch-action: none; }
+.tc-split::after { content: ""; position: absolute; top: 0; bottom: 0; left: -1px; width: 2px; background: var(--owb-brand); opacity: 0; transition: opacity var(--owb-t-fast); pointer-events: none; }
+.tc-split:hover::after, .tc-split.drag::after, .tc-split:focus-visible::after { opacity: .6; }
+/* 列表是一下子收掉的，按钮也一下子到位：全局按钮的 transform 过渡会让它慢半拍滑过去，中途被卡片边框切掉一半 */
+.tc-w .tc-fold { position: absolute; left: 0; top: 50%; transform: translate(-50%, -50%); display: flex; align-items: center; justify-content: center; width: 18px; height: 40px; border: 1px solid var(--owb-border); border-radius: 9px; background: var(--owb-card); box-shadow: var(--owb-shadow-sm); color: var(--owb-text-2); transition: color var(--owb-t-fast), border-color var(--owb-t-fast); }
+.tc-w .tc-fold:hover { color: var(--owb-text); border-color: var(--owb-text-3); }
+.tc-w .tc-fold:focus-visible { outline: 2px solid var(--owb-brand); outline-offset: 1px; }
+.tc-fold svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; transition: transform var(--owb-t-fast); }
+/* 收起后条贴在地图右边，按钮整个缩进地图里，不让卡片边框切掉一半 */
+.tc-w.tc-folded .tc-fold { transform: translate(-100%, -50%); border-right: 0; border-radius: 9px 0 0 9px; }
+.tc-w.tc-folded .tc-fold svg { transform: rotate(180deg); }
+
+.tc-grip { position: absolute; left: 0; right: 0; bottom: 0; height: 10px; z-index: 3; cursor: row-resize; touch-action: none; outline: none; }
+.tc-grip::after { content: ""; position: absolute; left: 50%; bottom: 3px; width: 36px; height: 4px; margin-left: -18px; border-radius: 2px; background: var(--owb-text-3); opacity: .35; transition: opacity var(--owb-t-fast); }
+.tc-grip:hover::after, .tc-grip.drag::after, .tc-grip:focus-visible::after { opacity: .8; background: var(--owb-brand); }
+
 @container (max-width: 620px) {
-  .tc-body { grid-template-columns: minmax(0, 1fr); }
-  .tc-map { height: 300px; }
-  .tc-panel { max-height: 360px; border-left: 0; border-top: 1px solid var(--owb-border); }
+  .tc-body, .tc-w.tc-folded .tc-body { grid-template-columns: minmax(0, 1fr); }
+  .tc-map { height: min(var(--tc-h, 300px), 70vh); }
+  .tc-panel { height: auto; max-height: 360px; border-left: 0; border-top: 1px solid var(--owb-border); }
+  .tc-split::before { top: -5px; bottom: auto; left: 0; right: 0; width: auto; height: 10px; cursor: row-resize; }
+  .tc-split::after { top: -1px; bottom: auto; left: 0; right: 0; width: auto; height: 2px; }
+  .tc-w .tc-fold { left: 50%; top: 0; width: 40px; height: 18px; }
+  .tc-fold svg { transform: rotate(90deg); }
+  .tc-w.tc-folded .tc-fold { transform: translate(-50%, -100%); border: 1px solid var(--owb-border); border-bottom: 0; border-radius: 9px 9px 0 0; }
+  .tc-w.tc-folded .tc-fold svg { transform: rotate(-90deg); }
+  .tc-grip { display: none; }
 }
 
-.tc-map { position: relative; height: 400px; overflow: hidden; background: #e8e6e1; cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; outline: none; }
+.tc-map { position: relative; height: var(--tc-h, 400px); overflow: hidden; background: #e8e6e1; cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; outline: none; }
 .tc-map.grab { cursor: grabbing; }
 .tc-map:focus-visible { box-shadow: inset 0 0 0 2px var(--owb-brand); }
 .tc-tiles { position: absolute; inset: 0; }
@@ -74,7 +105,7 @@ html[data-theme="dark"] .tc-tiles { filter: invert(1) hue-rotate(180deg) brightn
 .tc-attr { position: absolute; right: 0; bottom: 0; padding: 1px 6px; border-top-left-radius: var(--radius-sm); background: color-mix(in srgb, var(--owb-card) 80%, transparent); color: var(--owb-text-3); font-size: 10px; pointer-events: none; }
 .tc-msg { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); max-width: 80%; padding: 8px 14px; border-radius: var(--radius-md); background: var(--owb-card); box-shadow: var(--owb-shadow-sm); color: var(--owb-text-2); font-size: 13px; text-align: center; }
 
-.tc-panel { height: 400px; overflow-y: auto; border-left: 1px solid var(--owb-border); padding: 14px 14px 16px; box-sizing: border-box; overscroll-behavior: contain; }
+.tc-panel { height: var(--tc-h, 400px); overflow-y: auto; border-left: 1px solid var(--owb-border); padding: 14px 14px 16px; box-sizing: border-box; overscroll-behavior: contain; }
 .tc-dl { color: var(--owb-brand-text); font-size: 12px; font-weight: 600; }
 .tc-dt { margin-top: 2px; font-size: 16px; font-weight: 600; line-height: 1.35; }
 .tc-ds { margin-top: 4px; color: var(--owb-text-2); font-size: 13px; }
@@ -96,6 +127,8 @@ html[data-theme="dark"] .tc-tiles { filter: invert(1) hue-rotate(180deg) brightn
 .tc-star { color: #d97706; }
 .tc-note { margin-top: 3px; color: var(--owb-text-2); font-size: 13px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .tc-miss { margin-top: 3px; color: var(--owb-text-3); font-size: 12px; }
+.tc-w .tc-setkey { color: var(--owb-brand-text); }
+.tc-w .tc-setkey:hover { text-decoration: underline; }
 
 .tc-leg { display: flex; align-items: center; gap: 8px; min-height: 18px; margin: 2px 0 2px 26px; color: var(--owb-text-3); font-size: 12px; }
 .tc-legline { width: 0; height: 18px; border-left: 2px dotted var(--owb-border); }

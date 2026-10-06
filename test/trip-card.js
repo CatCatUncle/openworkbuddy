@@ -80,6 +80,10 @@ const SAMPLES = [
   '{"days":[{"stops":[{"name":""},null,5,{"name":"有名"}]},{"stops":[]},"x"]}',
   "", "not json", "{'days':[]}", '{"days":[]}', '{"days":[{"stops":[]}]}', "[1,2]", "null", '"字符串"', '{"days":"x"}',
   '{"plan":[{"items":[{"name":"<img src=x onerror=alert(1)>","note":"\\"引号\\" & <b>"}]}]}',
+  // 真实翻车：一站里的 kind 漏了引号，整段解不开，卡片退成一坨原文
+  '{"title":"北京三天游","city":"北京","days":[{"stops":[{"time":"上午","name":"天安门广场","kind":"广场"},{"time":"晚上","name":"王府井",kind:"商业街","note":"吃烤鸭"}]}]}',
+  // 字符串里长得像「键名:」「收尾逗号」的东西不许动
+  '{days:[{stops:[{name:"后海","note":"别动 {kind:1, ] 和 a,}"},{ name : "什刹海\\\\",},],},],}',
 ];
 const TIMES = ["上午", "9:30", "10：30", "12:00", "14点", "18:30", "20:00", "3:00", "早餐", "lunch", "Sunset", "夜宵", "", "全天", "下午茶", "傍晚"];
 const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 25.03], [114.17, 22.3], [126.98, 37.57],
@@ -97,6 +101,11 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
     const trail = itinerary.parse('{"days":[{"stops":["翠湖公园","南强街",]},]}');
     ok(trail && trail.days[0].stops.length === 2, "多一个收尾逗号照样解得开（模型最常犯的错）");
     ok(itinerary.parse("{'days':[]}") === null, "单引号不修：猜着修出一份错行程，比显示原文更糟");
+    const bare = itinerary.parse(SAMPLES[SAMPLES.length - 2]);
+    eq(bare && bare.days[0].stops[1], { name: "王府井", time: "晚上", note: "吃烤鸭", kind: "商业街", city: "", addr: "" }, "键名漏了引号（kind:\"商业街\"）照样解得开，值一字不差");
+    const tricky = itinerary.parse(SAMPLES[SAMPLES.length - 1]);
+    ok(tricky && tricky.days[0].stops[0].note === "别动 {kind:1, ] 和 a,}" && tricky.days[0].stops[1].name === "什刹海\\",
+      "补引号、去逗号只动字符串外面：字符串里像键名、像收尾逗号的字原样留着", tricky && tricky.days[0].stops);
 
     const alias = itinerary.parse(SAMPLES[2]);
     eq(alias && { t: alias.title, c: alias.city, d: alias.days[0].title, s: alias.days[0].summary, p: alias.days[0].stops[0] },
@@ -613,7 +622,12 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
     ok(fs.existsSync(path.join(ROOT, "public", "css", "tripcard.css")), "tripcard.css 在");
     ok((read("src/agent/agent.js").match(/itinerary\.PROMPT_BLOCK/g) || []).length === 2, "提示词两条路都带上行程卡那一节（内置引擎、本机 Codex / Claude Code）");
     ok(/"amap": \{ url: "https:\/\/console\.amap\.com\//.test(read("public/js/app-03.js")), "设置页「去哪拿 Key」有高德");
-    ok(/function renderMapCard/.test(read("public/js/app-05.js")) && /renderMapCard\(pane, s\)/.test(read("public/js/app-05.js")), "设置页有地图那一节");
+    const app05 = read("public/js/app-05.js");
+    ok(/\["map", "地图", "map"\]/.test(app05) && /active === "map"\) renderMapPane\(pane, s\)/.test(app05) && /^function renderMapPane\(pane, s\)/m.test(app05),
+      "设置里地图单独一页（左栏「地图」），不再埋在联网搜索页最底下");
+    ok(/PLATFORM_ONLY_CATS = new Set\(\[[^\]]*"map"/.test(app05), "地图那页只给平台管理员（Key 是整台服务器的）");
+    ok(!/renderMapCard|renderMapPane\(pane, s\);\n\}\n/.test(app05.slice(app05.indexOf("function renderSearchPane"), app05.indexOf("function renderMapPane"))), "联网搜索页底下不再挂一份");
+    ok(/id="i-map"/.test(read("public/index.html")), "左栏「地图」用的图标 sprite 里有");
     const admin = require(mod("admin"));
     ok(admin.PLATFORM_WRITE.includes("/api/geo/test"), "「测一下」归平台管理员（花的是整台服务器那把 Key 的额度）");
     eq(admin.redactSecrets({ map: { provider: "amap", amap_key: KEY, amap_daily_cap: 9 } }), { map: { provider: "amap", amap_key: "", amap_daily_cap: 9 } }, "普通成员拉设置时 amap_key 被抹掉");

@@ -60,10 +60,34 @@
     if (!days.length) return null;
     return { title: str(obj.title || obj.name, LIMIT.title), city: str(obj.city || obj.destination, LIMIT.city), days };
   }
+  // 模型常漏的两处格式：收尾逗号、键名引号（kind:"商业街"）。只改字符串外面，字符串里一个字不动
+  const BARE_KEY = /[A-Za-z_$][\w$]*(?=\s*:)/y, TRAIL_COMMA = /,(?=\s*[}\]])/y;
+  function loosen(s) {
+    let out = "", last = "", inStr = false;
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      if (inStr) {
+        out += c;
+        if (c === "\\") out += s[++i] || "";
+        else if (c === '"') { inStr = false; last = c; }
+        continue;
+      }
+      if (c === '"') inStr = true;
+      else if (c === ",") { TRAIL_COMMA.lastIndex = i; if (TRAIL_COMMA.test(s)) continue; }
+      else if ((last === "{" || last === ",") && /[A-Za-z_$]/.test(c)) {
+        BARE_KEY.lastIndex = i;
+        const m = BARE_KEY.exec(s);
+        if (m) { out += '"' + m[0] + '"'; i += m[0].length - 1; last = '"'; continue; }
+      }
+      out += c;
+      if (!/\s/.test(c)) last = c;
+    }
+    return out;
+  }
   function parse(text) {
     const s = String(text || "").trim();
     if (!s) return null;
-    for (const t of [s, s.replace(/,\s*([}\]])/g, "$1")]) {
+    for (const t of [s, loosen(s)]) {
       try { return normalize(JSON.parse(t)); } catch (e) { /* 再试下一种 */ }
     }
     return null;
@@ -237,8 +261,14 @@
   // ---------------- 跟服务端要数据 ----------------
   let cfgP = null;
   const getCfg = () => cfgP || (cfgP = fetch("/api/geo/config").then((r) => (r.ok ? r.json() : {})).catch(() => ({})));
-  /** 设置里改了地图那一节：下一张卡片重新问 */
-  function resetConfig() { cfgP = null; }
+  /** 设置里改了地图那一节（比如刚填上高德 Key）：配置、查过的地点都作废，页面上的活卡片当场按新设置重查 */
+  let cfgGen = 0;
+  function resetConfig() {
+    cfgP = null;
+    cfgGen++;
+    placeMemo.clear();
+    for (const ws of live.values()) for (const w of ws) w.reload();
+  }
   async function post(url, body) {
     const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     let j = null;
@@ -249,6 +279,25 @@
   /** 查过的地点整页共用：同一份行程重新点活、两条消息提到同一个地方，都不再问服务端 */
   const placeMemo = new Map();
   const pkey = (name, city) => city + "|" + name;
+
+  // 「填高德 Key」那颗按钮只在主界面里、而且这人改得了服务器级设置时画：成员点进去是一页他看不到的设置
+  const canSetKey = () => typeof root.openModal === "function" && typeof root.amPlatformOwner === "function" && !!root.amPlatformOwner();
+
+  // ---------------- 地图和右边列表怎么摆 ----------------
+  // 拖过的宽窄、高矮、收没收起来记在本机，下一张卡片照这个摆。存不了（无痕窗口）就只管这一张。
+  const LAYOUT_KEY = "owb.tripcard.layout";
+  const PW = { min: 20, max: 65 }, MH = { min: 200, max: 900 };
+  const okPw = (v) => Number.isFinite(v) && v >= PW.min && v <= PW.max;
+  const okH = (v) => Number.isFinite(v) && v >= MH.min && v <= MH.max;
+  function loadLayout() {
+    try {
+      const v = JSON.parse(root.localStorage.getItem(LAYOUT_KEY) || "{}") || {};
+      return { pw: okPw(v.pw) ? v.pw : undefined, h: okH(v.h) ? v.h : undefined, fold: v.fold === true };
+    } catch (e) { return { fold: false }; }
+  }
+  function saveLayout(v) {
+    try { root.localStorage.setItem(LAYOUT_KEY, JSON.stringify(v)); } catch (e) { /* 存不了就只管这一张 */ }
+  }
 
   // ---------------- 墨卡托 ----------------
   const TS = 256;
@@ -277,12 +326,16 @@
       + `<div class="tc-body"><div class="tc-map" tabindex="0" aria-label="行程地图，拖动平移，双击放大">`
       + `<div class="tc-tiles"></div><svg class="tc-route" aria-hidden="true"></svg><div class="tc-pins"></div>`
       + `<div class="tc-zoom"><button type="button" data-z="1" aria-label="放大" title="放大">+</button><button type="button" data-z="-1" aria-label="缩小" title="缩小">−</button></div>`
-      + `<div class="tc-attr"></div><div class="tc-msg" hidden></div></div><div class="tc-panel"></div></div>`
+      + `<div class="tc-attr"></div><div class="tc-msg" hidden></div></div>`
+      + `<div class="tc-split" role="separator" aria-orientation="vertical" tabindex="0" aria-label="拖动调整地图和列表的宽窄">`
+      + `<button type="button" class="tc-fold"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></button></div>`
+      + `<div class="tc-panel"></div>`
+      + `<div class="tc-grip" role="separator" aria-orientation="horizontal" tabindex="0" aria-label="拖动调整地图高度"></div></div>`
       + `<div class="tc-tl" hidden></div>`;
     const $ = (s) => el.querySelector(s);
     const map = $(".tc-map"), tilesEl = $(".tc-tiles"), routeEl = $(".tc-route"), pinsEl = $(".tc-pins"),
       panel = $(".tc-panel"), tl = $(".tc-tl"), body = $(".tc-body"), msg = $(".tc-msg"), attr = $(".tc-attr"),
-      found = $(".tc-found"), list = $(".tc-list");
+      found = $(".tc-found"), list = $(".tc-list"), split = $(".tc-split"), grip = $(".tc-grip"), foldBtn = $(".tc-fold");
 
     const st = {
       day: 0, view: "map", userView: false,
@@ -293,6 +346,26 @@
       cfg: null, src: "", z: 12, cx: 0, cy: 0, fitted: -1, started: false, active: -1,
     };
     const tiles = new Map();
+
+    // ---- 摆法：右边列表多宽、地图多高、列表收没收 ----
+    const lay = loadLayout();
+    const narrow = () => el.clientWidth <= 620;   // 跟 tripcard.css 里的 @container 同一条线：窄了上下摆
+    function applyLayout() {
+      if (okPw(lay.pw)) el.style.setProperty("--tc-pw", lay.pw + "%"); else el.style.removeProperty("--tc-pw");
+      if (okH(lay.h)) el.style.setProperty("--tc-h", lay.h + "px"); else el.style.removeProperty("--tc-h");
+      el.classList.toggle("tc-folded", lay.fold);
+      const t = lay.fold ? "展开地点列表" : "收起地点列表，地图占满";
+      foldBtn.title = t;
+      foldBtn.setAttribute("aria-label", t);
+      foldBtn.setAttribute("aria-expanded", String(!lay.fold));
+    }
+    applyLayout();
+    function setFold(v) {
+      lay.fold = v;
+      applyLayout();
+      saveLayout(lay);
+      redraw();
+    }
 
     // ---- 视图切换 ----
     function setView(v, byUser) {
@@ -341,11 +414,19 @@
           + `<div class="tc-ph"><span class="tc-ini" aria-hidden="true">${esc(ini.toUpperCase())}</span>${ph}<span class="tc-no">${i + 1}</span></div>`
           + `<div class="tc-info"><div class="tc-nm">${esc(s.name)}</div>${meta ? `<div class="tc-meta">${meta}</div>` : ""}`
           + (s.note ? `<div class="tc-note">${esc(s.note)}</div>` : "")
-          + (p === null ? `<div class="tc-miss">地图上没找到这个地方</div>` : "") + `</div></div>`;
+          + (p === null ? `<div class="tc-miss">地图上没找到这个地方${keyHint() ? ` · ${keyBtn("填高德 Key 再找找")}` : ""}</div>` : "") + `</div></div>`;
       });
       panel.innerHTML = h;
       panel.querySelectorAll(".tc-ph img").forEach((img) => img.addEventListener("error", () => img.remove(), { once: true }));
     }
+    /** 走的是 OpenStreetMap、高德 Key 没填、行程在国内、这人改得了设置：提醒一句「填高德 Key」 */
+    function keyHint() {
+      if (!st.cfg || st.cfg.amap || st.provider === "amap" || !canSetKey()) return false;
+      const ps = st.places.flat().filter(Boolean);
+      if (ps.length) return ps.some((p) => { const w = convert(p.lng, p.lat, p.datum, "wgs84"); return inChina(w[0], w[1]); });
+      return /[\u4e00-\u9fff]/.test(it.city || "");
+    }
+    const keyBtn = (text) => `<button type="button" class="tc-setkey">${esc(text)}</button>`;
     function legHtml(d, i) {
       const leg = st.legs[d][i];
       const a = stopPlace(d, i), b = stopPlace(d, i + 1);
@@ -380,7 +461,8 @@
       found.textContent = done ? `找到 ${got} 个地点 ›` : got ? `已找到 ${got} 个地点…` : "正在找地点…";
       if (done && got < total) found.title = `${total - got} 个没找到`;
       if (list.hidden) return;
-      const src = st.provider === "amap" ? "地点数据：高德地图" : "地点数据：OpenStreetMap，照片：Wikimedia";
+      const src = st.provider === "amap" ? "地点数据：高德地图"
+        : "地点数据：OpenStreetMap，照片：Wikimedia" + (keyHint() ? ` · ${keyBtn("填高德 Key，国内地点更准")}` : "");
       list.innerHTML = it.days.map((d, di) => {
         const ps = st.places[di];
         return `<div class="tc-lday"><b>${esc(dayLabel(d, di))}</b>${d.stops.map((s, i) => {
@@ -394,18 +476,23 @@
     // ---- 查地点、查路 ----
     function loadDay(d) {
       if (st.loading[d]) return st.loading[d];
+      const g = cfgGen;   // 查到一半设置变了：这一趟的结果作废，别写进新一轮的状态里
+      const stale = () => g !== cfgGen;
       st.loading[d] = (async () => {
-        if (!st.cfg) st.cfg = await getCfg();
+        const cfg = await getCfg();
+        if (stale()) return;
+        if (!st.cfg) st.cfg = cfg;
         const stops = it.days[d].stops;
         const q = stops.map((s) => ({ name: s.name, city: s.city || it.city }));
         const need = q.filter((x) => !placeMemo.has(pkey(x.name, x.city)));
         if (need.length) {
           try {
             const r = await post("/api/geo/places", { items: need });
+            if (stale()) return;
             st.provider = r.provider || st.provider;
             (r.notes || []).forEach((n) => st.notes.add(n));
             (r.items || []).forEach((p, j) => { if (!(p && p.failed)) placeMemo.set(pkey(need[j].name, need[j].city), p && p.ok ? p : null); });
-          } catch (e) { st.notes.add(e.message); }
+          } catch (e) { if (stale()) return; st.notes.add(e.message); }
         }
         if (!st.provider) st.provider = st.cfg && st.cfg.amap ? "amap" : "osm";
         st.places[d] = q.map((x) => placeMemo.get(pkey(x.name, x.city)) || null);
@@ -416,12 +503,14 @@
           try {
             const pt = (p) => ({ lng: p.lng, lat: p.lat, datum: p.datum });
             const r = await post("/api/geo/legs", { pairs: pairs.map((i) => ({ a: pt(ps[i]), b: pt(ps[i + 1]) })) });
+            if (stale()) return;
             (r.notes || []).forEach((n) => st.notes.add(n));
             pairs.forEach((i, j) => { st.legs[d][i] = (r.items || [])[j] || null; });
-          } catch (e) { st.notes.add(e.message); }
+          } catch (e) { if (!stale()) st.notes.add(e.message); }
         }
-      })().catch((e) => { st.notes.add(e.message); st.places[d] = st.places[d] || it.days[d].stops.map(() => null); })
+      })().catch((e) => { if (stale()) return; st.notes.add(e.message); st.places[d] = st.places[d] || it.days[d].stops.map(() => null); })
         .then(() => {
+          if (stale()) return;
           renderFound();
           if (d !== st.day) return;
           renderPanel();
@@ -575,6 +664,8 @@
       if (t.dataset.v) setView(t.dataset.v, true);
       else if (t.dataset.d != null) setDay(+t.dataset.d);
       else if (t.dataset.z) zoomAt(+t.dataset.z);
+      else if (t.classList.contains("tc-setkey")) { if (canSetKey()) root.openModal("settings", "map"); }
+      else if (t.classList.contains("tc-fold")) setFold(!lay.fold);
       else if (t.classList.contains("tc-found")) {
         list.hidden = !list.hidden;
         found.setAttribute("aria-expanded", String(!list.hidden));
@@ -587,25 +678,72 @@
       } else if (t.classList.contains("tc-card") && !e.target.closest("a")) focusStop(+t.dataset.i, true);
     });
     el.addEventListener("keydown", (e) => {
-      const card = e.target.closest && e.target.closest(".tc-card");
+      const card = e.target.closest && !e.target.closest("button, a") && e.target.closest(".tc-card");
       if (card && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); focusStop(+card.dataset.i, true); }
+      if (e.target === split || e.target === grip) {
+        const wide = e.target === split && !narrow();
+        const k = e.key;
+        if (wide && (k === "ArrowLeft" || k === "ArrowRight")) {
+          e.preventDefault();
+          const pw = (lay.fold ? PW.min : okPw(lay.pw) ? lay.pw : panelPct()) + (k === "ArrowLeft" ? 3 : -3);
+          if (pw < PW.min) return setFold(true);
+          lay.fold = false;
+          lay.pw = Math.min(PW.max, pw);
+          applyLayout(); saveLayout(lay); redraw();
+        } else if (!wide && (k === "ArrowUp" || k === "ArrowDown")) {
+          e.preventDefault();
+          lay.h = Math.min(MH.max, Math.max(MH.min, map.clientHeight + (k === "ArrowDown" ? 40 : -40)));
+          applyLayout(); saveLayout(lay); redraw();
+        } else if (k === "Enter" && e.target === split) { e.preventDefault(); setFold(!lay.fold); }
+      }
       if (e.target === map && (e.key === "+" || e.key === "=")) zoomAt(1);
       if (e.target === map && e.key === "-") zoomAt(-1);
     });
     // 拖动：move/up 挂在 window 上——流式输出时整块卡片每 100ms 会被搬一次家，挂在元素上的指针捕获会丢
     let drag = null;
+    let rs = null;   // 正在拖分隔条 / 底边
+    const panelPct = () => { const w = body.clientWidth; return w ? Math.round((panel.offsetWidth / w) * 1000) / 10 : 41; };
+    function rsStart(e, bar) {
+      if (e.button !== 0 || e.target.closest(".tc-fold")) return;
+      e.preventDefault();
+      const b = body.getBoundingClientRect();
+      rs = { bar, kind: bar === split && !narrow() ? "w" : "h", right: b.right, width: b.width, y0: e.clientY, h0: map.clientHeight };
+      bar.classList.add("drag");
+      el.classList.add("tc-resizing");
+    }
+    function rsMove(e) {
+      if (rs.kind === "w") {
+        const pw = ((rs.right - e.clientX) / rs.width) * 100;
+        if (pw < PW.min * 0.6) lay.fold = true;   // 拖到快没了就当收起
+        else { lay.fold = false; lay.pw = Math.round(Math.min(PW.max, Math.max(PW.min, pw)) * 10) / 10; }
+      } else lay.h = Math.round(Math.min(MH.max, Math.max(MH.min, rs.h0 + e.clientY - rs.y0)));
+      applyLayout();
+      redraw();
+    }
+    function rsEnd() {
+      rs.bar.classList.remove("drag");
+      el.classList.remove("tc-resizing");
+      rs = null;
+      saveLayout(lay);
+    }
+    split.addEventListener("pointerdown", (e) => rsStart(e, split));
+    grip.addEventListener("pointerdown", (e) => rsStart(e, grip));
     map.addEventListener("pointerdown", (e) => {
       if (e.button !== 0 || e.target.closest("button, a")) return;
       drag = { x: e.clientX, y: e.clientY, cx: st.cx, cy: st.cy };
       map.classList.add("grab");
     });
     const onMove = (e) => {
+      if (rs) return rsMove(e);
       if (!drag) return;
       st.cx = drag.cx - (e.clientX - drag.x);
       st.cy = drag.cy - (e.clientY - drag.y);
       redraw();
     };
-    const onUp = () => { if (drag) { drag = null; map.classList.remove("grab"); } };
+    const onUp = () => {
+      if (rs) rsEnd();
+      if (drag) { drag = null; map.classList.remove("grab"); }
+    };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
     window.addEventListener("pointercancel", onUp);
@@ -649,6 +787,16 @@
     return {
       el, key,
       attached() { if (io && !st.started) io.observe(el); else start(); redraw(); },
+      /** 设置改了（resetConfig）：按新设置从头查一遍。还没进过视野的不用管，进来时查的就是新的 */
+      reload() {
+        st.cfg = null; st.provider = ""; st.notes.clear(); st.fitted = -1; st.src = "";
+        st.places = it.days.map(() => null);
+        st.legs = it.days.map(() => []);
+        st.loading = it.days.map(() => null);
+        renderFound();
+        setDay(st.day);
+        if (st.started) prefetch();
+      },
       dispose() {
         if (io) io.disconnect();
         if (ro) ro.disconnect();

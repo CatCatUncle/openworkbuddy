@@ -663,6 +663,7 @@ function whenToHuman(t) {
 const SETTING_CATS = [
   ["models", "模型", "brain"],
   ["search", "联网搜索", "search"],
+  ["map", "地图", "map"],
   ["agent", "智能体", "bot"],
   ["security", "安全", "shield"],
   ["shortcuts", "快捷键", "keyboard"],
@@ -677,11 +678,11 @@ const SETTING_CATS = [
   ["about", "关于", "info"],
 ];
 /**
- * 这六页从头到尾都是服务器级的：联网搜索的 Key、自进化规则、执行追踪、运行状况的日志与告警、备份/工作目录、飞书企微钉钉接入。
+ * 这七页从头到尾都是服务器级的：联网搜索和地图的 Key、自进化规则、执行追踪、运行状况的日志与告警、备份/工作目录、飞书企微钉钉接入。
  * 多人服务器上的普通成员每一颗按钮都会 403，连一行属于他自己的东西都没有——那就别画这个标签页。
  * （models / persona / security 是混的：里面有他自己的东西，标签留着，卡片各自按 platform_owner 挑。）
  */
-const PLATFORM_ONLY_CATS = new Set(["search", "evolve", "trace", "ops", "data", "im"]);
+const PLATFORM_ONLY_CATS = new Set(["search", "map", "evolve", "trace", "ops", "data", "im"]);
 async function renderSettings(active) {
   const s = await fetch("/api/settings").then(r => r.json());
   if (Array.isArray(s.moved_on_boot) && s.moved_on_boot.length) bootMoved = s.moved_on_boot;
@@ -700,6 +701,7 @@ async function renderSettings(active) {
   const pane = mBody.querySelector("#settings-pane");
   if (active === "models") renderModelsPane(pane, s);
   else if (active === "search") renderSearchPane(pane, s);
+  else if (active === "map") renderMapPane(pane, s);
   else if (active === "agent") renderAgentPane(pane, s);
   else if (active === "persona") renderPersonaPane(pane, s);
   else if (active === "look") renderLookPane(pane);
@@ -2225,15 +2227,14 @@ function renderSearchPane(pane, s) {
     } else msg.textContent = lastSaveError || "保存失败";
     e.target.disabled = false;
   };
-  renderMapCard(pane, s);
 }
 
-// 行程卡（public/tripcard.js）查地点用哪家。挂在联网搜索这页底下：都是「AI 替你去外面查东西」，
-// Key 也都是服务器级的，普通成员看不到这一页，正好一起挡住。
-function renderMapCard(pane, s) {
+// 行程卡（public/tripcard.js）查地点用哪家。以前塞在联网搜索那页最底下，填过 Key 的人都找不着，
+// 现在单独一页，行程卡上「填高德 Key」直接跳过来。Key 是服务器级的，普通成员看不到这一页。
+function renderMapPane(pane, s) {
   const m = s.map || {};
   pane.insertAdjacentHTML("beforeend", `
-    <div class="card-item" style="margin-top:20px">
+    <div class="card-item">
       <div class="t">地图（行程卡）</div>
       <div class="d" style="margin-bottom:8px">让它排行程时，回答里会带一张能拖、能点的地图。不填 Key 也能用；填了高德 Key，国内地点更准，还有评分。</div>
       <div class="f">查地点用哪家</div>

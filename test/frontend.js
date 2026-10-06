@@ -5490,7 +5490,7 @@ const HUB_CHECKS = `
 
 // ---- 设置页：会 403 的按钮不该摆在那儿（模型 / 个性化 / 安全 / 导航 / 档位菜单） ----
 // 根子不在那句提示，在于这一整屏都是照平台管理员画的：
-// 多人服务器上的普通成员照样看到整套标签页，其中「联网搜索 / 自进化 / 执行追踪 / 运行状况 / 数据 / 助理设置」六页
+// 多人服务器上的普通成员照样看到整套标签页，其中「联网搜索 / 地图 / 自进化 / 执行追踪 / 运行状况 / 数据 / 助理设置」七页
 // 从头到尾没有一样是他的；模型页那排单选钮存的是全局默认、个性化页那两张卡是全服务器共用一份、
 // 安全页八张卡全是服务器策略。点哪一颗都是 403。这一组把这四页在真 Chromium 里画出来数控件，
 // 每条都配一条平台管理员的反向对照——只删控件不写反向对照，把整页删空也能全绿。
@@ -5606,15 +5606,15 @@ const GATE_CHECKS = `
   owner = false;
   await renderSettings("models");
   const memberCats = navCats();
-  ok("成员的设置页里没有「联网搜索 / 自进化 / 执行追踪 / 运行状况 / 数据 / 助理设置」这六页（点进去每一颗按钮都是 403）",
-    !["search", "evolve", "trace", "ops", "data", "im"].some((k) => memberCats.includes(k)), memberCats.join(","));
+  ok("成员的设置页里没有「联网搜索 / 地图 / 自进化 / 执行追踪 / 运行状况 / 数据 / 助理设置」这七页（点进去每一颗按钮都是 403）",
+    !["search", "map", "evolve", "trace", "ops", "data", "im"].some((k) => memberCats.includes(k)), memberCats.join(","));
   ok("混着他自己东西的那几页留着（模型看得到有哪些、安全看得到档位、个性化里有他的宠物）",
     ["models", "agent", "security", "persona", "memory", "shortcuts", "look", "about"].every((k) => memberCats.includes(k)), memberCats.join(","));
   await renderSettings("data");
   ok("从旧深链跳进一个已经不画的页，退回第一页，不留一屏空白", activeCat() && activeCat().cat === "models", JSON.stringify(activeCat()));
   owner = true;
   await renderSettings("models");
-  ok("反向对照：平台管理员 14 页一个不少", navCats().length === 14 && navCats().includes("data") && navCats().includes("trace") && navCats().includes("ops"), navCats().join(","));
+  ok("反向对照：平台管理员 15 页一个不少", navCats().length === 15 && navCats().includes("map") && navCats().includes("data") && navCats().includes("trace") && navCats().includes("ops"), navCats().join(","));
 
   // ② 模型页：他改不了服务器的账单，但得知道有哪些模型
   owner = false;
@@ -6316,9 +6316,10 @@ window.__geo = { calls: [] };
     const body = init && init.body ? JSON.parse(init.body) : null;
     window.__geo.calls.push({ url: String(url), body: body });
     const res = (o, status) => ({ ok: (status || 200) < 400, status: status || 200, json: async () => o });
-    if (url === "/api/geo/config") return res({ provider: "auto", amap: true, keyFrom: "settings",
+    // window.__noKey = true：高德 Key 没填，查地点走 OpenStreetMap
+    if (url === "/api/geo/config") return res({ provider: "auto", amap: !window.__noKey, keyFrom: window.__noKey ? "" : "settings",
       sources: { osm: { datum: "wgs84", maxZoom: 19, attr: "© OpenStreetMap 贡献者" }, amap: { datum: "gcj02", maxZoom: 18, attr: "© 高德地图" } } });
-    if (url === "/api/geo/places") return res({ provider: "amap", notes: [], items: body.items.map((x) => {
+    if (url === "/api/geo/places") return res({ provider: window.__noKey ? "osm" : "amap", notes: [], items: body.items.map((x) => {
       const p = PTS[x.name];
       return p ? { ok: true, name: x.name, lng: p[0], lat: p[1], datum: "gcj02", addr: "五华区", kind: "", rating: p[3], photo: p[2], src: "amap" } : { ok: false };
     }) });
@@ -6518,6 +6519,146 @@ const TRIP_CHECKS = `
     && txt(ref, ".tc-nm") === "<img src=x onerror=window.__pwned=1>" && txt(ref, ".tc-note") === "<b>粗</b>"
     && txt(ref, ".tc-dt") === "<img src=x onerror=window.__pwned=1>" && window.__pwned === undefined, ref.querySelector(".tc-panel") && ref.querySelector(".tc-panel").innerHTML.slice(0, 300));
 
+  // ---------- 右边列表：收起、拖宽窄、拖高矮 ----------
+  localStorage.removeItem("owb.tripcard.layout");
+  ref.innerHTML = renderMd(reply);
+  await tick();
+  const lw = ref.querySelector(".tc-w");
+  await until(() => lw && lw.querySelectorAll(".tc-pin").length > 0);
+  const lbody = lw.querySelector(".tc-body"), lmap = lw.querySelector(".tc-map"), lpanel = lw.querySelector(".tc-panel");
+  const split = lw.querySelector(".tc-split"), grip = lw.querySelector(".tc-grip"), fold = lw.querySelector(".tc-fold");
+  const R = (n) => n.getBoundingClientRect();
+  const shown = (n) => getComputedStyle(n).display !== "none";
+  const stored = () => { try { return JSON.parse(localStorage.getItem("owb.tripcard.layout") || "null"); } catch (e) { return null; } };
+  const pw0 = lpanel.offsetWidth / lbody.clientWidth;
+  ok("默认：右边列表占四成上下，分隔条上有颗「收起」按钮", Math.abs(pw0 - 0.41) < 0.02 && !!fold && fold.getAttribute("aria-expanded") === "true"
+    && /收起/.test(fold.getAttribute("aria-label")), pw0);
+  const mw0 = lmap.offsetWidth;
+  fold.click();
+  await tick();
+  const fr = R(fold), cr = R(lw);
+  ok("点「收起」：列表藏起来，地图占满整张卡片宽", lw.classList.contains("tc-folded") && !shown(lpanel) && lmap.offsetWidth >= lbody.clientWidth - 1 && lmap.offsetWidth > mw0,
+    lmap.offsetWidth + " / " + lbody.clientWidth);
+  ok("收起后按钮整个留在卡片里（不被边框切掉一半），换成「展开」", fr.right <= cr.right + 0.5 && fr.left >= cr.left && fr.width > 10
+    && fold.getAttribute("aria-expanded") === "false" && /展开/.test(fold.getAttribute("aria-label")), JSON.stringify([fr.left, fr.right, cr.right]));
+  ok("收起这件事记在本机", stored() && stored().fold === true, JSON.stringify(stored()));
+  // 重画排在下一帧：等一会儿，等不到就是真没补瓦片
+  const tilesFull = await until(() => [...lw.querySelectorAll(".tc-tiles img")].some((i) => R(i).right >= R(lmap).right - 2), 2000);
+  ok("地图变宽后底图跟着铺满（不是只拉宽了框）", tilesFull, Math.max(0, ...[...lw.querySelectorAll(".tc-tiles img")].map((i) => R(i).right)) + " / " + R(lmap).right);
+  fold.click();
+  await tick();
+  ok("再点一下展开，列表回来", !lw.classList.contains("tc-folded") && shown(lpanel) && Math.abs(lmap.offsetWidth - mw0) <= 1);
+
+  const ptr = (type, target, x, y) => target.dispatchEvent(new PointerEvent(type, { bubbles: true, button: 0, buttons: type === "pointerup" ? 0 : 1, clientX: x, clientY: y, pointerId: 1, isPrimary: true }));
+  const sx = R(split).left, sy = R(split).top + 120;
+  const pwBefore = lpanel.offsetWidth;
+  ptr("pointerdown", split, sx, sy);
+  ptr("pointermove", window, sx - 100, sy);
+  ptr("pointerup", window, sx - 100, sy);
+  await tick();
+  ok("按住分隔条往左拖 100px：列表宽 100px，地图窄 100px", Math.abs(lpanel.offsetWidth - pwBefore - 100) <= 2 && Math.abs(lmap.offsetWidth - (mw0 - 100)) <= 2,
+    pwBefore + " → " + lpanel.offsetWidth);
+  ok("拖完的宽窄记在本机", stored() && Math.abs(stored().pw - (pwBefore + 100) / lbody.clientWidth * 100) < 0.6, JSON.stringify(stored()));
+  ok("拖分隔条不会顺手拖动地图", !lmap.classList.contains("grab"));
+  const sx2 = R(split).left;
+  ptr("pointerdown", split, sx2, sy);
+  ptr("pointermove", window, R(lbody).right - 20, sy);
+  ptr("pointerup", window, R(lbody).right - 20, sy);
+  await tick();
+  ok("一路拖到最右边：当收起处理", lw.classList.contains("tc-folded") && !shown(lpanel));
+  const sx3 = R(split).left;
+  ptr("pointerdown", split, sx3 - 2, sy);
+  ptr("pointermove", window, sx3 - 260, sy);
+  ptr("pointerup", window, sx3 - 260, sy);
+  await tick();
+  ok("收起后从右边缘往左拖，列表又拉出来", !lw.classList.contains("tc-folded") && shown(lpanel) && lpanel.offsetWidth > 200, lpanel.offsetWidth);
+  const mh0 = lmap.offsetHeight, gy = R(grip).top + 5, gx = R(grip).left + 100;
+  ptr("pointerdown", grip, gx, gy);
+  ptr("pointermove", window, gx, gy + 150);
+  ptr("pointerup", window, gx, gy + 150);
+  await tick();
+  ok("按住底边往下拖 150px：地图高 150px，右边列表跟着一样高", Math.abs(lmap.offsetHeight - mh0 - 150) <= 1 && Math.abs(lpanel.offsetHeight - lmap.offsetHeight) <= 1,
+    mh0 + " → " + lmap.offsetHeight + " / " + lpanel.offsetHeight);
+  ptr("pointerdown", grip, gx, R(grip).top + 5);
+  ptr("pointermove", window, gx, R(grip).top - 2000);
+  ptr("pointerup", window, gx, R(grip).top - 2000);
+  await tick();
+  ok("往上拖过头：最矮 200px，不会拖没", lmap.offsetHeight === 200, lmap.offsetHeight);
+  split.focus();
+  split.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+  const pwKey = lpanel.offsetWidth;
+  split.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+  ok("键盘也能调：焦点在分隔条上按 ←，列表变宽", lpanel.offsetWidth > pwKey, pwKey + " → " + lpanel.offsetWidth);
+  const keep = stored();
+  const t2 = document.createElement("div");
+  t2.className = "a-text";
+  document.body.insertBefore(t2, ref.nextSibling);
+  t2.innerHTML = renderMd(reply.replace("昆明两日", "昆明两日（另一份）"));
+  await tick();
+  const w2 = t2.querySelector(".tc-w");
+  ok("下一张卡片照记下的摆：同样宽窄、同样高矮", !!w2 && w2.querySelector(".tc-map").offsetHeight === keep.h
+    && Math.abs(w2.querySelector(".tc-panel").offsetWidth / w2.querySelector(".tc-body").clientWidth * 100 - keep.pw) < 0.6, JSON.stringify(keep));
+  t2.remove();
+  localStorage.setItem("owb.tripcard.layout", "{坏的");
+  t2.innerHTML = renderMd(reply.replace("昆明两日", "昆明两日（第三份）"));
+  document.body.appendChild(t2);
+  await tick();
+  const w3 = t2.querySelector(".tc-w");
+  ok("本机记的那份坏了：照默认摆，不报错", !!w3 && w3.querySelector(".tc-map").offsetHeight === 400 && !w3.classList.contains("tc-folded"));
+  t2.remove();
+  localStorage.removeItem("owb.tripcard.layout");
+
+  // ---------- 高德 Key 没填：在卡片上直接给个去处 ----------
+  ref.innerHTML = renderMd(reply);
+  await tick();
+  const kw = ref.querySelector(".tc-w");
+  await until(() => kw && /^找到/.test(txt(kw, ".tc-found")));
+  // 同一份行程重渲，接回来的是上面那张活卡片（连同停在第几天）：切回第 1 天，「不存在的地方」在这天
+  kw.querySelector('.tc-tabs [data-d="0"]').click();
+  await tick();
+  const placesN0 = calls("/api/geo/places"), cfgN0 = calls("/api/geo/config");
+  window.__noKey = true;
+  TripCard.resetConfig();
+  await until(() => calls("/api/geo/places") >= placesN0 + 2 && /^找到/.test(txt(kw, ".tc-found")));
+  await tick();
+  ok("设置改了（resetConfig）：页面上那张卡片当场重新问设置、重新查地点", calls("/api/geo/config") === cfgN0 + 1 && calls("/api/geo/places") >= placesN0 + 2,
+    (calls("/api/geo/config") - cfgN0) + " / " + (calls("/api/geo/places") - placesN0));
+  ok("不在主界面（没有设置弹窗）：不画「填高德 Key」", !kw.querySelector(".tc-setkey"));
+  const OPENED = [];
+  window.openModal = (k, sub) => { OPENED.push([k, sub]); };
+  let owner = false;
+  window.amPlatformOwner = () => owner;
+  TripCard.resetConfig();
+  await until(() => /^找到/.test(txt(kw, ".tc-found")));
+  await tick();
+  ok("普通成员（改不了服务器设置）：不画「填高德 Key」", !kw.querySelector(".tc-setkey"));
+  owner = true;
+  TripCard.resetConfig();
+  await until(() => !!kw.querySelector(".tc-miss .tc-setkey"));
+  const kcards = [...kw.querySelectorAll(".tc-panel .tc-card")];
+  const miss = kcards[3].querySelector(".tc-miss");
+  ok("没填高德 Key、行程在国内、这人能改设置：没找到的那站后面跟一句「填高德 Key 再找找」", !!miss && miss.textContent === "地图上没找到这个地方 · 填高德 Key 再找找", miss && miss.textContent);
+  miss.querySelector(".tc-setkey").click();
+  ok("点它：直接打开设置的「地图」页", OPENED.length === 1 && OPENED[0][0] === "settings" && OPENED[0][1] === "map", JSON.stringify(OPENED));
+  ok("点它不会顺手把那张地点卡片选中", !kcards[3].classList.contains("on"));
+  kw.querySelector(".tc-found").click();
+  const klist = kw.querySelector(".tc-list");
+  ok("清单底下写明走的是 OpenStreetMap，跟一个「填高德 Key」", /地点数据：OpenStreetMap，照片：Wikimedia · 填高德 Key，国内地点更准/.test(klist.textContent) && !!klist.querySelector(".tc-setkey"), klist.textContent.slice(-80));
+  klist.querySelector(".tc-setkey").click();
+  ok("清单里那颗也是去「地图」页", OPENED.length === 2 && OPENED[1][1] === "map");
+  kw.querySelector(".tc-found").click();
+  // 填上 Key、存好：设置页会调 resetConfig。紧接着又改一次——前一轮还没回来的结果不许盖掉后一轮
+  TripCard.resetConfig();
+  window.__noKey = false;
+  TripCard.resetConfig();
+  await until(() => /^找到/.test(txt(kw, ".tc-found")) && !!kw.querySelector(".tc-panel .tc-card"));
+  await new Promise((r) => setTimeout(r, 80));
+  kw.querySelector(".tc-found").click();
+  ok("填好 Key 存下之后：那张卡片换成高德查的，「填高德 Key」不见了", !kw.querySelector(".tc-setkey") && /地点数据：高德地图/.test(txt(kw, ".tc-list"))
+    && TripCard._live.get(kw.parentNode.dataset.tcKey).some((x) => x._state.cfg && x._state.cfg.amap === true), txt(kw, ".tc-list").slice(-40));
+  kw.querySelector(".tc-found").click();
+  delete window.openModal; delete window.amPlatformOwner;
+
   // ---------- 窄 ----------
   const narrow = document.getElementById("narrow");
   narrow.innerHTML = renderMd(reply);
@@ -6530,6 +6671,24 @@ const TRIP_CHECKS = `
   ok("窄的时候不出横向滚动条", nw.scrollWidth <= nw.clientWidth + 1 && narrow.scrollWidth <= narrow.clientWidth + 1, nw.scrollWidth + " > " + nw.clientWidth);
   const tabs = nw.querySelector(".tc-tabs");
   ok("天数标签一行排不下就自己横着滑，不把卡片撑宽", tabs.scrollWidth <= tabs.clientWidth + 1 || getComputedStyle(tabs).overflowX !== "visible");
+  const nfold = nw.querySelector(".tc-fold"), nsplit = nw.querySelector(".tc-split");
+  const nfr = nfold.getBoundingClientRect();
+  ok("窄的时候收起按钮横着趴在地图和列表的交界上，底边那条不画（列表自己滚）", nfr.width > nfr.height && Math.abs(nfr.top + nfr.height / 2 - nm.bottom) < 2
+    && getComputedStyle(nw.querySelector(".tc-grip")).display === "none", JSON.stringify([nfr.width, nfr.height, nfr.top, nm.bottom]));
+  nfold.click();
+  await tick();
+  const nm2 = nw.querySelector(".tc-map").getBoundingClientRect(), nfr2 = nfold.getBoundingClientRect();
+  ok("窄的时候点收起：列表藏掉，按钮缩回地图里", getComputedStyle(nw.querySelector(".tc-panel")).display === "none" && nfr2.bottom <= nm2.bottom + 0.5 && nfr2.top >= nm2.top);
+  nfold.click();
+  await tick();
+  const nh0 = nw.querySelector(".tc-map").offsetHeight, ny = nsplit.getBoundingClientRect().top, nx = nm.left + 30;
+  nsplit.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, buttons: 1, clientX: nx, clientY: ny, pointerId: 1, isPrimary: true }));
+  window.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, buttons: 1, clientX: nx, clientY: ny + 60, pointerId: 1, isPrimary: true }));
+  window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: nx, clientY: ny + 60, pointerId: 1, isPrimary: true }));
+  await tick();
+  ok("窄的时候按住交界往下拖：地图变高（上下摆时拖的是高矮，不是宽窄）", Math.abs(nw.querySelector(".tc-map").offsetHeight - nh0 - 60) <= 1, nh0 + " → " + nw.querySelector(".tc-map").offsetHeight);
+  ok("拖完照样不出横向滚动条", nw.scrollWidth <= nw.clientWidth + 1);
+  localStorage.removeItem("owb.tripcard.layout");
 
   return { names, fails };
 })()
@@ -8016,7 +8175,7 @@ const LOOK_CHECKS = FLUSH_SRC + `
   ok("点分区空白处：不改任何状态、不报错", (() => { pane.querySelector(".card-item").click(); return lookGet("fs") === "m" && getTheme() === "light"; })());
 
   // 左栏目录：图标 + 短名，别一列密密麻麻的字
-  ok("设置目录 14 项都带图标、名字 ≤ 4 字，且含「外观」", SETTING_CATS.length === 14 && SETTING_CATS.every(([k, l, i]) => i && l.length <= 4) && SETTING_CATS.some(([k, l]) => k === "look" && l === "外观"));
+  ok("设置目录 15 项都带图标、名字 ≤ 4 字，且含「外观」", SETTING_CATS.length === 15 && SETTING_CATS.every(([k, l, i]) => i && l.length <= 4) && SETTING_CATS.some(([k, l]) => k === "look" && l === "外观"));
   if (fails.length) throw new Error("外观：" + (names.length + fails.length) + " 条里挂了 " + fails.length + " 条：\\n" + fails.join("\\n"));
   return names;
 `;

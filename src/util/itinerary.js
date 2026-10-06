@@ -74,15 +74,45 @@ function normalize(obj) {
   return { title: str(obj.title || obj.name, LIMIT.title), city: str(obj.city || obj.destination, LIMIT.city), days: /** @type {Day[]} */ (days) };
 }
 
+const BARE_KEY = /[A-Za-z_$][\w$]*(?=\s*:)/y;
+const TRAIL_COMMA = /,(?=\s*[}\]])/y;
 /**
- * 围栏里的文字 → 行程。先按严格 JSON 解；不行再把模型最常犯的「多一个收尾逗号」去掉试一次。
- * 别的修补不做：猜错了画出来的是一份错的行程，比显示原文更糟。
+ * 模型最常犯的两处格式错：多一个收尾逗号，键名漏了引号（kind:"商业街"）。只改字符串外面这两处，
+ * 字符串里的内容一个字不动——这两处补上不会改变行程本身。
+ * @param {string} s
+ */
+function loosen(s) {
+  let out = "", last = "", inStr = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (inStr) {
+      out += c;
+      if (c === "\\") out += s[++i] || "";
+      else if (c === '"') { inStr = false; last = c; }
+      continue;
+    }
+    if (c === '"') inStr = true;
+    else if (c === ",") { TRAIL_COMMA.lastIndex = i; if (TRAIL_COMMA.test(s)) continue; }
+    else if ((last === "{" || last === ",") && /[A-Za-z_$]/.test(c)) {
+      BARE_KEY.lastIndex = i;
+      const m = BARE_KEY.exec(s);
+      if (m) { out += '"' + m[0] + '"'; i += m[0].length - 1; last = '"'; continue; }
+    }
+    out += c;
+    if (!/\s/.test(c)) last = c;
+  }
+  return out;
+}
+
+/**
+ * 围栏里的文字 → 行程。先按严格 JSON 解；不行把上面那两处格式错补上再试一次。
+ * 别的修补不做（单引号、注释、半截 JSON）：猜错了画出来的是一份错的行程，比显示原文更糟。
  * @param {string} text @returns {Itinerary | null}
  */
 function parse(text) {
   const s = String(text || "").trim();
   if (!s) return null;
-  for (const t of [s, s.replace(/,\s*([}\]])/g, "$1")]) {
+  for (const t of [s, loosen(s)]) {
     try { return normalize(JSON.parse(t)); } catch {}
   }
   return null;
@@ -153,7 +183,7 @@ function fencesToMarkdown(md) {
 const PROMPT_BLOCK = [
   "## 行程规划：地图行程卡",
   "用户要规划旅行、出游、一日游、逛吃路线时，在回复正文里写一个 ```itinerary 围栏，界面会把它画成「按天切换的地图 + 时间线」卡片。地点的坐标、照片、评分由程序拿地点名去地图服务查，你**不要**给经纬度、评分。",
-  "- 写法（必须是合法 JSON：双引号，不带注释，不带多余逗号）：",
+  "- 写法（必须是合法 JSON：每个键名、字符串都用双引号，不带注释，不带多余逗号）：",
   "```itinerary",
   '{"title":"昆明三日游","city":"昆明","days":[{"title":"老昆明慢逛","summary":"翠湖周边步行串起来，傍晚去老街觅食","stops":[{"time":"上午","name":"翠湖公园","kind":"公园","note":"湖边散步、喝咖啡"},{"time":"晚上","name":"南强街","kind":"街区","note":"小锅米线、烧饵块"}]}]}',
   "```",

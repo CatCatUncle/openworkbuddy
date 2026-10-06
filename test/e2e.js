@@ -14728,8 +14728,8 @@ function testLookPrefsStatic() {
   const cats = a05.slice(a05.indexOf("const SETTING_CATS = ["), a05.indexOf("];", a05.indexOf("const SETTING_CATS = [")));
   const rows = [...cats.matchAll(/\["([a-z]+)", "([^"]+)", "([^"]+)"\]/g)];
   // 这个数字是故意钉死的：加一页设置就得回来改一次，顺手确认新页也接了线、图标也真存在。
-  // 13 → 14 是「运行状况」那页进来的（日志/告警/指标那条线）。
-  assert(rows.length === 14 && rows.every((m) => m[3].length && m[2].length <= 4), "设置目录每项都要 [id, ≤4字短名, 图标] 三元组，现在：" + rows.length + " 项");
+  // 13 → 14 是「运行状况」那页进来的（日志/告警/指标那条线）；14 → 15 是「地图」（行程卡的高德 Key，以前埋在联网搜索页最底下没人找得到）。
+  assert(rows.length === 15 && rows.every((m) => m[3].length && m[2].length <= 4), "设置目录每项都要 [id, ≤4字短名, 图标] 三元组，现在：" + rows.length + " 项");
   // 第三格从 emoji 换成图标名之后，多了一种新的翻车方式：忘了套 ic() 就直接把 "palette" 这几个字母印在目录上。
   // 这事只有人打开设置页才看得见，所以两头都钉死：名字得是 sprite 里真有的 symbol，画的时候得走 ic()。
   const { iconNames } = require(modPath("icons"));
