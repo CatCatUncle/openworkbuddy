@@ -531,6 +531,11 @@ async function canvasHistoryWriteback(before, after) {
       const back = await canvasBoardWriteback(p, fields);
       if (back) errors.push(back);
     }
+    // 放映顺序另走一条整批的（时间线上拖一格动的是一串镜头的 order）：这一步里 order 变了的镜头一起回表，
+    // 退回到还没拖过的那一步，order 没了，分镜表那头也拿掉
+    const ord = (q) => String(q && q.order != null ? q.order : "");
+    const reordered = ((after && after.nodes) || []).filter((item) => old.has(item.id) && ord(item.payload) !== ord(old.get(item.id)));
+    if (reordered.length) { const back = await canvasBoardOrderSync(reordered); if (back) errors.push(back); }
     if (errors.length) canvasToast(errors[0], "triangle-alert", "err");
   } catch (e) { console.warn("[canvas] 撤销后回写分镜表出错", e); }
 }

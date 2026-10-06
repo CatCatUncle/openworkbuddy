@@ -656,9 +656,56 @@ function mergeStoryboard(base, add) {
   return { data, warnings };
 }
 
+/**
+ * 放映顺序回写分镜表：画布时间线上拖一格、或者 Alt+←/→ 挪一格之后，整批镜头的 order 一起落进分镜表。
+ *
+ * 顺序记在每一镜的 order 上，不去挪 scenes[].shots 数组：
+ *   · 拖一镜跨场（第二场的一镜放到第一场中间），靠挪数组就得把它搬进另一场——这一场的地点、时间跟着变了，
+ *     那是改戏，不是排顺序；
+ *   · 镜头号、产物文件名一个都不动。文件名里带镜头号，号一改就跟盘上的首帧、视频对不上了。
+ * 一整批要么全写、要么一笔不写：只写进去一半，分镜表里的顺序就是新旧两种排法拼出来的，哪一种都不是。
+ * order 给 null 是「拿掉这一镜的显式顺序」（撤销到还没拖过的那一步），回到按场次、镜头号排。
+ * @param {any} data 分镜表，原地改
+ * @param {unknown} items [{ shot, scene?, order }]
+ * @returns {{ ok: true, changed: number } | { ok: false, status: number, error: string }}
+ */
+function applyShotOrder(data, items) {
+  const bad = (error, status = 400) => ({ ok: /** @type {false} */ (false), status, error });
+  if (!Array.isArray(items) || !items.length) return bad("shots 要是一组 { shot, order }，收到的是空的");
+  if (items.length > 2000) return bad(`一次最多排 2000 镜，收到 ${items.length} 镜`);
+  const scenes = Array.isArray(data && data.scenes) ? data.scenes : [];
+  const seen = new Set(), plan = [];
+  for (const item of items) {
+    const shotId = String((item && item.shot) || "").trim(), sceneId = String((item && item.scene) || "").trim();
+    if (!shotId) return bad("有一项没写镜头号（shot）");
+    const order = item.order;
+    // 分镜表里 order 是数字：写成字符串，整份表下次就读不出来了
+    if (order !== null && !(typeof order === "number" && Number.isFinite(order) && order >= 1)) return bad(`镜头 ${shotId} 的 order 要是一个不小于 1 的数字，或者 null`);
+    const key = sceneId + "\n" + shotId;
+    if (seen.has(key)) return bad(`镜头 ${shotId} 在这一批里出现了两次`);
+    seen.add(key);
+    const hits = [];
+    for (const scene of scenes) {
+      if (sceneId && String((scene && scene.id) || "") !== sceneId) continue;
+      for (const shot of (Array.isArray(scene && scene.shots) ? scene.shots : [])) {
+        if (shot && typeof shot === "object" && String(shot.id || "") === shotId) hits.push(shot);
+      }
+    }
+    if (!hits.length) return bad(`分镜表里没有镜头 ${shotId}`, 404);
+    if (hits.length > 1) return bad(`分镜表里有 ${hits.length} 个镜头都叫 ${shotId}，不替你猜是哪一个——先把重复的编号改掉`, 409);
+    plan.push([hits[0], order]);
+  }
+  let changed = 0;
+  for (const [shot, order] of plan) {
+    if (order === null) { if ("order" in shot) { delete shot.order; changed++; } }
+    else if (shot.order !== order) { shot.order = order; changed++; }
+  }
+  return { ok: true, changed };
+}
+
 module.exports = {
   dramaProgress, outputPaths, assetLocator,
-  buildStoryboardPrompt, parseStoryboardReply, normalizeStoryboardDraft, validateStoryboard, mergeStoryboard,
+  buildStoryboardPrompt, parseStoryboardReply, normalizeStoryboardDraft, validateStoryboard, mergeStoryboard, applyShotOrder,
   STORYBOARD_ASPECTS,
   _internals: { outputOf, normRel, medianMs, isPlaceholder, SCRIPT_MIN, storyboardSchema, schemaErrors },
 };

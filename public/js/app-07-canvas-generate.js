@@ -780,6 +780,42 @@ async function canvasBoardWriteback(payload, fields) {
 }
 
 /**
+ * 时间线上排好的顺序，回到分镜表里（每一镜的 order）。一份分镜表一趟，服务端整批要么全写要么不写。
+ *
+ * 只认展开时盖过戳、镜头号没在画布上改过的那几镜；手搓的镜头没有真源，顺序只记在画布上。
+ * order 空着（撤销回还没拖过的那一步）发 null：分镜表那头也拿掉，回到按场次、镜头号排。
+ * 镜头号和文件名一个都不碰。
+ * 绝不抛：挂在拖动松手和撤销后面，没人接它的 Promise。回不去就照原话说是哪一句
+ * @param {any[]} items 画布节点，或者快照里的一项（{ payload }）
+ * @returns {Promise<string>} 空串 = 都回去了（或者本来就没有要回的）
+ */
+async function canvasBoardOrderSync(items) {
+  const groups = new Map();
+  for (const item of items || []) {
+    const p = (item && typeof item.get === "function" ? canvasPayload(item) : item && item.payload) || {};
+    const board = String(p.board || "").trim(), shot = String(p.board_shot || "").trim();
+    if (!board || !shot) continue;
+    if (String(p.id || "").trim() && String(p.id).trim() !== shot) continue;
+    const n = Number(p.order);
+    const order = p.order == null || p.order === "" || !Number.isFinite(n) || n < 1 ? null : n;
+    if (!groups.has(board)) groups.set(board, []);
+    groups.get(board).push({ shot, ...(p.board_scene ? { scene: String(p.board_scene) } : {}), order });
+  }
+  for (const [board, shots] of groups) {
+    let why = "";
+    try {
+      const r = await fetch("/api/drama/storyboard/order", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: board, shots }),
+      });
+      const out = await r.json().catch(() => ({}));
+      if (!r.ok || !out.ok) why = String(out.error || r.status);
+    } catch (e) { why = String(e.message || e); }
+    if (why) return canvasT("顺序只排在了画布上，没写回分镜表（{why}）", { why: why.slice(0, 120) });
+  }
+  return "";
+}
+
+/**
  * 视频这一枪的时长 / 画幅 / 分辨率。卡片上写着「5s · 16:9 · 1080p」、新建短剧定了「每镜 5 秒 · 9:16」，
  * 以前一项都没发出去，出来的全是模型默认那一档——说一套做一套。
  * 镜头卡：时长用这一镜自己的（分镜表里改过的也算），没有再用新建短剧定的；画幅用这部戏的

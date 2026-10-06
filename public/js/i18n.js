@@ -422,7 +422,7 @@
       "把字幕烧进画面": "Burn subtitles into the picture",
       "会写出": "Will write",
       "正在看这部戏能不能拼（在探每一镜的真实时长和画幅）…": "Checking whether this film can be built (measuring each shot's real duration and frame size)…",
-      "按分镜编号排序，不对就改镜头 ID。": "Sorted by shot number — fix the shot IDs if the order is wrong.",
+      "跟时间线一个顺序，不对就去时间线上拖。": "Same order as the timeline. Drag shots there to change it.",
       "配音合轨 → 拼接 → 配乐 → 字幕，本机运行，不花钱。": "Voice → join → music → subtitles. Runs locally, free.",
       "垫上配乐": "Lay music underneath",
       "说话的时候自动压低": "ducks under the dialogue",
@@ -432,6 +432,9 @@
       "这次合成的进度找不到了，可以重新合成。": "This build's progress is lost. You can rebuild.",
       "正在停…下次合成要从头再拼一遍。": "Stopping… The next build starts from the first shot.",
       "用视频原声": "Video's own sound",
+      "拖动或 Alt+←/→ 换顺序": "Drag or Alt+←/→ to reorder",
+      "{id} 挪到第 {n} 镜": "Moved {id} to position {n}",
+      "顺序只排在了画布上，没写回分镜表（{why}）": "Order changed on the canvas only. Not saved to the storyboard ({why})",
       // 画布底部时间线 / 连播预览 / 角色面板 / ⌘F / 合成完成通知
       "时间线": "Timeline",
       "收起时间线": "Collapse timeline",

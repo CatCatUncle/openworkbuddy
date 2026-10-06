@@ -947,6 +947,12 @@ html[data-theme="dark"] .ui-select {
 .canvas-page .ctl-cell.is-playing { border-color: var(--owb-brand); box-shadow: 0 0 0 2px color-mix(in srgb, var(--owb-brand) 35%, transparent); }
 .canvas-page .ctl-cell.is-playing .ctl-tc { background: var(--owb-brand); }
 .canvas-page .ctl-cell:focus-visible { outline: 2px solid var(--owb-brand); outline-offset: 1px; }
+/* 拖一格换顺序：拖着的那格变淡，松手会插在哪两格中间就亮一道竖线 */
+.canvas-page .ctl-strip.is-reordering, .canvas-page .ctl-strip.is-reordering .ctl-cell { cursor: grabbing; user-select: none; }
+.canvas-page .ctl-cell.is-dragging { opacity: .45; }
+.canvas-page .ctl-cell.is-drop-before::before, .canvas-page .ctl-cell.is-drop-after::after { content: ""; position: absolute; top: 2px; bottom: 2px; width: 2px; border-radius: 1px; background: var(--owb-brand); pointer-events: none; }
+.canvas-page .ctl-cell.is-drop-before::before { left: -4px; }
+.canvas-page .ctl-cell.is-drop-after::after { right: -4px; }
 .canvas-page .ctl-peek { position: absolute; z-index: 2; display: grid; gap: 6px; width: max-content; max-width: 280px; padding: 8px; border: 1px solid var(--owb-border); border-radius: var(--radius-md); background: var(--owb-bg); box-shadow: var(--shadow-menu); color: var(--owb-text); font-size: 12px; pointer-events: none; opacity: 0; transition: opacity .12s var(--owb-ease); }
 .canvas-page .ctl-peek.is-open { opacity: 1; }
 .canvas-page .ctl-peek-media { display: flex; justify-content: center; min-width: 160px; border-radius: 6px; background: var(--owb-bg-hover); overflow: hidden; }

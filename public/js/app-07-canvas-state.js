@@ -100,8 +100,9 @@ let canvasState = {
   // seedDrama 是「新建短剧」表单填的那几项，等新画布铺好后塞进那张剧本卡（见 canvasRestoreOrSeed）
   drafting: new Set(), seedDrama: null,
   // 底部时间线（见 canvasRenderTimeline）：timelineOpen 为 null = 按本机记下的开合来；
-  // playback 是正在连播的那一趟，null = 没在放；find 是 ⌘F 那条搜索的命中和走到第几个
-  timelineOpen: null, timelineTimer: null, timelineChatObserver: null, castOpen: false, playback: null, find: null, findHandler: null,
+  // playback 是正在连播的那一趟，null = 没在放；find 是 ⌘F 那条搜索的命中和走到第几个；
+  // timelineDragEndAt 是上一次在时间线上拖完松手的时刻，松手后浏览器补的那个 click 靠它认出来
+  timelineOpen: null, timelineTimer: null, timelineChatObserver: null, castOpen: false, playback: null, find: null, findHandler: null, timelineDragEndAt: 0,
 };
 
 // 夹着数字的句子：词条按「{n}」模板收，先查词典再把数塞进去。塞完再交给界面，

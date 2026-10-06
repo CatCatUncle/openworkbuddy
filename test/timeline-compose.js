@@ -22,6 +22,7 @@
  *   【4】字幕：断行、时间轴、ASS 样式、禁用词
  *   【4b】字体名读取、片头片尾卡
  *   【4d】短剧一键合成：没配音的镜头用视频原声（真 ffmpeg 量声音的在【5s】）
+ *   【4e】放映顺序：时间线上拖出来的 order 写回分镜表、分镜表认它、合成按它排
  */
 
 const fs = require("fs");
@@ -759,6 +760,80 @@ section("【4d】短剧合成：没配音的镜头用视频原声");
   // 配乐压低那条提醒：原声也是「说话」，没有 sidechaincompress 时照样要说
   const p6 = plan([shot("S1-01", { video: "o.mp4" }), audioNode("bgm", { role: "配乐", title: "雨夜", url: "bgm.mp3" })], { "o.mp4": withSound(2, 1080, 1920), "bgm.mp3": A(30) }, { duck: false });
   ok(p6.blockers.some((b) => /sidechaincompress/.test(b.text)), "只有原声、没有配音、本机不能压低配乐：照样提醒配乐是固定音量", p6.blockers.map((b) => b.text));
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// 【4e】放映顺序：时间线上拖格子换的顺序存成每镜一个 order，镜头号、文件名一个不动。
+// 分镜表是真源：applyShotOrder 把一批 order 写进去（全成或全不成），schema 认这个字段，
+// 合成按它排——时间线上排第几，成片里就排第几
+// ════════════════════════════════════════════════════════════════════════
+section("【4e】放映顺序 order：写回分镜表、校验、合成排序");
+{
+  const P = require(mod("drama-pipeline"));
+  const C = require(mod("drama-compose"));
+  const board = () => ({
+    title: "雨夜", aspect: "9:16",
+    characters: [{ id: "A", name: "林", look: "短发" }],
+    scenes: [
+      { id: "S1", shots: [{ id: "S1-01", shot_size: "中景", frame_prompt: "f", motion_prompt: "m" }, { id: "S1-02", shot_size: "近景", frame_prompt: "f", motion_prompt: "m" }] },
+      { id: "S2", shots: [{ id: "S2-01", shot_size: "全景", frame_prompt: "f", motion_prompt: "m" }] },
+    ],
+  });
+  const flat = (d) => d.scenes.flatMap((sc) => sc.shots.map((sh) => [sh.id, sh.order]));
+
+  const d1 = board();
+  const r1 = P.applyShotOrder(d1, [{ shot: "S2-01", scene: "S2", order: 1 }, { shot: "S1-01", scene: "S1", order: 2 }, { shot: "S1-02", order: 3 }]);
+  ok(r1.ok && r1.changed === 3 && JSON.stringify(flat(d1)) === JSON.stringify([["S1-01", 2], ["S1-02", 3], ["S2-01", 1]]),
+     "★一批 order 写进各自那一镜，镜头号和场次里的先后都不动★", { r1, flat: flat(d1) });
+  const r1b = P.applyShotOrder(d1, [{ shot: "S2-01", order: 1 }, { shot: "S1-01", order: 5 }]);
+  ok(r1b.ok && r1b.changed === 1, "跟原来一样的不算改（changed 只数真变了的）", r1b);
+  const r1c = P.applyShotOrder(d1, [{ shot: "S1-01", order: null }, { shot: "S1-02", order: null }, { shot: "S2-01", order: null }]);
+  ok(r1c.ok && r1c.changed === 3 && d1.scenes.every((sc) => sc.shots.every((sh) => !("order" in sh))),
+     "★order 给 null：整个字段拿掉（撤销到没拖过），不留个 null 在表里★", d1.scenes);
+
+  // 全成或全不成：后面一项不对，前面那几项也一个都不写
+  const d2 = board();
+  const r2 = P.applyShotOrder(d2, [{ shot: "S1-01", order: 1 }, { shot: "S9-09", order: 2 }]);
+  ok(!r2.ok && r2.status === 404 && r2.error === "分镜表里没有镜头 S9-09" && flat(d2).every(([, o]) => o === undefined),
+     "★有一镜分镜表里没有：整批不写（404），前面那镜也没写上★ 写一半，表里就是一份谁也没排过的顺序", { r2, flat: flat(d2) });
+  const bads = [
+    [[{ shot: "S1-01", order: 0 }], 400, /不小于 1 的数字/],
+    [[{ shot: "S1-01", order: "2" }], 400, /不小于 1 的数字/],
+    [[{ shot: "S1-01", order: Infinity }], 400, /不小于 1 的数字/],
+    [[{ shot: "S1-01" }], 400, /不小于 1 的数字/],
+    [[{ shot: "", order: 1 }], 400, /没写镜头号/],
+    [[{ shot: "S1-01", order: 1 }, { shot: "S1-01", order: 2 }], 400, /出现了两次/],
+    [[{ shot: "S1-01", scene: "S2", order: 1 }], 404, /没有镜头 S1-01/],
+    [[], 400, /空的/],
+    ["S1-01", 400, /空的/],
+  ];
+  for (const [items, status, re] of bads) {
+    const d = board(), r = P.applyShotOrder(d, items);
+    ok(!r.ok && r.status === status && re.test(r.error) && flat(d).every(([, o]) => o === undefined), "反向对照：" + JSON.stringify(items) + " → " + status + "，表里一个字不改", r);
+  }
+  // 撞号：两场里都有 S1-01。不带场次号就不替人挑，带了场次号就能定位
+  const d3 = board(); d3.scenes[1].shots.push({ id: "S1-01", shot_size: "中景", frame_prompt: "f", motion_prompt: "m" });
+  const r3 = P.applyShotOrder(d3, [{ shot: "S1-01", order: 1 }]);
+  ok(!r3.ok && r3.status === 409 && /2 个镜头都叫 S1-01/.test(r3.error), "两镜撞号又没带场次号：409，不替人猜是哪一个", r3);
+  const r3b = P.applyShotOrder(d3, [{ shot: "S1-01", scene: "S2", order: 1 }]);
+  ok(r3b.ok && d3.scenes[1].shots[1].order === 1 && !("order" in d3.scenes[0].shots[0]), "带了场次号：只写那一场里的那一镜", d3.scenes);
+
+  // 分镜表 schema 认 order：写回去的表下次还读得出来
+  const d4 = board(); d4.scenes[0].shots[0].order = 3; d4.scenes[0].shots[1].order = 1.5;
+  const v4 = P.validateStoryboard(d4);
+  ok(v4.ok, "★分镜表里带 order（整数、小数都行）照样校验通过★ schema 不认的话，拖过一次整份表就读不出来了", v4.errors);
+  for (const bad of [0, -1, "3"]) {
+    const d = board(); d.scenes[0].shots[0].order = bad;
+    const v = P.validateStoryboard(d);
+    ok(!v.ok && v.errors.some((e) => /order/.test(e)), "反向对照：order 写成 " + JSON.stringify(bad) + " 校验不过", v.errors);
+  }
+
+  // 合成认同一个 order：有它就按它排，镜头号排在后面
+  const n = (id, order, y) => ({ id: "n_" + id, kind: "shot", payload: { id, ...(order != null ? { order } : {}) }, position: { x: 0, y: y || 0 } });
+  const ids = (list) => C._internals.sortShots(list).map((x) => x.payload.id);
+  eq(ids([n("S1-01", 2), n("S1-02", 3), n("S2-01", 1)]), ["S2-01", "S1-01", "S1-02"], "★合成按 order 排：S2-01 拖到第一，成片里它就第一个放★");
+  eq(ids([n("S1-01"), n("S1-02"), n("S2-01")]), ["S1-01", "S1-02", "S2-01"], "反向对照：都没 order 照旧按场次、镜头号排");
+  eq(ids([n("S1-01"), n("S2-01", 1)]), ["S2-01", "S1-01"], "有 order 的排在没 order 的前面（新加的镜头没拖过，接在最后）");
 }
 
 // 【5】【6】（真 ffmpeg / 工具接线）。要真跑子进程、要等，所以是 async 的；再往后加的节接在 runtimeSections 里

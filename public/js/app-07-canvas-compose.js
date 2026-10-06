@@ -108,7 +108,7 @@ function canvasComposeHtml(p) {
     return `<div class="cp-compose is-plan"><div class="cp-compose-head"><b>合成方案</b>`
       + `<span>${(plan.shots || []).length} 镜 · ${plan.totalSeconds ? plan.totalSeconds + " 秒" : "总时长探不到"} · ${plan.mode === "copy" ? "直接拼，一帧都不重压" : `统一到 ${plan.target.w}×${plan.target.h} 重新编码`}</span>`
       + `<button class="ui-btn ui-btn--xs ui-btn--ghost" data-cp-compose-close>收起</button></div>`
-      + `<div class="cp-compose-tip">按分镜编号排序，不对就改镜头 ID。</div>`
+      + `<div class="cp-compose-tip">跟时间线一个顺序，不对就去时间线上拖。</div>`
       + `<ol class="cp-order">${rows}</ol>`
       + [...stop, ...warn].map((b) => `<div class="cp-compose-log is-${esc(b.level)}">${esc(b.text)}</div>`).join("")
       + `<label class="cp-compose-sub"><input type="checkbox" data-cp-compose-sub ${canvasState.composeSub ? "checked" : ""}>把字幕烧进画面${subNote}</label>`

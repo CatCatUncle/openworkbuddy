@@ -333,6 +333,8 @@ const STUB3 = `
     if (s.includes("/api/canvas/progress")) return J(window.__progress || {});
     if (s.includes("/api/drama/storyboards")) return J({ storyboards: window.__board ? [{ name: "ep1", title: "第一集", shots: 2 }] : [] });
     if (s.includes("/api/drama/storyboard/output")) { window.__bodies.push({ url: "/api/drama/storyboard/output", body }); return J({ ok: true }); }
+    // 时间线上拖格子换顺序：整批 order 回分镜表（第四十八节）。__orderFail 给一句原话就照真服务端那样按 404 退回
+    if (s.includes("/api/drama/storyboard/order")) { window.__bodies.push({ url: "/api/drama/storyboard/order", body }); return window.__orderFail ? J({ error: window.__orderFail }, 404) : J({ ok: true, changed: 1 }); }
     if (s.includes("/api/drama/storyboard?")) return J(window.__board ? { data: window.__board } : { error: "没有这份分镜表" });
     return inner.apply(this, arguments);
   };
@@ -3590,6 +3592,99 @@ app.whenReady().then(async () => {
   ok(/找不到了/.test(丢.toast) && !/重启|太久/.test(丢.toast), "提示只说找不到了，不替人猜是重启还是太久", 丢.toast);
   ok(丢.重来.posts.length === 1 && !丢.重来.posts[0].run && 丢.重来.job === null && 丢.重来.plan,
      "点【重新合成】：重新算方案摆出来给人看（不直接开跑），旧任务清掉", 丢.重来);
+
+  console.log("\n— 四十八、时间线拖格子换顺序：写进 order、回分镜表，镜头号不动；Alt+←/→ 也能挪；一挪一步撤销 —");
+  const 排 = await run(`
+    (async () => {
+      ${一集}
+      window.__progress = ${一集进度};
+      await canvasLoadProgress();
+      canvasHistoryReset(canvasSnapshot());
+      window.__bodies = []; window.__orderFail = "";
+      const box = document.getElementById("canvas-timeline");
+      const 格 = (id) => box.querySelector('[data-ctl-shot="' + id + '"]');
+      const 顺序 = () => [...box.querySelectorAll("[data-ctl-shot]")].map((c) => c.querySelector(".ctl-cap b").textContent);
+      const 序号 = () => Object.fromEntries(canvasState.graph.getElements().filter((n) => canvasKind(n) === "shot").map((n) => [n.id, canvasPayload(n).order]));
+      const 镜头号 = () => canvasState.graph.getElements().filter((n) => canvasKind(n) === "shot").map((n) => canvasPayload(n).id + "/" + canvasPayload(n).board_shot).sort();
+      const 回表 = () => window.__bodies.filter((b) => b.url === "/api/drama/storyboard/order").map((b) => b.body);
+      const 单格回表 = () => window.__bodies.filter((b) => b.url === "/api/drama/storyboard/output").length;
+      const 字 = () => (document.querySelector("#owb-toast span") || {}).textContent || "";
+      const 中 = (el) => { const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; };
+      const 按 = (el, type, at) => (el || window).dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, clientX: at.x, clientY: at.y, button: 0, pointerId: 1, pointerType: "mouse" }));
+      const 起 = { 顺序: 顺序(), 镜头号: 镜头号() };
+
+      // ① 反向对照：按下松开没挪（点一下）——照旧选中这一格，不换顺序、不回表
+      const t3 = 格("t3"), a3 = 中(t3);
+      按(t3, "pointerdown", a3); 按(null, "pointerup", a3); t3.click();
+      ${等(100)}
+      const 点一下 = { 顺序: 顺序(), 回表: 回表().length, 选中: [...canvasState.selectedIds] };
+
+      // ② 把最后一镜 S2-02 拖到第一格左半边松手：插到最前面
+      const t1 = 格("t1"), a1 = 中(t1), 头 = box.querySelector("[data-ctl-shot]").getBoundingClientRect();
+      const 落 = { x: 头.left + 4, y: a1.y };
+      按(t1, "pointerdown", a1);
+      按(null, "pointermove", { x: a1.x - 20, y: a1.y });
+      按(null, "pointermove", 落);
+      const 拖着 = { 淡: t1.classList.contains("is-dragging"), 线: box.querySelector(".is-drop-before") ? box.querySelector(".is-drop-before").dataset.ctlShot : "" };
+      按(null, "pointerup", 落);
+      格("t1") && 格("t1").click();   // 松手后浏览器补的那个 click：不算点了这一格
+      ${等(100)}
+      const 拖后 = { 顺序: 顺序(), 序号: 序号(), 镜头号: 镜头号(), 回表: 回表(), 单格: 单格回表(), 提示: 字(), 有撤销: !!document.querySelector("#owb-toast .owb-toast-act"),
+        选中: [...canvasState.selectedIds], 残留: box.querySelectorAll(".is-dragging, .is-drop-before, .is-drop-after").length };
+
+      // ③ 键盘：焦点在 S1-02 上按 Alt+← 挪前一位；焦点跟着它走，等防抖那趟重画完还在它身上
+      window.__bodies = [];
+      格("t4").focus();
+      格("t4").dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", altKey: true, bubbles: true, cancelable: true }));
+      ${等(350)}
+      const 键后 = { 顺序: 顺序(), 焦点: document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.ctlShot : "", 回表: 回表() };
+      // 不按 Alt 的方向键还是只走格子，不挪顺序
+      document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }));
+      ${等(100)}
+      const 走格 = { 顺序: 顺序(), 焦点: document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.ctlShot : "" };
+
+      // ④ 撤销：一下退一挪，分镜表跟着退；退到没拖过，order 整个拿掉（分镜表那头发 null）
+      window.__bodies = [];
+      canvasUndo(); ${等(300)}
+      const 撤一 = { 顺序: 顺序(), 回表: 回表() };
+      window.__bodies = [];
+      canvasUndo(); ${等(300)}
+      const 撤二 = { 顺序: 顺序(), 序号: 序号(), 回表: 回表() };
+
+      // ⑤ 分镜表退回来了：画布上照样排好，照原话说没写回去
+      window.__orderFail = "分镜表里没有镜头 S2-02";
+      canvasTimelineMove("t1", 0); ${等(200)}
+      const 回不去 = { 顺序: 顺序(), 提示: 字() };
+      window.__orderFail = "";
+      return { 起, 点一下, 拖着, 拖后, 键后, 走格, 撤一, 撤二, 回不去 };
+    })()`);
+  ok(JSON.stringify(排.起.顺序) === JSON.stringify(["S1-01", "S1-02", "S2-01", "S2-02"]), "先验料：没拖过的时候按镜头号排", 排.起.顺序);
+  ok(JSON.stringify(排.点一下.顺序) === JSON.stringify(排.起.顺序) && 排.点一下.回表 === 0 && JSON.stringify(排.点一下.选中) === JSON.stringify(["t3"]),
+     "反向对照：按下松开没挪，就是点了一下——选中这一格，顺序不变、不回表", 排.点一下);
+  ok(排.拖着.淡 && 排.拖着.线 === "t2", "拖着的时候那一格变淡，松手会插到哪儿亮一道线（第一格前面）", 排.拖着);
+  ok(JSON.stringify(排.拖后.顺序) === JSON.stringify(["S2-02", "S1-01", "S1-02", "S2-01"]),
+     "★把最后一镜拖到最前面松手：时间线上它排第一，其余顺次往后★", 排.拖后.顺序);
+  ok(JSON.stringify(排.拖后.序号) === JSON.stringify({ t1: 1, t2: 2, t3: 4, t4: 3 }),
+     "★整条每一镜都写上 order（1、2、3、4），不只写挪的那一镜★ 只写一镜，没写的全排它后面，顺序就乱了", 排.拖后.序号);
+  ok(JSON.stringify(排.拖后.镜头号) === JSON.stringify(排.起.镜头号), "★镜头号一个没动★ 文件名里带它，改了就跟盘上的首帧、视频对不上", 排.拖后.镜头号);
+  ok(排.拖后.回表.length === 1 && 排.拖后.回表[0].name === "ep1" && 排.拖后.单格 === 0
+     && JSON.stringify(排.拖后.回表[0].shots) === JSON.stringify([{ shot: "S2-02", scene: "S2", order: 1 }, { shot: "S1-01", scene: "S1", order: 2 }, { shot: "S1-02", scene: "S1", order: 3 }, { shot: "S2-01", scene: "S2", order: 4 }]),
+     "★顺序整批写回分镜表（一份表一趟，带场次号定位）★ 分镜表是真源，只改画布的话下次展开又变回去", 排.拖后.回表);
+  ok(/S2-02 挪到第 1 镜/.test(排.拖后.提示) && 排.拖后.有撤销, "提示说清挪到第几镜，挂「撤销」", 排.拖后.提示);
+  ok(JSON.stringify(排.拖后.选中) === JSON.stringify(["t3"]) && 排.拖后.残留 === 0, "松手后补的那个 click 不算点了这一格（选中没换）；拖完淡色、竖线都收干净", 排.拖后);
+  ok(JSON.stringify(排.键后.顺序) === JSON.stringify(["S2-02", "S1-02", "S1-01", "S2-01"]) && 排.键后.焦点 === "t4",
+     "★Alt+←：选中的这一镜往前挪一位，焦点跟着它走★（重画完焦点没掉到页面上）", 排.键后);
+  ok(排.键后.回表.length === 1 && JSON.stringify(排.键后.回表[0].shots.map((x) => [x.shot, x.order])) === JSON.stringify([["S2-02", 1], ["S1-02", 2], ["S1-01", 3], ["S2-01", 4]]),
+     "键盘挪的也回分镜表", 排.键后.回表);
+  ok(JSON.stringify(排.走格.顺序) === JSON.stringify(排.键后.顺序) && 排.走格.焦点 === "t2", "反向对照：不按 Alt 的 → 只走到下一格，不挪顺序", 排.走格);
+  ok(JSON.stringify(排.撤一.顺序) === JSON.stringify(["S2-02", "S1-01", "S1-02", "S2-01"]) && 排.撤一.回表.length === 1
+     && JSON.stringify(排.撤一.回表[0].shots.map((x) => [x.shot, x.order]).sort()) === JSON.stringify([["S1-01", 2], ["S1-02", 3]]),
+     "★⌘Z 一下只退一挪（回到拖完那一步），分镜表里那两镜的 order 跟着退★", 排.撤一);
+  ok(JSON.stringify(排.撤二.顺序) === JSON.stringify(["S1-01", "S1-02", "S2-01", "S2-02"]) && Object.values(排.撤二.序号).every((v) => v === undefined)
+     && 排.撤二.回表.length === 1 && 排.撤二.回表[0].shots.length === 4 && 排.撤二.回表[0].shots.every((x) => x.order === null),
+     "★再撤一下回到没拖过：order 整个拿掉，分镜表那头也发 null 拿掉★ 不然下次展开又按旧 order 排回去", 排.撤二);
+  ok(JSON.stringify(排.回不去.顺序) === JSON.stringify(["S2-02", "S1-01", "S1-02", "S2-01"]) && /没写回分镜表/.test(排.回不去.提示) && /（分镜表里没有镜头 S2-02）/.test(排.回不去.提示),
+     "分镜表退回来：画布上照样排好，提示照原话说没写回去", 排.回不去.提示);
 
   srv.close();
   console.log(fail ? `\n有失败：${pass} 过 / ${fail} 挂` : `\n全部通过：${pass} 过 / 0 挂`);

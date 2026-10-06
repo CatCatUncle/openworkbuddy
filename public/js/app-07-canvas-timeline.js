@@ -110,23 +110,28 @@ function canvasRenderTimeline() {
   const lacking = shots.filter((s) => s.missing.length);
   const total = shots.reduce((sum, s) => sum + s.seconds, 0);
   const keep = box.querySelector(".ctl-strip")?.scrollLeft || 0;
+  // 焦点在哪一格，重画完还落回那一格：Alt+→ 挪完一镜、生成完一镜都会整条重画，
+  // 不接回来焦点就掉到页面上，再按一下方向键挪的是画布上的卡
+  const active = document.activeElement, focusId = active && box.contains(active) && active.dataset && active.dataset.ctlShot ? active.dataset.ctlShot : "";
   const pb = canvasState.playback, playing = pb && !pb.ended && pb.shots[pb.index] ? String(pb.shots[pb.index].nodeId) : "";
   // 方向键在格子之间走，Tab 只停一格（选中的那格，没有就第一格）：三十镜不该是三十个 Tab 站
   const home = Math.max(0, shots.findIndex((s) => canvasState.selectedIds.has(s.nodeId)));
   let clock = 0;
   const starts = shots.map((s) => { const at = clock; clock += s.seconds; return at; });
   const cells = open ? shots.map((s, i) => {
-    const tip = [s.id, ...s.missing.map((k) => canvasT("缺" + k))].join(" · ");
+    const tip = [s.id, ...s.missing.map((k) => canvasT("缺" + k)), canvasT("拖动或 Alt+←/→ 换顺序")].join(" · ");
     // 格子宽窄跟着时长走，一眼看得出哪一镜长：一秒 16px，夹在 80–160 之间
     const w = Math.round(Math.min(160, Math.max(80, s.seconds * 16)));
     const pips = canvasTimelineParts(s).map((x) => `<i class="is-${x.state}"></i>`).join("");
-    return `<button type="button" class="ctl-cell${s.missing.length ? " is-lacking" : ""}${canvasState.selectedIds.has(s.nodeId) ? " is-selected" : ""}${playing === String(s.nodeId) ? " is-playing" : ""}" data-ctl-shot="${esc(s.nodeId)}" data-ctl-i="${i}" tabindex="${i === home ? 0 : -1}" title="${esc(tip)}" style="--ctl-w:${w}px">${canvasTimelineThumb(s)}<span class="ctl-tc">${canvasTimelineClock(starts[i])}</span></span><span class="ctl-pips" aria-hidden="true">${pips}</span><span class="ctl-cap"><b>${esc(s.id)}</b><span>${esc(canvasT("{n} 秒", { n: canvasTimelineNum(s.seconds) }))}</span></span>${s.missing.length ? '<i class="ctl-dot" aria-hidden="true"></i>' : ""}</button>`;
+    return `<button type="button" class="ctl-cell${s.missing.length ? " is-lacking" : ""}${canvasState.selectedIds.has(s.nodeId) ? " is-selected" : ""}${playing === String(s.nodeId) ? " is-playing" : ""}" data-ctl-shot="${esc(s.nodeId)}" data-ctl-i="${i}" tabindex="${i === home ? 0 : -1}" aria-keyshortcuts="Alt+ArrowLeft Alt+ArrowRight" title="${esc(tip)}" style="--ctl-w:${w}px">${canvasTimelineThumb(s)}<span class="ctl-tc">${canvasTimelineClock(starts[i])}</span></span><span class="ctl-pips" aria-hidden="true">${pips}</span><span class="ctl-cap"><b>${esc(s.id)}</b><span>${esc(canvasT("{n} 秒", { n: canvasTimelineNum(s.seconds) }))}</span></span>${s.missing.length ? '<i class="ctl-dot" aria-hidden="true"></i>' : ""}</button>`;
   }).join("") : "";
   box.hidden = false;
   box.classList.toggle("is-open", open);
   box.innerHTML = `${canvasState.castOpen ? canvasCastPanelHtml(shots) : ""}<div class="ctl-panel"><div class="ctl-head"><button type="button" class="ctl-toggle" data-ctl-toggle aria-expanded="${open}" title="${open ? "收起时间线" : "展开时间线"}">${ic(open ? "chevron-down" : "chevron-up")}<b>时间线</b></button><span class="ctl-meta"><span>${esc(canvasT("{n} 镜", { n: shots.length }))}</span><span>${esc(canvasT("{n} 秒", { n: canvasTimelineNum(total) }))}</span>${lacking.length ? `<button type="button" class="ctl-lack" data-ctl-lack title="选中缺素材的镜头"><i class="ctl-dot" aria-hidden="true"></i>${esc(canvasT("{n} 镜缺素材", { n: lacking.length }))}</button>` : ""}</span><span class="ctl-actions"><button type="button" class="ui-btn ui-btn--ghost ui-btn--xs${canvasState.castOpen ? " is-active" : ""}" data-ctl-cast aria-pressed="${canvasState.castOpen}">${ic("users")}角色</button><button type="button" class="ui-btn ui-btn--outline ui-btn--xs" data-ctl-play title="只放本机已有的视频和配音，不花钱">${ic("play")}连播预览</button></span></div>${open ? `<div class="ctl-strip" role="list">${cells}</div>` : ""}</div>`;
   const strip = box.querySelector(".ctl-strip");
   if (strip) strip.scrollLeft = keep;   // 重画是常事（生成完一镜就画一遍），别每次都把人滚回第一镜
+  const back = focusId && strip ? [...strip.querySelectorAll("[data-ctl-shot]")].find((el) => el.dataset.ctlShot === focusId) : null;
+  if (back) { strip.querySelectorAll("[data-ctl-shot]").forEach((el) => { el.tabIndex = el === back ? 0 : -1; }); back.focus({ preventScroll: true }); canvasTimelineReveal(strip, back); }
   box.querySelector("[data-ctl-toggle]").addEventListener("click", () => {
     canvasState.timelineOpen = !open;
     try { localStorage.setItem("openworkbuddy.canvas.timeline", open ? "0" : "1"); } catch {}
@@ -137,6 +142,8 @@ function canvasRenderTimeline() {
   box.querySelector("[data-ctl-play]").addEventListener("click", () => canvasPlaybackStart());
   box.querySelectorAll("[data-ctl-shot]").forEach((btn) => {
     btn.addEventListener("click", () => {
+      // 拖完松手浏览器还会补一个 click：那一下不是「点了这一格」，别让画布跳过去
+      if (Date.now() - (canvasState.timelineDragEndAt || 0) < 400) return;
       canvasProgressFocus([btn.dataset.ctlShot]);
       box.querySelectorAll(".ctl-cell.is-selected").forEach((el) => el.classList.remove("is-selected"));
       btn.classList.add("is-selected");
@@ -153,6 +160,7 @@ function canvasRenderTimeline() {
   });
   if (strip) {
     strip.addEventListener("scroll", () => canvasTimelinePeekHide(box), { passive: true });
+    strip.addEventListener("pointerdown", (e) => canvasTimelineDragStart(e, box, strip));
     // ←/→ 在镜头之间走，Home/End 到头到尾。走到哪格就选中哪格、画布跟过去，跟点一下一样。
     // 截住不往上冒：画布页自己也认方向键（挪选中的卡），不截的话格子一换、身后的卡也跟着挪
     strip.addEventListener("keydown", (e) => {
@@ -160,6 +168,12 @@ function canvasRenderTimeline() {
       if (!cur || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
       e.preventDefault(); e.stopPropagation();
       const all = [...strip.querySelectorAll("[data-ctl-shot]")], at = all.indexOf(cur);
+      // 按着 Alt（Mac 上是 Option）：不是走到旁边那格，是把这一镜往前、往后挪一位；Alt+Home/End 挪到头、到尾。
+      // 焦点跟着这一镜走（重画时接回来），连按几下就挪几位、记几步撤销
+      if (e.altKey) {
+        canvasTimelineMove(cur.dataset.ctlShot, e.key === "Home" ? 0 : e.key === "End" ? all.length - 1 : at + (e.key === "ArrowRight" ? 1 : -1));
+        return;
+      }
       const to = all[e.key === "Home" ? 0 : e.key === "End" ? all.length - 1 : Math.max(0, Math.min(all.length - 1, at + (e.key === "ArrowRight" ? 1 : -1)))];
       if (!to || to === cur) return;
       all.forEach((el) => { el.tabIndex = el === to ? 0 : -1; });
@@ -179,6 +193,82 @@ function canvasTimelineReveal(strip, cell) {
   if (cr.left < sr.left) strip.scrollLeft -= sr.left - cr.left + 8;
   else if (cr.right > sr.right) strip.scrollLeft += cr.right - sr.right + 8;
 }
+/**
+ * 把一镜挪到放映顺序的第 to 位（从 0 数）。拖格子松手、Alt+←/→ 都走这里。
+ *
+ * 挪完整条时间线每一镜都写上 order（1、2、3…），不只写挪的那一镜：
+ * 没写 order 的镜头一律排在写了的后面，只给一镜写上，它就跑到最前面去了。
+ * 镜头号、产物文件名一个都不动——文件名里带镜头号，改号就跟盘上的首帧、视频对不上。
+ * 一次挪动记一步撤销；分镜表是真源，顺序跟着写回去（canvasBoardOrderSync）。
+ * 合成那边认的是同一个 order（drama-compose.js orderKeyOf），时间线上排第几，成片里就排第几
+ * @returns {boolean} 挪没挪
+ */
+function canvasTimelineMove(nodeId, to) {
+  if (canvasState.playback) return false;   // 连播拿的是开播那一刻的顺序，放着的时候不换
+  const shots = canvasTimelineShots();
+  const from = shots.findIndex((s) => String(s.nodeId) === String(nodeId));
+  const at = Math.max(0, Math.min(shots.length - 1, Math.round(Number(to) || 0)));
+  if (from < 0 || at === from) return false;
+  const list = shots.map((s) => s.node);
+  list.splice(at, 0, list.splice(from, 1)[0]);
+  // 先把还在防抖里的上一笔记下来：刚改完一句台词紧接着拖，⌘Z 不该把两件事一起退掉
+  canvasHistoryFlush();
+  list.forEach((node, i) => { if (canvasPayload(node).order !== i + 1) node.set("canvasPayload", { ...canvasPayload(node), order: i + 1 }); });
+  canvasPersist();
+  canvasHistoryFlush();   // 这一挪单独记一步：连按三下 Alt+→ 是三步，⌘Z 一下退一格
+  canvasRenderTimeline();
+  canvasToast(canvasT("{id} 挪到第 {n} 镜", { id: shots[from].id, n: at + 1 }), "arrow-right", undefined, { label: "撤销", run: canvasUndo });
+  canvasBoardOrderSync(list).then((why) => { if (why) canvasToast(why, "triangle-alert", "err"); });
+  return true;
+}
+
+/**
+ * 按住一格拖到别处松手，就插到那里。挪过 6px 才算拖：不然点一下、双击连播都会被当成拖。
+ * 拖着的时候两格之间亮一道竖线，说清楚松手会插在哪；拖到时间线左右边上自己往那头滚。
+ * 用 pointer 事件自己算落点，不用浏览器自带的拖放：那套拖起来是一张半透明截图，落点也画不出来
+ */
+function canvasTimelineDragStart(e, box, strip) {
+  const cell = e.target && e.target.closest ? e.target.closest("[data-ctl-shot]") : null;
+  if (!cell || e.button !== 0 || canvasState.playback) return;
+  const x0 = e.clientX, y0 = e.clientY, from = Number(cell.dataset.ctlI), id = cell.dataset.ctlShot;
+  let slot = -1, dragging = false;
+  const cells = () => [...strip.querySelectorAll("[data-ctl-shot]")];
+  const mark = (k) => cells().forEach((el, i, all) => {
+    el.classList.toggle("is-drop-before", i === k);
+    el.classList.toggle("is-drop-after", k === all.length && i === all.length - 1);
+  });
+  const move = (ev) => {
+    if (!dragging) {
+      if (Math.abs(ev.clientX - x0) < 6 && Math.abs(ev.clientY - y0) < 6) return;
+      dragging = true;
+      cell.classList.add("is-dragging"); strip.classList.add("is-reordering");
+      canvasTimelinePeekHide(box);
+    }
+    ev.preventDefault();
+    const r = strip.getBoundingClientRect();
+    if (ev.clientX < r.left + 32) strip.scrollLeft -= 16; else if (ev.clientX > r.right - 32) strip.scrollLeft += 16;
+    // 落点：插在第几格前面（按挪之前的排法数）。过了哪一格的中线就算插到它后面
+    const all = cells();
+    slot = all.findIndex((el) => ev.clientX < el.getBoundingClientRect().left + el.getBoundingClientRect().width / 2);
+    if (slot < 0) slot = all.length;
+    mark(slot);
+  };
+  const end = (ev) => {
+    window.removeEventListener("pointermove", move, true);
+    window.removeEventListener("pointerup", end, true);
+    window.removeEventListener("pointercancel", end, true);
+    if (!dragging) return;
+    canvasState.timelineDragEndAt = Date.now();
+    cell.classList.remove("is-dragging"); strip.classList.remove("is-reordering"); mark(-1);
+    if (ev.type === "pointercancel" || slot < 0) return;
+    // 插在第 slot 格前面：往右挪的时候，自己原来那一格让出来了，要扣掉
+    canvasTimelineMove(id, slot > from ? slot - 1 : slot);
+  };
+  window.addEventListener("pointermove", move, true);
+  window.addEventListener("pointerup", end, true);
+  window.addEventListener("pointercancel", end, true);
+}
+
 /** 连播放到哪一镜，时间线上哪一格就亮着，看不见就滚过去。nodeId 给空 = 不在放了 */
 function canvasTimelineMarkPlaying(nodeId) {
   const box = document.getElementById("canvas-timeline");
