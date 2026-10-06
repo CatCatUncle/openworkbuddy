@@ -278,6 +278,7 @@ The diagram doubles as a reading order: start at `server.js`, then see how `src/
 
 ## What's new
 
+- **Oct 7** Trip cards redesigned: the map fills the card with the stops floating in a panel on the right; pins show photos and names, and clicking a stop glides the map to it; China days with four or more stops can open the whole route too
 - **Oct 6** System sandbox: commands and scripts the AI runs on macOS and Windows can't read your Keys or ledger or modify the app; switch it in Settings → Security; it adds 7–16 ms per command
 - **Oct 6** Only the models you configured: the relay, the judge model and memory embeddings no longer touch unregistered models; with a quota set, unpriced models are refused
 - **Oct 6** Quota gate gaps closed: fallback channels, vision and image generation are priced first; pricier tiers matched only by prefix are refused too
