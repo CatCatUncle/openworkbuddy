@@ -471,9 +471,12 @@ app.whenReady().then(async () => {
   // 真正每 1.8 秒跑的那条路照样在写盘。所以这儿让 canvasStartRemoteSync 自己转两圈
   const echo = await run(`
     (async () => {
-      window.__remote = { version: 1, updatedAt: Date.now(), edges: [],
-        nodes: [{ id: "m1", kind: "note", payload: { title: "对方改的" }, position: { x: 0, y: 0 }, size: { width: 300, height: 200 } }] };
       await canvasFlushRemoteWrite();   // 上一段欠着的那笔先写完，不然下面数回写会把它算进来
+      // 「对方改的」得放在冲完之后：假服务端收到 PUT 会把 __remote 换成刚写的那份，
+      // 先放的话，机器慢、上一段那笔还没发出去时，这一冲就把它盖掉了，同步怎么转都拉不到。
+      // 时间也得比刚写的那份晚：同一毫秒里盖的戳一样大，同步只认更新的，会当成没变
+      window.__remote = { version: 1, updatedAt: Math.max(Date.now(), Number(window.__remote.updatedAt) || 0) + 1, edges: [],
+        nodes: [{ id: "m1", kind: "note", payload: { title: "对方改的" }, position: { x: 0, y: 0 }, size: { width: 300, height: 200 } }] };
       window.__puts = [];
       canvasStartRemoteSync();
       // 等它自己转到，别写死等几秒：一圈 1.8 秒，正在写盘的那一圈会整圈跳过，
