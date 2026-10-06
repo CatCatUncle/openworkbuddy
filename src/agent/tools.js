@@ -3999,6 +3999,7 @@ async function executeToolCore(name, input, opts = {}) {
       detail, // 改文件的 diff：看着改了哪几行批，而不是对着一个文件名下注
       seg: verdict.seg || "", // 长命令里到底是哪一段触发的：尾巴上藏一句 rm -rf，人得一眼看得见
       sessionId: opts.sessionId || "",
+      blacklist: !!verdict.blacklist, // 碰了文件黑名单的卡，多人共用时谁也批不了
     });
     security.audit(label + "审批", text, ok ? "已批准" : "已拒绝");
     if (ok) return null;

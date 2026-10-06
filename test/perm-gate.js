@@ -24,6 +24,8 @@
  *   ⑩ 真起一台 server.js：对话里加的当场在连接器页上、同一趟下一步就能调；外面手改 config.json
  *      不用重启也认（只重连变了的），存别的设置、连接器页拿旧列表保存都不会把它盖回去；
  *      页开着时别处换了的那台不被旧样子改回去；手写坏了形状的一条不卡同步、不拖垮开机；外面刚关的不被对话里加的拉起来
+ *   ⑪ 多人共用：命令、代码碰了文件黑名单直接拦、不出审批卡；挂着的黑名单卡成员批不了（平台管理员也批不了），
+ *      单机桌面照旧弹卡
  *
  * 模型是本地假的，一分钱不花、一个字节不出网。
  *   node test/perm-gate.js
@@ -433,6 +435,59 @@ async function cliRun(args, call, { stopAt, pty } = {}) {
     const APP = fs.readFileSync(path.join(ROOT, "public", "js", "app-02.js"), "utf8");
     ok(/a\.persistable && apCanAlways/.test(APP), "网页的「一直允许」按钮看 persistable 画不画");
     security.clearSessionAllow();
+  });
+
+  await section("⑪ 多人共用：碰了文件黑名单直接拦、不出审批卡；成员批不了自己的黑名单卡", async () => {
+    const SSH = path.join(os.homedir(), ".ssh", "id_rsa_permgate_probe");
+    try {
+      // 单机（没注册 = 一个人）：照旧弹卡，拒了就不跑
+      fresh(); answer = () => "deny";
+      let r = await run("run_shell", { command: `cat ${SSH}` }, {});
+      ok(cards.length === 1 && /黑名单/.test(cards[0].rule || "") && r.isError, "单机：命令碰了 ~/.ssh 弹卡问一声", { cards: cards.map((c) => c.rule), r: r.content });
+
+      security.setMultiUser(() => true);
+      fresh(); answer = () => "allow";
+      r = await run("run_shell", { command: `cat ${SSH}` }, {});
+      ok(cards.length === 0 && r.isError && /拦截/.test(r.content) && /多人共用/.test(r.content), "★多人：命令碰了黑名单直接拦，一张卡都不出★", { cards: cards.length, r: r.content });
+      r = await run("run_node", { code: `require("fs").readFileSync(${JSON.stringify(SSH)})` }, {});
+      ok(cards.length === 0 && r.isError && /拦截/.test(r.content), "★多人：代码碰了黑名单也直接拦★", { cards: cards.length, r: r.content });
+      r = await run("run_shell", { command: `cat ${SSH}` }, { permission_mode: "full" });
+      ok(cards.length === 0 && r.isError, "  └ 全自动也一样拦", r.content);
+      const v = security.checkCommand(security.getSecurity({}), "cat ~/.ssh/id_rsa");
+      ok(v.action === "deny" && v.blacklist === true && !("ruleKey" in v && v.ruleKey), "  └ 判定是 deny，带黑名单记号", v);
+      security.setMultiUser(() => { throw new Error("账号库读坏了"); });
+      eq(security.checkCommand(security.getSecurity({}), "cat ~/.ssh/id_rsa").action, "deny", "  └ 判断几个人时出错按多人算");
+
+      // 挂着的黑名单卡（切成多人之前就摆出来的）：走 server.js 那条批卡路由，成员点允许 → 403、任务拿到拒绝
+      security.setMultiUser(() => true);
+      const SERVER = src("server");
+      const at = SERVER.indexOf('app.post("/api/security/approvals/:id"');
+      const end = SERVER.indexOf("\n});", at);
+      const routes = {};
+      for (const who of ["bob", undefined]) {
+        new Function("app", "security", "config", "saveConfig", "approvalScope", SERVER.slice(at, end + 4))(
+          { post: (p, fn) => (routes[p] = fn) }, security, {}, () => {}, () => who);
+        const post = (id, body) => new Promise((resolve) => {
+          const res = { code: 200, status(c) { this.code = c; return this; }, json(o) { resolve({ status: this.code, json: o }); } };
+          routes["/api/security/approvals/:id"]({ params: { id }, body }, res);
+        });
+        const pending = security.requestApproval("命令执行", "cat ~/.ssh/id_rsa", { timeoutMs: 5000, owner: "bob", rule: "命令碰到了文件黑名单（~/.ssh）", blacklist: true });
+        const item = security.listApprovals("bob").find((x) => x.text === "cat ~/.ssh/id_rsa");
+        const res = await post(item.id, { allow: true, scope: "once" });
+        const tag = who ? "成员批自己任务的卡" : "平台管理员批";
+        ok(res.status === 403 && /黑名单/.test(res.json.error || ""), `★多人：${tag} → 403★`, res);
+        eq(await pending, false, `  └ ${tag}：任务拿到的是「拒绝」，不用干等超时`);
+      }
+      // 反向对照：不碰黑名单的普通卡，成员照样能批自己的
+      const pending = security.requestApproval("命令执行", "git push --force", { timeoutMs: 5000, owner: "bob", ruleKey: "danger:force-push" });
+      const item = security.listApprovals("bob").find((x) => x.text === "git push --force");
+      const rr = security.resolveApproval(item.id, true, "once", "bob");
+      ok(rr.ok, "反向对照：普通卡成员照样批得了", rr);
+      eq(await pending, true, "  └ 任务拿到的是「允许」");
+    } finally {
+      security.setMultiUser(null);
+      security.clearSessionAllow();
+    }
   });
 
   await section("⑥ install_skill：装进本软件的技能库，过档位、过扫描，整目录替换前要点头", async () => {

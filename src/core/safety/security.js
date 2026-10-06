@@ -164,6 +164,30 @@ function auditExport() {
   return auditLog.map((e) => `${e.ts}\t[${e.type}]\t${e.action}\t${e.text}`).join("\n");
 }
 
+// ---------- 多人部署 ----------
+
+/**
+ * 这台服务器是不是不止一个账号。账号库在业务层，这一层够不着，由 server.js / cli.js 注册进来。
+ * 没注册（单测、只用到闸的工具）= 一个人，判定照旧。
+ *
+ * 为什么要分：审批卡是发起任务的那个人自己批的。单机桌面上那就是机器主人，弹卡问一声没毛病；
+ * 多人共用时成员批自己任务的卡，碰了文件黑名单（config.json 里的 Key、账号库）也就是自己批给自己。
+ */
+let multiUserFn = null;
+/** @param {(() => boolean) | null} fn */
+function setMultiUser(fn) {
+  multiUserFn = typeof fn === "function" ? fn : null;
+}
+function isMultiUser() {
+  if (!multiUserFn) return false;
+  try { return !!multiUserFn(); } catch { return true; } // 读坏按多人：判错了就是让成员自己批黑名单
+}
+/** 碰了文件黑名单：一个人时弹卡（不给「同类不再问」），多人时直接拦、不出卡 */
+function blacklistVerdict(rule, seg) {
+  if (isMultiUser()) return { action: "deny", rule: `${rule}，多人共用时这类一律拦下`, seg, blacklist: true };
+  return { action: "ask", rule, seg, ruleKey: "", blacklist: true };
+}
+
 // ---------- 文件安全 ----------
 
 function expandPath(s, platform = process.platform) {
@@ -1037,7 +1061,7 @@ function checkCommand(sec, command, platform = process.platform) {
     for (const b of needles) {
       if (b.needles.some((n) => n && low.includes(n))) {
         // 有 shell 在手，文件黑名单本来是形同虚设的（read_file 拦得住，`cat` 拦不住）
-        return { action: "ask", rule: `命令碰到了文件黑名单（${b.raw}）`, seg, ruleKey: "" };
+        return blacklistVerdict(`命令碰到了文件黑名单（${b.raw}）`, seg);
       }
     }
     // cmd 没有 `FOO=1 命令` 这种写法：`rd=x git status` 剥成 git status，放行名单里有 git 就把 rd 放过去了
@@ -1114,7 +1138,7 @@ function checkCode(sec, code, platform = process.platform) {
     const raw = String(b).trim();
     // 黑名单排最前：这条在任何档位下都拦（全自动也不例外），它挡的是 ~/.ssh、config.json 这些
     if (pathNeedles(b, platform).some((n) => n && low.includes(n))) {
-      return { action: "ask", rule: `代码碰到了文件黑名单（${raw}）`, seg: raw, ruleKey: "" };
+      return blacklistVerdict(`代码碰到了文件黑名单（${raw}）`, raw);
     }
   }
   if (mode === "full") return { action: "allow" };
@@ -1204,7 +1228,7 @@ function isPersistableRule(ruleKey) {
  *   没有归属就等于谁登录了都能看，还能替别人点「允许」。
  *   IM / 定时任务这类没有登录态的后台跑法留空，只有平台管理员看得见。
  */
-function requestApproval(kind, text, { timeoutMs = 120000, stopSignal, rule = "", ruleKey = "", source = "", owner = "", detail = "", seg = "", sessionId = "" } = {}) {
+function requestApproval(kind, text, { timeoutMs = 120000, stopSignal, rule = "", ruleKey = "", source = "", owner = "", detail = "", seg = "", sessionId = "", blacklist = false } = {}) {
   const id = "ap_" + Date.now() + "_" + Math.floor(Math.random() * 1e6);
   // 只算一次：列表、通知、计时器三处必须是同一个时刻，否则审批卡倒数到 0 了人还能点
   const deadline = Date.now() + Math.max(5000, timeoutMs);
@@ -1239,6 +1263,8 @@ function requestApproval(kind, text, { timeoutMs = 120000, stopSignal, rule = ""
       deadline,
       // 哪个会话在等：侧栏要把点亮在那一行上；空 = 不属于某个会话（只进标题计数）
       sessionId: String(sessionId || ""),
+      // 碰了文件黑名单的卡：多人共用时谁也批不了（见 resolveApproval）
+      blacklist: !!blacklist,
       resolve: finish,
     });
     emitApproval({ type: "open", entry: { ...approvals.get(id), resolve: undefined } });
@@ -1265,6 +1291,12 @@ function resolveApproval(id, allow, scope = "once", scopeTo) {
   if (!e) return { ok: false };
   // 越权不能跟「这条已经没了」返回同一种结果：前者要报出来，后者是正常的竞态（超时/别处点过）
   if (scopeTo != null && e.owner !== scopeTo) return { ok: false, forbidden: true, error: "这条审批是别人的任务发起的" };
+  // 多人共用时闸那头碰了黑名单就直接拦、不出卡；这里兜住切成多人之前就挂着的、或者别的入口摆出来的卡。
+  // 只能拒不能批，平台管理员也一样：黑名单护的是 Key 和账号库，不该有「点一下就放」的口子
+  if (allow && e.blacklist && isMultiUser()) {
+    e.resolve(false);
+    return { ok: false, forbidden: true, error: "这条碰了文件黑名单，多人共用时不能批，已按拒绝处理" };
+  }
   const key = e.ruleKey;
   if (allow && key && (scope === "session" || scope === "always")) addSessionAllow(key);
   e.resolve(!!allow);
@@ -1348,6 +1380,8 @@ module.exports = {
   checkWrite,
   checkCommand,
   checkCode,
+  setMultiUser,
+  isMultiUser,
   ruleFor,
   parseAllowRule, // 命令行 --allow：开跑前点名放行的那几类
   allowFlagFor,

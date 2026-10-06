@@ -318,6 +318,10 @@ require("./src/platform/child-env").setPolicy(() => {
   try { solo = account.userCount() <= 1; } catch {}
   return { allow: security.getSecurity(config).env_passthrough, keys: solo };
 });
+// 多人共用时碰了文件黑名单直接拦、不出审批卡（同网页服务）；读账号库出错按「多个」算
+security.setMultiUser(() => {
+  try { return account.userCount() > 1; } catch { return true; }
+});
 
 // ---------- --perm：这一趟放多少权 ----------
 // 网页那边四档是点得到的（设置里一个下拉），命令行原来只能改 config.json —— 而 config.json 是

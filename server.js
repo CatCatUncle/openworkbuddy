@@ -130,6 +130,8 @@ const config = fillDefaults(rawConfig, CONFIG_DEFAULTS);
 // 子进程环境的策略：每次起子进程现问，设置页改了清单不用重启。
 // 像 Key 的名字只在一个账号时给——账号多了，成员的任务也跑在这台机器上（见 platform/child-env.js 顶上）
 childEnv.setPolicy(() => ({ allow: security.getSecurity(config).env_passthrough, keys: !admin.multiUser() }));
+// 多人共用时命令、代码碰了文件黑名单直接拦、不出审批卡：卡是发起任务的人自己批的
+security.setMultiUser(() => admin.multiUser());
 // 助理的名字和头像：想叫它「小秘」就叫「小秘」。界面（气泡头像/侧栏/品牌位）和系统提示词都跟着这里走
 // "@cat" 是内置猫标的哨兵值，跟应用图标同一只猫；前端 avatarBits 认它，account.normalizeAvatar 放行
 const ASSISTANT_DEFAULT = { name: "OpenWorkBuddy", avatar: "@cat" };
