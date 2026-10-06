@@ -495,6 +495,7 @@
       "未按空画布显示，以免自动保存覆盖原件。原件未改动。": "Not shown as an empty canvas, so autosave can't overwrite the original. The original is untouched.",
       "选择用途再连线。Agent 会把它当作真实生成输入，而不是一条装饰箭头。": "Pick what the link is for before drawing it. The Agent treats it as real generation input, not a decorative arrow.",
       "重跑对应镜头可重新生成，或改掉引用它的节点。": "Rerun that shot to regenerate it, or change the node referencing it.",
+      "有画布读不出来，哪些素材没人用先不标。": "A canvas can't be read, so nothing is marked unused for now.",
       "找不到本项目 Agent 输入框，请回到助理页后重试。": "The project Agent input was not found. Return to the assistant view and try again.",
       "创作任务已放入本项目 Agent 输入框，确认后发送。": "The creation task was placed in this project's Agent input. Review it and send.",
       "素材库": "Asset library",

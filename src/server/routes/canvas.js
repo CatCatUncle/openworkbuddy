@@ -48,7 +48,9 @@ const ASSET_KINDS = { image: /\.(png|jpe?g|webp|gif|bmp|avif)$/i, video: /\.(mp4
 // reference 这一条是补上的：角色节点的定妆照就落在 reference 里。少了它，定妆照会被算成
 // 「没人用」——而「没人用」这一栏在界面上是加粗的、旁边还写着「多半是重跑留下的旧版本，占地方」，
 // 等于指着这部戏最要命的几张图叫人删。文件删了，后面每一镜的脸都会开始换人。
-const ASSET_REF_KEYS = ["path", "url", "first_frame", "last_frame", "video", "audio", "image", "reference", "ref", "voice_file", "file"];
+// subtitled（烧好字幕的那一版成片）和 reference_video（动作参考视频）同理：少了它们，带字幕的成片
+// 和拿来对动作的参考片都会被标成「没人用」
+const ASSET_REF_KEYS = ["path", "url", "first_frame", "last_frame", "video", "audio", "image", "reference", "ref", "voice_file", "file", "subtitled", "reference_video"];
 
 function assetKindOf(name) {
   for (const [kind, re] of Object.entries(ASSET_KINDS)) if (re.test(name)) return kind;
@@ -117,18 +119,31 @@ app.get("/api/canvas/assets", (req, res) => {
     // 画布上没画出来的镜头，它的首帧照样是「有人在用」的。
     // 引用先原样收齐（连同从哪写出来的），拿到清单再统一认：以前按文件名记账，
     // 两集各有一张「镜头_S1-01_首帧.png」时，A 集的引用会记到 B 集那张图头上
-    const uses = [];   // { ref, near, use: { from, id, title, kind } }
+    const uses = [];   // { ref, near, use: { from, id, title, kind, board? } }
     const noteUse = (ref, use, near) => { if (assetBase(ref)) uses.push({ ref, near, use }); };
-    const boardNear = canvasAssetNear(name);
     let boardUnreadable = "";
-    try {
-      const state = canvasReadState(name || undefined, {});
+    // 项目里每一张画布都算：以前只看眼下这张，第 1 集画布上的定妆照，切到第 2 集再看就成了「没人用」——
+    // 那一栏是提示可以删的。别的画布上的用处在标题后面注明是哪张画布
+    const unreadable = [];   // 读不出来的画布：它们引用了什么不知道，「没人用」就一个都不敢说
+    const boardsToScan = [];
+    try { for (const b of canvasList()) if (b && b.name) boardsToScan.push(String(b.name)); } catch {}
+    if (name && !boardsToScan.includes(name)) boardsToScan.push(name);
+    if (!name) { try { canvasReadState(undefined, {}); } catch (e) { boardUnreadable = e.message; } }
+    for (const board of boardsToScan) {
+      let state;
+      try { state = canvasReadState(board, {}); } catch (e) {   // 画布坏了不该连素材台账一起看不了
+        if (board === name) boardUnreadable = e.message;
+        unreadable.push(board);
+        continue;
+      }
+      const near = canvasAssetNear(board), mine = !name || board === name;
       for (const node of state.nodes || []) {
         const refs = new Set();
         assetRefsIn(node.payload, refs);
-        for (const r of refs) noteUse(r, { from: "画布", id: String(node.id || ""), title: String((node.payload && (node.payload.title || node.payload.name || node.payload.id)) || node.kind || "节点"), kind: String(node.kind || "") }, boardNear);
+        const title = String((node.payload && (node.payload.title || node.payload.name || node.payload.id)) || node.kind || "节点");
+        for (const r of refs) noteUse(r, { from: "画布", id: String(node.id || ""), title: mine ? title : `${title}（画布 ${board}）`, kind: String(node.kind || ""), board }, near);
       }
-    } catch (e) { boardUnreadable = e.message; }   // 画布坏了不该连素材台账一起看不了
+    }
 
     const boards = [];
     for (const f of outputFiles()) {
@@ -160,7 +175,7 @@ app.get("/api/canvas/assets", (req, res) => {
     const users = new Map();   // 相对路径 → [{ from, id, title, kind }]
     const twins = new Map();   // 相对路径 → 跟它同名的那几份（含它自己）
     const lost = new Map();    // 文件名 → { base, paths, usedBy }
-    const addUse = (list, use) => { if (!list.some((u) => u.from === use.from && u.id === use.id)) list.push(use); return list; };
+    const addUse = (list, use) => { if (!list.some((u) => u.from === use.from && u.id === use.id && u.board === use.board)) list.push(use); return list; };
     for (const u of uses) {
       const hit = locate(u.ref, u.near);
       if (hit.ambiguous) { for (const r of hit.ambiguous) { users.set(r, addUse(users.get(r) || [], u.use)); twins.set(r, hit.ambiguous); } continue; }
@@ -177,10 +192,11 @@ app.get("/api/canvas/assets", (req, res) => {
       const kind = assetKindOf(f.name);
       if (!kind) continue;
       const base = assetBase(f.name), rel = String(f.name).replace(/[\\]/g, "/");   // [\\] 的缘故见上面 near 那行
-      const usedBy = users.get(rel) || [];
+      // 有画布读不出来的时候，没查到用处 ≠ 没人用：usedBy 给 null（界面上就是「不知道，不说」），不标没人用
+      const used = users.get(rel), usedBy = used || (unreadable.length ? null : []);
       const version = assetVersionOf(base);
       assets.push({
-        name: f.name, base, kind, role: assetRoleOf(base), size: f.size, mtime: f.mtime, dup_of: f.dup_of || undefined, usedBy, orphan: usedBy.length === 0,
+        name: f.name, base, kind, role: assetRoleOf(base), size: f.size, mtime: f.mtime, dup_of: f.dup_of || undefined, usedBy, orphan: !!usedBy && usedBy.length === 0,
         ...(version ? { version } : {}), ...(twins.has(rel) ? { ambiguous: twins.get(rel) } : {}),
       });
     }
@@ -188,7 +204,7 @@ app.get("/api/canvas/assets", (req, res) => {
     const missing = [...lost.values()];
     assets.sort((a, b) => String(b.mtime).localeCompare(String(a.mtime)));
     res.json({
-      assets, missing, boards, ...(boardUnreadable ? { boardUnreadable } : {}),
+      assets, missing, boards, ...(boardUnreadable ? { boardUnreadable } : {}), ...(unreadable.length ? { boardsUnreadable: unreadable } : {}),
       stat: {
         total: assets.length, orphan: assets.filter((a) => a.orphan).length, missing: missing.length, ambiguous: assets.filter((a) => a.ambiguous).length,
         bytes: assets.reduce((n, a) => n + (a.size || 0), 0),

@@ -486,7 +486,7 @@ function canvasRenderLibrary() {
   const missing = (ledger && Array.isArray(ledger.missing) ? ledger.missing : []).slice(0, 8);
   const missingHtml = missing.length ? `<div class="canvas-library-missing"><b>${ic("triangle-alert")}${missing.length} 个引用的文件不在了</b>${missing.map((m) => `<div><span>${esc(m.base)}</span><small>${esc((m.usedBy || []).map((u) => u.title || u.id).join("、") || "有人在引用")} 还指着它</small></div>`).join("")}<small class="canvas-library-missing-tip">重跑对应镜头可重新生成，或改掉引用它的节点。</small></div>` : "";
 
-  const statHtml = ledger && ledger.stat ? `<div class="canvas-library-stat">${ledger.stat.total} 个素材 · 图 ${ledger.stat.byKind.image} / 视频 ${ledger.stat.byKind.video} / 音 ${ledger.stat.byKind.audio}${ledger.stat.orphan ? ` · <b>${ledger.stat.orphan} 个没人用</b>` : ""}${ledger.stat.bytes ? ` · ${canvasBytesText(ledger.stat.bytes)}` : ""}</div>` : "";
+  const statHtml = ledger && ledger.stat ? `<div class="canvas-library-stat">${ledger.stat.total} 个素材 · 图 ${ledger.stat.byKind.image} / 视频 ${ledger.stat.byKind.video} / 音 ${ledger.stat.byKind.audio}${ledger.stat.orphan ? ` · <b>${ledger.stat.orphan} 个没人用</b>` : ""}${ledger.stat.bytes ? ` · ${canvasBytesText(ledger.stat.bytes)}` : ""}${Array.isArray(ledger.boardsUnreadable) && ledger.boardsUnreadable.length ? `<small>${esc(canvasT("有画布读不出来，哪些素材没人用先不标。"))}</small>` : ""}</div>` : "";
 
   const listHtml = shown.length ? shown.map((asset) => {
     const kind = asset.kind, label = kind === "image" ? "图片" : kind === "video" ? "视频" : "音频";
