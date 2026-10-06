@@ -125,13 +125,45 @@ async function probePage(electron, file, { settleMs = 1200 } = {}) {
   }
 }
 
+// ---- 渲染时拦本机/内网 ----
+// 页面自己跳转（JS 改 location、302）、加载图片脚本 XHR，都会先过 webRequest。fetch_url 进门时判过的只是第一个地址，
+// 页面后面要去哪儿它管不着；不在这儿拦，一张公网页面就能把隐藏窗口带去读本机服务、云元数据，再把正文交回给 AI。
+// 一个分区只能挂一个 onBeforeRequest：几个窗口同时开着时按 webContents 的 id 各查各的规则，没登记的照常放。
+// 只认字面地址和 localhost（这一层没有 DNS 结果）：域名解析到内网的拦不到，那一截在 net-guard 顶上写着。
+const os = require("os");
+const netAddr = require("../../util/net-addr");
+/** @type {Map<number, any>} webContents.id → 规则（core/safety/net-guard.js renderRule 算的那份） */
+const renderBlocks = new Map();
+const hookedSessions = new WeakSet();
+function hookBlocks(ses) {
+  if (!ses || !ses.webRequest || hookedSessions.has(ses)) return;
+  hookedSessions.add(ses);
+  ses.webRequest.onBeforeRequest((d, cb) => {
+    const rule = renderBlocks.get(d.webContentsId);
+    cb(rule && blockedInRender(d.url, rule) ? { cancel: true } : {});
+  });
+}
+/** 这个请求按规则该不该拦 @param {string} url @param {{allow?: string[], own?: number[], local?: boolean, bg?: number[]}} rule */
+function blockedInRender(url, rule) {
+  const selfIps = [];
+  try { for (const l of Object.values(os.networkInterfaces())) for (const a of l || []) selfIps.push(String(a.address).replace(/%.*$/, "")); } catch { /* 读不到就只认回环 */ }
+  return !!netAddr.judgeLiteralUrl(url, { ...rule, selfIps });
+}
+
 /**
  * web_fetch 的渲染那一半：真打开一遍，等正文不再变长（或超时）再取。
+ * block：本机/内网拦截规则（AI 工具这条路必带）；不带 = 内部调用，不拦。
  * @returns {Promise<{text:string, title:string}>}
  */
-async function readRendered(electron, url, { waitMs = 2500, maxWaitMs = 12000, ua = "" } = {}) {
+async function readRendered(electron, url, { waitMs = 2500, maxWaitMs = 12000, ua = "", block = null } = {}) {
   const win = openHiddenWeb(electron);
+  const wcId = win.webContents.id;
   try {
+    if (block) {
+      hookBlocks(win.webContents.session);
+      renderBlocks.set(wcId, block);
+      if (blockedInRender(url, block)) throw new Error("这个地址是本机或内网，安全中心没放行");
+    }
     if (ua) win.webContents.setUserAgent(ua);
     await win.loadURL(url);
     let text = "";
@@ -146,11 +178,12 @@ async function readRendered(electron, url, { waitMs = 2500, maxWaitMs = 12000, u
     const title = await win.webContents.executeJavaScript("document.title || ''").catch(() => "");
     return { text: (text || "").replace(/\n{3,}/g, "\n\n").trim(), title: String(title || "").trim().slice(0, 80) };
   } finally {
+    renderBlocks.delete(wcId);
     closeHiddenWindow(win, electron);
   }
 }
 
 module.exports = {
   WEB_PARTITION, hiddenWeb, openHiddenWeb, closeHiddenWindow, isRuntimeNoise, readConsoleEvent, cleanConsoleText,
-  probePage, readRendered,
+  probePage, readRendered, blockedInRender,
 };

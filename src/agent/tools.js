@@ -12,6 +12,8 @@ const { DATA_DIR, dataPath, appPath } = require("../platform/paths");
 const { spawn, spawnSync } = require("child_process");
 const { outDecoder } = require("../util/out-decode");
 const security = require("../core/safety/security");
+const netGuard = require("../core/safety/net-guard"); // 联网工具的地址闸：本机/内网默认拦、OWB 自己的端口永远拦、发请求钉住判过的 IP
+const netAddr = require("../util/net-addr");
 const memory = require("../core/memory/memory");
 const mediaModels = require("../core/model/media-models"); // 图/视频/语音/视觉的多模型选择（同一把 Key 配多个型号）
 const cdp = require("../platform/render/cdp"); // 可选的本机 Chrome CDP：不捆绑浏览器、不连接远程地址
@@ -24,6 +26,8 @@ const jev = require("../core/judge/jev"); // 判断模型：上面那一问就�
 const HK = require("./hooks"); // config.json 里 agent.hooks 配的命令：跑命令前、改完文件后
 const CT = require("./code-tools"); // 写代码那几样：按名找文件、后台命令、进度清单、改前查有没有被动过
 const depsGuard = require("../platform/deps-guard"); // 工作空间嵌在应用目录里时，npm/pnpm 别往上找到应用自己的 package.json
+const { buildChildEnv } = require("../platform/child-env"); // AI 跑的命令/脚本只拿最小环境变量：用户 shell 里的 Key 不跟着下去
+const sandbox = require("../platform/sandbox"); // macOS / Windows 上命令和脚本套系统沙箱：读不到 Key 和账本、改不了应用自己
 const winname = require("../util/winname"); // Windows 不认的文件名（a:b 会悄悄写进备用数据流）
 // 媒体那几样（生图 / 生视频 / 配音 / 转写 / 看图 / 截图 + 生成缓存）和画布状态拆到 src/tools/ 下了，这里只是转手。
 // 它们要用的工作目录根还在本文件（下面那套 ALS），递过去的是取值函数、用到时才读，按请求切换的根照样生效
@@ -1138,7 +1142,116 @@ function timeoutNote(timeoutMs, tip) {
   return `(执行超时被终止：跑满 ${Math.max(1, Math.round(timeoutMs / 1000))} 秒没结束，连同它拉起的子进程一起停了${tip || ""})\n`;
 }
 
-function runNode(code, timeoutMs, cwd, stopSignal, session = "") {
+// ---------- 系统沙箱（macOS） ----------
+// 命令闸看的是命令原文，同一件事换个写法就认不出来；沙箱由系统按真实路径拦，怎么写都一样（见 src/platform/sandbox.js）
+
+/** 设置页看的现状：最近一次起命令时判出来的 */
+let sandboxState = { mode: "", ok: false, reason: "还没跑过命令", warn: /** @type {string[]} */ ([]), at: 0 };
+function noteSandbox(next) {
+  const prev = sandboxState;
+  sandboxState = { warn: [], ...next, at: Date.now() };
+  if (prev.ok === sandboxState.ok && prev.reason === sandboxState.reason && prev.mode === sandboxState.mode) return;
+  if (sandboxState.mode === "off") return;
+  if (!sandboxState.ok) security.audit("系统沙箱", `没立起来：${sandboxState.reason}`, sandboxState.mode === "required" ? "拦截" : "未隔离");
+  else if (sandboxState.warn.length) security.audit("系统沙箱", `这些机密文件在别处还有硬链接：${sandboxState.warn.join("、")}`, "提醒");
+}
+function sandboxStatus() {
+  // platform：设置页按跑服务的那台决定摆不摆沙箱这一栏、说明写哪个系统
+  return { ...sandboxState, warn: [...sandboxState.warn], platform: process.platform };
+}
+
+/** 属主的项目目录（server 启动时接上）：成员的任务要把它们藏起来 */
+let ownerDirsFn = () => /** @type {string[]} */ ([]);
+function setOwnerDirs(fn) { ownerDirsFn = typeof fn === "function" ? fn : () => []; }
+
+/** 各组织的工作根：没指定目录的都在 tenants/ 底下，指定了的各在各处 */
+function tenantRoots() {
+  const org = require("../domains/account/org");
+  const out = [org.tenantsDir()];
+  try {
+    for (const o of org._internals.load().orgs) if (o && o.id !== org.DEFAULT_ORG && o.root_dir) out.push(org.rootDirOf(o, workspaceDir));
+  } catch {}
+  return out;
+}
+
+/** 这一趟命令的沙箱参数 */
+function sandboxOpts(sec) {
+  const root = sandbox.real(ws());
+  let hide = [];
+  // Windows 那层是完整性级别，没有「藏哪几个目录」这一说：多人用时各组织的工作区不互相藏（设置页和 docs/安全.md 写明了）
+  if (security.isMultiUser() && process.platform !== "win32") {
+    const roots = tenantRoots().map((r) => sandbox.real(r));
+    // 成员的任务：别家组织、属主的工作区和项目都藏；属主的任务：只藏各组织的
+    const member = roots.some((r) => sandbox.isUnder(root, r));
+    hide = member ? [...roots, dataPath("workspace"), dataPath("projects"), workspaceDir, ...ownerDirsFn()] : roots;
+    hide = sandbox.hideAround(hide, root);
+  }
+  // 手改 config.json 写进来的：不是绝对路径的扔掉，别让一条错字把整个沙箱拖成立不起来
+  const unixAllow = Array.isArray(sec.sandbox_unix_allow) ? sec.sandbox_unix_allow.map(String).filter((p) => path.isAbsolute(p)) : [];
+  // 一个人用时放 ssh-agent，git push 照常；多人时不放：那是属主的钥匙
+  const agentSock = process.env.SSH_AUTH_SOCK;
+  if (!security.isMultiUser() && agentSock && path.isAbsolute(agentSock)) unixAllow.push(agentSock);
+  return {
+    data: DATA_DIR, app: require("../platform/root").ROOT, home: require("os").homedir(),
+    ports: netGuard.ownPorts(), writable: [root], hide, unixAllow, hardened: sec.sandbox_level !== "basic",
+  };
+}
+
+/**
+ * @typedef {{ bin: string, args: string[], opts?: object, env?: Record<string, string> }} Wrapped
+ *   opts、env 要叠在调用方自己的 spawn 选项和环境变量之上（Windows 那层要改命令行拼法、临时目录）
+ * @typedef {(bin: string, args: string[], o?: { verbatim?: boolean }) => Wrapped} WrapFn
+ *   verbatim：args 已按 cmd 的规矩拼好，原样接上
+ */
+/**
+ * 这一趟命令怎么包：{ wrap } 就照着包好再 spawn，{ error } 就别跑了。sandboxed：真套上了
+ * auto：立不起来照常跑，记一笔、设置页看得到；required：立不起来就不跑；off：不包。
+ * 没设过的档位：多人用的 Mac 按 required，其余按 auto（Linux 上没有这层，不能因此一条命令都跑不了）
+ * @returns {Promise<{ wrap: WrapFn, sandboxed?: boolean, error?: undefined } | { error: string, wrap?: undefined, sandboxed?: undefined }>}
+ */
+async function sandboxFor(sec) {
+  const mode = sandbox.effectiveMode(sec.sandbox, security.isMultiUser() && process.platform === "darwin");
+  /** @type {WrapFn} */
+  const asIs = (bin, args) => ({ bin, args });
+  const bare = { wrap: asIs };
+  if (mode === "off") { noteSandbox({ mode, ok: false, reason: "已关闭" }); return bare; }
+  const win = process.platform === "win32";
+  let pf;
+  if (process.platform !== "darwin" && !win) pf = { ok: false, reason: "系统沙箱只有 macOS 和 Windows 上有", warn: [] };
+  else {
+    let o = null;
+    try { o = sandboxOpts(sec); } catch (e) { pf = { ok: false, reason: String(/** @type {any} */ (e).message || e), warn: [] }; }
+    if (o) {
+      const opts = o;
+      pf = await (win ? sandbox.preflightWin(opts) : sandbox.preflight(opts));
+      if (pf.ok) {
+        noteSandbox({ mode, ...pf });
+        /** @type {WrapFn} */
+        const wrap = win ? (bin, args, wo) => sandbox.wrapWin(bin, args, { ...wo, home: opts.home || undefined }) : (bin, args) => sandbox.wrap(bin, args, opts);
+        return { wrap, sandboxed: true };
+      }
+    }
+  }
+  noteSandbox({ mode, ...pf });
+  if (mode === "required") return { error: `这台机器要求命令在系统沙箱里跑，可沙箱没立起来（${pf.reason}），命令没有执行。管理员可以在 设置 → 安全 里看沙箱状态。` };
+  return bare;
+}
+/**
+ * Windows 那层比 macOS 管得宽：工作区和临时目录以外一律写不了。输出里有「拒绝访问」就补一句现状，
+ * 模型别换着写法反复去撞，也好跟用户说清开关在哪
+ */
+const DENIED_RE = /Access is denied|拒绝访问|\bEPERM\b|\bEACCES\b|Permission denied/i;
+function sandboxDeniedHint(text, box, platform = process.platform) {
+  if (!box || !box.sandboxed || platform !== "win32" || !DENIED_RE.test(String(text || ""))) return "";
+  return "（这条命令在系统沙箱里跑：只能写工作区和临时目录，Key 和账本读不到。开关在 设置 → 安全 → 系统沙箱。）";
+}
+/** 启动时先预检一遍：设置页一打开就有现状，第一条命令也不用等 */
+function warmSandbox(sec) {
+  return sandboxFor(sec || security.DEFAULTS).then(() => sandboxStatus(), () => sandboxStatus());
+}
+
+/** box：sandboxFor 给的包法，不传就不包 */
+function runNode(code, timeoutMs, cwd, stopSignal, session = "", box = null) {
   ensureDirs();
   const syntaxErr = precheckSyntax(code);
   if (syntaxErr) return Promise.resolve({ content: syntaxErr, isError: true });
@@ -1154,7 +1267,10 @@ function runNode(code, timeoutMs, cwd, stopSignal, session = "") {
   fs.writeFileSync(file, code, "utf8");
   return new Promise((resolve) => {
     // nodeExec：服务端在独立服务进程里时 execPath 是 Electron Helper，换回应用本体（行为和以前一样）
-    const child = spawn(require("../platform/electron-bridge").nodeExec(), [file], {
+    const nodeBin = require("../platform/electron-bridge").nodeExec();
+    /** @type {Wrapped} */
+    const w = box ? box.wrap(nodeBin, [file]) : { bin: nodeBin, args: [file] };
+    const child = spawn(w.bin, w.args, {
       cwd: cwd || ws(),
       // 自成进程组，好让 killTree 能连着孙子进程一起收（脚本里再 spawn 是常事）
       detached: process.platform !== "win32",
@@ -1164,10 +1280,12 @@ function runNode(code, timeoutMs, cwd, stopSignal, session = "") {
       // 子进程要用同一个数据根才不会各写各的
       // PATH 跟 run_shell 同一份（shellPath）：脚本里 execSync("ffmpeg …") 也得找得到刚装的东西，
       // 不然 Windows 上拿的还是应用启动那一刻的 PATH，run_shell 找得到、run_node 里找不到
-      env: { ...process.env, NODE_PATH: appPath("node_modules"), OPENWORKBUDDY_HOME: DATA_DIR, ELECTRON_RUN_AS_NODE: "1", PATH: shellPath(), ...depsGuardEnv(cwd, code, shellPath()) },
+      // 其余环境变量只给白名单里的：process.env 整份传下去，脚本一句 process.env 就把 Key 全读走了（见 child-env.js）
+      env: buildChildEnv({ NODE_PATH: appPath("node_modules"), OPENWORKBUDDY_HOME: DATA_DIR, ELECTRON_RUN_AS_NODE: "1", PATH: shellPath(), ...depsGuardEnv(cwd, code, shellPath()), ...w.env }),
       // 同 runShell：脚本里读 stdin 就当场读到结尾，别空等到超时
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
+      ...w.opts,
     });
     const out = makeOutSink("node", 8000, 8000);
     const err = makeOutSink("node-err", 4000, 6000);
@@ -1189,6 +1307,8 @@ function runNode(code, timeoutMs, cwd, stopSignal, session = "") {
       if (stopped) result += "(用户已停止任务，脚本被终止)\n";
       else if (timedOut) result += timeoutNote(timeoutMs);
       result += `exit code: ${code2}`;
+      const deny = code2 !== 0 ? sandboxDeniedHint(o + "\n" + e, box) : "";
+      if (deny) result += "\n" + deny;
       const done = { content: result, isError: stopped || timedOut || code2 !== 0 };
       // 脚本自己 spawn 了没等的子进程：看一眼进程组，还有人就记账（见 noteStray）
       noteStray(child.pid, "run_node 脚本", session, { quiet: stopped || timedOut, tip: "要一直跑，用 run_shell 的 background:true 起" })
@@ -1436,19 +1556,22 @@ function missingBinHint(text, platform = process.platform, ctx = {}) {
   return lines.join("\n");
 }
 
-function runShell(command, timeoutMs, cwd, stopSignal, session = "") {
+function runShell(command, timeoutMs, cwd, stopSignal, session = "", box = null) {
   ensureDirs();
   return new Promise((resolve) => {
     const sh = pickShell(command);
-    const child = spawn(sh.bin, sh.args, {
+    /** @type {Wrapped} */
+    const w = box ? box.wrap(sh.bin, sh.args, { verbatim: !!sh.opts.windowsVerbatimArguments }) : { bin: sh.bin, args: sh.args };
+    const child = spawn(w.bin, w.args, {
       cwd: cwd || ws(),
       // 同 runNode：整组一起杀，否则 `npm install` 那一窝会活过「让我停下」。超时也一样，见 armTimeout
       detached: process.platform !== "win32",
-      env: { ...process.env, ...winTextEnv(), PATH: shellPath(), OPENWORKBUDDY_HOME: DATA_DIR, ...depsGuardEnv(cwd, command, shellPath()) },
+      env: buildChildEnv({ ...winTextEnv(), PATH: shellPath(), OPENWORKBUDDY_HOME: DATA_DIR, ...depsGuardEnv(cwd, command, shellPath()), ...w.env }),
       // stdin 不给：留着一根没人写的管道，`read`、python 的 input()、npm init 这种等输入的命令
       // 会一直等到超时才回来。给 /dev/null，它当场读到结尾，要么走默认值要么报错退出
       stdio: ["ignore", "pipe", "pipe"],
       ...sh.opts,
+      ...w.opts,
     });
     const out = makeOutSink("shell", 8000, 8000);
     const err = makeOutSink("shell-err", 4000, 6000);
@@ -1472,6 +1595,8 @@ function runShell(command, timeoutMs, cwd, stopSignal, session = "") {
       // 缺的是我们认识的外部工具时，把 shell 那句 command not found 翻译一遍再递出去
       const hint = code2 !== 0 ? missingBinHint(o + "\n" + e, process.platform, { code: code2, command }) : "";
       if (hint) result += "\n" + hint;
+      const deny = code2 !== 0 ? sandboxDeniedHint(o + "\n" + e, box) : "";
+      if (deny) result += "\n" + deny;
       const done = { content: result, isError: stopped || timedOut || code2 !== 0 };
       // `(python3 -m http.server 8731 >/dev/null 2>&1 &)`、`nohup ... &`：外层 shell 退了，进程组里还有人（见 noteStray）
       noteStray(child.pid, command, session, { quiet: stopped || timedOut, tip: "要一直跑，用 background:true 起，交给用户接着用的再加 keep:true" })
@@ -2263,7 +2388,34 @@ function bgOwner(opts) {
   return String((a && typeof a === "object" ? a.id || a.name : a) || "");
 }
 
-function startBackground(cmd, cwd, opts, keep = false) {
+/**
+ * 这个人自己 background 起的、还在跑的命令正在监听的端口。
+ * AI 起个开发服务器、再拿浏览器打开看效果，是写网页的日常，不该被「本机地址默认拦」挡住。
+ * 放它不多开口子：能起后台命令就本来能跑命令；组织关了命令行就起不了，这里永远是空的。
+ * 只按进程组认（后台命令自成一组）；Windows、没有 lsof 就当没有，照常拦。
+ */
+function bgListenPorts(opts) {
+  const who = bgOwner(opts);
+  const pgids = process.platform === "win32" ? [] : CT.bgList()
+    .filter((j) => j.owner === who && j.exit === undefined && j.child && j.child.pid > 0)
+    .map((j) => j.child.pid);
+  if (!pgids.length) return Promise.resolve(new Set());
+  const bin = fs.existsSync("/usr/sbin/lsof") ? "/usr/sbin/lsof" : "lsof";
+  return new Promise((resolve) => {
+    require("child_process").execFile(bin, ["-nP", "-a", "-iTCP", "-sTCP:LISTEN", "-g", pgids.join(","), "-Fn"], { timeout: 3000, windowsHide: true }, (_e, out) => {
+      const ports = new Set();
+      for (const line of String(out || "").split("\n")) {
+        const m = /^n.*:(\d+)$/.exec(line);
+        if (m) ports.add(Number(m[1]));
+      }
+      resolve(ports);
+    });
+  });
+}
+/** 联网工具过地址闸时带上的：这一趟任务的后台命令端口（要拦本机地址时才去查） */
+const netOpts = (opts) => ({ bgPorts: () => bgListenPorts(opts) });
+
+function startBackground(cmd, cwd, opts, keep = false, box = null) {
   ensureDirs();
   const r = CT.bgStart({
     command: cmd,
@@ -2275,12 +2427,15 @@ function startBackground(cmd, cwd, opts, keep = false) {
     logDir: tmpDir(),
     spawnFn: () => {
       const sh = pickShell(cmd);
-      return spawn(sh.bin, sh.args, {
+      /** @type {Wrapped} */
+      const w = box ? box.wrap(sh.bin, sh.args, { verbatim: !!sh.opts.windowsVerbatimArguments }) : { bin: sh.bin, args: sh.args };
+      return spawn(w.bin, w.args, {
         cwd: cwd || ws(),
         detached: process.platform !== "win32",
         stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env, ...winTextEnv(), PATH: shellPath(), OPENWORKBUDDY_HOME: DATA_DIR, ...depsGuardEnv(cwd, cmd, shellPath()) },
+        env: buildChildEnv({ ...winTextEnv(), PATH: shellPath(), OPENWORKBUDDY_HOME: DATA_DIR, ...depsGuardEnv(cwd, cmd, shellPath()), ...w.env }),
         ...sh.opts,
+        ...w.opts,
       });
     },
   });
@@ -3249,16 +3404,21 @@ function decodeBody(buf, ct) {
 
 /**
  * @param {string} url
- * @param {{render?: "auto"|"force"|"off"|boolean, waitMs?: number, saveDir?: string}} [opts]
+ * @param {{render?: "auto"|"force"|"off"|boolean, waitMs?: number, saveDir?: string, guard?: {sec: any, bgPorts?: Function}}} [opts]
  *   render 收 "auto"/"force"/"off"；老调用方传的 true/false 也认（false = off）。
+ *   guard：AI 工具这条路必带。带了就走 net-guard：连判过的 IP、每一跳重判；渲染窗口也按同一份规则拦本机/内网。
  */
-async function fetchUrl(url, { render, saveDir, waitMs } = {}) {
+async function fetchUrl(url, { render, saveDir, waitMs, guard } = {}) {
   // 归一化放在这儿而不是 executeTool 里：内部调用方（测试、以后可能的别的入口）也得到同一套语义
   const mode = render === false || render === "off" ? "off" : render === "force" ? "force" : "auto";
   let resp;
   try {
-    resp = await fetch(url, { redirect: "follow", headers: browserHeaders(url), signal: AbortSignal.timeout(30000) });
+    const signal = AbortSignal.timeout(30000);
+    resp = guard
+      ? await netGuard.guardedFetch(url, { sec: guard.sec, bgPorts: guard.bgPorts, headers: browserHeaders(url), signal })
+      : await fetch(url, { redirect: "follow", headers: browserHeaders(url), signal });
   } catch (e) {
+    if (e && e.code === "NET_BLOCKED") throw new Error(`网络访问被安全中心拦截：${e.message}`);
     throw new Error(`抓取失败：${e.name === "TimeoutError" ? "30 秒还没响应（站点太慢或需要代理）" : e.message}`);
   }
   const ct = resp.headers.get("content-type") || "";
@@ -3297,7 +3457,9 @@ async function fetchUrl(url, { render, saveDir, waitMs } = {}) {
   // force 是模型明说了"这页的正文得靠 JS"，那就不再看像不像空壳，直接渲染。
   const forced = mode === "force";
   if (forced || (mode !== "off" && looksEmptyPage(text, resp.status))) {
-    const rendered = await renderPage(url, waitMs ? { waitMs: clampWait(waitMs) } : {}).catch((e) => ({ error: e.message }));
+    // 渲染窗口里页面自己跳转、加载子资源，按同一份规则拦本机/内网（那边没有 DNS 结果，只认字面地址）
+    const block = guard ? { ...netGuard.renderRule(guard.sec), bg: guard.bgPorts ? [...(await guard.bgPorts().catch(() => new Set()))] : [] } : null;
+    const rendered = await renderPage(url, { ...(waitMs ? { waitMs: clampWait(waitMs) } : {}), block }).catch((e) => ({ error: e.message }));
     // auto 那档要比长短：渲染没渲出东西时，原样返回静态正文比返回一段更短的壳有用。
     // force 不比——模型要的就是渲染后的那一份，哪怕它比静态 HTML 短（静态里那些长度
     // 往往正是导航和推荐位，恰恰是它想绕开的东西）
@@ -3387,11 +3549,11 @@ function tagsToText(html) {
  * 应用本体跑在 Electron 主进程里，等于随身带了个 Chrome——不装 puppeteer 也能读动态页面。
  * CLI 模式下没有 Electron，如实抛错让上层换路子，不要假装读到了。
  */
-async function renderPage(url, { waitMs = 2500, maxWaitMs = 12000 } = {}) {
+async function renderPage(url, { waitMs = 2500, maxWaitMs = 12000, block = null } = {}) {
   // 服务端在独立服务进程里：窗口归主进程开，超时按「最长等多久 + 开窗/关窗余量」算
   const bridge = require("../platform/electron-bridge");
   if (bridge.isRemote()) {
-    return bridge.call("page.render", { url, waitMs, maxWaitMs, ua: BROWSER_UA }, { timeoutMs: maxWaitMs + waitMs + 30000 });
+    return bridge.call("page.render", { url, waitMs, maxWaitMs, ua: BROWSER_UA, block }, { timeoutMs: maxWaitMs + waitMs + 30000 });
   }
   let electron;
   try {
@@ -3402,7 +3564,7 @@ async function renderPage(url, { waitMs = 2500, maxWaitMs = 12000 } = {}) {
   if (!electron || !electron.BrowserWindow || !electron.app || !electron.app.isReady()) {
     throw new Error("内置浏览器不可用（命令行模式）");
   }
-  return readRendered(electron, url, { waitMs, maxWaitMs, ua: BROWSER_UA });
+  return readRendered(electron, url, { waitMs, maxWaitMs, ua: BROWSER_UA, block });
 }
 
 function stripTags(s) {
@@ -3790,6 +3952,27 @@ function quotaGate(cap, call = {}) {
 }
 
 /**
+ * 生图 / 生视频 / 配音 / 转写发出去之前问额度。价按这一趟**真正会跑的那个型号**算：
+ * 跟里面发请求用同一个 mediaModels.pick 挑配置，AI 没填 model 就是默认那条的型号。
+ * 拿 AI 填的空串或名称去估价，要么查不到被白拦，要么估成 0——有上限的人就多了一扇不计钱的门。
+ *
+ * 点了个不存在的型号：pick 那句「现在能用的是：…」原样回去，不占额度、一个请求都不发。
+ * 这一路压根没配（缺地址或型号）：不问额度，里面会先说「去设置里配」，同样不发请求。
+ * units 可以是个函数，拿挑好的那条配置算量（视频秒数要按型号的默认时长和上限来夹）。
+ * @returns {{ bad: any, hold: any }}
+ */
+function mediaGate(cap, opts, input, units) {
+  let cfg;
+  try { cfg = mediaModels.pick((opts || {}).media, cap, (input || {}).model); }
+  catch (e) { return { bad: { content: e.message, isError: true }, hold: null }; }
+  if (!cfg || !String(cfg.base_url || "").trim() || !String(cfg.model || "").trim()) return { bad: null, hold: null };
+  return quotaGate(cap, {
+    model: String(cfg.model).trim(), provider: cfg.provider || "",
+    units: typeof units === "function" ? units(cfg) : units,
+  });
+}
+
+/**
  * 五路媒体工具（看图/生图/生视频/配音/转文字）统一穿过这里。
  *
  * quotaGate 管的是「这次花不花得起」，这里管的是「这条渠道现在还通不通」——
@@ -3799,14 +3982,15 @@ function quotaGate(cap, call = {}) {
  * 一个一个去记账，早晚漏掉一条，而漏掉的那条恰好就是撞得最凶的那条。放在派发这一层，
  * 无论里面从哪儿返回的，出口只有一个，记账必然完整。
  */
-async function viaMedia(cap, opts, input, run) {
+async function viaMedia(cap, opts, input, run, hold) {
   let cfg = null;
   // pick 抛错 = 用户点名了一个不存在的型号，那是 input 的事不是渠道的事：照常放行，
   // 让里面那句「现在能用的是：…」原样出去
   try { cfg = mediaModels.pick((opts || {}).media, cap, (input || {}).model); } catch { cfg = null; }
   if (cfg && cfg.base_url) {
+    // 下面三处在这儿就拦下、run 根本没跑：外面已经预扣的那笔要当场还回去，别占着预算等十五分钟后被扫
     const stop = mediaHealth.gate(cap, cfg, mediaModels.CAP_CN[cap]);
-    if (stop) return stop;
+    if (stop) { quota.undo(hold); return stop; }
     // 挂错家的型号，在发请求**之前**就拦下来。
     // 这不是为了省那一次网络往返，是为了让 agent 拿到一句它能照着做的话：上游回的原话是
     // 400 "not a valid model ID"，模型看了只会换个参数再来一遍，撞上十轮都不会想到
@@ -3820,6 +4004,7 @@ async function viaMedia(cap, opts, input, run) {
         `请用户去 设置 → 模型 → ${capCn}，把型号名改成这种写法。\n` +
         `这一步不用重试，也别换参数再试——换什么参数都一样。`, isError: true };
       mediaHealth.record(cap, cfg, res);
+      quota.undo(hold);
       return res;
     }
     const want = mediaModels.mismatch(cfg.kind || mediaModels.guessKind(cfg.base_url), cfg.model, cfg.base_url);
@@ -3830,6 +4015,7 @@ async function viaMedia(cap, opts, input, run) {
         `请用户去 设置 → 模型 → ${capCn}，把它改挂到${mediaModels.kindLabel(want)}的渠道（没有就先加一条），或者换一个这条渠道上有的型号。\n` +
         `这一步不用重试，也别换参数再试——换什么参数都一样。`, isError: true };
       mediaHealth.record(cap, cfg, res);
+      quota.undo(hold);
       return res;
     }
   }
@@ -3997,6 +4183,7 @@ async function executeToolCore(name, input, opts = {}) {
       detail, // 改文件的 diff：看着改了哪几行批，而不是对着一个文件名下注
       seg: verdict.seg || "", // 长命令里到底是哪一段触发的：尾巴上藏一句 rm -rf，人得一眼看得见
       sessionId: opts.sessionId || "",
+      blacklist: !!verdict.blacklist, // 碰了文件黑名单的卡，多人共用时谁也批不了
     });
     security.audit(label + "审批", text, ok ? "已批准" : "已拒绝");
     if (ok) return null;
@@ -4104,7 +4291,9 @@ async function executeToolCore(name, input, opts = {}) {
         // modeGated：只看不动/每步都问是用户当场选的档，闸门总开关关着也得照档办
         const blocked = await passGate(await judgeRisk(security.checkCode(sec, code), "代码", code), "代码", code, { force: modeGated() });
         if (blocked) return blocked;
-        return await runNode(code, timeoutMs, fileBase, opts.stopSignal, opts.sessionId || "");
+        const box = await sandboxFor(sec);
+        if (box.error) { security.audit("命令拦截", "run_node（系统沙箱没立起来）", "拦截"); return { content: box.error, isError: true }; }
+        return await runNode(code, timeoutMs, fileBase, opts.stopSignal, opts.sessionId || "", box);
       }
       case "run_shell": {
         if (orgBlocksShell()) return shellBlocked("run_shell");
@@ -4116,9 +4305,11 @@ async function executeToolCore(name, input, opts = {}) {
         if (blocked) return blocked;
         const hookSays = await HK.beforeShell(opts.hooks, cmd, { cwd: fileBase, stopSignal: opts.stopSignal });
         if (hookSays) { security.audit("命令执行", cmd, "钩子拦截"); return { content: hookSays, isError: true }; }
+        const box = await sandboxFor(sec);
+        if (box.error) { security.audit("命令拦截", cmd + "（系统沙箱没立起来）", "拦截"); return { content: box.error, isError: true }; }
         security.audit("命令执行", cmd, "放行");
-        if (input.background) return startBackground(cmd, fileBase, opts, input.keep === true);
-        return await runShell(cmd, timeoutMs, fileBase, opts.stopSignal, opts.sessionId || "");
+        if (input.background) return startBackground(cmd, fileBase, opts, input.keep === true, box);
+        return await runShell(cmd, timeoutMs, fileBase, opts.stopSignal, opts.sessionId || "", box);
       }
       case "shell_output": {
         const who = bgOwner(opts);
@@ -4387,6 +4578,18 @@ async function executeToolCore(name, input, opts = {}) {
         if (action === "navigate" && !/^https?:\/\//i.test(String(input.url || ""))) {
           return { content: "navigate 只接受 http/https URL。", isError: true };
         }
+        // 打开网页跟 fetch_url 过同两道闸：组织的网络名单、安全中心（域名名单 + 本机/内网地址 + OWB 自己的端口）。
+        // 这个浏览器常常是用户自己那个、带着登录态，打开本机的管理页比 fetch_url 还危险
+        if (action === "navigate") {
+          const org = hostAllowed(null, input.url);
+          if (!org.ok) return netBlocked(input.url, org.why);
+          const g = await netGuard.checkUrl(sec, input.url, netOpts(opts));
+          if (!g.allowed) {
+            security.audit("网络拦截", String(input.url), "拦截");
+            return { content: `网络访问被安全中心拦截：${g.reason}`, isError: true };
+          }
+          security.audit("网络访问", `Chrome 打开：${input.url}`, "放行");
+        }
         // owner：几个对话同时开浏览器时各用各的标签页（cdp.js OWNED）
         const r = await cdp.run({ ...input, owner: opts.sessionId || "" });
         if (action === "screenshot") {
@@ -4408,12 +4611,30 @@ async function executeToolCore(name, input, opts = {}) {
         const blocked = await passGate(security.checkWrite(sec, outRel), "写录屏", outRel, { force: true });
         if (blocked) return blocked;
         // 打开的地址、页面每次换页（含自己跳的）都过组织名单 + 安全中心，跟 fetch_url 同一道闸。
-        // 换页是落地之后才查（请求已经发出去了），查到就整条不交片；图片、fetch 这类子资源不查，跟 fetch_url 渲染模式一样
+        // 换页是落地之后才查（请求已经发出去了），查到就整条不交片；图片、fetch 这类子资源不查，跟 fetch_url 渲染模式一样。
+        // 地址闸要查 DNS（异步），录制器那边换页回调是同步的：goto 点名的地址开录前先查好记下，
+        // 录的时候换到没查过的，域名名单照查，地址只按字面判（本机、内网 IP、localhost）
+        const bgPorts = await bgListenPorts(opts).catch(() => new Set());
+        const href = (u) => { try { return new URL(String(u)).href; } catch { return String(u); } };
+        const nav = new Map();
+        for (const st of Array.isArray(input.steps) ? input.steps : []) {
+          const u = st && typeof st.goto === "string" ? st.goto.trim() : st && st.goto && typeof st.goto.url === "string" ? st.goto.url.trim() : "";
+          if (!/^https?:\/\//i.test(u) || nav.has(href(u))) continue;
+          nav.set(href(u), await netGuard.checkUrl(sec, u, { bgPorts: async () => bgPorts }));
+        }
+        const navRule = { ...netGuard.renderRule(sec), bg: [...bgPorts], selfIps: netGuard.selfIps() };
         const checkNav = (u) => {
           const org = hostAllowed(null, u);
           if (!org.ok) { security.audit("网络拦截", u, "拦截"); return { ok: false, why: org.why }; }
-          const g = security.checkUrl(sec, u);
-          if (!g.allowed) { security.audit("网络拦截", u, "拦截"); return { ok: false, why: `安全中心拦下了：${g.reason}（设置 → 安全中心 → 网络安全）` }; }
+          let g = nav.get(href(u));
+          if (!g) {
+            const dom = security.checkUrl(sec, u);
+            const lit = dom.allowed ? netAddr.judgeLiteralUrl(u, navRule) : null;
+            g = !dom.allowed ? { allowed: false, reason: `${dom.reason}（${netGuard.WHERE}）` }
+              : lit ? { allowed: false, reason: lit.own ? "页面跳到了 OpenWorkBuddy 自己的服务端口" : `页面跳到了${lit.label}地址，没放行（${netGuard.WHERE}）` }
+                : { allowed: true };
+          }
+          if (!g.allowed) { security.audit("网络拦截", u, "拦截"); return { ok: false, why: `安全中心拦下了：${g.reason}` }; }
           security.audit("网络访问", `录屏打开：${u}`, "放行");
           return { ok: true };
         };
@@ -4573,12 +4794,12 @@ async function executeToolCore(name, input, opts = {}) {
         // 组织的网络名单、安全中心的黑白名单。审计只记洗过的地址：地址里常拼着 key
         if (entry.url) {
           const orgNet = hostAllowed(null, entry.url);
-          const g = orgNet.ok ? security.checkUrl(sec, entry.url) : { allowed: false, reason: "" };
+          const g = orgNet.ok ? await netGuard.checkUrl(sec, entry.url, netOpts(opts)) : { allowed: false, reason: "" };
           if (!g.allowed) {
             security.audit("网络拦截", `加连接器 ${entry.name}：${where}`, "拦截");
             return {
               content: orgNet.ok
-                ? `连接器没加，安全中心拦下了：${g.reason}（设置 → 安全中心 → 网络安全）`
+                ? `连接器没加，安全中心拦下了：${mcpLib.scrubText(String(g.reason || ""), input)}`
                 : `连接器没加：${orgNet.why}。要放行找组织管理员改「企业设置 → 网络设置」。`,
               isError: true,
             };
@@ -4678,18 +4899,20 @@ async function executeToolCore(name, input, opts = {}) {
         return { content: r.text, isError: r.bad };
       }
       case "look_at_image":
-        return await withStop(opts, (stop) => viaMedia("vision", opts, input, () => lookAtImage(opts, input, timeoutMs, resolveFile, stop)));
+        // 看图的额度闸在里面问：要等挑完渠道（主模型自己看，还是单配的那条）才知道按谁的价
+        return await withStop(opts, (stop) => viaMedia("vision", opts, input, () => lookAtImage(opts, input, timeoutMs, resolveFile, stop,
+          { gate: (c) => quotaGate("vision", c) })));
       case "generate_image": {
-        const g = quotaGate("image", { model: input.model, units: unitsFor("image", input) });
+        const g = mediaGate("image", opts, input, unitsFor("image", input));
         if (g.bad) return g.bad;
         return await withStop(opts, (stop) => viaMedia("image", opts, input, () => withGenCache("generate_image", "image", opts, input, fileBase, resolveFile, g.hold,
-          () => generateImage(opts.media, input, timeoutMs, fileBase, resolveFile, stop))));
+          () => generateImage(opts.media, input, timeoutMs, fileBase, resolveFile, stop)), g.hold));
       }
       case "generate_video": {
-        const g = quotaGate("video", { model: input.model, units: unitsFor("video", input, null, opts.media) });
+        const g = mediaGate("video", opts, input, (cfg) => unitsFor("video", input, null, cfg));
         if (g.bad) return g.bad;
         return await withStop(opts, (stop) => viaMedia("video", opts, input, () => withGenCache("generate_video", "video", opts, input, fileBase, resolveFile, g.hold,
-          () => generateVideo(opts.media, input, { ...opts, saveDir: fileBase, resolveFile, signal: stop }))));
+          () => generateVideo(opts.media, input, { ...opts, saveDir: fileBase, resolveFile, signal: stop })), g.hold));
       }
       case "html_to_image":
         // 单张原样交给 media.htmlToImage；html_files[] 批量一张张串行截，每张报一次进度
@@ -4713,14 +4936,14 @@ async function executeToolCore(name, input, opts = {}) {
             gate: (c) => quotaGate("tts", c), onProgress: opts.onProgress,
           })));
         }
-        const g = quotaGate("tts", { model: input.model, units: unitsFor("tts", input) });
+        const g = mediaGate("tts", opts, input, unitsFor("tts", input));
         if (g.bad) return g.bad;
         return await withStop(opts, (stop) => viaMedia("tts", opts, input, () => withGenCache("text_to_speech", "tts", opts, input, fileBase, resolveFile, g.hold,
-          () => textToSpeech(opts.media, input, timeoutMs, fileBase, stop))));
+          () => textToSpeech(opts.media, input, timeoutMs, fileBase, stop)), g.hold));
       }
       case "transcribe_audio": {
         const mins = unitsFor("asr", input, resolveFile);
-        const g = quotaGate("asr", { model: input.model, units: mins });
+        const g = mediaGate("asr", opts, input, mins);
         if (g.bad) return g.bad;
         let r;
         try {
@@ -4754,15 +4977,16 @@ async function executeToolCore(name, input, opts = {}) {
         if (!orgNet.ok) return netBlocked(input.url, orgNet.why);
         const fg = quotaGate("fetch");
         if (fg.bad) return fg.bad;
-        const gate = security.checkUrl(sec, input.url);
+        const gate = await netGuard.checkUrl(sec, input.url, netOpts(opts));
         if (!gate.allowed) {
           security.audit("网络拦截", input.url, "拦截");
-          return { content: `网络访问被安全中心拦截：${gate.reason}（设置 → 安全中心 → 网络安全）`, isError: true };
+          return { content: `网络访问被安全中心拦截：${gate.reason}`, isError: true };
         }
         // 老名字的语义就是"必须渲染"；新参数里 render 只认三个值，其余（含老的布尔 false）交给 fetchUrl 归一化
         const mode = name === "render_page" ? "force" : input.render;
         security.audit("网络访问", `${mode === "force" ? "浏览器渲染" : "网络访问"}已执行：${input.url}`, "放行");
-        const page = await fetchUrl(input.url, { render: mode, waitMs: input.wait_ms, saveDir: fileBase });
+        // guard：真发请求时连的是上面判过的那几个 IP，跳转每一跳重判（进门判一次、发请求时再解析一遍，DNS 可以换答案）
+        const page = await fetchUrl(input.url, { render: mode, waitMs: input.wait_ms, saveDir: fileBase, guard: { sec, ...netOpts(opts) } });
         quota.record("fetch", { provider: mode === "force" ? "render" : "http", meta: String(input.url).slice(0, 120) });
         return { content: page, isError: false };
       }
@@ -5161,4 +5385,4 @@ const diskConnectorHost = {
 };
 
 module.exports = {
-  _internals: { setDepsAppDir: (d) => { depsAppDir = d; }, depsGuardEnv, searchBodyError, searchHttpError, toItems, pickHits, SEARCH_HTTP_HINT, searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, execCheck, extCheck, EXT_CHECK_MAX, openHiddenWeb, hiddenWeb, WEB_PARTITION, checkPage, runShell, runNode, startBackground, trackBgGroup, noteStray, strays, psRows, verifiedPgids, reapStrays, reapStraysAtExit, strayFile, saveStrays, auditHtml, savedAt, markDuplicates, pickShell, winTextEnv, fetchRetry, nearestTool, viaMedia, lookAtImage, pickEye, mainCanSee, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, unitsFor, anySignal, sleepFor, videoPlan: mediaModels.videoPlan, editFile, planEdit, planMulti, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, WIN_PYTHON_HINT, runsPython, winPython3Shim, winStoreStub, shCheckBin, SH_ENV_NOISE, reapBgJob, pdfHowTo, underRoot, winCanonCase, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES, docToText, slidesToText, sheetsToText }, TOOL_DEFS, executeTool, ownRootFiles, releaseRun, holdRun, runHeld, reapLeftoverStrays, badToolArgs, outputFiles, turnSnapshot, statOutputs, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withLibraryBase, libBase, notesFileOf, LIB_DIR, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage, canvasSafeName, setConnectorHost, checkConnector };
+  _internals: { setDepsAppDir: (d) => { depsAppDir = d; }, depsGuardEnv, searchBodyError, searchHttpError, toItems, pickHits, SEARCH_HTTP_HINT, searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, execCheck, extCheck, EXT_CHECK_MAX, openHiddenWeb, hiddenWeb, WEB_PARTITION, checkPage, runShell, runNode, startBackground, sandboxFor, sandboxOpts, sandboxDeniedHint, trackBgGroup, noteStray, strays, psRows, verifiedPgids, reapStrays, reapStraysAtExit, strayFile, saveStrays, auditHtml, savedAt, markDuplicates, pickShell, winTextEnv, fetchRetry, nearestTool, viaMedia, lookAtImage, pickEye, mainCanSee, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, unitsFor, anySignal, sleepFor, videoPlan: mediaModels.videoPlan, editFile, planEdit, planMulti, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, WIN_PYTHON_HINT, runsPython, winPython3Shim, winStoreStub, shCheckBin, SH_ENV_NOISE, reapBgJob, pdfHowTo, underRoot, winCanonCase, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES, docToText, slidesToText, sheetsToText }, TOOL_DEFS, executeTool, ownRootFiles, releaseRun, holdRun, runHeld, reapLeftoverStrays, badToolArgs, outputFiles, turnSnapshot, statOutputs, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withLibraryBase, libBase, notesFileOf, LIB_DIR, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage, canvasSafeName, setConnectorHost, checkConnector, sandboxStatus, warmSandbox, setOwnerDirs };

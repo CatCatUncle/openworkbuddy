@@ -260,6 +260,108 @@ console.log("\n【9】老版本升上来：api-usage.json 里的账一笔不少�
   fs.rmSync(tmp2, { recursive: true, force: true });
 }
 
+console.log("\n【10】钱闸查价按真跑的那个型号；有预算的人碰上没单价的，发出去之前就拦");
+{
+  reset();
+  // 跟 admin.js 里挂到请求上的那个 actor 同一个形状：budget 是 limitsOf 的入参，price 带着整份 config
+  const config = {
+    providers: [{ id: "p-img", name: "某云", kind: "openai", base_url: "https://api.example.invalid/v1" }],
+    media_models: [
+      { id: "m1", cap: "image", name: "出图", model: "wanx2.1-t2i-turbo", provider: "p-img", default: true },
+      { id: "m2", cap: "image", name: "新出图", model: "某个刚上线的图像模型", provider: "p-img" },
+    ],
+    media: { image: { model: "wanx2.1-t2i-turbo" } },
+  };
+  const s = { budget: { org_yuan: 100 } };
+  const who = (settings) => ({
+    org: "o-price", user: "xm", quota: null,
+    budget: { orgId: "o-price", org: settings, user: { username: "xm" } },
+    price: { config },
+  });
+  const run = (a, model) => {
+    let g = null;
+    quota.withActor(a, () => { g = quota.gate("image", { model }); if (g.hold) quota.undo(g.hold); });
+    return g;
+  };
+
+  eq(quota._internals.priceTarget("image", "出图", "", who(s)), { key: "wanx2.1-t2i-turbo", resolved: true },
+    "点的是「名称」，查价拿的是那条背后的型号 id");
+  eq(quota._internals.priceTarget("image", "", "", who(s)).key, "wanx2.1-t2i-turbo",
+    "不点名，查价拿的是默认那条——不是拿空串去查");
+  eq(quota._internals.priceTarget("search", "", "jina", who(s)), { key: "jina", resolved: false },
+    "反向对照：搜索没有「型号」，照旧拿引擎名查");
+
+  const named = run(who(s), "出图");
+  ok(named.ok, "有预算、点名称、背后型号查得到单价：放行（以前拿名称去查价，查不到就被白拦）", named.why);
+  ok(run(who(s), "").ok, "有预算、不点名：按默认那条查价，放行");
+
+  const fresh = run(who(s), "新出图");
+  ok(!fresh.ok && /单价/.test(fresh.why || "") && /按量计价/.test(fresh.why || ""),
+    "有预算、背后型号没单价：发出去之前就拦，说清去哪补", fresh.why);
+  ok(!/预算由平台管理员/.test(fresh.why || ""), "这句不接「预算由谁设」——跟预算设多少无关，是缺价目", fresh.why);
+
+  ok(run(who({ budget: { org_yuan: 0 } }), "新出图").ok,
+    "反向对照：一档上限都没设，同一个没单价的型号照常放行（单机、没开预算的公司不受影响）");
+  const priced = who(s);
+  priced.price = { config: { ...config, unit_prices: { image: { "某个刚上线的图像模型": 0.2 } } } };
+  const after = run(priced, "新出图");
+  ok(after.ok, "管理员在「按量计价」里补上这一行，同一趟就放行", after.why);
+}
+
+console.log("\n【11】看图按 token 过两道闸：次数照数，钱按真去的型号和渠道算");
+{
+  reset();
+  ok(quota.CAP_KEYS.includes("vision") && quota.billable("vision") && quota.byTokens("vision"),
+    "看图是一路付费能力，钱按 token 算");
+  ok(!quota.byTokens("image") && quota.billable("image"), "反向对照：生图还是按张算");
+  const usage = require(mod("usage-store"));
+  const remote = "https://api.example.invalid/v1";
+  const local = "http://127.0.0.1:11434/v1";
+  const tokens = { prompt: 1700, max_tokens: 2000 };
+  const who = (orgId, yuan, limits) => ({
+    org: orgId, user: "xm", quota: table("vision", limits || {}),
+    budget: { orgId, org: { budget: { org_yuan: yuan } }, user: { username: "xm" } },
+    price: { config: { providers: [], models: [] } },
+  });
+  const gate = (a, model, base_url) => {
+    let g = null;
+    quota.withActor(a, () => { g = quota.gate("vision", { model, base_url, tokens }); });
+    return g;
+  };
+
+  const a1 = who("o-v1", 100);
+  const g1 = gate(a1, "gpt-4o", remote);
+  ok(g1.ok && g1.hold && g1.hold.est > 0, "有价目的远端型号：放行，预扣按 token 估、大于 0", g1);
+  quota.withActor(a1, () => quota.record("vision", {
+    model: "gpt-4o", base_url: remote, tokens: { prompt: 1500, cached: 0, completion: 200 }, meta: "a.png", hold: g1.hold,
+  }));
+  const rows = quota._internals.loadAll().usage.filter((e) => e.cap === "vision" && e.org === "o-v1");
+  ok(rows.length === 1 && rows[0].n === 1 && rows[0].cost > 0 && !rows[0].cost_unknown,
+    "看完按回包用量记一笔：算 1 次，钱大于 0，不是「不知道」", rows);
+  const money = usage.read({}).filter((e) => e.cap === "vision" && e.org === "o-v1");
+  ok(money.length === 1 && money[0].prompt === 1500 && money[0].completion === 200 && money[0].unit === "次" && money[0].cost > 0,
+    "主账上也落一笔，token 数原样记下（单位缺省不再炸）", money);
+
+  const g2 = gate(who("o-v2", 0.0001), "gpt-4o", remote);
+  ok(!g2.ok && /上限/.test(g2.why || "") && /视觉模型看图/.test(g2.why || ""),
+    "预算只剩零头：发出去之前就拦，说清撞的是哪一路", g2.why);
+
+  const g3 = gate(who("o-v3", 100), "some-new-vl-model", remote);
+  ok(!g3.ok && /价目/.test(g3.why || ""), "有预算、远端型号没价目：发出去之前就拦，说去价目表补", g3.why);
+
+  const g4 = gate(who("o-v4", 100), "some-new-vl-model", local);
+  ok(g4.ok, "反向对照：本机渠道上的型号不当「没价目」拦——那确实是 0 元", g4.why);
+  quota.undo(g4.hold);
+
+  const a5 = who("o-v5", 0, { user_daily: 2 });
+  for (let i = 0; i < 2; i++) {
+    const g = gate(a5, "gpt-4o", remote);
+    quota.withActor(a5, () => quota.record("vision", { model: "gpt-4o", base_url: remote, tokens: { prompt: 10, completion: 1 }, hold: g.hold }));
+  }
+  const g5 = gate(a5, "gpt-4o", remote);
+  ok(!g5.ok && /视觉模型看图/.test(g5.why || ""), "次数闸：每人每天 2 次，第三次被拦", g5.why);
+}
+
 function ok_silent(cond) { if (!cond) { fail++; console.log("  ✗ 关着闸门的时候居然拦了一次"); } }
 
 try { fs.rmSync(HOME, { recursive: true, force: true }); } catch {}

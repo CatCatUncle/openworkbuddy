@@ -19,6 +19,9 @@ const os = require("os");
 const fs = require("fs");
 const path = require("path");
 const which = require("../platform/which");
+const gate = require("./gate");
+const prefs = require("../core/config/prefs");
+const security = require("../core/safety/security");
 
 const BACKENDS = [require("./claude-code"), require("./codex")];
 
@@ -113,6 +116,45 @@ function resolve(config) {
 }
 
 /**
+ * 开跑前过闸（规则见 gate.js）：不行就抛带 code 的错，文案说清去哪改；行就给出这一趟该传给 run() 的设置。
+ *
+ * 属主那份只认 config.json 原样——成员的个人设置盖不到它；成员自己挑的 model 从叠过个人设置的那份里拿。
+ * 所以这里必须收**原始** config，不能收 prefs.agentView 叠过的那份。
+ * @param {string} id
+ * @param {object} config        原始 config（config.json）
+ * @param {{shellOff?: boolean, multi?: boolean, model?: string, trial?: boolean}} [o]  multi 不传就问 security.isMultiUser()
+ * @returns {{backend: object, opts: object, model: string, allowed: string[]}}
+ */
+function admit(id, config, { shellOff = false, multi, model, trial = false } = {}) {
+  const backend = get(id);
+  if (!backend) throw new Error(`「${id}」不是一个本机引擎`);
+  let owner = (((config && config.agent) || {}).engine_options || {})[id] || {};
+  let mine = (prefs.agentCfg(config).engine_options || {})[id] || {};
+  // model：设置页上刚填、还没保存的那个（「测试连接」用）。成员填的照样得在放行列表里
+  if (model !== undefined) mine = { ...mine, model };
+  // trial：属主在设置页试连——还没打开、型号还没存也能试，别的条件（命令行、附加参数、要有型号）照查
+  if (trial) owner = { ...owner, enabled: true, ...(model !== undefined ? { model } : {}) };
+  const isMulti = multi === undefined ? security.isMultiUser() : !!multi;
+  const ok = gate.admit({ id, label: backend.label, owner, mine, shellOff, multi: isMulti });
+  return { backend, opts: { ...mine, model: ok.model, allowedModels: ok.allowed }, model: ok.model, allowed: ok.allowed };
+}
+
+/**
+ * 设置页要的那几项：开没开、放行哪些型号、钉的是哪个。只读属主那份。
+ * @param {string} id
+ * @param {object} config  原始 config
+ */
+function gateView(id, config) {
+  const owner = (((config && config.agent) || {}).engine_options || {})[id] || {};
+  return {
+    enabled: owner.enabled === true,
+    pinned: typeof owner.model === "string" ? owner.model.trim() : "",
+    allowed: gate.allowedModels(owner),
+    network: owner.network === true,
+  };
+}
+
+/**
  * 真连一次。
  *
  * 为什么光有 detect 不够：`--version` 只证明**文件在**，证明不了**能用**。
@@ -195,4 +237,4 @@ async function ask({ id, opts = {}, system, prompt, timeoutMs = 60000, signal })
   }
 }
 
-module.exports = { list, get, detectAll, resolve, testConnect, ask, which, BUILTIN, BACKENDS };
+module.exports = { list, get, detectAll, resolve, admit, gateView, testConnect, ask, which, BUILTIN, BACKENDS };

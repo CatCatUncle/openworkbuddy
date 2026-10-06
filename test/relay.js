@@ -138,6 +138,58 @@ console.log("\n【1】价目表：四层覆盖、认不出的不算 0 元、缓�
      "折扣填 0 不是「全免」，是填错了——按不打折算，宁可多收");
   eq(pricing.costOf({ model: "gpt-4o", prompt: 1e6 }, { discount: 1.5 }).yuan, full.yuan,
      "反向对照：填个大于 1 的数也不会变成加价");
+
+  // 首页向导给每家默认挑的那个型号，是最多人真在用的那一个。它查不到价的话，
+  // 设了预算的人一点开就被拦（见【3】），没设的人账上永远「算不出钱」。
+  // 新加一家云端服务商、或者换了默认型号，先去 pricing.js 按官网价补一行，这一条才会绿。
+  const chatModels = require(mod("chat-models"));
+  const cloud = chatModels.templates().filter((t) => !t.local);
+  ok(cloud.length >= 8, "向导里的云端服务商一家没漏地读到了", cloud.map((t) => t.kind));
+  const noPrice = cloud.filter((t) => {
+    const r = pricing.priceOf(t.model, { base_url: t.base_url || "https://api.example.com/v1" });
+    return !r || r.src === "local";
+  }).map((t) => `${t.kind}:${t.model}`);
+  eq(noPrice, [], "向导里每家云端默认型号都查得到价目（本机那家除外）");
+
+  // 「本机 = 0 元」认的是渠道地址，不是型号名：型号名谁都能起，地址才说明钱付给了谁
+  for (const [u, want] of [
+    ["http://127.0.0.1:11434/v1", true], ["http://localhost:8000", true], ["http://[::1]:8080/v1", true],
+    ["http://10.2.3.4/v1", true], ["http://172.20.0.5:4000", true], ["http://192.168.1.9:11434", true],
+    ["http://gpu-box.local:8000/v1", true], ["192.168.0.2:11434", true],
+    ["https://api.openai.com/v1", false], ["https://172.32.0.1/v1", false], ["http://11.0.0.1/v1", false],
+    ["https://localhost.example.com/v1", false], ["https://api.deepseek.com", false], ["", false],
+  ]) eq(pricing.isPrivateBase(u), want, `isPrivateBase(${JSON.stringify(u)}) = ${want}`);
+
+  const CLOUD = "https://api.some-cloud.com/v1", LAN = "http://192.168.1.20:11434/v1";
+  ok(pricing.priceOf("llama-3.1-8b-instruct", { base_url: CLOUD }) === null,
+     "云端渠道上叫 llama 的型号不再白送：查不到价就是查不到（以前按名字猜成本机、记 0 元）");
+  ok(pricing.costOf({ model: "qwen2.5-coder-32b", prompt: 1e6 }, { base_url: CLOUD }).unknown === true,
+     "云端渠道上叫 qwen-coder 的也一样，记「算不出钱」而不是 0 元");
+  const lan = pricing.costOf({ model: "qwen2.5-coder-32b", prompt: 1e6, completion: 1e6 }, { base_url: LAN });
+  ok(lan.unknown === false && lan.yuan === 0, "同一个型号挂在内网地址上：0 元、算得出", lan);
+  const gw = pricing.priceOf("gpt-4o", { base_url: "http://127.0.0.1:4000/v1" });
+  ok(gw && gw.src === "builtin", "反向对照：本机网关转发的 gpt-4o 照样按官方价收（表里认得的型号不因为地址变免费）", gw);
+
+  // 地址从哪来：后台调用只带「用的是哪条模型」的名字，按名字去 config 里找它的渠道地址
+  const cfg = {
+    providers: [{ id: "p-lan", name: "机房", base_url: LAN }],
+    models: [
+      { name: "机房 Qwen", model: "qwen2.5-coder-32b", channel: "p-lan" },
+      { name: "云上 Qwen", model: "qwen2.5-coder-32b", base_url: CLOUD },
+    ],
+  };
+  ok(pricing.costOf({ model: "qwen2.5-coder-32b", provider: "机房 Qwen", prompt: 1e6 }, { config: cfg }).unknown === false,
+     "按模型名找到它挂的渠道、渠道在内网：记 0 元");
+  ok(pricing.costOf({ model: "qwen2.5-coder-32b", provider: "云上 Qwen", prompt: 1e6 }, { config: cfg }).unknown === true,
+     "同一个型号 id 换一条挂在云端的：记「算不出钱」");
+  ok(pricing.priceOf("qwen2.5-coder-32b", { config: cfg }) === null,
+     "只有型号 id、而它既挂内网又挂云端：不往便宜的方向猜");
+
+  // 管理员手填的价永远优先——内网网关后面其实接的是付费厂商时，靠这一格补回来
+  const adminLan = pricing.priceOf("qwen2.5-coder-32b", { base_url: LAN, config: { prices: { "qwen2.5-coder-32b": { in: 3, out: 6 } } } });
+  ok(adminLan && adminLan.src === "admin" && adminLan.row.in === 3, "内网地址上的型号，管理员手填了价就按手填的收", adminLan);
+  const famLan = pricing.priceOf("qwen2.5-coder-32b", { base_url: LAN, config: { prices: { qwen: { in: 3, out: 6 } } } });
+  ok(famLan && famLan.src === "local", "反向对照：手填的只是一个前缀族（qwen），不把本机那条也连带收钱", famLan);
 }
 
 /* ============================================================
@@ -232,6 +284,63 @@ console.log("\n【3】额度闸门：预扣、并发、0 = 不限、算不出钱
   bill({ org: "unk-org2", model: "gpt-4o", cost: 0.25 });
   eq(budget.status({ org: { budget: { org_yuan: 1 } }, orgId: "unk-org2" })[0].spent, 0.25,
      "反向对照：算得出钱的那笔照常累进去（不是「一律不算」）");
+
+  // ③ 的第三半：头上有上限的人点名一个没价目的型号。放行的话 settle 进去是 0，
+  // 预算一分不动——等于给了一扇不计数的门。所以发出去之前就拦。
+  budget.invalidate();
+  const NEW = "某个刚上线的型号-v9";
+  const capped = { org: { budget: { org_yuan: 100 } }, orgId: "unpriced-org", usage: { model: NEW, prompt: 10, max_tokens: 10 } };
+  const ue = threw(() => budget.reserve(capped));
+  ok(ue && ue.status === 402 && ue.code === "model_unpriced", "有上限、型号没价目：发出去之前就拦，402 + model_unpriced", ue && { status: ue.status, code: ue.code });
+  ok(ue && ue.budget && ue.budget.unpriced === true && ue.budget.level === "org", "报得出是哪一档的上限管着它", ue && ue.budget);
+  ok(ue && ue.message.includes(NEW) && /价目/.test(ue.message) && /企业管理/.test(ue.message),
+     "错误里写着哪个型号、去哪补价目", ue && ue.message);
+  ok(budget.unpriced(capped) && budget.unpriced(capped).level === "org", "长任务入口问同一句，答案一样");
+
+  const keyOnly = { vkey: { id: "k-unpriced", budget_yuan: 5 }, orgId: "unpriced-org2", usage: { model: NEW } };
+  ok(budget.unpriced(keyOnly) && budget.unpriced(keyOnly).level === "key", "只有那把 Key 设了上限，也拦，拦在 Key 那一档");
+  const userOnly = { org: { budget: { default_user_yuan: 5 } }, user: { username: "u-unpriced" }, orgId: "unpriced-org3", usage: { model: NEW } };
+  ok(budget.unpriced(userOnly) && budget.unpriced(userOnly).level === "user", "只有个人月预算，也拦，拦在人那一档");
+
+  budget.invalidate();
+  let freeUnk = null;
+  const free = threw(() => { freeUnk = budget.reserve({ ...capped, org: { budget: { org_yuan: 0 } } }); });
+  ok(free === null && freeUnk && freeUnk.unknown === true,
+     "反向对照：一档上限都没设（单机、没开预算），照转，收条上记着「算不出钱」", free && free.message);
+  budget.release(freeUnk);
+  ok(budget.unpriced({ ...capped, org: {} }) === null, "反向对照：没上限时长任务入口那一句也放行");
+  ok(budget.unpriced({ ...capped, usage: { model: "gpt-4o" } }) === null, "反向对照：有上限、型号查得到价，不拦");
+
+  budget.invalidate();
+  let paid = null;
+  const priced = threw(() => {
+    paid = budget.reserve({ ...capped, price: { config: { prices: { [NEW]: { in: 1, out: 2 } } } } });
+  });
+  ok(priced === null && paid && paid.unknown === false && paid.est > 0,
+     "管理员在价目表里补上这一行，同一趟就放行、照价预扣", priced && priced.message);
+  budget.release(paid);
+
+  const ucap = threw(() => budget.reserve({ ...capped, usage: { cap: "image", model: "our-diffusion-v9", units: 1 } }));
+  ok(ucap && ucap.code === "model_unpriced" && /单价/.test(ucap.message), "按量那几路（生图这种）没单价，有上限时一样拦", ucap && ucap.message);
+
+  // ③ 的第四半：只靠「最长前缀族」认出来的型号。gpt-5.2-pro 落到 gpt-5.2 那一行，价差十倍，
+  // 有上限的人点名它，预算按便宜那档扣——等于打了个一折。前缀后面只是日期、或更便宜的档（mini / flash 这种）才认。
+  for (const [m, why] of [["gpt-5.2-pro", "pro 档"], ["gpt-4o-realtime-preview", "实时语音档"], ["claude-opus-5-deep-research", "深度研究档"], ["kimi-k2-thinking", "思考档"], ["glm-4.6v", "名字只前缀对上半截的视觉版"]]) {
+    const hit = budget.unpriced({ ...capped, usage: { model: m } });
+    ok(hit && hit.level === "org" && hit.message.includes(m) && /价目表/.test(hit.message),
+       `★有上限、${m} 只认得出前缀族★ 当没价目拦（${why}的价不一定跟族里那行一样）`, hit);
+    const e = threw(() => budget.reserve({ ...capped, usage: { model: m, prompt: 10, max_tokens: 10 } }));
+    ok(e && e.code === "model_unpriced", `中转站预扣那一步也拦 ${m}`, e && e.message);
+  }
+  for (const m of ["gpt-4o-2026-05-13", "gpt-4o-mini", "doubao-seed-1-6-flash-250715", "claude-haiku-4-5-20251001"]) {
+    ok(budget.unpriced({ ...capped, usage: { model: m } }) === null, `反向对照：${m}（日期 / 更便宜的档）照常放行`);
+  }
+  ok(budget.unpriced({ ...capped, org: {}, usage: { model: "gpt-5.2-pro" } }) === null,
+     "反向对照：没上限的照旧按族里的价估，不拦");
+  ok(pricing.costOf({ model: "gpt-5.2-pro", prompt: 1e6, completion: 0 }).unknown === false,
+     "反向对照：账本照旧记一个近似价（只有设了上限的闸门从严）");
+  ok(budget.unpriced({ ...capped, usage: { model: "gpt-5.2-pro" }, price: { config: { prices: { "gpt-5.2-pro": { in: 100, out: 800 } } } } }) === null,
+     "管理员给 gpt-5.2-pro 单独补一行价，同一趟就放行");
 }
 
 /* ============================================================
@@ -605,6 +714,24 @@ console.log("\n【6】离职：停用账号关的是他本人的路，中转站�
 
   g = await hit("/v1/chat/completions", { authorization: "Bearer " + svcKey.secret });
   ok(g.status === 404 || g.status === 405 || g.status === 400, "聊天那条只收 POST", g.status);
+
+  // 设了预算的 Key 点名一个挂在云端渠道、却没价目的型号：转发之前就 402，错误码跟「额度用完」分开。
+  // 渠道地址是 .invalid，拦不住的话也连不上任何真服务
+  config.models.push({ name: "新上的", model: "某个刚上线的型号-v9", channel: "ark" });
+  const budgetKey = vkeys.create({ name: "有预算的", org: org.DEFAULT_ORG, budget_yuan: 5 });
+  g = await new Promise((resolve) => {
+    const body = JSON.stringify({ model: "某个刚上线的型号-v9", messages: [{ role: "user", content: "hi" }] });
+    const rq = http.request({ host: "127.0.0.1", port: P2, path: "/v1/chat/completions", method: "POST",
+      headers: { authorization: "Bearer " + budgetKey.secret, "content-type": "application/json" } }, (res) => {
+      let b = ""; res.on("data", (x) => (b += x));
+      res.on("end", () => { let j = null; try { j = JSON.parse(b); } catch {} resolve({ status: res.statusCode, json: j }); });
+    });
+    rq.on("error", () => resolve({ status: 0, json: null }));
+    rq.end(body);
+  });
+  ok(g.status === 402 && ((g.json || {}).error || {}).code === "model_unpriced" && /价目/.test(g.json.error.message),
+     "★有预算的 Key 调没价目的型号★ 发出去之前 402，code 是 model_unpriced、说清去哪补价目", g.json);
+  config.models.pop();
 
   s2.close();
 
@@ -1007,6 +1134,334 @@ console.log("\n【6】离职：停用账号关的是他本人的路，中转站�
   ok(runTaskGate(null) === null, "反向对照：没到顶就不抛");
   ok(runTaskGate(() => { throw new Error("组织设置里塞了个怪值"); }) === null,
      "反向对照：判不出来的时候放行，而且**只**放行判不出来那一种——真拦下来的那一句得原样往上抛，不能被同一个 catch 吞掉");
+
+  // ---- ⑤ 价目闸：长任务入口没有 reserve 那一步，查不到价的对话模型在开跑前就得拦 ----
+  const upSrc = blockAround(SRC9, "function unpricedChat(user, runLLM) {", "function unpricedChat");
+  ok(!!upSrc, "server.js 里有 unpricedChat 这道价目闸");
+  const NEWM = "某个刚上线的型号-v9";
+  const upCfg = {
+    agent: { engine: "builtin" },
+    models: [
+      { name: "新上的", model: NEWM, base_url: "https://api.example.invalid/v1" },
+      { name: "机房", model: NEWM, base_url: "http://10.0.0.8:8000/v1" },
+    ],
+  };
+  const upRun = (orgYuan, runLLM, cfg) => new Function("config", "prefs", "org", "budget", upSrc + "\nreturn unpricedChat;")(
+    cfg || upCfg, { agentCfg: (c) => c.agent || {} },
+    { ...orgStub, settingsOf: () => ({ budget: { org_yuan: orgYuan } }) }, budget,
+  )({ username: "xiaoyuan" }, runLLM);
+  ok(/价目/.test(upRun(50, { provider: "新上的", model: NEWM })), "有组织预算、对话模型挂在云端且没价目：开跑前就拦，说清去哪补");
+  eq(upRun(0, { provider: "新上的", model: NEWM }), "", "反向对照：没设预算，同一个型号照常跑（记「算不出钱」）");
+  eq(upRun(50, { provider: "机房", model: NEWM }), "", "反向对照：同一个型号挂在内网渠道上，0 元、不拦");
+  eq(upRun(50, { provider: "已经删掉的", model: NEWM }), "", "会话点名的模型已不在列表里：让开跑时那句「已不在模型列表里」去说，这儿不抢着报");
+  eq(upRun(50, { provider: "新上的", model: NEWM }, { ...upCfg, agent: { engine: "claude-code" } }), "",
+     "外部 CLI 引擎走它自己的订阅，不经这本价目");
+  ok(SRC9.includes("unpricedChat(user, llmForSession(getSession(sessionId)))"), "/api/chat 开流之前问过这一句");
+  ok(/const why = unpricedChat\(owner, runLLM\);\s*if \(why\) throw/.test(SRC9), "定时任务 / IM 那条路上也问过，拦下是抛出来，不是静悄悄跑完");
+  const dramaSrc = fs.readFileSync(path.join(ROOT, "src/server/routes/drama.js"), "utf8");
+  ok(/unpricedChat\(user, runLLM\)/.test(dramaSrc) && /unpricedWhy\) return res\.status\(402\)/.test(dramaSrc),
+     "短剧草稿那条真调模型的路也接上了");
+
+  // ---- ⑥ 主渠道挂了换备用渠道：换道前同一道价目闸再量一次；换过道的两段各按各的价记账 ----
+  // 入口那道闸只看主渠道。以前有限额的人主渠道一挂，就换到一条没价目的备用渠道上接着跑，
+  // 后半截一分不进预算；记账又拿主渠道的价算整趟——备用那条贵十倍，预算也只扣便宜那份。
+  {
+    const quotaMod = require(mod("quota"));
+    const { createAgentRuntime } = require(mod("agent"));
+    const { McpManager } = require(mod("mcp"));
+    const NEWB = "某个没登记价目的备用型号-x1";
+    const foCfg = (backupModel) => ({
+      agent: { max_steps: 4, tool_timeout_ms: 30000, failover_model: "备" },
+      active_model: "主",
+      models: [
+        { name: "主", provider: "openai", model: "deepseek-chat", base_url: "https://api.example.invalid/v1", api_key: "sk-test-xxxx" },
+        { name: "备", provider: "openai", model: backupModel, base_url: "https://api.example.invalid/v1", api_key: "sk-test-xxxx" },
+      ],
+    });
+    // 主渠道：第一步正常回一个工具调用（花了钱），第二步起服务端持续报错
+    const primary = () => {
+      let n = 0;
+      return {
+        provider: "主", model: "deepseek-chat",
+        async chat({ tools: ts, toolChoice }) {
+          if (!ts || !ts.length || toolChoice === "none") return { text: "（收尾）", toolCalls: [], stopReason: "end_turn", usage: { prompt: 1, completion: 1 } };
+          if (n++ === 0) return { text: "", toolCalls: [{ id: "c1", name: "read_file", input: { path: "没有这个文件.txt" } }], stopReason: "tool_use", usage: { prompt: 2000, completion: 100 } };
+          throw new Error("Service is too busy");
+        },
+      };
+    };
+    // 备用渠道的假工厂：记下有没有真的发出过请求
+    const factory = (hits) => (cfg) => {
+      const row = cfg.models.find((m) => m.name === cfg.active_model);
+      return {
+        provider: row.name, model: row.model,
+        async chat() { hits.push(row.model); return { text: "备用渠道答完了", toolCalls: [], stopReason: "end_turn", usage: { prompt: 3000, completion: 1000 } }; },
+      };
+    };
+    const foDir = path.join(HOME, "failover-ws"); // 建在本套件的临时家里，跟着它一起收
+    fs.mkdirSync(foDir, { recursive: true });
+    const foRun = async (cfg, actor) => {
+      const hits = [], events = [];
+      const rt = createAgentRuntime({ config: cfg, llm: primary(), mcpManager: new McpManager(), experts: [], llmFactory: factory(hits) });
+      const go = () => tools.withWorkspace(foDir, () => rt.runTask({ history: [{ role: "user", content: "看一眼那个文件" }], emit: (e) => events.push(e) }));
+      let r = null, err = null;
+      try { r = await (actor ? quotaMod.withActor(actor, go) : go()); } catch (e) { err = e; }
+      return { r, err, hits, events, fo: events.filter((e) => e.type === "failover") };
+    };
+    const capped = (cfg) => ({
+      org: org.DEFAULT_ORG, user: "xiaoyuan", dept: "", source: "web", quota: null,
+      budget: { orgId: org.DEFAULT_ORG, org: { budget: { org_yuan: 500 } }, user: { username: "xiaoyuan" } },
+      price: { config: cfg },
+    });
+
+    const cfgA = foCfg(NEWB);
+    const A = await foRun(cfgA, capped(cfgA));
+    ok(A.hits.length === 0, "★有限额、备用渠道没价目★ 不换道：备用那条一次请求都没发", A.hits);
+    ok(A.fo.length === 1 && A.fo[0].blocked === true && /价目表/.test(A.fo[0].note) && /没换到备用渠道「备」/.test(A.fo[0].note),
+       "照实说没换、卡在没价目、去哪补", A.fo.map((e) => e.note));
+    ok(A.err && /too busy/.test(A.err.message), "主渠道的错原样报出来，任务如实失败（不是悄悄跑完）", A.err && A.err.message);
+    const A0 = await foRun(cfgA, null);
+    ok(A0.hits.length === 1 && A0.r && A0.r.provider === "备" && A0.fo.length === 1 && !A0.fo[0].blocked,
+       "反向对照：没设任何限额，同一条备用渠道照常换过去（单机用户的老行为不变）", { hits: A0.hits, fo: A0.fo, err: A0.err && A0.err.message });
+
+    const cfgB = foCfg("claude-opus-5");
+    const B = await foRun(cfgB, capped(cfgB));
+    ok(B.hits.length === 1 && B.r && B.r.provider === "备" && B.r.model === "claude-opus-5",
+       "反向对照：备用渠道有价目，有限额也照常换；交回的是真在跑的那条", B.r && { provider: B.r.provider, model: B.r.model, err: B.err && B.err.message });
+    const by = (B.r && B.r.usageBy) || [];
+    const seg = (p) => by.find((x) => x.provider === p) || { usage: {} };
+    ok(by.length === 2 && seg("主").usage.prompt === 2000 && seg("备").usage.prompt === 3000 && seg("备").model === "claude-opus-5",
+       "用量按渠道拆开交回：主渠道那一步、备用渠道那几步各是各的", by);
+    const ev = B.events.find((e) => e.type === "usage");
+    ok(ev && Array.isArray(ev.usageBy) && ev.usageBy.length === 2, "usage 事件也带着拆开的那份（命令行记账读的是它）", ev);
+
+    const sid = "failover-split-1";
+    account.chargeRun({ username: "xiaoyuan" }, { ...B.r.usage, model: B.r.model, provider: B.r.provider, source: "web", sessionId: sid, usageBy: B.r.usageBy });
+    const rows = usageStore.read({}).filter((x) => x.kind === "run" && x.sessionId === sid);
+    // 折扣跟记账同一个口径：前面【5】给默认组织设过折扣
+    const disc = org.settingsOf(org.getOrg(org.DEFAULT_ORG)).price_discount;
+    const want = (m, u) => pricing.costOf({ model: m, prompt: u.prompt, completion: u.completion }, { config: cfgB, discount: disc }).yuan;
+    const rowOf = (m) => rows.find((x) => x.model === m);
+    ok(rows.length === 2 && rowOf("deepseek-chat") && rowOf("claude-opus-5"), "★记账两段各一行★ 型号各是各的", rows.map((x) => [x.model, x.cost]));
+    const total = rows.reduce((t, x) => t + x.cost, 0);
+    const right = want("deepseek-chat", seg("主").usage) + want("claude-opus-5", seg("备").usage);
+    ok(Math.abs(total - right) < 1e-6, "两段的钱加起来 = 主渠道价 × 主渠道用量 + 备用价 × 备用用量", { total, right });
+    const allAtPrimary = want("deepseek-chat", B.r.usage);
+    ok(total > allAtPrimary * 2, "反向对照：整趟按主渠道的价记会少算一大截（这把尺子量得出差别）", { total, allAtPrimary });
+    ok(rows.reduce((t, x) => t + x.prompt, 0) === B.r.usage.prompt && rows.reduce((t, x) => t + x.calls, 0) === B.r.usage.calls,
+       "拆开后 token、调用次数的合计跟整趟对得上，不多记也不漏记", rows.map((x) => [x.prompt, x.calls]));
+
+    ok(/spentBy\.push\(\.\.\.r\.usageBy\)/.test(SRC9) && /usageBy: spentBy/.test(SRC9),
+       "网页对话那条路把拆开的用量交给记账");
+    ok(/usageBy: r\.usageBy/.test(SRC9), "定时任务 / IM 那条路也交了");
+  }
+
+  /* ============================================================
+     【11】中转站只转登记过的型号
+     ============================================================
+     以前渠道上一个型号都没登记，中转站就把它当「通用网关」：任何名字都拿管理员的上游 Key 转出去，
+     只挂了生图模型的渠道也算。「只能用我配的模型」在这条路上不成立。
+     这一段钉住：没登记的不转（上游一次都收不到）、放行要属主明着开、空型号 Key 只认登记过的。
+     ============================================================ */
+  console.log("\n【11】中转站只转登记过的型号：没登记的上游收不到、放行开关只归属主、空型号 Key 不跟着放开");
+  const hits11 = [];
+  const up11 = http.createServer((rq, rs) => {
+    let b = "";
+    rq.on("data", (c) => (b += c));
+    rq.on("end", () => {
+      let j = {}; try { j = JSON.parse(b); } catch {}
+      hits11.push({ url: rq.url, key: String(rq.headers.authorization || "").replace(/^Bearer\s+/i, ""), model: j.model });
+      rs.writeHead(200, { "content-type": "application/json" });
+      if (rq.url === "/v1/embeddings") {
+        return rs.end(JSON.stringify({ object: "list", data: [{ embedding: [0.1] }], model: j.model, usage: { prompt_tokens: 3, total_tokens: 3 } }));
+      }
+      rs.end(JSON.stringify({ id: "c1", object: "chat.completion", model: j.model,
+        choices: [{ index: 0, message: { role: "assistant", content: "好" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 3, completion_tokens: 1 } }));
+    });
+  });
+  up11.listen(0, "127.0.0.1");
+  await new Promise((r11) => up11.once("listening", r11));
+  const UP11 = `http://127.0.0.1:${up11.address().port}/v1`;
+  const cfg11 = {
+    providers: [
+      { id: "reg", name: "登记过的渠道", kind: "openai", base_url: UP11, api_key: "sk-test-reg" },
+      { id: "bare", name: "啥都没登记的", kind: "openai", base_url: UP11, api_key: "sk-test-bare" },
+      { id: "pic", name: "只挂了生图的", kind: "openai", base_url: UP11, api_key: "sk-test-pic" },
+    ],
+    models: [{ name: "主力", model: "gpt-4o-mini", channel: "reg" }],
+    media_models: [{ cap: "image", name: "画图", model: "dall-e-3", provider: "pic" }],
+    embedding: { provider: "bare", model: "bge-m3" },
+  };
+  const srv11 = express();
+  srv11.use(express.json());
+  srv11.use(relay.createRouter({
+    config: () => cfg11, orgSettings: () => ({ budget: { org_yuan: 0 } }), user: () => null, clientIp: () => "127.0.0.1",
+  }));
+  let saved11 = 0;
+  srv11.use(account.createRouter({}));
+  srv11.use(account.authGuard);
+  srv11.use(admin.tenantScope({ withWorkspace: tools.withWorkspace, withPolicy: tools.withPolicy, getWorkspaceDir: tools.getWorkspaceDir }));
+  srv11.use(admin.platformGuard);
+  srv11.use(admin.redactGuard);
+  srv11.use(admin.createAdminRouter({ readConfig: () => cfg11, saveConfig: () => { saved11++; }, orgUsage: () => ({ files: 0, bytes: 0 }) }));
+  const s11 = srv11.listen(0, "127.0.0.1");
+  await new Promise((r11) => s11.once("listening", r11));
+  const P11 = s11.address().port;
+  const req11 = (method, p, { key, cookie, body } = {}) => new Promise((resolve) => {
+    const payload = body === undefined ? null : Buffer.from(JSON.stringify(body));
+    const rq = http.request({ host: "127.0.0.1", port: P11, path: p, method, headers: {
+      ...(payload ? { "content-type": "application/json", "content-length": payload.length } : {}),
+      ...(key ? { authorization: "Bearer " + key } : {}), ...(cookie ? { cookie } : {}),
+    } }, (res) => {
+      let b = ""; res.on("data", (x) => (b += x));
+      res.on("end", () => { let j = null; try { j = JSON.parse(b); } catch {} resolve({ status: res.statusCode, json: j }); });
+    });
+    rq.on("error", () => resolve({ status: 0, json: null }));
+    rq.end(payload || undefined);
+  });
+  const chat11 = (key, model) => req11("POST", "/v1/chat/completions", { key, body: { model, messages: [{ role: "user", content: "hi" }] } });
+  const emptyK = vkeys.create({ name: "没写型号的", org: org.DEFAULT_ORG });
+  const starK = vkeys.create({ name: "写了星号的", org: org.DEFAULT_ORG, models: ["*"] });
+  const namedK = vkeys.create({ name: "点名新型号的", org: org.DEFAULT_ORG, models: ["brand-new-x"] });
+
+  let g11 = await chat11(emptyK.secret, "gpt-4o-mini");
+  ok(g11.status === 200 && hits11.length === 1 && hits11[0].key === "sk-test-reg",
+     "登记过的型号照常转，走的是登记它的那条渠道", { status: g11.status, hits: hits11 });
+
+  // ★原来的通用网关：渠道没登记型号就什么都转。现在没登记的一律 404，上游一次都收不到
+  hits11.length = 0;
+  g11 = await chat11(starK.secret, "brand-new-x");
+  const e11 = (g11.json && g11.json.error) || {};
+  ok(g11.status === 404 && e11.code === "model_not_found" && e11.type === "invalid_request_error",
+     "★没登记的型号不再当通用网关转出去★ 404 + OpenAI 那个错误形状（code = model_not_found）", g11.json);
+  ok(/brand-new-x/.test(e11.message || "") && /没登记/.test(e11.message || "") && /设置 → 模型/.test(e11.message || ""),
+     "错误说清是哪个型号没登记、去哪儿登记", e11.message);
+  eq(hits11.length, 0, "★假上游一次请求都没收到★（不是转出去被上游拒了，是根本没发）");
+  g11 = await chat11(emptyK.secret, "brand-new-x");
+  ok(g11.status === 404 && hits11.length === 0, "空型号的 Key 叫没登记的也一样 404、上游 0 次", { status: g11.status, hits: hits11.length });
+
+  // 只挂了媒体模型的渠道不替人转对话：它登记的 dall-e-3 是生图那一路的
+  g11 = await chat11(starK.secret, "dall-e-3");
+  ok(g11.status === 404 && hits11.length === 0, "★只挂了生图模型的渠道不转对话★ 拿生图型号名去叫对话：404，上游 0 次", { status: g11.status, hits: hits11 });
+  ok(!relay.pickChannels(cfg11, "dall-e-3").length && !relay.pickChannels(cfg11, "随便什么").length,
+     "选渠道那一步就挑不出它（不靠上游报错兜底）");
+
+  // 向量那一路认设置里选定的嵌入模型，但那条登记不顺带让对话也能叫
+  g11 = await req11("POST", "/v1/embeddings", { key: emptyK.secret, body: { model: "bge-m3", input: "你好" } });
+  ok(g11.status === 200 && hits11.length === 1 && hits11[0].key === "sk-test-bare" && hits11[0].url === "/v1/embeddings",
+     "嵌入模型登记在哪条渠道，向量就从哪条转", { status: g11.status, hits: hits11 });
+  hits11.length = 0;
+  g11 = await chat11(starK.secret, "bge-m3");
+  ok(g11.status === 404 && hits11.length === 0, "反向：嵌入模型的登记不算对话的登记", { status: g11.status, hits: hits11.length });
+
+  // ---- 后台：停了哪些、受影响的 Key、开关只归平台超级管理员 ----
+  let a11 = await req11("GET", "/api/admin/relay", { cookie: boss });
+  const gw11 = (a11.json || {}).gateway || {};
+  // bare 上登记了嵌入模型，向量那一路还在转，不算停转
+  eq(a11.status === 200 && (gw11.stopped || []).map((c) => [c.id, c.media_only]), [["pic", true]],
+     "中转站页列出停转的渠道（只挂了媒体模型的那条），登记过对话或向量的不在里头");
+  ok((gw11.keys || []).some((k) => k.id === emptyK.key.id && k.models.length === 0)
+     && (gw11.keys || []).some((k) => k.id === namedK.key.id && k.models.includes("brand-new-x")),
+     "受影响的 Key 也列出来：空型号的、点名的型号哪条渠道都转不了的", gw11.keys);
+  ok(((a11.json || {}).channels || []).every((c) => c.any_model === false), "放行开关默认全关");
+  const audit11 = vkeys.relayAudit({ providers: [
+    { id: "gw", name: "以前的通用网关", kind: "openai", base_url: "http://127.0.0.1:9/v1" },
+    { id: "cc", name: "Claude 原生", kind: "anthropic", base_url: "http://127.0.0.1:9" },
+  ] }, []);
+  eq(audit11.stopped, [{ id: "gw", name: "以前的通用网关", media_only: false }],
+     "一个型号都没登记的 OpenAI 兼容渠道算停转；本来就不走中转的原生协议渠道不算");
+
+  // 席位前面几段已经用满，把前面那个普通成员提成平台管理员（不是超级管理员）
+  r = await req11("POST", "/api/admin/members/xiaoyuan", { cookie: boss, body: { role: "admin" } });
+  ok(r.status === 200, "把一个成员提成平台管理员（不是超级管理员）", r.json);
+  const login11 = (who, pw) => new Promise((resolve) => {
+    const payload = Buffer.from(JSON.stringify({ username: who, password: pw }));
+    const rq = http.request({ host: "127.0.0.1", port: P11, path: "/api/auth/login", method: "POST",
+      headers: { "content-type": "application/json", "content-length": payload.length } }, (res) => {
+      res.resume(); res.on("end", () => resolve(String((res.headers["set-cookie"] || [""])[0]).split(";")[0]));
+    });
+    rq.end(payload);
+  });
+  const subCookie = await login11("xiaoyuan", memPwd);
+  ok(!!subCookie, "平台管理员登得进来");
+  const before11 = saved11;
+  ok((await req11("POST", "/api/admin/relay/channels/bare", { cookie: subCookie, body: { any_model: true } })).status === 403,
+     "平台管理员打不开「放行任意型号」——只有超级管理员能");
+  ok((await req11("POST", "/api/admin/relay/channels/bare", { cookie: auditor, body: { any_model: true } })).status === 403,
+     "审计员也打不开");
+  ok(cfg11.providers[1].relay_any_model === undefined && saved11 === before11, "被拒的那两趟一个字都没写进配置");
+  ok((await req11("POST", "/api/admin/relay/channels/bare", { cookie: boss, body: { any_model: "yes" } })).status === 400,
+     "开关只认 true / false，别的值不猜");
+  a11 = await req11("POST", "/api/admin/relay/channels/bare", { cookie: boss, body: { any_model: true } });
+  ok(a11.status === 200 && cfg11.providers[1].relay_any_model === true && saved11 === before11 + 1,
+     "超级管理员打开了，配置里真有这一格、也真存了盘", { status: a11.status, json: a11.json });
+  ok(org._internals.readAudit(org.DEFAULT_ORG).some((e) => e.action === "中转站放行任意型号" && e.actor === "hr-boss"),
+     "打开放行记进审计：谁、哪天、开的哪条渠道", org._internals.readAudit(org.DEFAULT_ORG).slice(0, 3));
+
+  // ★打开之后：写了型号的 Key 能走这条渠道叫没登记的；空型号 Key 不跟着放开
+  hits11.length = 0;
+  g11 = await chat11(starK.secret, "brand-new-x");
+  ok(g11.status === 200 && hits11.length === 1 && hits11[0].key === "sk-test-bare",
+     "★开关打开后放行★ 写了型号的 Key 叫没登记的型号，从打开的那条渠道转出去", { status: g11.status, hits: hits11 });
+  g11 = await chat11(namedK.secret, "brand-new-x");
+  ok(g11.status === 200, "点名了这个型号的 Key 也能用", g11.json);
+  hits11.length = 0;
+  g11 = await chat11(emptyK.secret, "brand-new-x");
+  ok(g11.status === 401 && /没写型号/.test(((g11.json || {}).error || {}).message || "") && hits11.length === 0,
+     "★空型号 Key 只能用登记过的★ 放行开关开着它也叫不动没登记的，上游 0 次", { status: g11.status, json: g11.json, hits: hits11.length });
+  g11 = await chat11(emptyK.secret, "gpt-4o-mini");
+  ok(g11.status === 200, "反向对照：同一把空型号 Key 叫登记过的照常", g11.status);
+  // 同一个型号，登记的渠道和放行的渠道都接得了：空型号 Key 只能落在登记的那条上（两条同级、权重随机，多叫几次）
+  hits11.length = 0;
+  for (let i = 0; i < 8; i++) await chat11(emptyK.secret, "gpt-4o-mini");
+  ok(hits11.length === 8 && hits11.every((h) => h.key === "sk-test-reg"),
+     "★空型号 Key 的流量不落到放行的渠道上★ 只走登记了这个型号的那条", hits11.map((h) => h.key));
+  ok(relay.pickChannels(cfg11, "gpt-4o-mini").length === 2
+     && relay.pickChannels(cfg11, "gpt-4o-mini", { registeredOnly: true }).map((c) => c.p.id).join() === "reg",
+     "挑渠道时放行的那条只给写了型号的 Key");
+  ok(!hits11.some((h) => h.key === "sk-test-pic"), "只挂了生图的那条渠道全程一次都没被拿去转对话", hits11);
+
+  a11 = await req11("GET", "/api/admin/relay", { cookie: boss });
+  ok((((a11.json || {}).channels || []).find((c) => c.id === "bare") || {}).any_model === true
+     && !((a11.json || {}).gateway.stopped || []).some((c) => c.id === "bare"),
+     "页面上这条渠道显示放行中，也不再算停转");
+
+  a11 = await req11("POST", "/api/admin/relay/channels/bare", { cookie: boss, body: { any_model: false } });
+  hits11.length = 0;
+  g11 = await chat11(starK.secret, "brand-new-x");
+  ok(a11.status === 200 && !("relay_any_model" in cfg11.providers[1]) && g11.status === 404 && hits11.length === 0,
+     "关掉之后又回到只转登记过的", { status: g11.status, hits: hits11.length });
+
+  // 渠道自己写了白名单的，只认白名单，放行开关在它身上不起作用
+  cfg11.providers[1].models = ["only-this"];
+  cfg11.providers[1].relay_any_model = true;
+  ok(!relay.pickChannels(cfg11, "brand-new-x").length && relay.pickChannels(cfg11, "only-this").length === 1,
+     "渠道白名单优先于放行开关");
+  delete cfg11.providers[1].models; delete cfg11.providers[1].relay_any_model;
+
+  // 设置页保存渠道时不认表单里的放行开关，只从旧值抄（设置页的权限比这个开关宽）
+  ok(SRC9.includes("...(prev.relay_any_model === true ? { relay_any_model: true } : {})")
+     && !/relay_any_model:\s*p\.relay_any_model|p\.relay_any_model\s*===/.test(SRC9),
+     "设置页保存渠道：放行开关只从旧值抄过来，不从提交的表单里拿");
+  ok(/relayHit/.test(SRC9), "启动时把「中转站有渠道 / Key 受影响」递给升级提示");
+  const migrate11 = require(mod("migrate"));
+  const ws11 = path.join(HOME, "ws11"); fs.mkdirSync(ws11, { recursive: true });
+  const notes11 = migrate11.runMigrations(ws11, path.join(HOME, "mig11.json"), { version: "9.9.9", priorUse: true, relayHit: true });
+  ok(notes11.some((n) => n.id === "relay-registered-only-v1" && /API 中转站/.test(n.note)), "升级上来、有受影响的：提示一次，告诉去哪儿看", notes11);
+  const quiet11 = migrate11.runMigrations(path.join(HOME, "ws11b"), path.join(HOME, "mig11b.json"), { version: "9.9.9", priorUse: true, relayHit: false });
+  ok(!quiet11.some((n) => n.id === "relay-registered-only-v1"), "反向对照：没受影响的不打扰", quiet11);
+  // 升级提示在界面上是「升级整理：」+ 这句拼起来再翻的：每条升级提示切英文都得整句翻过去，不能半截留中文
+  {
+    const i18n = require(path.join(ROOT, "public/js/i18n.js"));
+    const all = { embedOff: true, relayHit: true, engineNoModel: "本机 Codex", codexNet: true };
+    const lines = migrate11.MIGRATIONS.filter((m) => m.upgradeOnly && m.id !== "tidy-root-v1")
+      .map((m) => m.run({ workspace: path.join(HOME, "ws11c"), options: all })).filter(Boolean);
+    const stuck = lines.map((n) => "升级整理：" + n).filter((t) => !/^Upgrade: [^\u4e00-\u9fff]+$/.test(i18n.tr(t, "en")));
+    ok(lines.length >= 4 && stuck.length === 0, "★升级提示切英文整句都翻了★（带「升级整理：」前缀那样翻）", stuck);
+  }
+
+  s11.close(); up11.close();
 
   try { fs.rmSync(HOME, { recursive: true, force: true }); } catch {}
   console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);

@@ -23,6 +23,7 @@ const path = require("path");
 const crypto = require("crypto");
 const { spawn } = require("child_process");
 const { StringDecoder } = require("string_decoder");
+const { buildChildEnv } = require("../platform/child-env");
 
 const PROTOCOL_VERSION = "2025-06-18";
 
@@ -433,7 +434,9 @@ class StdioTransport {
       } else extra = { shell: true, windowsHide: true }; // 认不出：照旧让 cmd 自己去找，至少不弹窗
     }
     this.proc = spawn(bin, args, {
-      env: { ...process.env, ...env, ...this.env },
+      // 只拿基础白名单 + 这台服务自己在 env 里配的键。不吃属主那份透传清单，ssh-agent 也不给：
+      // 连接器要用哪把 Key，配在它自己的 env 里，别的凭证它一样也不该看见（第三方连接器的代码我们没审过）
+      env: buildChildEnv({ ...env, ...this.env }, { allow: [], keys: false }),
       cwd: this.cwd || undefined,
       stdio: ["pipe", "pipe", "pipe"],
       ...extra,

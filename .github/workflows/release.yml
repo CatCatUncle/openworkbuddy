@@ -64,6 +64,15 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # Windows 包里要带系统沙箱的小助手（native/owb-sandbox，Go 写的），产物不进 git，这里现编。
+      # 漏了这两步 electron-builder 的 afterPack 当场红，不会发出一个设置页有开关、底下却没沙箱的包
+      - if: runner.os == 'Windows'
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: native/owb-sandbox/go.mod
+          cache: false # 只用标准库，没有 go.sum 可当缓存键
+      - if: runner.os == 'Windows'
+        run: npm run build:sandbox
       # 不签名、不公证：没有 Apple Developer ID 证书。用户首次打开要手动放行，README 里写了。
       # 显式写死这个变量，免得哪天 runner 的钥匙串里有了证书就被自动捡去签
       - run: npm run ${{ matrix.script }}

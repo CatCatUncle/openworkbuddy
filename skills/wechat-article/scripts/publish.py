@@ -133,9 +133,13 @@ def credentials():
             c = json.load(f)
         if c.get("appid") and c.get("secret"):
             return c["appid"], c["secret"]
+    # 在 OpenWorkBuddy 里跑时，命令只拿系统基础变量：用户 shell 里设好了也传不进来，得说清去哪儿放行
+    seen = [k for k in ("WECHAT_APPID", "WECHAT_SECRET") if os.environ.get(k)]
+    got = f"（这次只看到 {seen[0]}）" if seen else ""
     die(
-        "没找到公众号凭据。设置环境变量 WECHAT_APPID / WECHAT_SECRET，\n"
-        "   或写入 ~/.openworkbuddy/wechat.json：{\"appid\": \"...\", \"secret\": \"...\"}"
+        f"没找到公众号凭据{got}。写入 ~/.openworkbuddy/wechat.json：{{\"appid\": \"...\", \"secret\": \"...\"}}，\n"
+        "   或用环境变量 WECHAT_APPID / WECHAT_SECRET：在 OpenWorkBuddy 里跑时两个名字都要加进\n"
+        "   设置 → 安全 →「命令能看到的环境变量」（WECHAT_SECRET 只在这台机器只有一个账号时才给）"
     )
 
 

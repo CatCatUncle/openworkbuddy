@@ -1626,7 +1626,8 @@ PAGES.apiquota = {
         ? `<div class="fd" style="margin-top:4px">用得最多：${c.top.map((t) => `${esc(t.user)} ${num(t.n)}`).join(" · ")}</div>`
         : "";
       const state = c.configured
-        ? badge(c.paid ? "已配置 · 按次计费" : "已就绪 · 不花钱", c.paid ? "secondary" : "outline")
+        // 看图按 token 收（一趟花多少看图多大、答多长），写「按次」会让人以为一次一个价
+        ? badge(c.paid ? (c.billing === "token" ? "已配置 · 按 token 计费" : "已配置 · 按次计费") : "已就绪 · 不花钱", c.paid ? "secondary" : "outline")
         : badge("还没配", "outline");
       return cardT(
         headRow(
@@ -1811,14 +1812,23 @@ PAGES.relay = {
       <div class="fd" style="margin-top:10px">对话和向量按 token 计，其余按量计，共用同一份额度。</div>`);
 
     /* ---- 渠道 ---- */
+    // 「没登记的型号」那一格就是放行开关。只有平台超级管理员能拨：它决定管理员的上游 Key
+    // 能不能被拿去叫任意名字。其他人只看得到现在是开是关
+    const anyCell = (c) => {
+      if (!c.relayable) return `<span class="fd">不走中转</span>`;
+      if (c.whitelist.length) return `<span class="fd">按渠道白名单</span> ${c.whitelist.map((m) => `<code class="ad-mono">${esc(m)}</code>`).join(" ")}`;
+      if (OWNER && !RO) return `<label class="ad-row" style="gap:8px"><span class="ui-switch"><input type="checkbox" data-any="${esc(c.id)}"${c.any_model ? " checked" : ""}><i></i></span><span class="fd">放行任意型号</span></label>`;
+      return c.any_model ? badge("放行任意型号", "destructive") : `<span class="fd">不转</span>`;
+    };
     const chRows = (d.channels || []).map((c) => [
       `<b>${esc(c.name)}</b><div class="fd">${esc(c.kind || "—")}</div>`,
-      c.has_key ? badge("有 Key", "secondary") : badge("没填 Key", "outline"),
+      (c.has_key ? badge("有 Key", "secondary") : badge("没填 Key", "outline")) + (c.stopped ? " " + badge("已停转", "destructive") : ""),
       c.models.length ? c.models.map((m) => `<code class="ad-mono">${esc(m)}</code>`).join(" ") : `<span class="fd">这条渠道下面一个型号都没挂</span>`,
+      anyCell(c),
     ]);
     const chan = cardT(
-      headRow(secT("转得出去的渠道", "没挂渠道的型号转发不了。")),
-      table([{ t: "渠道" }, { t: "状态" }, { t: "这条渠道下的型号" }], chRows) +
+      headRow(secT("转得出去的渠道", "只转登记过的型号，别的回 404。放行任意型号只对写了型号的 Key 生效。")),
+      table([{ t: "渠道" }, { t: "状态" }, { t: "这条渠道下的型号" }, { t: "没登记的型号" }], chRows) +
         ((d.orphans || []).length
           ? `<div style="padding:0 20px 18px">${note(`这些型号登记了但<b>没挂渠道</b>，中转站转不出去：`
               + d.orphans.map((m) => `<code>${esc(m)}</code>`).join("、")
@@ -1839,7 +1849,7 @@ PAGES.relay = {
         `<div class="ad-mono">${yuan(k.spent_month)} / ${cap(k.budget_yuan)}</div>${
           k.budget_yuan ? `<div style="margin-top:4px;max-width:140px">${progress(pct)}</div>` : ""}`,
         `<div class="fd">${(k.caps || []).length ? (k.caps || []).map((c) => capName(c)).map(esc).join("、") : "七路能力全开"}</div>
-         <div class="fd">${k.models.length ? k.models.map(esc).join("、") : "不限型号"}</div>
+         <div class="fd">${k.models.length ? k.models.map(esc).join("、") : "只用登记过的型号"}</div>
          <div class="fd">${k.ips.length ? "来源 " + k.ips.map(esc).join("、") : "不限来源"}${k.expires_at ? " · 到期 " + esc(k.expires_at) : ""}</div>`,
         `<span class="ad-mono">${num(k.calls)}</span><div class="fd">${k.last_used_at ? ago(k.last_used_at) : "从未"}</div>`,
         RO ? "" : `<div class="ad-row">
@@ -1932,7 +1942,7 @@ PAGES.relay = {
       const SRC = { builtin: ["内置", "outline"], admin: ["手填", "secondary"], channel: ["渠道自带", "secondary"] };
       priceCard = cardT(
         headRow(
-          secT("价目表", `单位：元 / 百万 token。内置价为 ${esc(d.prices_as_of)} 公开报价（1 美元 = ${esc(d.usd_cny)} 元），手填优先。未登记的型号照转，记为「算不出钱」。`),
+          secT("价目表", `单位：元 / 百万 token。内置价为 ${esc(d.prices_as_of)} 公开报价（1 美元 = ${esc(d.usd_cny)} 元），手填优先；表里没有的型号走本机 / 内网渠道记 0 元。没价目的型号：设了预算的人用不了，其他人照转、记为「算不出钱」。`),
           RO ? "" : `<button class="ui-btn ui-btn--outline ui-btn--sm" id="rl-price-new">${ic("plus")}加一个型号</button>`
         ),
         table(
@@ -1959,7 +1969,7 @@ PAGES.relay = {
       unitCard = cardT(
         headRow(
           secT("按量计价：搜索 / 生图 / 生视频 / 语音",
-            `按张 / 秒 / 千字符 / 分钟 / 次计价，不按 token。内置价为 ${esc(d.prices_as_of)} 公开报价，手填优先。`),
+            `按张 / 秒 / 千字符 / 分钟 / 次计价，不按 token。内置价为 ${esc(d.prices_as_of)} 公开报价，手填优先。没单价的：设了预算的人用不了。`),
           RO ? "" : `<button class="ui-btn ui-btn--outline ui-btn--sm" id="rl-unit-new">${ic("plus")}加一个</button>`
         ),
         (d.unit_prices || []).map((g) => {
@@ -1983,7 +1993,8 @@ PAGES.relay = {
     /**
      * 催填单。这两行比上面两张价目表都重要：表里有什么是静态的，
      * 而这儿列的是「本月真调过、但查不到价」——每一条都是一笔真花了钱但记成 0 的账。
-     * 不拦人（拦了业务方比少算一笔账惨得多），但得天天挂在这儿。
+     * 这些账只会出自没设预算的人（设了预算的，没价目的型号在发出去之前就被拦了，见 budget.unpriced），
+     * 所以这张单子不拦人，但得天天挂在这儿：补上价，那些被拦的人也就能用了。
      */
     const nag = [];
     if ((d.prices_missing || []).length)
@@ -1993,8 +2004,29 @@ PAGES.relay = {
       nag.push(`按量那几路里，这几个<b>没登记单价</b>：`
         + d.unit_missing.map((u) => `<code>${esc(u.model)}</code>（${esc(capName(u.cap))}，元/${esc(u.unit)}）`).join("、"));
 
+    /**
+     * 升级提示：中转站以前把没登记型号的渠道当通用网关，现在只转登记过的。
+     * 停了的渠道、受影响的 Key 列在页首，说清怎么恢复。按内容记「知道了」：名单变了会再出来
+     */
+    const gw = d.gateway || { stopped: [], keys: [] };
+    const gwSig = JSON.stringify(gw);
+    let gwSeen = "";
+    try { gwSeen = localStorage.getItem("owb.relay.gateway.seen") || ""; } catch {}
+    // 名字（渠道、Key、型号）是用户起的，挂 translate="no"：英文界面下不该被当成界面文字去翻
+    const nm = (x) => `<b translate="no">${esc(x)}</b>`;
+    const gwLines = [`中转站现在<b>只转登记过的型号</b>，没登记的回 404。`];
+    if (gw.stopped.length) gwLines.push(`已停转的渠道（一个型号都没登记）：` + gw.stopped.map((c) =>
+      nm(c.name) + (c.media_only ? `<span>（只挂了媒体模型，生图等照常）</span>` : "")).join("、"));
+    for (const k of gw.keys) gwLines.push(nm(k.name) + (k.models.length
+      ? `<span>：这几个型号没有渠道转</span> ` + k.models.map((m) => `<code>${esc(m)}</code>`).join(" ")
+      : `<span>：没写型号，只能用登记过的</span>`));
+    gwLines.push(`要恢复：平台管理员在「模型与 Key」给渠道登记型号；或平台超级管理员在下面渠道表里打开「放行任意型号」，并在 Key 的型号里写明。`);
+    const gwNote = (gw.stopped.length || gw.keys.length) && gwSeen !== gwSig
+      ? note(gwLines.join("<br>") + ` <button class="ui-btn ui-btn--ghost ui-btn--xs" id="rl-gw-ok">知道了</button>`, true) : "";
+
     return `<div class="ad-wrap">
       ${note("给业务方发<b>虚拟 Key</b>，各自限额、可随时吊销，不暴露上游真 Key。员工在界面上的调用也计入同一预算。")}
+      ${gwNote}
       ${head}
       ${unknown || estimated ? note(`本月有 <b>${num(unknown)}</b> 次调用算不出钱（型号没登记价目），`
         + `<b>${num(estimated)}</b> 次的花费是估的（流式那一路上游没报 usage，按字数折的）。`
@@ -2022,8 +2054,32 @@ PAGES.relay = {
       rq.onkeydown = (e) => { if (e.key === "Enter" && !imeKey(e)) { clearTimeout(rt); goMem({ ...relayMQ, q: rq.value, offset: 0 }); } };
     }
     bindPager(root, relayMQ, RELAY_MEM_PAGE, goMem);
+    const gwOk = root.querySelector("#rl-gw-ok");
+    if (gwOk) gwOk.onclick = () => {
+      try { localStorage.setItem("owb.relay.gateway.seen", JSON.stringify(d.gateway || {})); } catch {}
+      route(true);
+    };
     if (RO) return;
     const reload = () => route(true);
+
+    /* ---- 放行任意型号（只有平台超级管理员看得到这个开关） ---- */
+    root.querySelectorAll("[data-any]").forEach((cb) => {
+      cb.onchange = () => {
+        const c = (d.channels || []).find((x) => x.id === cb.dataset.any);
+        if (!c) return;
+        const save = async (on) => {
+          await post("/api/admin/relay/channels/" + encodeURIComponent(c.id), { any_model: on });
+          toast(on ? "已放行任意型号" : "已改回只转登记过的");
+          reload();
+        };
+        if (!cb.checked) return save(false).catch((e) => { cb.checked = true; toast(e.message, true); });
+        // 打开要先确认：取消的话开关得回到关着的样子，所以先拨回去，确认了再由 reload 画成开
+        cb.checked = false;
+        confirmBox("放行「" + c.name + "」的任意型号",
+          `写了型号的 Key 能拿这条渠道的上游 Key <b>叫任何型号</b>，包括没登记、没价目的。没写型号的 Key 仍只能用登记过的。`,
+          "放行", () => save(true), true);
+      };
+    });
 
     /* ---- 发一把 ---- */
     const KEY_FIELDS = (k) => [
@@ -2039,7 +2095,7 @@ PAGES.relay = {
         options: (d.caps || []).map((c) => ({ value: c.key, label: c.label })),
         desc: "都不勾 = 全开。限制能力比限制型号更稳。" },
       { name: "models", label: "只允许这几个型号", value: ((k && k.models) || []).join(", "),
-        placeholder: "留空 = 不限，多个用逗号隔开", desc: "其他型号的调用会被拦下。" },
+        placeholder: "留空 = 只用登记过的型号，逗号隔开", desc: "其他型号会被拦下。要走「放行任意型号」的渠道，得在这里写明。" },
       { name: "ips", label: "只允许这几个来源", value: ((k && k.ips) || []).join(", "),
         placeholder: "留空 = 不限，支持 1.2.3.4 和 1.2.3.0/24", desc: "服务器间调用建议填，防 Key 泄漏。" },
     ];

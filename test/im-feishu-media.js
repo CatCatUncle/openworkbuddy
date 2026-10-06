@@ -1216,7 +1216,8 @@ async function rejects(p) {
     app.use(express.json());
     app.use((_req, _res, next) => tools.withWorkspace(WS4, next));
     app.use(createImRouter({
-      config: { im: { feishu: { app_id: "cli_spend", app_secret: "s_spend" } } },
+      // 「本机模型 0 元」认的是渠道地址，不是型号名（见 pricing.isPrivateBase）：庚那一趟的型号挂在本机地址上
+      config: { im: { feishu: { app_id: "cli_spend", app_secret: "s_spend" } }, models: [{ name: "本机", model: "ollama/qwen2.5", base_url: "http://127.0.0.1:11434/v1" }] },
       runtime, sessions: new Map(), outputFiles: () => [],
     }).router);
     const server = await new Promise((resolve) => { const s = app.listen(0, "127.0.0.1", () => resolve(s)); });

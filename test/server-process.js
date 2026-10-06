@@ -558,7 +558,9 @@ async function isolation(L, port, label) {
     ok(said, "日志留了一行「上次没收干净的后台进程组 … 已收掉」", A.tail(900));
     const back = await req(a.port, "GET", "/api/info");
     ok(back.status === 200, "重启后同一个口照样应答", back.status);
-    ok(/\[服务进程\] 独立服务进程退出了（退出码 [^）]*），\d+ms 后重启/.test(A.log) && new RegExp(`\\[服务进程\\] 重启好了，监听 ${a.port}`).test(A.log), "日志写明：退出码、几毫秒后重启、重启好了监听哪个口", A.tail(900));
+    // 退出那行会带上服务进程 stderr 的最后一行，原文照抄、里面自己就可能有「）」：别用 [^）]* 卡它，按行尾认
+    ok(/\[服务进程\] 独立服务进程退出了（退出码 \S+?(，最后一行 stderr：.*)?），\d+ms 后重启/.test(A.log) && new RegExp(`\\[服务进程\\] 重启好了，监听 ${a.port}`).test(A.log), "日志写明：退出码、几毫秒后重启、重启好了监听哪个口",
+      { exited: (A.log.match(/\[服务进程\] 独立服务进程退出了.*/g) || []).slice(-2), tail: A.tail(300) });
     const rl = await req(a.port, "GET", "/api/security/system");
     ok(rl.status === 200, "重启以后登录态还在（令牌在盘上，不在进程里）", rl.status);
     ok(!/已改回在主进程里运行|改在主进程里接着跑/.test(A.log), "★反向对照★ 正常这一台的日志里没有「改回主进程」那一行", A.tail(600));

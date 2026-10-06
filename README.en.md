@@ -182,6 +182,18 @@ The hard part isn't drawing a person — it's keeping the same person across all
 
 **<https://hunan-travel.pages.dev/>** — it's live, go click around. One HTML file plus a folder of images, no external CDN. Drop it on any static host and it's a site. Not a mockup — the thing it actually handed over.
 
+**"I'm spending three days in Beijing — plan the trip for me, and use the map card."**
+
+<p align="center">
+ <img src="docs/images/case-trip-map.jpg" width="860" alt="Map view of a three-day Beijing trip card: day 1's Temple of Heaven, Tiananmen, the Forbidden City, Jingshan and Qianmen pinned in order, with photo place cards and a navigation link for each stop on the right">
+</p>
+
+<p align="center">
+ <img src="docs/images/case-trip-timeline.jpg" width="860" alt="The same trip card switched to the timeline: day 1 from the Temple of Heaven in the morning to Qianmen Street in the evening">
+</p>
+
+The itinerary in the answer becomes a trip card: switch between days, every stop is pinned on the map in order, the place cards on the right come with photos and a "Navigate" link; flip to "Timeline" at the top right and the day runs from morning to evening. Works without a Key; add an AMap Key in Settings → Map and places in China get more accurate.
+
 **"Every morning at seven, send me today's weather and what I should watch out for, on Feishu."**
 
 <p align="center">
@@ -266,6 +278,21 @@ The diagram doubles as a reading order: start at `server.js`, then see how `src/
 
 ## What's new
 
+- **Oct 7** Lighter when idle: with nothing running, the server wakes about 2 times a second instead of 40; an unfocused window stops watching for stalls
+- **Oct 7** Trip cards redesigned: the map fills the card with the stops floating in a panel on the right; pins show photos and names, and clicking a stop glides the map to it; China days with four or more stops can open the whole route too
+- **Oct 6** System sandbox: commands and scripts the AI runs on macOS and Windows can't read your Keys or ledger or modify the app; switch it in Settings → Security; it adds 7–16 ms per command
+- **Oct 6** Only the models you configured: the relay, the judge model and memory embeddings no longer touch unregistered models; with a quota set, unpriced models are refused
+- **Oct 6** Quota gate gaps closed: fallback channels, vision and image generation are priced first; pricier tiers matched only by prefix are refused too
+- **Oct 6** Keys stay out of the AI's reach: child processes get no Key variables by default; network tools can't reach localhost, the LAN or cloud metadata
+- **Oct 6** External engines must name a model and are off by default for multi-user setups; Codex runs offline and writes only to the workspace by default
+- **Oct 6** Trip cards: itineraries in answers become a map you can drag and click, with per-day tabs, place cards and photos; Navigate opens Google Maps abroad and AMap in China; works without a Key
+- **Oct 6** The README now has two trip-card screenshots from a three-day Beijing plan: the map with each day's stops, and the timeline from morning to evening
+- **Oct 6** Images made by local Codex land in the conversation folder and preview in the output panel
+- **Oct 6** The commercial license now spells out the three cases where a license code is revoked and how to appeal; the app has no analytics or telemetry
+- **Oct 6** Source code moved into layered folders under src/, each layer depending only downward; read [代码架构](docs/代码架构.md) before extending it
+- **Oct 5** New project: connectors, experts and skills can be selected all at once, filtered and Shift-selected, or copied from an existing project
+- **Oct 5** Evals: judges see the process, prompts are editable, plus human review and a multi-dimension scorecard
+- **Oct 3** The README now has an AI short-drama episode made from one sentence: 75 seconds, click the poster
 - **Oct 2** Prompt templates open a fill-in form first, with choices, defaults and a live preview; select text and click "Make a blank" to write one; deletes can be undone
 - **Oct 2** The Windows installer is a wizard: choose the drive, see progress; the package went from over ten thousand files to about four thousand
 - **Oct 2** Windows tasks no longer flash a black window; Chinese paths, GBK output and high-DPI display fixed; the delete guard catches twenty-odd more spellings
@@ -290,16 +317,12 @@ The diagram doubles as a reading order: start at `server.js`, then see how `src/
 - **Sep 28** Replies cut off mid-sentence no longer count as done: the model picks up where it stopped
 - **Sep 28** Pick a channel's API format: OpenAI, Responses, Anthropic, Gemini or Ollama native
 - **Sep 28** Sending "continue" to a chat still running elsewhere no longer errors: the page attaches to that run and slips your message in
-- **Sep 27** Video: say "make a 30-second promo", pick length, aspect ratio and sound in a form, and get voice-over, motion and a finished mp4; paid steps stay off unless you tick them
-- **Sep 27** Ready-made recipes: promo video, product demo, Xiaohongshu carousel, multi-platform posting; web demos can be screen-recorded, with local details masked before anything is published
-- **Sep 27** The library gains a Workspace tab you can click through folder by folder, so every workspace file is findable; "this turn's output" lists deeply nested files too
-- **Sep 27** Feishu: mp4s go out as video, compressed first if too big; the card shows what the run cost, or "price unknown" when there is no official price; IM file errors no longer leak local paths
 
 Older entries → **[Changelog](CHANGELOG.en.md)**.
 
 ## ⚠️ This agent has a shell
 
-It runs commands, edits files and goes online, so there are command approvals, file blocklists, a URL allowlist, an audit log and four permission levels. Third-party skills get a static check before install and risky ones are refused by default — but it isn't antivirus; read the `skill.md` yourself.
+It runs commands, edits files and goes online, so there are command approvals, file blocklists, a URL allowlist, an audit log and four permission levels; on macOS and Windows its commands also run in a system sandbox that can't read your Keys or ledger. Third-party skills get a static check before install and risky ones are refused by default — but it isn't antivirus; read the `skill.md` yourself.
 **Read [安全](docs/安全.md) before exposing it to the internet** — defaults are tuned for local use.
 
 ## Contributing

@@ -124,9 +124,10 @@ function merge(base, patch) {
  * /api/settings 的处理器靠它把请求体拆成两半。两处共用一张表，才不会出现
  * 「闸放行了、处理器没接、于是静默不生效」这种最难查的岔子。
  *
- * 特地不收的：engine_options 里的 bin / permissionMode / sandbox / network / extraArgs。
- * bin 是「起哪个可执行文件」，在多人服务器上等于任意命令执行；后面四个是那个 CLI 的权限档，
- * 谁都能改的话，组织设置里那个 allow_shell=false 就成了摆设。
+ * 特地不收的：engine_options 里的 bin / permissionMode / sandbox / network / extraArgs / enabled / models。
+ * bin 是「起哪个可执行文件」，在多人服务器上等于任意命令执行；permissionMode 到 extraArgs 是那个 CLI 的权限档，
+ * 谁都能改的话，组织设置里那个 allow_shell=false 就成了摆设；enabled / models 是属主给的开关和型号放行列表，
+ * 成员自己能改就等于没放行这回事。成员挑的 model 也得落在属主那张列表里（engines/gate.js 核）。
  */
 const PERSONAL_ENGINE_OPTS = ["model", "thinking"];
 function isPersonalPatch(body) {
@@ -213,9 +214,15 @@ function agentCfg(config) {
   const out = { ...base };
   if (a.engine !== undefined) out.engine = a.engine;
   if (a.thinking !== undefined) out.thinking = a.thinking;
-  if (a.engine_options) {
+  if (a.engine_options && typeof a.engine_options === "object") {
     out.engine_options = { ...(base.engine_options || {}) };
-    for (const [id, v] of Object.entries(a.engine_options)) out.engine_options[id] = { ...(out.engine_options[id] || {}), ...v };
+    // 只叠个人那几项：个人设置文件里就算被塞进了 bin / extraArgs / models，也盖不到属主那份上
+    for (const [id, v] of Object.entries(a.engine_options)) {
+      if (!v || typeof v !== "object") continue;
+      const mine = {};
+      for (const f of PERSONAL_ENGINE_OPTS) if (v[f] !== undefined) mine[f] = v[f];
+      if (Object.keys(mine).length) out.engine_options[id] = { ...(out.engine_options[id] || {}), ...mine };
+    }
   }
   return out;
 }

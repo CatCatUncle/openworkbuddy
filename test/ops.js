@@ -513,6 +513,38 @@ console.log("\n【13】指标：每分钟那个循环真的会滚 + 会推");
       ok(!("loop_util" in e) && typeof e.loop_max_ms === "number", "★Electron 里不记 loop_util（那里恒为 0），卡顿读数照记★", JSON.stringify(e));
       try { delete process.versions.electron; } catch {}
     } else console.log("  - 跳过：这版 node 不让往 process.versions 上加字段");
+    // 闲着就关表：空转的服务端每秒被它叫醒 38 次（2026-10-07 实测），闲的时候量出来只有一排 0
+    I.loopDisarm(); I.loopArm();
+    const idleRow = { tasks: 0, active_runs: 0 };
+    I.loopNap(idleRow, Date.now());
+    ok(I.loopArmed, "刚 wake 过（start 也算一次），这一拍闲着也不关——要满一分钟没事才关");
+    I.loopNap({ ...idleRow, active_runs: 1 }, Date.now() + I.LOOP_QUIET_MS + 1);
+    ok(I.loopArmed, "反向对照：还有任务在跑，一分钟没请求也不关（长任务正是最容易卡的时候）");
+    I.loopNap(idleRow, Date.now() + I.LOOP_QUIET_MS + 1);
+    ok(!I.loopArmed, "★闲了一分钟、也没 wake，表关了★");
+    await nap(150);
+    const q = metrics.snapshot();
+    ok(!("loop_max_ms" in q) && !("loop_p99_ms" in q), "关着的那一段行里没有卡顿两格（没量 ≠ 0）", JSON.stringify(q));
+    ok(typeof q.loop_util === "number", "loop_util 不靠定时器，表关了照记", JSON.stringify(q));
+    metrics.wake();
+    ok(I.loopArmed, "★来了请求（wake），表又开了★");
+    await nap(200);
+    const t2 = Date.now(); while (Date.now() - t2 < 500) {}
+    await nap(120);
+    const w = metrics.snapshot();
+    ok(w.loop_max_ms >= 350, "重新开的表抓得到卡顿", w.loop_max_ms);
+    I.loopDisarm();
+    metrics.wake();
+    ok(!I.loopArmed, "反向对照：没 start（或已 stop）的进程，wake 不开表");
+    const srvSrc = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+    ok(/app\.use\(\(req, res, next\) => \{\s*if \(!req\.headers\["x-owb-poll"\]\) metrics\.wake\(\);\s*next\(\);/.test(srvSrc), "★每条请求都 wake，只有带 X-OWB-Poll 的后台轮询不算★");
+    // 页面开着时自己定时问的那几条都得带上它：漏一条，窗口一开着表就永远关不掉（实测漏了就是每秒 40 次）
+    const fe = ["app-01.js", "app-02.js"].map((f) => fs.readFileSync(path.join(__dirname, "..", "public", "js", f), "utf8")).join("\n");
+    const polled = (u) => new RegExp(`fetch\\("${u.replace(/\//g, "\\/")}", \\{ headers: \\{ "X-OWB-Poll": "1" \\}`).test(fe);
+    for (const u of ["/im/status", "/api/security/approvals", "/api/cli/live"]) ok(polled(u), `后台轮询 ${u} 带着 X-OWB-Poll`);
+    ok(!polled("/api/chat/running"), "反向对照：没标的请求认不出来（判据不是恒真）");
+    ok(/activeRuns\.set\(sessionId, runState\);\s*metrics\.wake\(\)/.test(srvSrc), "★起任务也 wake（定时任务、IM 进来的不走请求）★");
+    ok(/shouldWrite\(row, last, now\)[^\n]*\n\s*loopNap\(row, now\)/.test(fs.readFileSync(mod("metrics"), "utf8")), "分钟快照那一拍真的会去关表");
     I.loopDisarm();
     await nap(100);
     const c = metrics.snapshot();
