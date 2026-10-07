@@ -179,7 +179,8 @@ function attach(engineId, { home, root = "", baseDir = "", user = "", tools, lib
   const shimEnv = { PATH: shim.dir };
   // codex 的命令跑在它自己的沙箱里（只写工作区、默认不联网），owb 脚本也在里面；MCP 服务器不在
   const shimSandboxed = engineId === "codex";
-  const common = { names, lent, toolCount: lent.length, shim: shim.path, shimDir: shim.dir, shimBin: shim.bin, shimIsPrimary, shimSandboxed };
+  // engine：提示词按它教看图（claude 用 Read、codex 用 view_image）
+  const common = { engine: engineId, names, lent, toolCount: lent.length, shim: shim.path, shimDir: shim.dir, shimBin: shim.bin, shimIsPrimary, shimSandboxed };
   if (engineId === "codex") {
     return {
       // 不再把数据根加进可写目录：那等于让引擎里的任何命令都能改配置和账号。

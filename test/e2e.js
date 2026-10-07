@@ -12515,6 +12515,9 @@ async function testEngineToolBridge() {
   }
   // 负向：没借工具时不许凭空吹一段
   assert.strictEqual(bridgedLine(null), "", "没借工具却还在提示词里说有");
+  assert.strictEqual(bridgedLine({ lent: [], shimBin: "owb" }), "", "一个不借时还在提示词里说有");
+  // 没借生图（画布任务就是这样）就不许说「要图就自己生——你有」
+  assert(!/你有/.test(bridgedLine({ lent: ["remember"], shimBin: "owb" })), "没借生图却说「你有」");
 
   // ⑪ 放行规则要真的下到命令行上。拿一个假 CLI 当靶子，把它收到的 argv 原样吐回来：
   //    这条断言是有代价换来的 —— 真跑一次本机 claude，模型照着提示词敲了三次 owb，
@@ -14483,7 +14486,7 @@ function testI18n() {
   // 钉代码行（const stableSystem = …），不钉 agent.js 里那句讲历史的注释
   assert(/function langBlock\(lang\)/.test(ag) && /\n\s*const stableSystem = [^\n]*\+ langBlock\(lang\) \+ modePrompt\(mode\);/.test(ag)
     && /\n\s*const system = stableSystem \+ \(await volatileSystemBlock\(\{[^}]*projBlock/.test(ag), "agent 系统提示词没拼 langBlock");
-  assert(/if \(extra\.lang\) parts\.push\(langBlock\(extra\.lang\)\)/.test(ag) && /\{ projectContext, history, lang \}/.test(ag), "本机引擎（claude/codex）的系统提示词没接 lang");
+  assert(/if \(extra\.lang\) parts\.push\(langBlock\(extra\.lang\)\)/.test(ag) && /\{ projectContext, history, lang(, [^}\n]*)? \}/.test(ag), "本机引擎（claude/codex）的系统提示词没接 lang");
   // 三处子任务：专家、专家团、explore（只读探索）。少一处，英文界面下那个子任务就回中文了
   assert((ag.match(/askUser, lang[,}]/g) || []).length === 2 && (ag.match(/^        lang,\n/gm) || []).length === 3, "专家 / 专家团 / explore 子任务没继承 lang");
   const fnSrc = ag.slice(ag.indexOf("function langBlock(lang) {"), ag.indexOf("\n}\n", ag.indexOf("function langBlock(lang) {")) + 3);
@@ -15104,7 +15107,7 @@ async function testEngineContextParity() {
   const evolve = require(modPath("evolve"));
   const cc = require(modPath("claude-code"));
   const { probeHelp } = require(modPath("jsonl"));
-  const { SKILLS_DIR, loadSkills } = require(modPath("skills"));
+  const { SKILLS_DIR, PLUGINS_DIR, loadSkills } = require(modPath("skills"));
 
   let seen = null;
   const probe = {
@@ -15147,15 +15150,21 @@ async function testEngineContextParity() {
     at("你在为 OpenWorkBuddy 干活"); at("全程用中文回复");
     // 技能索引：装了技能就得点名 + 说清怎么读正文；工作区根目录要告诉它可以读
     let n = 0; try { n = loadSkills().length; } catch {}
-    if (n > 0) { at("## 你会的技能"); assert(/library_read|skill\.md/.test(sp), "技能索引没说怎么读正文"); }
+    // 一个不落、每条都带正文的完整路径：library_read 翻的是资料库，翻不到技能
+    if (n > 0) {
+      const lines = sp.slice(at("## 你会的技能")).split("\n").filter((l) => /^- .+ → /.test(l));
+      const paths = lines.map((l) => l.split(" → ").pop());
+      assert(lines.length === n && paths.every((p) => path.isAbsolute(p) && fs.existsSync(p)),
+        `技能索引得一个不落、每条都给正文的完整路径：列了 ${lines.length}/${n}，不存在的 ${paths.filter((p) => !fs.existsSync(p)).slice(0, 2)}`);
+    }
     else assert(!sp.includes("## 你会的技能"), "没装技能却出现了技能标题");
     // 带 baseDir 时 cwd 是子目录，根目录只会出现在"可读范围"那句里——工作目录那句不算数
     const root = getWorkspaceDir();
     assert(sp.includes(root + " 下是用户在 OpenWorkBuddy 里所有对话的产出和资料"), "没告诉引擎工作区根目录可读：" + root);
     assert(sp.includes("新文件只写在本次工作目录里"), "没说清写只写本次工作目录");
-    // claude 的 --add-dir 名单：工作区根 + 技能库
-    assert(Array.isArray(seen.addDirs) && seen.addDirs.includes(root) && seen.addDirs.includes(SKILLS_DIR),
-      "addDirs 没带工作区根和技能库：" + JSON.stringify(seen.addDirs));
+    // claude 的 --add-dir 名单：工作区根 + 技能库 + 插件目录（插件带的技能正文在那儿）
+    assert(Array.isArray(seen.addDirs) && seen.addDirs.includes(root) && seen.addDirs.includes(SKILLS_DIR) && seen.addDirs.includes(PLUGINS_DIR),
+      "addDirs 没带工作区根、技能库和插件目录：" + JSON.stringify(seen.addDirs));
 
     // ② 负对照：什么都没配 → 这几块一个都不许出现（空标题会让模型把"没有记忆"当事实）
     seen = null; memCalls.length = 0;

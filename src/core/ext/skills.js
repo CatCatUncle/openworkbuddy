@@ -148,7 +148,8 @@ function readSkillsFromDisk() {
       const fm = parseFrontmatter(fs.readFileSync(path.join(dir, file), "utf8"));
       // hasAssets：技能除 skill.md 外还自带 scripts/templates 等资源（agent 需要知道目录在哪）
       const hasAssets = names.some((f) => !/^skill\.md$/i.test(f) && !f.startsWith("."));
-      skills.push({ name: fm.name || entry.name, description: fm.description, content: fm.content, dir, hasAssets });
+      // file：正文的完整路径，大小写照盘上的。本机引擎那份技能表照它给路径，叫引擎自己读
+      skills.push({ name: fm.name || entry.name, description: fm.description, content: fm.content, dir, file: path.join(dir, file), hasAssets });
     }
   }
   // Agent Plugins 插件带来的技能一并进来。重名时本地 skills/ 优先——
@@ -904,7 +905,7 @@ async function ensureDefaultSkills({ only = null, force = false } = {}) {
 }
 
 module.exports = {
-  loadSkills, SKILLS_DIR, getSkillFull, saveSkill, deleteSkill, installFromGitHub,
+  loadSkills, SKILLS_DIR, PLUGINS_DIR, getSkillFull, saveSkill, deleteSkill, installFromGitHub,
   DEFAULT_SKILLS, listDefaultSkills, installDefaultSkill, ensureDefaultSkills,
   parseFrontmatter, dirSize, safeName, adaptLibraryAsSkill, defaultInstallOpts,
   // 安装那道闸的内部件：测试要能直接按住「拷贝之前」这一刻验，

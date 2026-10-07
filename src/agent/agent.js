@@ -7,7 +7,7 @@
  */
 
 const { TOOL_DEFS, executeTool, outputFiles, turnSnapshot, statOutputs, isUserInput, filesScope, getWorkspaceDir, withWorkspace, orgPolicy, badToolArgs, libBase, getLibraryDir } = require("./tools");
-const { loadSkills, SKILLS_DIR } = require("../core/ext/skills");
+const { loadSkills, SKILLS_DIR, PLUGINS_DIR } = require("../core/ext/skills");
 /** 这一趟的人装不了技能：技能整台服务器一份，接口那边归平台管理员（admin.js 的 tenantScope 把这条放进策略） */
 const skillsWriteOff = () => !!orgPolicy() && orgPolicy().skills_write === false;
 /** 同理：连接器整台服务器一份（密钥、进程都在这台机器上），加连接器归平台管理员 */
@@ -2442,7 +2442,9 @@ function modePrompt(mode) {
     if (guard.note) emit({ type: "status", text: guard.note, depth: 0 });
 
     try {
-      const systemPrompt = await engineSystemPrompt(cwd, mode, user, bridged, { projectContext, history, lang });
+      // claude 那边实际用的档位：engine_options 里手填的 permissionMode 最大（见 claude-code.js）
+      const claudeMode = opts.permissionMode || guard.claudeMode;
+      const systemPrompt = await engineSystemPrompt(cwd, mode, user, bridged, { projectContext, history, lang, engine: backend.id, claudeMode });
       await filesOut.ready; // 开跑前的基线必须先落定，否则引擎第一步写的文件会被当成「本来就有」
       const runWith = (resumeId) => backend.run({
         prompt: enginePrompt(history, resumeId),
@@ -2536,11 +2538,11 @@ function modePrompt(mode) {
    * 本项目那份几千字的协调者提示词不往这儿塞——里面大半在讲本项目自己的工具，
    * CLI 手上没有那些工具，讲了只会让它去找不存在的东西。
    */
-  /** claude 的 --add-dir 名单：工作区根 + 技能库。不存在的目录由引擎那边过滤 */
+  /** claude 的 --add-dir 名单：工作区根 + 技能库 + 插件目录（插件带的技能正文在那儿）。不存在的目录由引擎那边过滤 */
   function engineAddDirs() {
     const out = [];
     try { out.push(getWorkspaceDir()); } catch {}
-    out.push(SKILLS_DIR);
+    out.push(SKILLS_DIR, PLUGINS_DIR);
     return out;
   }
 
@@ -2555,29 +2557,30 @@ function modePrompt(mode) {
     let list = [];
     try { list = loadSkills(); } catch { return ""; }
     if (!list.length) return "";
-    const MAX = 40;
-    const one = (s) => `- ${s.name}${s.description ? "：" + String(s.description).replace(/\s+/g, " ").slice(0, 60) : ""}`;
-    const lines = list.slice(0, MAX).map(one);
-    const more = list.length > MAX ? `\n（还有 ${list.length - MAX} 个没列，用 library_list 看全）` : "";
-    const canTool = bridged && bridged.lent.includes("library_read");
-    const how = canTool
-      ? (bridged.shimIsPrimary
-        ? `用 \`${bridged.shimBin} library_read '{"name":"技能名"}'\` 读它的正文`
-        : `用 mcp__openworkbuddy__library_read（或命令 ${bridged.shimBin} library_read）读它的正文`)
-      : `正文在 ${SKILLS_DIR}/<技能名>/skill.md，直接读`;
+    // 一个不落，每个都带正文的完整路径，叫它用自己的读文件工具直接读。
+    // 以前只列前 40 个、剩下的叫它「用 library_list 看全」，读正文也指到 library_read——
+    // 可那两个翻的是资料库，翻不到技能：第 41 个往后的技能，引擎那边等于不存在
+    const one = (s) => `- ${s.name}${s.description ? "：" + String(s.description).replace(/\s+/g, " ").slice(0, 60) : ""} → ${s.file || path.join(s.dir, "skill.md")}`;
     // 你自己那套技能目录（~/.claude/skills、~/.codex/skills）本软件不读：装到那儿，用户在技能页和 / 里都找不到
     const canInstall = bridged && bridged.lent.includes("install_skill");
     const install = canInstall
-      ? `用户让你装一个技能（给了 GitHub 链接）时，用 ${bridged.shimIsPrimary ? `\`${bridged.shimBin} install_skill '{"url":"链接"}'\`` : "mcp__openworkbuddy__install_skill"} 装进 OpenWorkBuddy 的技能库，` +
+      ? "用户让你装一个技能（给了 GitHub 链接）时，用 mcp__openworkbuddy__install_skill 装进 OpenWorkBuddy 的技能库，" +
         "别照上游 README 往 ~/.claude/skills、~/.codex 里放，也别 clone 到工作目录——那些地方 OpenWorkBuddy 不读，用户在界面上找不到。\n"
       : "";
     return `\n## 你会的技能（${list.length} 个，用户装在 OpenWorkBuddy 里的）\n` +
-      `任务对得上其中某个技能时，先${how}，再照着做——技能里是用户认可的做法，别凭自己的习惯重来。\n` +
-      install + lines.join("\n") + more;
+      "任务对得上其中某个技能时，先用你自己的读文件工具读它的正文（每条箭头后面就是正文文件），再照着做——技能里是用户认可的做法，别凭自己的习惯重来。" +
+      "正文里提到的脚本、模板，相对的是正文所在的那个目录。\n" +
+      install + list.map(one).join("\n");
   }
 
   async function engineSystemPrompt(cwd, mode, user, bridged, extra = {}) {
     const who = user ? `当前用户：${user}。` : "";
+    // claude 按「自动改文件」跑（acceptEdits）：改文件不用问，命令要审批——而 -p 是非交互的，没人点得了同意。
+    // 不说的话它被拒一次就换个写法再试，一趟能撞十几回，最后交付里只剩一句「环境限制」
+    const stopLoss = extra.engine === "claude-code" && extra.claudeMode === "acceptEdits"
+      ? `这一趟的档位是「自动改文件」：改文件不用问；命令行里${bridged && bridged.lent.length ? "除了 owb，" : ""}只有少数只读命令（ls、cat 这类）能直接跑，别的多半会被拒——这条路没人能点同意。` +
+        "被拒一次就别换个写法再试：停下来，在交付里写清楚卡在哪条命令、它要干什么，让用户决定是自己在终端里跑，还是把安全档位调到「全自动」。"
+      : "";
     const modeLine =
       mode === "ask" ? "本次只回答问题，不改文件、不执行有副作用的命令。"
       : mode === "plan" ? "本次只做调研和规划，输出可执行的步骤清单，不要真的动手改东西。"
@@ -2591,7 +2594,11 @@ function modePrompt(mode) {
       "先分清这次是**问题**还是**活**：打招呼、问你是谁、问一个你张嘴就能答的问题——直接答完就结束，两三句话，不要列计划、不要去看目录、不要写文件、不要套汇报格式。判据是用户要的是不是一件做出来的东西，跟消息长短无关（「把这份报告做成 PPT」是活，「你都会干什么」不是）。拿不准就先当问题答，用户真要东西会再说一句；为一句问候建目录写文件，是白烧钱还留一地垃圾。",
       `是活的时候：工作目录是 ${cwd}，产出文件都写在这里（用相对路径即可），用户会在成果面板里看到它们；最后一段写清楚做了什么、产出了哪些文件、还差什么，别用「已完成」三个字代替交代。`,
       modeLine,
+      stopLoss,
       bridgedLine(bridged),
+      // 引擎起的子进程带着 NODE_PATH（jsonl.js 的 engineNodePath），指到程序自带的 node_modules
+      mode !== "ask" && mode !== "plan" &&
+        "要出 PPT / Word / Excel：node 脚本里直接 require(\"pptxgenjs\") / require(\"docx\") / require(\"exceljs\")，本软件自带，不用 npm install。得用 require，import 写法找不到它们。",
       "全程用中文回复。",
       // 回复正文同样走网页那套渲染，行程卡照样画得出来
       "\n" + itinerary.PROMPT_BLOCK,
@@ -2625,54 +2632,75 @@ function modePrompt(mode) {
    * 所以这里逐个报名字，并且明说「不要反过来让用户自己去生成」。
    */
   function bridgedLine(bridged) {
-    if (!bridged) return "";
+    if (!bridged || !bridged.lent || !bridged.lent.length) return "";
     const has = (n) => bridged.lent.includes(n);
+    // 一句话说明。清单照 lent 逐个列，不在这张表里的也列名字——提示词里列的、MCP 挂上的、owb list 打出来的，
+    // 三处必须是同一份（以前手写一串 has(...)，漏了交付页、录屏、画布，又把资料库标成「技能库」）
+    const DESC = {
+      generate_image: "生图（用户在本项目里配好的图像模型，你直接调，图会落到工作目录）",
+      generate_video: "生视频",
+      text_to_speech: "配音",
+      transcribe_audio: "把录音/视频里的话转成文字（会议、采访、口播素材）",
+      html_to_image: "网页转长图（排版好的 HTML 截成图）",
+      delivery_page: "把成片、封面、文案收成一页本地交付页",
+      gen_diagram: "流程图/架构图/统计图（dot 离线可用）",
+      look_at_image: "看图兜底：你自己读不了图时再用（带上你想知道的具体问题）",
+      read_document: "读 Word/Excel/PPT/压缩包（你自带的读文件工具读这几种只会得到乱码）",
+      render_page: "取 JS 渲染之后的网页正文",
+      // 桥是个纯 node 子进程，没有内置浏览器：check_page 在这儿只做静态体检，浏览器那一半直接跳过
+      check_page: "网页静态体检：结构、标签闭合、本地引用、外链资源（这条路上不开浏览器，看不到控制台报错）",
+      record_web_demo: "录网页产品的演示视频（在你的沙箱外起一个隔离 Chrome）",
+      web_search: "联网搜索，返回标题、链接、摘要",
+      library_list: "资料库：列出用户放进来的参考文件和灵感笔记（翻不到技能）",
+      library_read: "资料库：读其中一个文本文件",
+      save_skill: "把这次趟出来的做法存成技能（进本软件的技能库）",
+      install_skill: "用户让装 GitHub 上的技能时用它（装进本软件的技能库，不是 ~/.claude/skills）",
+      add_connector: "用户让接某个 MCP 时用它（进本软件的连接器页，别手改 config.json）",
+      remember: "长期记忆：记一条",
+      forget: "长期记忆：忘掉一条",
+      canvas_manage: "画布：改节点、交生成清单",
+    };
     // 用裸命令名，不用绝对路径：路径写法会被 CLI 的权限层判成「需要审批」，
     // 非交互模式下没人能点同意。bridge 已经把脚本目录挂进子进程 PATH 了。
     const shim = bridged.shimBin || "";
     // 两条路：MCP 工具是主路（两个 CLI 都由它们自己拉起服务器，不在命令沙箱里），命令行是后备。
+    const mcpBlock = [
+      "OpenWorkBuddy 已经把它自己的工具挂给你了，名字都以 mcp__openworkbuddy__ 开头：",
+      ...bridged.lent.map((n) => `  · mcp__openworkbuddy__${n}${DESC[n] ? "  " + DESC[n] : ""}`),
+    ].join("\n");
+    const example = has("generate_image")
+      ? `例：${shim} generate_image '{"prompt":"雪山日出，写实摄影","filename":"fig_a.jpg"}'`
+      : has("gen_diagram") ? `例：${shim} gen_diagram '{"kind":"dot","source":"digraph{A->B}","filename":"flow.png"}'` : "";
     const cliBlock = shim ? [
-      bridged.shimIsPrimary
-        ? "OpenWorkBuddy 把它自己的工具借给你了，用命令行调（这台 CLI 挂不上 MCP，命令行是唯一入口）："
-        : "万一上面那些 mcp__openworkbuddy__ 工具没挂上，同一批工具还有一个命令行入口：",
+      "万一上面那些 mcp__openworkbuddy__ 工具没挂上，同一批工具还有一个命令行入口：",
       `  ${shim} list                          # 列出你能用的全部工具和必填参数`,
+      `  ${shim} <工具名> --help                # 看一个工具的完整说明和全部参数（list 里每个只摘了一句）`,
       `  ${shim} <工具名> '<JSON 参数>'          # 直接调用，结果打在 stdout`,
       `  ${shim} <工具名> @参数文件.json         # 参数太长、带引号或换行时用这个，别跟 shell 引号硬拼`,
-      `例：${shim} generate_image '{"prompt":"雪山日出，写实摄影","filename":"fig_a.jpg"}'`,
-      `例：${shim} gen_diagram '{"kind":"dot","source":"digraph{A->B}","filename":"flow.png"}'`,
+      example,
       "退出码 0 是成功，1 是失败；失败时 stdout 里就是失败原因原文。",
       // codex 的命令沙箱只写工作区、默认不联网，owb 脚本跑在里面：要联网、要写数据目录的工具从这条路调不成
       bridged.shimSandboxed &&
         `${shim} 跑在你的命令沙箱里：写不了 OpenWorkBuddy 的数据目录（记忆、技能存不进去），沙箱没开网时也联不了网（生图、出视频调不成）。这几样用上面的 mcp__openworkbuddy__ 工具。`,
     ].filter(Boolean).join("\n") : "";
-    const mcpBlock = bridged.shimIsPrimary ? "" : [
-      "另外：OpenWorkBuddy 已经把它自己的工具挂给你了，名字都以 mcp__openworkbuddy__ 开头，其中——",
-      has("generate_image") && "  · mcp__openworkbuddy__generate_image  生图（用户在本项目里配好的图像模型，你直接调，图会落到工作目录）",
-      has("generate_video") && "  · mcp__openworkbuddy__generate_video  生视频     · mcp__openworkbuddy__text_to_speech 配音",
-      has("transcribe_audio") && "  · mcp__openworkbuddy__transcribe_audio 把录音/视频里的话转成文字（会议、采访、口播素材）",
-      has("gen_diagram") && "  · mcp__openworkbuddy__gen_diagram     流程图/架构图/统计图（dot 离线可用）",
-      has("html_to_image") && "  · mcp__openworkbuddy__html_to_image   网页转长图（排版好的 HTML 截成图）",
-      has("look_at_image") && "  · mcp__openworkbuddy__look_at_image   看图（带上你想知道的具体问题）",
-      has("read_document") && "  · mcp__openworkbuddy__read_document   读 Word/Excel/PPT/压缩包（你自带的读文件工具读这几种只会得到乱码）",
-      has("check_page") && "  · mcp__openworkbuddy__check_page      打开你做的网页，看真实效果和控制台报错",
-      has("web_search") && "  · mcp__openworkbuddy__web_search   联网搜索、取网页正文",
-      has("library_list") && "  · mcp__openworkbuddy__library_list / library_read / save_skill   技能库",
-      has("install_skill") && "  · mcp__openworkbuddy__install_skill   用户让装 GitHub 上的技能时用它（装进本软件的技能库，不是 ~/.claude/skills）",
-      has("add_connector") && "  · mcp__openworkbuddy__add_connector   用户让接某个 MCP 时用它（进本软件的连接器页，别手改 config.json）",
-      has("remember") && "  · mcp__openworkbuddy__remember / forget           长期记忆",
-    ].filter(Boolean).join("\n");
-    const toolNames = bridged.lent.join("、");
+    // 看图：两个 CLI 自己就能看本地图片，look_at_image 要另调一次看图模型，只当兜底
+    const eye = !has("look_at_image") ? ""
+      : bridged.engine === "claude-code" ? "看工作目录里的图片，直接用你自己的 Read 读图片文件；Read 读不出图（模型不收图）时再用 look_at_image。"
+      : bridged.engine === "codex" ? "看本地图片用你自带的 view_image；它用不了（模型不收图）时再用 look_at_image。"
+      : "";
+    const shot = ["html_to_image", "render_page"].filter(has);
     return [
       mcpBlock,
       cliBlock,
-      `这次借给你的工具：${toolNames}。`,
-      "要图就自己生，别在交付里写「我没有生图工具，请你把图放进去」——你有。",
+      eye,
+      has("generate_image") && "要图就自己生，别在交付里写「我没有生图工具，请你把图放进去」——你有。",
       // 实测（2026-09-26）：codex 的 workspace-write 沙箱（macOS seatbelt）里 Chrome 一起就 Abort trap: 6，
-      // 模型自己写脚本跑无头 Chrome 截图/自测只会白跑一圈再报「环境问题」。借出去的这几样在沙箱外跑，照样好使
-      (has("check_page") || has("html_to_image") || has("render_page")) &&
-        "网页自测、截图、看渲染效果，一律用 " + ["check_page", "html_to_image", "render_page"].filter(has).join(" / ") +
-        "，不要自己在命令行里起 Chrome / Playwright / Puppeteer 无头浏览器、也不要自己开调试端口连 CDP——沙箱里浏览器起不来（macOS 上报 Abort trap: 6），" +
-        "起得来的环境里它跑完也没人收，会一直挂在后台吃 CPU。这几个工具走 mcp__openworkbuddy__ 调时在沙箱外跑，用完即走。",
+      // 模型自己写脚本跑无头 Chrome 截图/自测只会白跑一圈再报「环境问题」
+      (has("check_page") || shot.length) &&
+        "不要自己在命令行里起 Chrome / Playwright / Puppeteer 无头浏览器、也不要自己开调试端口连 CDP——沙箱里浏览器起不来（macOS 上报 Abort trap: 6），" +
+        "起得来的环境里它跑完也没人收，会一直挂在后台吃 CPU。" +
+        (has("check_page") ? "网页交付前用 check_page 做一遍静态体检；真实渲染效果，用户在 OpenWorkBuddy 的文件面板里一点就能预览。" : "") +
+        (shot.length ? `截图、取渲染后的正文用 ${shot.join(" / ")}，它们在你的沙箱外跑，用完即走。` : ""),
       "工具挑最轻、最对口的那个，拿到结果就停：别为同一个问题反复截图、反复体检，也别拿到了再换个工具重拿一遍。",
       "调用失败了就把失败原因如实写进交付（比如「图像模型未配置」），那是用户能动手解决的信息；不要假装图已经有了。",
     ].filter(Boolean).join("\n");

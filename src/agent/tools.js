@@ -1755,7 +1755,7 @@ function libraryList() {
  *   2. **文件不存在时把绝对路径抖进对话。** 原来的 ENOENT 会带出 `/Users/xxx/...` 整条
  *      本机路径。名字打错是常事，代价不该是泄露用户的目录结构。
  */
-function libraryRead(name) {
+function libraryRead(name, canImport = true) {
   const abs = libResolve(name);
   const base = path.basename(String(name || ""));
   if (!abs) return { text: "文件名不合法。名字要一字不差地取自 library_list 的结果（含子目录，如 客户A/合同.md）。", bad: true };
@@ -1763,6 +1763,10 @@ function libraryRead(name) {
   try { buf = fs.readFileSync(abs); }
   catch { return { text: `资料库里没有「${base}」。先用 library_list 看看到底有哪些文件，名字要一字不差。`, bad: true }; }
   if (looksBinary("", buf)) {
+    // 本机引擎借不到 library_import（见 lendable.js），叫它用就是指一条走不通的路
+    if (!canImport) {
+      return { text: `${base} 不是文本文件（${(buf.length / 1024).toFixed(0)} KB，按文本读只会得到乱码）。这条路上没有把资料库文件复制出来的工具：请用户把它拖进对话，放进工作目录后再读。`, bad: true };
+    }
     const next = DOC_EXT.test(base)
       ? "先用 library_import 把它复制到工作目录，再用 read_document 读。"
       : /\.(png|jpe?g|webp|gif|bmp|svg)$/i.test(base)
@@ -4908,7 +4912,7 @@ async function executeToolCore(name, input, opts = {}) {
       case "library_list":
         return { content: libraryList(), isError: false };
       case "library_read": {
-        const r = libraryRead(input.name);
+        const r = libraryRead(input.name, !Array.isArray(opts.knownTools) || opts.knownTools.includes("library_import"));
         return { content: r.text, isError: r.bad };
       }
       case "library_import": {

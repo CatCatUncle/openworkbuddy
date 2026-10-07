@@ -171,8 +171,14 @@ function setupRoots() {
   tools.setReplyBase(path.join(tools.getWorkspaceDir(), BASE_DIR));
 }
 
+/** 没借出去（或者名字敲错了）时的那句话：像哪个借出去的就点一下名 */
+function notLent(name) {
+  const guess = tools._internals.nearestTool(name, [...ALLOW]);
+  return `工具 ${name} 没有借给本机引擎${guess ? `。名字相近的有 ${guess}` : ""}`;
+}
+
 async function callTool(name, args) {
-  if (!ALLOW.has(name)) throw new Error(`工具 ${name} 没有借给本机引擎`);
+  if (!ALLOW.has(name)) throw new Error(notLent(name));
   if (loaded.error) { loaded = loadConfig(); config = loaded.config; }
   if (loaded.error) {
     const file = dataPath("config.json");
@@ -306,17 +312,47 @@ function readArgs(raw) {
 function cliList() {
   const lines = lentDefs().map((d) => {
     const req = ((d.input_schema || {}).required || []).join(", ");
-    const one = String(d.description || "").split("\n")[0].slice(0, 90);
+    const first = String(d.description || "").split("\n")[0];
+    const one = first.length > 90 ? first.slice(0, 90) + "…" : first;
     return `${d.name}${req ? `  [必填：${req}]` : ""}\n    ${one}`;
   });
-  return lines.length ? lines.join("\n") : "（这次没借出任何工具）";
+  if (!lines.length) return "（这次没借出任何工具）";
+  // 说明只摘了开头一句：参数怎么填、有什么讲究，全在后面。不说一声，模型就照这半句去拼
+  return lines.join("\n") + "\n（每个只摘了一句。完整说明和全部参数：owb <工具名> --help）";
+}
+
+/** `owb <工具名> --help`：完整说明 + 每个参数（类型、必填、可选值、说明） */
+function cliHelp(name) {
+  const d = lentDefs().find((x) => x.name === name);
+  if (!d) return "";
+  const schema = /** @type {{required?: string[], properties?: Record<string, any>}} */ (d.input_schema || {});
+  const req = new Set(schema.required || []);
+  const typeOf = (v) => {
+    const t = Array.isArray(v.type) ? v.type.join("|") : v.type || "";
+    return t === "array" && v.items && v.items.type ? `array<${v.items.type}>` : t;
+  };
+  const params = Object.entries(schema.properties || {}).map(([k, v]) => {
+    const opts = Array.isArray(v.enum) ? `（可选：${v.enum.join(" / ")}）` : "";
+    return `  ${k}${req.has(k) ? "  [必填]" : ""}  ${typeOf(v)}${opts}\n      ${String(v.description || "").replace(/\s+/g, " ")}`;
+  });
+  return `${d.name}\n${String(d.description || "").trim()}\n\n参数：\n${params.length ? params.join("\n") : "  （没有参数）"}`;
 }
 
 async function cli(argv) {
   let [cmd, ...rest] = argv;
   if (cmd === "call") [cmd, ...rest] = rest; // `call x` 和直接 `x` 都收
-  if (!cmd || cmd === "list" || cmd === "--help" || cmd === "-h") {
+  const isHelp = (a) => a === "--help" || a === "-h" || a === "help";
+  if (!cmd || cmd === "list" || (isHelp(cmd) && !rest.length)) {
     process.stdout.write(cliList() + "\n");
+    return 0;
+  }
+  // help 写在哪儿都认：`owb x --help`、`owb help x`、`owb x '{}' -h`。认出来就只打说明，不执行
+  if (isHelp(cmd) || rest.some(isHelp)) {
+    const name = isHelp(cmd) ? rest.find((a) => !isHelp(a)) : cmd;
+    if (!name) { process.stdout.write(cliList() + "\n"); return 0; } // `owb help -h` 这种：没点名，就当 list
+    const h = cliHelp(name);
+    if (!h) throw new Error(notLent(name));
+    process.stdout.write(h + "\n");
     return 0;
   }
   const r = await callTool(cmd, readArgs(rest[0]));
@@ -349,4 +385,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { LENDABLE, listTools, callTool, handle, cli, cliList, readArgs, _internals: { lentDefs } };
+module.exports = { LENDABLE, listTools, callTool, handle, cli, cliList, cliHelp, readArgs, _internals: { lentDefs } };

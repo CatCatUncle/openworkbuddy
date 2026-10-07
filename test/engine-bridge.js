@@ -18,6 +18,9 @@
  *      主模型和引擎命中同一条生成缓存，各拿各坐标系里的路径
  *   ⑨ 设置文件读不出来（JSON 坏了、最外层不是一组设置）：借来的工具一律不执行，报文件在哪和原话、
  *      系统日志里留一条；文件不在照常跑；MCP 那条路上文件改好了下一条就执行
+ *   ⑩ 提示词说真话（主进程真跑一趟，桩引擎拿真名）：列的工具 = MCP 挂的 = owb list = 借出名单；技能一个不落、
+ *      每条带正文的完整路径；claude「自动改文件」档说清命令会被拒、被拒就停；看图按引擎分；
+ *      owb 的 --help 写在哪都认；敲错工具名给近似名；借出去的 library_read 不指没借出的 library_import
  *
  * 真起桥子进程，但不起任何 CLI 引擎、不出网（假生图上游起在 127.0.0.1）。
  *   node test/engine-bridge.js
@@ -466,6 +469,125 @@ const serverOf = (att) => JSON.parse(fs.readFileSync(att.runOpts.mcpConfigPath, 
     const [a, b] = r.results;
     ok(a && a.isError && /不执行/.test(a.text) && a.text.includes(cfgFile), "MCP：设置坏着时回 isError，人话里有文件在哪", a);
     ok(b && !b.isError && !/不执行/.test(b.text), "MCP：文件改好后下一条直接执行，不用重开引擎", b);
+  }
+
+  section("⑩ 提示词说真话：清单就是借出去的那份，技能一个不落带路径，owb 的说明看得全、敲错了给近似名");
+  {
+    const tools = require(mod("tools"));
+    const engines = require(mod("engines"));
+    const skills = require(mod("skills"));
+    const { createAgentRuntime } = require(mod("agent"));
+    const { McpManager } = require(mod("mcp"));
+    // 45 个技能：以前只列前 40 个，后面的叫它「用 library_list 看全」——那个工具翻的是资料库，翻不到技能
+    for (let i = 1; i <= 45; i++) {
+      const d = path.join(skills.SKILLS_DIR, `fx-${String(i).padStart(2, "0")}`);
+      fs.mkdirSync(d, { recursive: true });
+      // 第 45 个正文叫 SKILL.md（大写）：路径得照盘上的真名给，不能想当然写成 skill.md
+      fs.writeFileSync(path.join(d, i === 45 ? "SKILL.md" : "skill.md"), `---\nname: fx-${i}\ndescription: 夹具技能第 ${i} 个\n---\n照着做第 ${i} 步`);
+    }
+    let seen = null;
+    const run = async (o) => {
+      // owb 脚本和 MCP 配置都是跑完就删：三处清单得趁现在拿
+      const first = String((o.env && o.env.PATH) || "").split(path.delimiter)[0];
+      const shim = path.join(first, "owb");
+      seen = { prompt: o.systemPrompt || "", addDirs: o.addDirs || [], mcp: null, owb: null };
+      if (o.mcpConfigPath) seen.mcp = mcpList(JSON.parse(fs.readFileSync(o.mcpConfigPath, "utf8")).mcpServers[bridge.SERVER_NAME]).names;
+      if (SH && fs.existsSync(shim)) { const l = owb(shim, ["list"]); seen.owb = l.code === 0 ? listedNames(l.out) : null; seen.owbOut = l.out; }
+      return { finalText: "好", usage: {}, stopped: null, sessionId: null };
+    };
+    // 拿 claude-code / codex 这两个名字起桩：提示词按引擎分叉（看图、止血那句），得用真名。原来那个先摘下来，跑完放回去
+    const withStub = async (id, cfg, fn) => {
+      const i = engines.BACKENDS.findIndex((b) => b.id === id);
+      const real = i >= 0 ? engines.BACKENDS.splice(i, 1)[0] : null;
+      const stub = { id, label: "桩", bin: null, note: "", install: "", launchHeader: "", supportsResume: false, models: [],
+        async detect() { return { id, installed: true, path: "", version: "0" }; }, run };
+      engines.BACKENDS.push(stub);
+      try {
+        const fakeLLM = { provider: "mock", model: "scripted", async chat() { return { text: "内置答的", toolCalls: [], stopReason: "end" }; } };
+        const rt = createAgentRuntime({ config: { ...cfg, agent: { engine: id, max_steps: 3, engine_options: { [id]: { model: "m1", ...((cfg.opts) || {}) } } } }, llm: fakeLLM, mcpManager: new McpManager(), experts: [] });
+        seen = null;
+        await rt.runTask({ history: [{ role: "user", content: "干活" }], emit() {} });
+        return await fn(seen || {});
+      } finally {
+        engines.BACKENDS.splice(engines.BACKENDS.indexOf(stub), 1);
+        if (real) engines.BACKENDS.splice(i, 0, real);
+      }
+    };
+    const promptTools = (p) => [...p.matchAll(/^ {2}· mcp__openworkbuddy__(\w+)/gm)].map((m) => m[1]);
+    const skillLines = (p) => { const k = p.indexOf("## 你会的技能"); return k < 0 ? [] : p.slice(k).split("\n").filter((l) => /^- .+ → /.test(l)); };
+
+    await withStub("claude-code", {}, async (s) => {
+      const want = lendable.lentFor({ renderer: false });
+      const listed = promptTools(s.prompt);
+      ok(sorted(listed) === sorted(want) && listed.length === want.length, "★提示词里列的工具 = 借出名单★（一个不多一个不少，不重复）", { listed, want });
+      ok(s.mcp && sorted(s.mcp) === sorted(want), "MCP 挂上的 = 借出名单", s.mcp);
+      if (SH) ok(s.owb && sorted(s.owb) === sorted(want), "owb list 打出来的 = 借出名单", s.owb);
+      ok(!/library_list[^\n]*技能库/.test(s.prompt) && /library_list[^\n]*资料库/.test(s.prompt), "library_list 标的是资料库，不再叫「技能库」", s.prompt.match(/.*library_list.*/g));
+      ok(/check_page[^\n]*不开浏览器/.test(s.prompt) && !/check_page[^\n]*控制台报错，/.test(s.prompt), "check_page 说的是这条路上真做得到的（静态体检，不开浏览器）", s.prompt.match(/.*check_page.*/g));
+      ok(!/library_import/.test(s.prompt), "提示词里不叫它用没借出去的 library_import");
+      ok(!/挂不上 MCP/.test(s.prompt), "「挂不上 MCP、命令行是唯一入口」那段死分支没了");
+      ok(/owb <工具名> --help/.test(s.prompt), "命令行入口告诉它怎么看一个工具的完整说明");
+
+      const lines = skillLines(s.prompt);
+      const n = skills.loadSkills().length;
+      ok(n >= 45 && lines.length === n, `★技能一个不落：${lines.length}/${n}★`, lines.slice(-3));
+      const paths = lines.map((l) => l.split(" → ").pop());
+      ok(paths.every((p) => path.isAbsolute(p) && fs.existsSync(p)), "每条后面都是正文的完整路径，而且真有这个文件", paths.filter((p) => !fs.existsSync(p)).slice(0, 3));
+      ok(paths.some((p) => p.endsWith(path.join("fx-45", "SKILL.md"))), "正文叫 SKILL.md 的，路径照盘上的真名给", paths.filter((p) => p.includes("fx-45")));
+      const block = s.prompt.slice(s.prompt.indexOf("## 你会的技能"));
+      ok(!/library_list|library_read|还有 \d+ 个没列/.test(block.split("\n").slice(0, 4).join("\n")), "不再叫它拿资料库工具去翻技能，也不截断", block.slice(0, 300));
+      ok(s.addDirs.includes(skills.SKILLS_DIR) && s.addDirs.includes(skills.PLUGINS_DIR), "--add-dir 带上技能库和插件目录（插件带的技能正文在那儿）", s.addDirs);
+
+      ok(/自动改文件/.test(s.prompt) && /被拒一次就别换个写法再试/.test(s.prompt), "★claude 按「自动改文件」跑：提示词说清命令会被拒、被拒就停★");
+      ok(/Read 读图片文件/.test(s.prompt) && !/view_image/.test(s.prompt), "claude：看图用它自己的 Read，look_at_image 只兜底");
+      ok(/require\("pptxgenjs"\)/.test(s.prompt) && /import 写法找不到/.test(s.prompt), "告诉它 node 脚本直接 require 自带的 pptxgenjs / docx / exceljs");
+    });
+    // 反向对照：「全自动」档 claude 不审批命令，那句止血的话不该出现；engine_options 里手填的档位也认
+    await withStub("claude-code", { security: { permission_mode: "full" } }, async (s) => {
+      ok(s.prompt && !/被拒一次就别换个写法再试/.test(s.prompt), "反向对照：「全自动」档不说命令会被拒");
+    });
+    await withStub("claude-code", { opts: { permissionMode: "bypassPermissions" } }, async (s) => {
+      ok(s.prompt && !/被拒一次就别换个写法再试/.test(s.prompt), "反向对照：引擎设置里手填了 bypassPermissions，照实际档位说");
+    });
+    await withStub("codex", {}, async (s) => {
+      ok(/view_image/.test(s.prompt) && !/Read 读图片文件/.test(s.prompt), "codex：看图用它自带的 view_image");
+      ok(!/被拒一次就别换个写法再试/.test(s.prompt), "codex 没有 claude 那套审批，不说那句");
+    });
+
+    // owb：help 写在哪儿都认，只打说明不执行；清单里说明被截了要说一声；敲错名给近似名
+    if (SH) {
+      const cc = bridge.attach("claude-code", { home: HOME, baseDir: "任务_说明", user: "t", tools: ["generate_image", "remember", "library_list"] });
+      try {
+        const def = tools.TOOL_DEFS.find((d) => d.name === "generate_image");
+        const tail = String(def.description).trim().slice(-20);
+        for (const args of [["generate_image", "--help"], ["help", "generate_image"], ["generate_image", JSON.stringify({ prompt: "雪山" }), "-h"]]) {
+          const h = owb(cc.shim, args);
+          ok(h.code === 0 && h.out.includes(tail) && /参数：/.test(h.out) && /prompt\s+\[必填\]/.test(h.out), `owb ${args.join(" ")}：打完整说明和全部参数`, h.out.slice(0, 300));
+        }
+        const l = owb(cc.shim, ["list"]);
+        ok(/owb <工具名> --help/.test(l.out) && sorted(listedNames(l.out)) === sorted(cc.lent), "owb list 末尾说一声怎么看全，名字清单不受影响", l.out.slice(-200));
+        const typo = owb(cc.shim, ["generate_imag", "{}"]);
+        ok(typo.code !== 0 && /没有借给/.test(typo.out) && /名字相近的有 generate_image/.test(typo.out), "★敲错名（generate_imag）：拒，并点出近似的 generate_image★", typo.out);
+        const far = owb(cc.shim, ["zzzz_qqqq", "{}"]);
+        ok(far.code !== 0 && /没有借给/.test(far.out) && !/名字相近/.test(far.out), "反向对照：差得远的名字不乱猜", far.out);
+        const notLent = owb(cc.shim, ["gen_diagram", "--help"]);
+        ok(notLent.code !== 0 && /没有借给/.test(notLent.out), "没借出去的工具，--help 也说没借", notLent.out);
+      } finally { cc.cleanup(); }
+    }
+
+    // 资料库里的二进制：这条路上没有 library_import，别再叫它用
+    {
+      const lib = path.join(HOME, "data", "library-users", "看图的");
+      fs.mkdirSync(lib, { recursive: true });
+      fs.writeFileSync(path.join(lib, "图.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, 0x49, 0x48, 0x44, 0x52, 0, 1, 2, 3]));
+      const a = bridge.attach("claude-code", { home: HOME, baseDir: "任务_资料", user: "看图的", tools: ["library_read"], library: { base: lib, mount: "" } });
+      try {
+        const r = mcpCall(serverOf(a), "library_read", { name: "图.png" });
+        ok(/不是文本文件/.test(r.text) && !/library_import/.test(r.text) && /拖进对话/.test(r.text), "★借出去的 library_read 读到二进制：不叫它用没借出的 library_import★", r.text);
+      } finally { a.cleanup(); }
+      const own = await tools.withLibraryBase(lib, () => tools.executeTool("library_read", { name: "图.png" }, {}));
+      ok(/library_import/.test(own.content), "反向对照：内置引擎那边照旧指到 library_import", own.content);
+    }
   }
 
   console.log(`\n${pass} 通过，${fail} 失败`);

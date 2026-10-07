@@ -307,6 +307,7 @@ function pluginSkills() {
         description: s.description,
         content: s.content,
         dir: s.dir,
+        file: path.join(s.dir, "SKILL.md"), // 插件技能的正文只认这个名，见 discoverSkills
         hasAssets: names.some((f) => !/^skill\.md$/i.test(f) && !f.startsWith(".")),
         plugin: p.name, // 有这个字段就是插件带来的：只读，不许在技能编辑器里改删
       });
