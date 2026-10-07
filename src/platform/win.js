@@ -169,4 +169,123 @@ function killTree(child, signal, deps = {}) {
   try { process.kill(-child.pid, signal); } catch { try { child.kill(signal); } catch {} }
 }
 
-module.exports = { isWin, isBatch, shimScript, pickNode, escapeArg, launchPlan, execFile, killTree, CMD_MAX };
+/**
+ * 进程树快照。按进程组杀、taskkill /T 有两种够不着：
+ *   · 自立门户的子孙（detached 起的、setsid 的，比如脚本拉起的浏览器）：不在引擎那个进程组里；
+ *   · 中间那层先退了的：孤儿过继出去（macOS 给 1 号进程，Linux 常给 systemd --user 这类收养进程），
+ *     顺着父进程再也找不到（Windows 上 taskkill /T 也是顺着父进程找）。
+ * 所以跑着的时候隔一阵拍一张「引擎底下都有谁」，记下 pid、父进程和启动时刻；停的时候按记下来的逐个杀。
+ * 杀之前核对：pid 还在、启动时刻没变、父进程还是记下的那个；父进程换了，只认「原来那个父进程已经没了」（过继给谁不管）——
+ * pid 被系统复用给了别的进程就对不上，不杀。只认记下来的 pid，绝不按名字、按模式杀。
+ * 拍不到的不猜：两张快照之间起了又立刻过继出去的（双 fork 的守护进程）这里收不到。
+ */
+const WIN_PS = "Get-CimInstance Win32_Process | ForEach-Object { '{0} {1} {2}' -f $_.ProcessId, $_.ParentProcessId, $(if ($_.CreationDate) { $_.CreationDate.ToFileTimeUtc() } else { 0 }) }";
+function psCommand(win) {
+  return win
+    ? { bin: "powershell.exe", args: ["-NoProfile", "-NonInteractive", "-Command", WIN_PS] }
+    : { bin: "ps", args: ["-A", "-o", "pid=,ppid=,lstart="] };
+}
+/** ps / PowerShell 的输出 → pid → { ppid, start }。启动时刻原样当字符串比（ps 的 lstart 精确到秒，Windows 是 FILETIME） */
+function parseProcs(text) {
+  const out = new Map();
+  for (const line of String(text || "").split(/\r?\n/)) {
+    const m = /^\s*(\d+)\s+(\d+)\s+(\S.*?)\s*$/.exec(line);
+    if (m) out.set(Number(m[1]), { ppid: Number(m[2]), start: m[3].replace(/\s+/g, " ") });
+  }
+  return out;
+}
+const PS_OPTS = { windowsHide: true, timeout: 15000, maxBuffer: 32 << 20, encoding: "utf8", env: { ...process.env, LC_ALL: "C" } };
+/** 眼下系统里的进程。拿不到就是空表：空表对不上任何记录，一个都不杀 */
+function listProcs(deps = {}) {
+  if (deps.list) return Promise.resolve(deps.list());
+  const { bin, args } = psCommand(deps.win === undefined ? isWin() : deps.win);
+  const run = deps.execFile || require("child_process").execFile;
+  return new Promise((resolve) => {
+    try { run(bin, args, { ...PS_OPTS, windowsHide: true }, (err, stdout) => resolve(err ? new Map() : parseProcs(stdout))); }
+    catch { resolve(new Map()); }
+  });
+}
+/** 同步版：进程马上要退出（killAll）时用，等不到回调 */
+function listProcsSync(deps = {}) {
+  if (deps.list) return deps.list();
+  const { bin, args } = psCommand(deps.win === undefined ? isWin() : deps.win);
+  const run = deps.execFileSync || require("child_process").execFileSync;
+  try { return parseProcs(run(bin, args, { ...PS_OPTS, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] })); } catch { return new Map(); }
+}
+/** procs 里 root 底下的整棵树（不含 root 自己） */
+function treeOf(rootPid, procs) {
+  const kids = new Map();
+  for (const [pid, p] of procs) {
+    if (!kids.has(p.ppid)) kids.set(p.ppid, []);
+    kids.get(p.ppid).push(pid);
+  }
+  const out = new Map();
+  const stack = [...(kids.get(rootPid) || [])];
+  while (stack.length) {
+    const pid = stack.pop();
+    if (pid === rootPid || out.has(pid) || !procs.has(pid)) continue;
+    out.set(pid, procs.get(pid));
+    for (const k of kids.get(pid) || []) stack.push(k);
+  }
+  return out;
+}
+/** 按 pid 杀一个（连它底下的）。Windows 走 taskkill /T，别的系统直接发信号 */
+function killPid(pid, signal, deps = {}) {
+  const win = deps.win === undefined ? isWin() : deps.win;
+  if (win) {
+    const spawn = deps.spawn || require("child_process").spawn;
+    const args = ["/pid", String(pid), "/T"];
+    if (signal === "SIGKILL") args.push("/F");
+    try { spawn("taskkill", args, { windowsHide: true, stdio: "ignore" }).on("error", () => {}); } catch {}
+    return;
+  }
+  try { (deps.kill || process.kill)(pid, signal); } catch {}
+}
+/**
+ * 盯一棵进程树。snap() 拍一张并进记录（异步，不卡事件循环）；kill(signal, procs?) 先把眼下这棵树并进来，
+ * 再按记录逐个核对了杀。根进程自己不在这里杀，那是 killTree 的事
+ */
+function treeWatch(rootPid, deps = {}) {
+  const seen = new Map(); // pid → { ppid, start }
+  let busy = null;
+  const merge = (procs) => { for (const [pid, p] of treeOf(rootPid, procs)) seen.set(pid, p); return procs; };
+  /** 记下的父进程眼下还在不在（pid 被复用了也算不在）。根进程没记启动时刻，只看 pid */
+  const gone = (ppid, procs) => {
+    const now = procs.get(ppid);
+    if (!now) return true;
+    const was = seen.get(ppid);
+    return !!was && now.start !== was.start;
+  };
+  /** 记录里眼下还对得上的 pid */
+  const match = (procs) => {
+    merge(procs);
+    const out = [];
+    for (const [pid, was] of seen) {
+      const now = procs.get(pid);
+      if (!now || now.start !== was.start) continue; // 没了，或者 pid 被别的进程复用了
+      if (now.ppid !== was.ppid && !gone(was.ppid, procs)) continue; // 原来的父进程还在、它却换了父进程：不是我们那个
+      out.push(pid);
+    }
+    return out;
+  };
+  return {
+    seen,
+    match,
+    snap() {
+      if (!busy) busy = listProcs(deps).then(merge).finally(() => { busy = null; });
+      return busy;
+    },
+    kill(signal, procs) {
+      const go = (ps) => { const pids = match(ps); for (const pid of pids) killPid(pid, signal, deps); return pids; };
+      return procs ? Promise.resolve(go(procs)) : listProcs(deps).then(go);
+    },
+    killSync(signal) {
+      if (!seen.size && (deps.win === undefined ? isWin() : deps.win)) return []; // Windows 上 taskkill /T 已经顺着父进程收了眼下这棵树，没记录就不用再列一遍
+      const pids = match(listProcsSync(deps));
+      for (const pid of pids) killPid(pid, signal, deps);
+      return pids;
+    },
+  };
+}
+
+module.exports = { isWin, isBatch, shimScript, pickNode, escapeArg, launchPlan, execFile, killTree, CMD_MAX, parseProcs, treeOf, treeWatch };

@@ -7,7 +7,9 @@
  *   ① claude 把「没登录 / 限流 / 续跑的会话找不到」写在 result 里、stderr 空着、退出码 1。
  *      以前只看 stderr，用户拿到的是「退出码 1 且没有任何输出」；is_error 但退出码 0 时，报错原文还被当成回答交出去
  *   ② 按停止要当场杀：AbortSignal 挂了监听，不等 2 秒一跳的轮询；连带引擎派生的孙进程一起收。
- *      killAll 给硬退出用（关终端、被 kill）：一把收掉还活着的每一个
+ *      killAll 给硬退出用（关终端、被 kill）：一把收掉还活着的每一个。
+ *      自立门户的孙进程（detached，像脚本拉起的浏览器）、中间那层先退了留下的孤儿，按进程组杀够不着：
+ *      跑着时拍的进程树快照里有它，停的时候核对了 pid 和启动时刻再杀；对不上的（pid 被复用了）不碰
  *   ③ 借给引擎的 MCP 配置、工具入口是临时目录（里面有 key）：进程直接 exit 也得删掉
  *   ④ 续跑 id 失效（记录过期、换了机器）：一个工具还没动过就摊平历史重开一根，新 id 记回去；
  *      动过工具、报的是别的错、没有续跑 id、已经按了停止——这四种都不许重来
@@ -291,6 +293,90 @@ setInterval(() => {}, 1000);
     const r = await Promise.race([p, sleep(5000).then(() => null)]);
     ok(r !== null, "★killAll 把还活着的引擎收掉★（关终端、被 kill 时走这条）");
     ok(await until(() => !alive(kid) && !alive(grand), 5000), "连孙进程一起", { kid: alive(kid), grand: alive(grand) });
+  }
+
+  // 自立门户的孙进程：中间一层（像 claude 起的 bash / python）再起一个 detached 的（像脚本拉起的浏览器），
+  // 它自成一个进程组，按引擎那个组杀不到；中间那层先退了，它还过继给 1 号进程，顺着父进程也找不到
+  // stubborn：孙进程不理 SIGTERM（像关不掉的浏览器），只有 3 秒后那下 SIGKILL 收得掉
+  const detach = (tag, midLives, stubborn) => fakeBin("detach-" + tag, `
+const { spawn } = require("child_process");
+spawn(process.execPath, ["-e", ${JSON.stringify(`
+const { spawn } = require("child_process");
+const g = spawn(process.execPath, ["-e", ${JSON.stringify((stubborn ? "process.on('SIGTERM', () => {});" : "") + "setInterval(()=>{},1000)")}], { detached: true, stdio: "ignore" });
+g.unref();
+require("fs").writeFileSync(process.argv[1], JSON.stringify([process.pid, g.pid]));
+setTimeout(() => process.exit(0), Number(process.argv[2]));
+`)}, ${JSON.stringify(path.join(home, "pids-"))} + ${JSON.stringify(tag)}, ${JSON.stringify(String(midLives))}], { stdio: "ignore" });
+setInterval(() => {}, 1000);
+`);
+  const strays = [];
+  try {
+    {
+      const ctrl = new AbortController();
+      const p = runJsonl({ bin: detach("d-live", 60000), args: [], cwd: home, onLine() {}, stopSignal: ctrl.signal });
+      ok(await until(() => pidsOf("d-live")), "假引擎起来了，中间那层拉起了一个自成进程组的孙进程");
+      const [mid, g] = pidsOf("d-live");
+      strays.push(mid, g);
+      ctrl.abort(); // 还没到第一次拍快照（2 秒一跳）：靠的是停的那一刻先列一遍
+      const r = await p;
+      ok(r.killed === "stopped", "按停止记成 stopped", r);
+      // 2 秒内：头一下 SIGTERM 就收了，不是等 3 秒后那下 SIGKILL 补刀
+      ok(await until(() => !alive(g) && !alive(mid), 2000), "★自成进程组的孙进程也收了★ 停的那一刻先把整棵树记下来再杀", { mid: alive(mid), g: alive(g) });
+    }
+    {
+      const ctrl = new AbortController();
+      const p = runJsonl({ bin: detach("d-orphan", 4500, true), args: [], cwd: home, onLine() {}, stopSignal: ctrl.signal });
+      ok(await until(() => pidsOf("d-orphan")), "中间那层跑一阵就退出（像崩了的脚本），它拉起的那个留下来、还不理 SIGTERM");
+      const [mid, g] = pidsOf("d-orphan");
+      strays.push(mid, g);
+      ok(await until(() => !alive(mid), 9000) && alive(g), "中间那层先退了，孙进程还活着（过继给 1 号进程了）", { mid: alive(mid), g: alive(g) });
+      ctrl.abort();
+      await p;
+      ok(await until(() => !alive(g), 6000), "★中间那层先退了留下的孤儿也收了★ 跑着时拍的快照里有它；不理 SIGTERM 的，3 秒后 SIGKILL 照样按快照收", { g: alive(g) });
+    }
+    {
+      const p = runJsonl({ bin: detach("d-all", 60000), args: [], cwd: home, onLine() {} });
+      ok(await until(() => pidsOf("d-all")), "没有停止信号的一趟也拉起了自成进程组的孙进程");
+      const [mid, g] = pidsOf("d-all");
+      strays.push(mid, g);
+      killAll("SIGTERM");
+      await Promise.race([p, sleep(5000)]);
+      ok(await until(() => !alive(g) && !alive(mid), 5000), "★killAll 也收得到自成进程组的★（硬退出那条路，同步列一遍再杀）", { mid: alive(mid), g: alive(g) });
+    }
+  } finally {
+    for (const pid of strays) { try { if (alive(pid)) process.kill(pid, "SIGKILL"); } catch {} } // 只按记下的 pid 收拾，不按名字
+  }
+
+  // 核对：只杀记下来、而且眼下还对得上的（假进程表，不碰真进程）
+  {
+    const win = require(mod("win"));
+    const T = (pid, ppid, start) => [pid, { ppid, start }];
+    let cur = new Map([T(100, 50, "s100"), T(101, 100, "s101"), T(102, 101, "s102"), T(105, 101, "s105"), T(106, 102, "s106"), T(107, 105, "s107"), T(103, 7, "s103")]);
+    const killed = [];
+    const w = win.treeWatch(100, { win: false, list: () => cur, kill: (pid, sig) => killed.push([pid, sig]) });
+    await w.snap();
+    ok(same([...w.seen.keys()].sort(), [101, 102, 105, 106, 107]), "快照只记引擎底下的（自己、旁边不相干的都不记）", [...w.seen.keys()]);
+    cur = new Map([
+      T(100, 50, "s100"),
+      T(102, 1, "s102"),     // 中间那层（101）退了，过继给 1 号：收
+      T(104, 100, "s104"),   // 拍完快照之后才起的：停的那一刻并进来，收
+      T(105, 333, "s105x"),  // pid 被别的进程复用了（启动时刻变了）：不碰
+      T(106, 999, "s106"),   // 启动时刻一样，原来的父进程（102）还在，它却换了父进程：不碰
+      T(107, 888, "s107"),   // 原来的父进程（105）的 pid 被复用了，算原来那个没了：过继给哪个收养进程都收
+      T(103, 7, "s103"),     // 从来不是这棵树上的：不碰
+    ]);
+    const hit = await w.kill("SIGTERM");
+    ok(same(hit.sort(), [102, 104, 107]) && same(killed.map((k) => k[0]).sort(), [102, 104, 107]) && killed.every((k) => k[1] === "SIGTERM"),
+      "★只杀对得上的★ pid 被复用的、父进程还在却换了父进程的、不相干的一个不碰；过继出去的、拍完快照才起的都收", { hit, killed });
+    ok(!killed.some((k) => k[0] === 100), "引擎自己不在这里杀（那是按组杀那一下的事）", killed);
+    const calls = [];
+    const ww = win.treeWatch(100, { win: true, list: () => cur, spawn: (bin, args) => { calls.push([bin, ...args].join(" ")); return { on() {} }; } });
+    ww.seen.set(102, { ppid: 101, start: "s102" });
+    ww.killSync("SIGKILL");
+    ok(same(calls.sort(), ["taskkill /pid 102 /T /F", "taskkill /pid 104 /T /F"]), "Windows：记下的逐个 taskkill /T，第二下带 /F", calls);
+    const ps = win.parseProcs("  123     1 Wed Oct  7 20:14:00 2026\r\n4242 4000 133412345678901234\n乱码一行\n");
+    ok(same([...ps], [[123, { ppid: 1, start: "Wed Oct 7 20:14:00 2026" }], [4242, { ppid: 4000, start: "133412345678901234" }]]),
+      "ps（lstart）和 PowerShell（FILETIME）两种输出都读得懂，读不懂的行不要", [...ps]);
   }
 }
 

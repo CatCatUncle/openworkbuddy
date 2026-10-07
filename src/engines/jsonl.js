@@ -11,6 +11,8 @@
  *   · 停止 = 杀整棵进程树。CLI 自己还会派生子进程（bash、python、浏览器），
  *     只 kill 父进程会留下一堆孤儿继续跑、继续写文件。
  *     Unix 上 detached 起、按进程组杀；Windows 没有进程组，走 taskkill /T（见 ./win.js）。
+ *     自立门户的子孙、中间那层先退了的孤儿，这两样都够不着：跑着时隔一阵给进程树拍张快照，
+ *     停的时候按快照里的 pid 核对了再杀（见 win.treeWatch）。
  *
  * 一条硬规矩：**行内容坏了不许静默丢弃。** CLI 偶尔会往 stdout 混一行非 JSON
  * （升级提示、warning）。丢是对的，但要记进 junk 里 —— 否则"什么都没发生"
@@ -33,9 +35,16 @@ const STDERR_KEEP = 8000;
  * bash/python 就成了孤儿，接着改文件，时限也没人管了。
  */
 const LIVE = new Set();
+const WATCH = new WeakMap(); // 引擎进程 → 它那棵树的快照（win.treeWatch）
 function killAll(signal = "SIGTERM") {
-  for (const c of LIVE) { try { win.killTree(c, signal); } catch {} }
+  for (const c of LIVE) {
+    // 先按快照收自立门户的（同步列一次进程核对），再杀整组：反过来的话引擎一死，底下的就过继出去对不上父进程了
+    try { const w = WATCH.get(c); if (w) w.killSync(signal); } catch {}
+    try { win.killTree(c, signal); } catch {}
+  }
 }
+/** 隔几跳（2 秒一跳）拍一次进程树：Windows 上拍一次要起一个 PowerShell，拉长到 10 秒 */
+const SNAP_EVERY = win.isWin() ? 5 : 1;
 
 /**
  * 调用方追加的变量（引擎设置里的 env、桥给的 PATH）。多人共用时像 Key 的一个不留：
@@ -150,6 +159,8 @@ function runJsonl({ bin, args, cwd, env, stdin, onLine, deadline, stopSignal }) 
     // 兜底那条路参数超长时先把话说在前头：失败了报出来的会是 cmd 的乱码错，跟真实原因对不上
     if (plan.warn) junkWarn = plan.warn;
     LIVE.add(child);
+    const watch = win.treeWatch(child.pid);
+    WATCH.set(child, watch);
 
     let killed = null;
     let stderr = "";
@@ -160,17 +171,29 @@ function runJsonl({ bin, args, cwd, env, stdin, onLine, deadline, stopSignal }) 
     const killTree = (why) => {
       if (killed || settled) return;
       killed = why;
-      win.killTree(child, "SIGTERM");
+      // 先把眼下这棵树记下来再动手：引擎一死，底下自立门户的就过继给 1 号进程，顺着父进程再也找不到了。
+      // 拍照最多等 300ms，等不到也照杀，别让停止卡在这儿
+      let fired = false;
+      const fire = (procs) => {
+        if (fired) return;
+        fired = true;
+        win.killTree(child, "SIGTERM");
+        watch.kill("SIGTERM", procs).catch(() => {});
+      };
+      watch.snap().then(fire, () => fire());
+      setTimeout(() => fire(), 300).unref();
       // 给它 3 秒体面退出（写完文件、关掉浏览器），之后不客气
-      setTimeout(() => win.killTree(child, "SIGKILL"), 3000).unref();
+      setTimeout(() => { win.killTree(child, "SIGKILL"); watch.kill("SIGKILL").catch(() => {}); }, 3000).unref();
     };
 
     // 时限靠这一个轮询：2 秒一次，比起给每种情况各挂一套定时器更好收尾。
     // 手动停止不能等这一跳：是真 AbortSignal 就直接挂监听，一按就杀——以前最多晚 2 秒，
     // 而人按完第一下 Ctrl+C 没见动静，第二下紧跟着就来了。纯 { aborted } 对象挂不上监听，照旧靠轮询
+    let ticks = 0;
     const tick = setInterval(() => {
       if (stopSignal && stopSignal.aborted) killTree("stopped");
       else if (deadline && Date.now() >= deadline) killTree("deadline");
+      else if (++ticks % SNAP_EVERY === 0) watch.snap().catch(() => {});
     }, 2000);
     const onAbort = () => killTree("stopped");
     const listens = !!stopSignal && typeof stopSignal.addEventListener === "function";
