@@ -324,11 +324,14 @@ const DELIVER_EXTS = "pptx|pptm|docx|doc|xlsx|xls|pdf|zip|mp4|mov|png|jpe?g|gif|
  * 工作目录里所有文件名 → 字节数。一条回复往往声称生成了好几个文件，
  * 一个名字走一遍目录树等于同一棵树扫好几遍，扫一次记下来就够了。
  */
-function workspaceIndex() {
+function workspaceIndex(near) {
   const idx = new Map();
   let root;
   try { root = getWorkspaceDir(); } catch { return idx; }
   const stack = [[root, 0]];
+  // 这一趟的工作目录排在最前面扫（栈顶先走）：它要是埋得深、或者整棵树太大撞了 3000 的上限，
+  // 刚交的文件就会被当成没有。整棵树那一趟走到它时不再进去
+  if (near && near !== root) stack.push([near, 0]);
   let visited = 0;
   while (stack.length && visited < 3000) {
     const [dir, d] = stack.pop();
@@ -341,7 +344,7 @@ function workspaceIndex() {
         if (!idx.has(e.name) || idx.get(e.name) === 0) {
           try { idx.set(e.name, fs.statSync(path.join(dir, e.name)).size); } catch { idx.set(e.name, -1); }
         }
-      } else if (e.isDirectory() && d < 4 && e.name !== "node_modules" && !e.name.startsWith(".")) {
+      } else if (e.isDirectory() && d < 4 && e.name !== "node_modules" && !e.name.startsWith(".") && path.join(dir, e.name) !== near) {
         stack.push([path.join(dir, e.name), d + 1]);
       }
     }
@@ -358,7 +361,7 @@ function sizeOf(p) {
  * 空文件也必须打回——写到一半失败、编码出错都会留下一个 0 字节的壳，
  * 只查存在性的话这种"交付"会被判为成功，用户点开才发现是空的。
  */
-function missingDeliverables(text) {
+function missingDeliverables(text, { near } = {}) {
   if (!text || !CLAIM_RE.test(text)) return [];
   const found = new Set();
   const pathRe = new RegExp(`(?:~|\\/(?:Users|home|tmp|private|var))\\/[^\\s"'\`（）()<>|,;：:*?]+\\.(?:${DELIVER_EXTS})\\b`, "gi");
@@ -373,7 +376,7 @@ function missingDeliverables(text) {
     if (path.isAbsolute(p)) size = sizeOf(p);
     else if (p.startsWith("~")) size = sizeOf(path.join(os.homedir(), p.slice(1)));
     else {
-      if (!idx) idx = workspaceIndex(); // 真有相对文件名要查时才扫目录
+      if (!idx) idx = workspaceIndex(near); // 真有相对文件名要查时才扫目录
       size = idx.has(p) ? idx.get(p) : -1;
     }
     if (size < 0) bad.push({ name: p, why: "missing" });
@@ -513,6 +516,47 @@ function normalizeEntry(e) {
 function normalizeHistory(history) {
   if (Array.isArray(history)) for (const e of history) normalizeEntry(e);
   return history;
+}
+
+/**
+ * 说「如图」却一张新图都没出。本机 CLI 那条路收尾用（见 engineDeliveryNotes）。
+ * 判据收得窄，宁可漏也别把正常汇报说成有问题：
+ *   1. 有「如图所示 / 见上图 / 已显示在上方」这类「图就在这儿」的说法（「比如图层」「如图表所示」不算）；
+ *   2. 回复里说了是自己做出来的（生成、画好、做好…）——光说「如图所示，配色偏暖」多半是在讲旧图；
+ *   3. 这一趟没有新图落进工作目录；
+ *   4. 用户这一条没带图（带了图，「如图」说的多半就是那张）。
+ */
+const SHOWN_RE = /((?<![比例假譬诸正犹宛恰])如[上下]?图(?!表)(?:所示)?|见[上下]图|(?:已经?|图片?(?:已经?)?)(?:显示|展示)在了?(?:上方|上面|下方|下面))/;
+const MADE_RE = /(生成|画好|画了|做好|做出|出图|绘制|制作|渲染|设计好)/;
+const IMG_FILE_RE = /\.(?:png|jpe?g|webp|gif|svg)$/i;
+function shownButNoImage(text, { madeImage = false, ask = "" } = {}) {
+  if (madeImage) return null;
+  const t = String(text || ""), q = String(ask || "");
+  if (!MADE_RE.test(t) || /【图片|已上传文件/.test(q) || VISUAL_IMG_RE.test(q)) return null;
+  const m = SHOWN_RE.exec(t);
+  return m ? m[1] : null;
+}
+
+/**
+ * 本机 CLI 收尾时核一遍交付：说做好了的文件不在 / 是空的、说「如图」却没出图，在运行页上照实提一句。
+ * 内置引擎那边是打回去重做；这边不打回——重起一趟是整个进程重来，慢，而且真花钱。
+ * 提示标 notice，重开对话还在；只说看到了什么，不猜为什么
+ */
+function engineDeliveryNotes({ text, cwd, madeImage, ask, emit }) {
+  const say = (t) => emit({ type: "status", notice: true, text: t, depth: 0 });
+  try {
+    const bad = missingDeliverables(text, { near: cwd });
+    const list = (xs) => xs.slice(0, 5).join("、") + (xs.length > 5 ? ` 等 ${xs.length} 个` : "");
+    const gone = bad.filter((b) => b.why === "missing").map((b) => b.name);
+    const empty = bad.filter((b) => b.why === "empty").map((b) => b.name);
+    if (gone.length) say(`回复里提到的文件没找到：${list(gone)}`);
+    if (empty.length) say(`回复里提到的文件是空的（0 字节）：${list(empty)}`);
+    // 点了名的文件已经说过了，同一件事不说两遍
+    const shown = bad.length ? null : shownButNoImage(text, { madeImage, ask });
+    if (shown) say(`回复里说「${shown}」，这一趟没有产出新图片`);
+  } catch (e) {
+    console.warn("[agent] 本机引擎收尾核对交付没做成:", (e && e.message) || e);
+  }
 }
 
 // ================= 悬空的工具调用（治「进程崩了一次，这段会话从此每轮都 400」） =================
@@ -2410,7 +2454,11 @@ function modePrompt(mode) {
     //   2) 同一版本已被别的任务先认领 → 不是我的（根目录文件只有这一道能拦）。
     const runToken = ++runSeq;
     claimBaseDir(baseDir, runToken);
-    const filesOut = makeFilesEmitter({ emit, ownership, baseDir, runToken, scan: true });
+    let madeImage = false; // 这一趟有没有新图落进来（收尾核对「如图」用）
+    const filesOut = makeFilesEmitter({
+      emit, ownership, baseDir, runToken, scan: true,
+      after: (changed) => { if (!madeImage) madeImage = changed.some((n) => IMG_FILE_RE.test(n)); },
+    });
     // 工具一跑完就对一次账，长任务中途就能看到产物，不用等收尾。
     // CLI 这条路是**每个**工具结果来一次（不像内置引擎是一批一次），所以走节流的那个口子：
     // 一串结果连着回来时合并成一次走树，而不是一个结果扫一遍 500 个文件
@@ -2550,6 +2598,8 @@ function modePrompt(mode) {
       // 在这儿补齐，让两条引擎路径对外一模一样，调用方不用各自记得去接。
       // 不学内置那样再花一次调用让模型写收尾：CLI 引擎重起一趟是整个进程重来，慢，而且真花钱。
       let finalText = rawFinal;
+      // 半路停下的那半句不核：话没说完，跟交付对不上是应该的
+      if (!r.stopped && rawFinal) engineDeliveryNotes({ text: rawFinal, cwd, madeImage, ask: currentAsk(history), emit });
       if (r.stopped) {
         emit({ type: "limit", note: r.stopped, depth: 0 });
         const notice = stopNotice(r.stopped);
@@ -4704,4 +4754,4 @@ function makeOwnership() {
   return { claimBaseDir, inForeignDir, mine, wrote, writerOf, _dirOwners: dirOwners, _fileClaims: fileClaims, _writes: writes };
 }
 
-module.exports = { createAgentRuntime, contextBudgetChars, spillToolResult, retryField, SPILL_OVER, SPILL_KEEP, splitParallelRuns, toolHeadline, resultOutcome, missingDeliverables, unseenVisualClaims, unfinishedMilestones, UNFINISHED_RE, trimHistory, historyChars, collectSources, mapPool, PARALLEL_MAX, GEN_TOOLS, DIRECT_TOOLS, GEN_PARALLEL_MAX, makeOwnership, makeFilesEmitter, cedeTo, wroteName, stepSignal, scanOutputs, sweepPlanOffThread, _scan: { stats: scanStats, scanTree, snapOf, filesOf, hubs: scanHubs, runScan, BROKEN_MAX: SCAN_BROKEN_MAX, broken: () => scanBroken, setBroken: (n) => { scanBroken = n; }, worker: () => scanWorker }, deadLoop, findCycle, pausedMediaBlock, reopenedMediaBlock, stopNotice, DEAD_LOOP_LIMITS, TRUNC_STOP, CUT_STOP, cutShortWhy, currentAsk, normalizeEntry, normalizeHistory, closeDanglingCalls, resumeNotice, INTERRUPTED_RESULT, REDO_SAFE_TOOLS, activeChannel, shellNote, engineHeartbeat, quietFor, _beat: { set: (ms) => { ENGINE_BEAT_MS = ms; } } };
+module.exports = { createAgentRuntime, contextBudgetChars, spillToolResult, retryField, SPILL_OVER, SPILL_KEEP, splitParallelRuns, toolHeadline, resultOutcome, missingDeliverables, unseenVisualClaims, unfinishedMilestones, UNFINISHED_RE, trimHistory, historyChars, collectSources, mapPool, PARALLEL_MAX, GEN_TOOLS, DIRECT_TOOLS, GEN_PARALLEL_MAX, makeOwnership, makeFilesEmitter, cedeTo, wroteName, stepSignal, scanOutputs, sweepPlanOffThread, _scan: { stats: scanStats, scanTree, snapOf, filesOf, hubs: scanHubs, runScan, BROKEN_MAX: SCAN_BROKEN_MAX, broken: () => scanBroken, setBroken: (n) => { scanBroken = n; }, worker: () => scanWorker }, deadLoop, findCycle, pausedMediaBlock, reopenedMediaBlock, stopNotice, DEAD_LOOP_LIMITS, TRUNC_STOP, CUT_STOP, cutShortWhy, currentAsk, normalizeEntry, normalizeHistory, closeDanglingCalls, resumeNotice, INTERRUPTED_RESULT, REDO_SAFE_TOOLS, activeChannel, shellNote, shownButNoImage, engineDeliveryNotes, engineHeartbeat, quietFor, _beat: { set: (ms) => { ENGINE_BEAT_MS = ms; } } };

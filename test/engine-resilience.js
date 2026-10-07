@@ -30,6 +30,8 @@
  *   ⑬ 状态播报里是事实的（引擎已启动、标了 notice 的）存盘，重开对话还在；进度播报不存
  *   ⑭ 跑着就看得见：codex 自带生图出的图半路就放进对话目录、出一张卡（写到一半的不拷，模型抢先复制过的不再放）；
  *      思考摘要进思考提示、进度清单画成打勾的表；本机 CLI 好一阵不出声，隔一段说一声还在跑，来了新事件重新算
+ *   ⑮ 收尾照实核一遍交付：说做好了的文件不在 / 是空的、说「如图」却没出新图，运行页上提一句（不打回、不重跑）；
+ *      用户这一条带了图、半路停下的、真交了的，都不说
  *
  * 引擎全是本地假的，不出网。
  *   node test/engine-resilience.js
@@ -1347,6 +1349,99 @@ process.stdin.on("data", (d) => { input += d; }).on("end", async () => {
   }
 }
 
+/**
+ * ⑮ 交付核对。内置引擎说「已生成 xx.pdf」而盘上没有，会被打回去重做；本机 CLI 那条路以前一句不查，
+ *   回复说做好了、文件根本不在，用户点开才知道
+ */
+async function partDeliveryNotes() {
+  console.log("\n⑮ 收尾核对交付：只提示，不打回");
+  const agentMod = require(mod("agent"));
+  const tools = require(mod("tools"));
+
+  // 判据本身：哪些说法算「图就在这儿」
+  const T = [
+    ["画好了，如图所示。", {}, "如图所示"],
+    ["画好了，如图所示。", { madeImage: true }, null],
+    ["海报做好了，见上图", {}, "见上图"],
+    ["已生成，图片已显示在上方", {}, "图片已显示在上方"],
+    ["画好了\n\n如上图", {}, "如上图"],
+    ["标题显示在上方，海报做好了", {}, null],
+    ["如图表所示，报表已生成", {}, null],
+    ["比如图层可以拆开，已生成", {}, null],
+    ["如图所示，配色偏暖", {}, null],
+    ["如图所示，这只猫的图是生成的", { ask: "【图片 1：猫.png】\n这是什么" }, null],
+    ["如图所示，已生成", { ask: "看看 猫.png 是什么" }, null],
+    // 手机传上来的图常是 .HEIC，文件名那条认不出：靠素材锚点、「已上传文件」那句认
+    ["如图所示，这张是生成的", { ask: "【图片 1：IMG_8037.HEIC】\n这张是 AI 生成的吗" }, null],
+    ["如图所示，这张是生成的", { ask: "这张是 AI 生成的吗（已上传文件：IMG_8037.HEIC）" }, null],
+  ];
+  const wrong = T.filter(([t, o, want]) => agentMod.shownButNoImage(t, o) !== want).map(([t, o, want]) => [t, o, want, agentMod.shownButNoImage(t, o)]);
+  ok(wrong.length === 0, "「如图」只认说图就在这儿、又说是自己做的（比如图层、如图表、讲旧图、用户自己带了图的都不算）", wrong);
+
+  // 这一趟的工作目录埋得深（整棵树那一趟走不到）：照样找得到它刚交的文件
+  const ws = tools.getWorkspaceDir();
+  const deep = path.join(ws, "d1", "d2", "d3", "d4", "d5");
+  fs.mkdirSync(deep, { recursive: true });
+  fs.writeFileSync(path.join(deep, "深处的报告.pdf"), "%PDF-1");
+  const ctl = agentMod.missingDeliverables("已导出 深处的报告.pdf");
+  const near = agentMod.missingDeliverables("已导出 深处的报告.pdf", { near: deep });
+  ok(ctl.length === 1 && near.length === 0, "★这一趟的工作目录先扫★ 埋得再深，刚交的文件也认得出（对照：不带它就当成没有）", { ctl, near });
+  const said = (cwd) => { const out = []; agentMod.engineDeliveryNotes({ text: "已导出 深处的报告.pdf", cwd, emit: (e) => out.push(e.text) }); return out; };
+  ok(said(deep).length === 0 && said(undefined).length === 1, "收尾核对带上这一趟的工作目录（对照：不带就误报没找到）", { withCwd: said(deep), without: said(undefined) });
+  fs.rmSync(path.join(ws, "d1"), { recursive: true, force: true });
+
+  // 真 agent 跑一个桩引擎：照剧本写文件、说最后那段话
+  const engines = require(mod("engines"));
+  const { McpManager } = require(mod("mcp"));
+  const llm = require(mod("llm")).createLLM({ models: [{ name: "桩", provider: "openai", base_url: "http://127.0.0.1:9/v1", api_key: "sk-test-offline", model: "mock", stream: false }] });
+  let plan = null;
+  const stub = {
+    id: "t-deliver", label: "本机桩", bin: null, note: "", install: "", launchHeader: "", supportsResume: false, models: [],
+    async detect() { return { id: "t-deliver", installed: true, path: "", version: "0" }; },
+    async run(o) {
+      for (const [name, body] of plan.write || []) {
+        const abs = path.join(o.cwd, name);
+        fs.writeFileSync(abs, body);
+        if (o.onWrite) o.onWrite(abs);
+      }
+      return { finalText: plan.text, usage: {}, stopped: plan.stopped || null, sessionId: null };
+    },
+  };
+  engines.BACKENDS.push(stub);
+  try {
+    const rt = agentMod.createAgentRuntime({ config: { agent: { engine: "t-deliver", max_steps: 3, engine_options: { "t-deliver": { model: "m1" } } } }, llm, mcpManager: new McpManager(), experts: [] });
+    const go = async (p) => {
+      plan = p;
+      const evs = [];
+      const r = await rt.runTask({ history: [{ role: "user", content: p.ask || "干活" }], emit: (e) => evs.push(e) });
+      const notes = evs.filter((e) => e.type === "status" && /^回复里/.test(e.text || ""));
+      return { r, evs, notes, texts: notes.map((e) => e.text) };
+    };
+
+    const A = await go({ text: "海报已生成：海报A.png，如图所示。" });
+    ok(same(A.texts, ["回复里提到的文件没找到：海报A.png"]), "★说做好了的文件不在★ 运行页上点名（同一件事不再追一句「如图」）", A.texts);
+    ok(A.notes.every((e) => e.notice === true && e.depth === 0), "核对结果标 notice：重开对话还在", A.notes);
+    ok(A.r.finalText === "海报已生成：海报A.png，如图所示。", "只提示，回复原样交出去（不改、不打回）", A.r.finalText);
+
+    const B = await go({ text: "画好了，如图所示。" });
+    ok(same(B.texts, ["回复里说「如图所示」，这一趟没有产出新图片"]), "★说「如图」却没出新图★ 照实提一句", B.texts);
+
+    const C = await go({ text: "海报已生成：海报C.png，如图所示。", write: [["海报C.png", "PNG-real"]] });
+    ok(C.texts.length === 0 && C.evs.some((e) => e.type === "files" && (e.changed || []).some((n) => /海报C\.png$/.test(n))), "真交了图：一句都不说", { notes: C.texts, files: C.evs.filter((e) => e.type === "files").map((e) => e.changed) });
+
+    const D = await go({ text: "已导出 空报告D.pdf", write: [["空报告D.pdf", ""]] });
+    ok(same(D.texts, ["回复里提到的文件是空的（0 字节）：空报告D.pdf"]), "★交出来是个空壳★ 照实说是空的", D.texts);
+
+    const E = await go({ ask: "【图片 1：猫.png】\n这张是 AI 生成的吗", text: "如图所示，这张更像是 AI 生成的：毛发边缘太规整。" });
+    ok(E.texts.length === 0, "用户这一条自己带了图：「如图」说的是那张，不提", E.texts);
+
+    const F = await go({ text: "画好了，如图所示", stopped: "已达最大步数（3 步）" });
+    ok(F.texts.length === 0 && F.evs.some((e) => e.type === "limit"), "半路停下的那半句不核", F.texts);
+  } finally {
+    engines.BACKENDS.splice(engines.BACKENDS.indexOf(stub), 1);
+  }
+}
+
 (async () => {
   try {
     await partResultErrors();
@@ -1363,6 +1458,7 @@ process.stdin.on("data", (d) => { input += d; }).on("end", async () => {
     await partBlame();
     partStatusPersist();
     await partLive();
+    await partDeliveryNotes();
     console.log(`\n引擎韧性：${pass} 项全过`);
   } finally {
     fs.rmSync(home, { recursive: true, force: true });
