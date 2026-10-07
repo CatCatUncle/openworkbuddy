@@ -3217,6 +3217,45 @@
   for (const [zh, en] of [["免费版", "Free"], ["团队版", "Team"], ["专业版", "Pro"], ["旗舰版", "Enterprise"]])
     PATTERNS.en.push([new RegExp("^" + zh + " · (\\d+)/(\\d+) 席 · 建于 (.+)$"), en + " · $1/$2 seats · created $3"]);
 
+  // ---------- 本机引擎运行页上的那些话（2026-10-07）：工具没挂上、只读停了哪些设置、档位收紧、心跳、交付核对 ----------
+  // 服务端推来的整句（agent.js / codex.js / security.js），textContent 直接写进运行页，覆盖率闸门扫不到，
+  // 漏翻了英文界面上就钉着一行中文。test/frontend.js「本机引擎那几句的英文」逐句过一遍，源码改了措辞那边当场红
+  for (const [zh, en] of Object.entries({
+    // 安全档位四个名字：安全页的下拉也是这几个字
+    "只看不动": "Look only",
+    "每步都问": "Ask every step",
+    "全自动": "Full auto",
+    "安全档位是「只看不动」：本机 CLI 这一趟按只读跑，不写文件也不跑命令。":
+      "Safety level is “Look only”: the local CLI runs read-only this time, with no file writes and no commands.",
+    "安全档位是「每步都问」，而本机 CLI 这条路没有审批通道（非交互，没人能点同意）——它要写文件或跑命令会被直接拒。想让它动手，把档位调到「自动改文件」。":
+      "Safety level is “Ask every step”, but the local CLI has no approval channel (it's non-interactive, so nobody can click Allow). Any file write or command it tries is refused. To let it act, switch to “Edit files for me”.",
+    "引擎那头上次的会话线程已经不在了，这次把对话历史重新带过去，开一根新的":
+      "The engine's previous session is gone, so the chat history is sent over again to start a new one",
+  })) if (!(zh in DICT.en)) DICT.en[zh] = en;
+  // 列表是「、」连的；多于五个时尾巴是「 等 N 个」（agent.js 的 engineDeliveryNotes）
+  const zhList = (s) => String(s).replace(/ 等 (\d+) 个$/, " ($1 in all)").split("、").join(", ");
+  const quietEn = (s) => String(s).replace(/^(\d+) 分 (\d+) 秒$/, "$1 min $2 s").replace(/^(\d+) 分钟$/, "$1 min").replace(/^(\d+) 秒$/, "$1 s");
+  // 只读那一趟停用的手填设置（agent.js 拼的 off 列表），每项是「名字 值」
+  const offEn = (s) => s.replace(/^档位 /, "permission mode ").replace(/^沙箱 /, "sandbox ").replace(/^全局连接器$/, "global connectors").replace(/^附加参数 /, "extra arguments ");
+  PATTERNS.en.push(
+    [/^本项目工具没能挂给引擎（(.+)），这次只能用 CLI 自带的工具$/, "Couldn't attach this project's tools to the engine ($1), so only the CLI's own tools are available this time"],
+    [/^这几个连接器走网址，本机引擎挂不上：(.+)$/, (m) => `These connectors work over a URL, which the local engine can't attach: ${zhList(m[1])}`],
+    [/^按你的安全设置，本机 CLI 不许自己跑这些命令：(.+)（这条路没有审批通道，只能直接禁）。$/,
+      (m) => `Per your safety settings, the local CLI may not run these commands on its own: ${zhList(m[1])} (there's no approval channel here, so they're blocked outright).`],
+    [/^这一趟是(计划|问答)模式，本机 CLI 按只读跑；引擎设置里手填的(.+)这次不用$/,
+      (m) => `This run is in ${m[1] === "计划" ? "Plan" : "Ask"} mode, so the local CLI runs read-only. Skipped this time from your engine settings: ${m[2].split("、").map(offEn).join(", ")}`],
+    [/^Codex 生成的图已放进对话目录：(.+)$/, (m) => `Images Codex generated are now in this chat's folder: ${zhList(m[1])}`],
+    // 心跳：引擎名夹在句首（本机 Codex / 本机 Claude Code），再查一次词典
+    [/^(.+?) 还在运行，已 (.+?)没有新输出$/, (m) => `${engName(m[1])} is still running, no new output for ${quietEn(m[2])}`],
+    [/^在想：(.+)$/, "Thinking: $1"],
+    [/^Codex 自带生图 (.+)$/, "Codex image generation $1"],
+    [/^已放进对话目录：(.+)$/, "Placed in this chat's folder: $1"],
+    [/^回复里提到的文件没找到：(.+)$/, (m) => `Files named in the reply weren't found: ${zhList(m[1])}`],
+    [/^回复里提到的文件是空的（0 字节）：(.+)$/, (m) => `Files named in the reply are empty (0 bytes): ${zhList(m[1])}`],
+    // 引号里是回复的原话，照抄
+    [/^回复里说「(.+)」，这一趟没有产出新图片$/, "The reply says “$1”, but this run produced no new image"],
+  );
+
   // 界面上开头那些表情（❌ ⚠️ ✅ 🪪 ⚙️ 🌐 …）正在一处处换成 SVG 图标。图标是 <svg>，
   // 翻译器不碰 SVG，所以换完之后 DOM 里的文本节点变成了光秃秃的「个人资料」，
   // 而词条当年是按「🪪 个人资料」收的——对不上就漏翻，页面会中英混着显示。

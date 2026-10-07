@@ -3342,6 +3342,63 @@ function testMultiRunI18n() {
   return names;
 }
 
+// ================= 本机引擎那几句的英文 =================
+// 本机 CLI 跑着时服务端推来的事实提示、心跳、交付核对（agent.js / codex.js / security.js），整句写进运行页。
+// 英文界面靠 i18n.js 的整句正则吃下它们；这里按真源码里的固定部分对一遍，源码改了措辞当场红
+const ENGINE_I18N_CASES = [
+  // [运行页上真出现的那句, 源码里必须有的固定部分, 允许留着的中文（回复原话）]。服务端原话、文件名用英文占位
+  ["本项目工具没能挂给引擎（spawn ENOENT），这次只能用 CLI 自带的工具", "），这次只能用 CLI 自带的工具"],
+  ["这几个连接器走网址，本机引擎挂不上：notion、figma", "这几个连接器走网址，本机引擎挂不上："],
+  ["安全档位是「只看不动」：本机 CLI 这一趟按只读跑，不写文件也不跑命令。"],
+  ["安全档位是「每步都问」，而本机 CLI 这条路没有审批通道（非交互，没人能点同意）——它要写文件或跑命令会被直接拒。想让它动手，把档位调到「自动改文件」。"],
+  ["按你的安全设置，本机 CLI 不许自己跑这些命令：sudo、rm（这条路没有审批通道，只能直接禁）。", "（这条路没有审批通道，只能直接禁）。"],
+  ["这一趟是计划模式，本机 CLI 按只读跑；引擎设置里手填的档位 bypassPermissions、沙箱 danger-full-access、全局连接器、附加参数 --yolo / --full-auto这次不用", "本机 CLI 按只读跑；引擎设置里手填的"],
+  ["这一趟是问答模式，本机 CLI 按只读跑；引擎设置里手填的全局连接器这次不用", "这次不用"],
+  ["引擎那头上次的会话线程已经不在了，这次把对话历史重新带过去，开一根新的"],
+  ["Codex 生成的图已放进对话目录：codex-image-1007-120000.png、codex-image-1007-120001.png", "Codex 生成的图已放进对话目录："],
+  ["本机 Codex 还在运行，已 30 秒没有新输出", " 还在运行，已 "],
+  ["本机 Claude Code 还在运行，已 1 分钟没有新输出", "没有新输出"],
+  ["本机 Codex 还在运行，已 1 分 30 秒没有新输出", " 分 ${r} 秒"],
+  ["在想：Planning the night scene", "在想："],
+  ["Codex 自带生图 codex-image-1007-120000.png", "Codex 自带生图 "],
+  ["已放进对话目录：codex-image-1007-120000.png", "已放进对话目录："],
+  ["回复里提到的文件没找到：poster.png", "回复里提到的文件没找到："],
+  ["回复里提到的文件没找到：a.pdf、b.pdf、c.pdf、d.pdf、e.pdf 等 7 个", " 等 ${xs.length} 个"],
+  ["回复里提到的文件是空的（0 字节）：report.pdf", "回复里提到的文件是空的（0 字节）："],
+  ["回复里说「如图所示」，这一趟没有产出新图片", "，这一趟没有产出新图片", "如图所示"],
+];
+function testEngineI18n() {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const root = path.join(__dirname, "..");
+  const srv = ["src/agent/agent.js", "src/engines/codex.js", "src/core/safety/security.js"].map((f) => fs.readFileSync(path.join(root, f), "utf8")).join("\n");
+  const HAN = /[一-鿿]/;
+  const jsDir = path.join(root, "public", "js");
+  const I18N_MOD = require(path.join(jsDir, "i18n.js"));
+  const miss = (mod) => ENGINE_I18N_CASES.filter(([s, , keep]) => { const o = mod.tr(s, "en"); return o === s || HAN.test(keep ? o.split(keep).join("") : o); }).map(([s]) => s);
+  for (const [s, frag] of ENGINE_I18N_CASES) ok("源码里真有这句：" + s.slice(0, 16), srv.includes(frag || s), "服务端源码里找不到「" + (frag || s) + "」——措辞改过？词典跟着改");
+  const m0 = miss(I18N_MOD);
+  ok(`英文界面全翻得动（${ENGINE_I18N_CASES.length} 句，除了回复原话一个汉字不剩）`, m0.length === 0, "还剩中文：" + m0.join(" ／ "));
+  const en = (s) => I18N_MOD.tr(s, "en");
+  // 几处拼出来的：引擎名、多久没出声、停用的那几项、超过五个的尾巴，各自也得翻对，不许半句英文半句中文
+  ok("  └ 心跳里引擎名和时长一起翻（1 分 30 秒 → 1 min 30 s）", en("本机 Codex 还在运行，已 1 分 30 秒没有新输出") === "Local Codex is still running, no new output for 1 min 30 s"
+    && en("本机 Claude Code 还在运行，已 1 分钟没有新输出") === "Local Claude Code is still running, no new output for 1 min", en("本机 Codex 还在运行，已 1 分 30 秒没有新输出"));
+  ok("  └ 只读那一趟停用的每一项都翻", en(ENGINE_I18N_CASES[5][0]) === "This run is in Plan mode, so the local CLI runs read-only. Skipped this time from your engine settings: permission mode bypassPermissions, sandbox danger-full-access, global connectors, extra arguments --yolo / --full-auto",
+    en(ENGINE_I18N_CASES[5][0]));
+  ok("  └ 超过五个文件的尾巴「等 7 个」也翻", en("回复里提到的文件没找到：a.pdf、b.pdf、c.pdf、d.pdf、e.pdf 等 7 个") === "Files named in the reply weren't found: a.pdf, b.pdf, c.pdf, d.pdf, e.pdf (7 in all)",
+    en("回复里提到的文件没找到：a.pdf、b.pdf、c.pdf、d.pdf、e.pdf 等 7 个"));
+  ok("  └ 安全档位的名字单独也能翻（安全页下拉）", en("只看不动") === "Look only" && en("每步都问") === "Ask every step" && en("全自动") === "Full auto" && en("自动改文件") === "Edit files for me");
+  // ★反向对照★ 摘掉 i18n.js 里「本机引擎运行页上的那些话」那一节再加载：这套断言得真红，而且红的就是这一节管的句子
+  const src = fs.readFileSync(path.join(jsDir, "i18n.js"), "utf8");
+  const a = src.indexOf("// ---------- 本机引擎运行页上的那些话"), b = src.indexOf("// 界面上开头那些表情");
+  ok("i18n.js 里那一节找得到（节标题没改）", a > 0 && b > a);
+  const mod = { exports: {} };
+  new Function("module", "window", src.slice(0, a) + src.slice(b))(mod, undefined);
+  const m1 = miss(mod.exports);
+  ok(`反向对照：摘掉那一节，${m1.length}/${ENGINE_I18N_CASES.length} 句当场露中文`, m1.length === ENGINE_I18N_CASES.length, "只红了 " + m1.length + " 句，这几句是别处吃下的：" + ENGINE_I18N_CASES.map(([s]) => s).filter((s) => !m1.includes(s)).join(" ／ "));
+  return names;
+}
+
 // 拼音打一半按回车/Esc：回车是把字母上屏、Esc 是取消拼字——这两下都是给输入法的。
 // 没过 imeKey 的回车会把半截拼音当整条发出去、把搜索跳到拼音字母匹配的那页；
 // 没过的 Esc 会把整张表单关掉、把画布上正在跑的那轮叫停。
@@ -16015,6 +16072,12 @@ app.whenReady().then(async () => {
       const namesMRI = testMultiRunI18n();
       for (const n of namesMRI) console.log("  ✓ " + n);
       console.log(`✅ 前端：多开那两波的英文（打开对话的等待和失败·预览页载入·成果区分格·侧栏行上的停·含反向对照）${namesMRI.length} 项通过`);
+    }
+
+    {
+      const namesEI = testEngineI18n();
+      for (const n of namesEI) console.log("  ✓ " + n);
+      console.log(`✅ 前端：本机引擎那几句的英文（工具没挂上·只读停用·档位收紧·心跳·交付核对·含反向对照）${namesEI.length} 项通过`);
     }
 
     const winESC = mkWin({ show: false, width: 600, height: 400, webPreferences: { offscreen: true } });
