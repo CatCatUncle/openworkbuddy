@@ -2421,7 +2421,7 @@ function modePrompt(mode) {
         // 画布任务也不借生图 / 生视频 / 配音：那边要先交清单、用户点「开跑」才生成（src/tools/canvas.js CANVAS_QUOTE_FIRST），
         // 桥那头不知道是哪条会话，拦不住，只能不借
         tools: skillsWriteOff() || connectorsLendOff() || canvasStore.canvasSessionOf(sessionId)
-          ? require("../engines/tool-bridge").LENDABLE.filter((n) => !(skillsWriteOff() && n === "install_skill") && !(connectorsLendOff() && n === "add_connector")
+          ? require("../engines/lendable").LENDABLE.filter((n) => !(skillsWriteOff() && n === "install_skill") && !(connectorsLendOff() && n === "add_connector")
             && !(canvasStore.canvasSessionOf(sessionId) && canvasStore.CANVAS_QUOTE_FIRST.includes(n)))
           : undefined,
         extraServers: config.mcp_servers || [],

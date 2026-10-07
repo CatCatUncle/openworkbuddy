@@ -81,11 +81,9 @@ const CYCLE_ALLOW = [
   ["src/core/ext/plugins.js", "src/core/ext/skills.js"],
   ["src/agent/mcp.js", "src/agent/tools.js"],
 ];
-// require 一个也会被 spawn 的脚本：tool-bridge 有 require.main 守卫，require 进来只拿那张表；二期把表抽成纯数据模块
-const SPAWN_ALLOW = [
-  ["src/agent/agent.js", "src/engines/tool-bridge.js"],
-  ["src/engines/bridge.js", "src/engines/tool-bridge.js"],
-];
+// require 一个也会被 spawn 的脚本。原先 agent.js、bridge.js 为了借工具名单 require tool-bridge，
+// 名单抽进 src/engines/lendable.js 之后一条都不剩；要加先想清楚那个脚本被 require 时顶层会干什么
+const SPAWN_ALLOW = [];
 
 // ── 抠边 ───────────────────────────────────────────────────────────────────
 const REQ_KINDS = new Set(["require", "resolve", "tryRequire"]); // 模块依赖（算层、算环）
@@ -280,7 +278,7 @@ const pathLoaded = new Set(edges.filter((e) => PATH_KINDS.has(e.kind)).map((e) =
 const reqSpawn = edges.filter((e) => REQ_KINDS.has(e.kind) && pathLoaded.has(e.to) && layerOf(e.to) && layerOf(e.to).rank !== 6);
 const reqSpawnPairs = [...new Set(reqSpawn.map((e) => `${e.from} → ${e.to}`))];
 const allowedSpawn = (e) => SPAWN_ALLOW.some(([a, b]) => a === e.from && b === e.to);
-ok(CYCLE_ALLOW.length <= 3 && SPAWN_ALLOW.length <= 2, `白名单条数没涨（环 ${CYCLE_ALLOW.length} ≤ 3、require-spawn ${SPAWN_ALLOW.length} ≤ 2）`);
+ok(CYCLE_ALLOW.length <= 3 && SPAWN_ALLOW.length === 0, `白名单条数没涨（环 ${CYCLE_ALLOW.length} ≤ 3、require-spawn ${SPAWN_ALLOW.length} = 0）`);
 // 名单里的环拆掉了才算过期；被一个更大的新环吞进去不算过期（那个大环在 ④ 里按白名单外的环列出来）
 const staleCycles = CYCLE_ALLOW.filter((w) => !cycles.some((c) => w.every((x) => c.includes(x))));
 ok(staleCycles.length === 0, `白名单里的 ${CYCLE_ALLOW.length} 个环都还在（拆掉了就从名单里删）`, staleCycles);

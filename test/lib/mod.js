@@ -204,6 +204,7 @@ const TABLE = Object.freeze({
   engines: "src/engines/index.js",
   gate: "src/engines/gate.js",
   jsonl: "src/engines/jsonl.js",
+  lendable: "src/engines/lendable.js",
   "tool-bridge": "src/engines/tool-bridge.js",
   which: "src/platform/which.js",
   win: "src/platform/win.js",

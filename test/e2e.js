@@ -12412,7 +12412,10 @@ async function testEngineToolBridge() {
     assert(!("writableRoots" in cx.runOpts), "又给 codex 开了数据目录的写权限，沙箱里的命令能改配置和账号：" + JSON.stringify(cx.runOpts.writableRoots));
     assert(cx.runOpts.mcpArgs.includes("mcp_servers.openworkbuddy.tool_timeout_sec=900"),
       "MCP 是主路后生视频这类长工具得放宽超时，不然 codex 半路判它超时：" + JSON.stringify(cx.runOpts.mcpArgs));
-    assert.strictEqual(cx.lent.length, tb.LENDABLE.length, "借出的工具数对不上：" + cx.lent.length + " vs " + tb.LENDABLE.length);
+    // 借出名单 = 整张表去掉要真浏览器的：桥是纯 node 子进程，那两个借过去也调不成，提示词却会照着名单叫模型去调
+    const lendable = require(modPath("lendable"));
+    assert.deepStrictEqual(cx.lent, lendable.lentFor({ renderer: false }), "借出的工具对不上：" + JSON.stringify(cx.lent));
+    assert(!cx.lent.some((n) => lendable.NEEDS_RENDERER.includes(n)), "要真浏览器的工具进了借出名单：" + JSON.stringify(cx.lent));
 
     // 脚本得把环境变量烘进去。不烘的话就得让模型自己带 OPENWORKBUDDY_HOME=... 前缀，
     // 它十次有三次会漏，漏了就落到错误的数据目录里，用户在成果面板里什么都看不到。
@@ -12472,12 +12475,13 @@ async function testEngineToolBridge() {
 
   // ⑨ MCP 那条路本身的形状：tools/list 必须是 inputSchema（小驼峰），本项目内部是 input_schema
   const listed = tb.listTools();
-  // 不能拿 LENDABLE 的长度直接比：桥是个纯 node 子进程，没有 Electron，要真浏览器的那两个
-  // 会被摘掉。挂一个必然抛「需要桌面版环境」的工具，比不挂更糟——CLI 那头的模型会先照着
-  // 做一遍、吃一条必然的失败、再回来重想，白烧一轮
+  // 挂上的必须跟 attach 给的借出名单（提示词照它列）是同一份。桥是个纯 node 子进程，没有 Electron，
+  // 要真浏览器的那两个会被摘掉。挂一个必然抛「需要桌面版环境」的工具，比不挂更糟——CLI 那头的模型
+  // 会先照着做一遍、吃一条必然的失败、再回来重想，白烧一轮
   const NEED_GUI = ["html_to_image", "render_page"];
-  assert(Array.isArray(listed) && listed.length === tb.LENDABLE.length - NEED_GUI.length,
-    `tools/list 返回的工具数不对：${listed.length}（白名单 ${tb.LENDABLE.length} 个，这个进程里该摘掉 ${NEED_GUI.length} 个要浏览器的）`);
+  const sorted = (a) => [...a].sort().join(",");
+  assert(Array.isArray(listed) && sorted(listed.map((t) => t.name)) === sorted(cx.lent),
+    `tools/list 跟借出名单对不上：挂了 ${sorted(listed.map((t) => t.name))}，名单是 ${sorted(cx.lent)}`);
   assert(!listed.some((t) => NEED_GUI.includes(t.name)), "要真浏览器的工具挂上桥了");
   assert(listed.some((t) => t.name === "read_document"), "read_document 没借给 CLI：它们自带的读文件工具读 Office 只会得到乱码");
   assert(listed.every((t) => t.inputSchema && !t.input_schema), "tools/list 用了 input_schema（下划线），MCP 客户端认的是 inputSchema");

@@ -24,6 +24,9 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+// 名单是纯数据，require 它不会碰 console、不读配置（tool-bridge.js 会，所以这里不 require 它）。
+// 下面一律 renderer:false：桥由 nodeLauncher 以纯 node 拉起，那头永远没有浏览器
+const { lentFor, toEnv } = require("./lendable");
 
 const BRIDGE_ENTRY = path.join(__dirname, "tool-bridge.js");
 const SERVER_NAME = "openworkbuddy";
@@ -43,7 +46,7 @@ function nodeLauncher() {
  * @param {string} o.home      数据根目录（bridge 靠它找 config.json / workspace）
  * @param {string} [o.baseDir] 本次对话的成果子目录（相对 workspace）
  * @param {string} [o.user]    当前用户名（记忆按人隔离）
- * @param {string[]} [o.tools] 借出去的工具名；不传就用 tool-bridge 的默认白名单
+ * @param {string[]} [o.tools] 借出去的工具名；不传就是 lendable.js 整张表，空数组就是一个不借
  * @param {Array} [o.extraServers] 用户自己配的 MCP 连接器（config.mcp_servers 的形状）
  */
 function buildServers({ home, baseDir = "", user = "", tools, extraServers = [] }) {
@@ -57,7 +60,8 @@ function buildServers({ home, baseDir = "", user = "", tools, extraServers = [] 
         OPENWORKBUDDY_HOME: home,
         OPENWORKBUDDY_BRIDGE_BASEDIR: baseDir,
         OPENWORKBUDDY_BRIDGE_USER: user,
-        ...(tools && tools.length ? { OPENWORKBUDDY_BRIDGE_TOOLS: tools.join(",") } : {}),
+        // 每次都写，一个不借也写：桥那头没拿到这个变量就不启动，不会按整张表借
+        OPENWORKBUDDY_BRIDGE_TOOLS: toEnv(lentFor({ tools, renderer: false })),
       },
     },
   };
@@ -154,8 +158,8 @@ function writeShim(server) {
 function attach(engineId, { home, baseDir = "", user = "", tools, extraServers = [] } = {}) {
   const servers = buildServers({ home, baseDir, user, tools, extraServers });
   const names = Object.keys(servers);
-  const lent = (tools && tools.length ? tools : require("./tool-bridge").LENDABLE)
-    .filter((n) => require("./tool-bridge").LENDABLE.includes(n));
+  // 跟 buildServers 写进环境变量的是同一份：提示词里列的、owb list 打出来的、MCP 挂上的，三处一致
+  const lent = lentFor({ tools, renderer: false });
   const shim = writeShim(servers[SERVER_NAME]);
   // 两边都以 MCP 为主（见文件头）；命令行脚本只是后备
   const shimIsPrimary = false;

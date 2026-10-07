@@ -23,7 +23,7 @@
  * 环境变量（由 src/engines/bridge.js 拼好后传进来）：
  *   OPENWORKBUDDY_HOME  数据根目录（config.json / workspace 都在这儿找）
  *   OPENWORKBUDDY_BRIDGE_BASEDIR   本次对话的成果子目录（相对 workspace），产物落这里
- *   OPENWORKBUDDY_BRIDGE_TOOLS     借出去的工具名，逗号分隔
+ *   OPENWORKBUDDY_BRIDGE_TOOLS     借出去的工具名，逗号分隔；一个不借时是「-」。缺了这个变量不启动
  *   OPENWORKBUDDY_BRIDGE_USER      当前用户名（记忆按人隔离用）
  *
  * 协议：换行分隔的 JSON-RPC，跟 mcp.js 那台客户端用的是同一种框法。
@@ -58,30 +58,8 @@ const mediaModels = require("../core/model/media-models");
 
 const PROTOCOL_VERSION = "2025-06-18";
 
-/** 借给 CLI 的工具白名单。改这里就是改「本机引擎能用到本项目的什么」。 */
-const LENDABLE = [
-  "generate_image",   // 生图：CLI 没有，用户最常撞的就是这条
-  "generate_video",   // 生视频
-  "text_to_speech",   // 配音
-  "transcribe_audio", // 录音转文字
-  "html_to_image",    // 网页转长图/封面
-  "delivery_page",    // 交付页：成片/封面/文案收成一页（本机出，不要浏览器）
-  "gen_diagram",      // mermaid / echarts / graphviz 出图
-  "look_at_image",    // 看图（CLI 在无头管道里读不了本地图片）
-  "read_document",    // 读 Office 文档/压缩包：CLI 只会按文本读，拿回去是一坨乱码
-  "render_page",      // 带 JS 渲染后取正文（本项目自己的模型不用它，见下面 BRIDGE_ONLY）
-  "check_page",       // 打开做好的网页，看控制台报错和实际效果
-  "record_web_demo",  // 网页产品演示录屏：CLI 沙箱里起不来 Chrome，借出去在沙箱外跑（要本机 Chrome + ffmpeg）
-  "web_search",       // 走本项目配的搜索渠道
-  "library_list",     // 技能库：有哪些
-  "library_read",     // 技能库：把某个技能的正文读出来
-  "save_skill",       // 这次趟出来的做法存成技能
-  "install_skill",    // 用户让装 GitHub 上的技能：不借的话 CLI 只会照上游 README 装进它自己的 ~/.claude/skills
-  "add_connector",    // 用户让接某个 MCP：不借的话 CLI 只会手改 config.json，或者装进它自己的配置，连接器页上都看不见
-  "remember",         // 长期记忆：记
-  "forget",           // 长期记忆：忘
-  "canvas_manage",    // 画布：改节点、交待生成清单。画布任务里生成工具不借（见 agent.js），不借它的话本机引擎既交不了清单、也改不了提示词
-];
+// 名单只此一份，在 lendable.js；这里再导出一次只是给老测试用
+const { LENDABLE, NEEDS_RENDERER, lentFor, parseList } = require("./lendable");
 
 function loadConfig() {
   try { return JSON.parse(fs.readFileSync(dataPath("config.json"), "utf8")); }
@@ -91,14 +69,11 @@ function loadConfig() {
 const config = loadConfig();
 const BASE_DIR = process.env.OPENWORKBUDDY_BRIDGE_BASEDIR || "";
 const USER = process.env.OPENWORKBUDDY_BRIDGE_USER || "";
-const ALLOW = new Set(
-  String(process.env.OPENWORKBUDDY_BRIDGE_TOOLS || LENDABLE.join(","))
-    .split(",").map((s) => s.trim()).filter(Boolean)
-);
-
-// 这两个要真浏览器。桥是个纯 node 子进程，没有 Electron，调了必抛「需要桌面版环境」——
-// 挂一个必然失败的工具，比不挂更糟：CLI 那边的模型会先照着做一遍，再回来重想。
-const NEEDS_RENDERER = ["html_to_image", "render_page"];
+// 借哪些由主进程定：bridge.js 每次都写这个变量，一个不借时也写（值是 lendable.NONE）。
+// 被拉起时没拿到它，就不是 bridge.js 拉的，按整张表兜底等于把关掉的工具又借出去，所以报错退出（见文件末尾）。
+// 被测试 require 进来时没有它，按整张表算。不在 LENDABLE 里的名字一律不认。
+const TOOLS_ENV = process.env.OPENWORKBUDDY_BRIDGE_TOOLS;
+const ALLOW = new Set(TOOLS_ENV === undefined ? LENDABLE : lentFor({ tools: parseList(TOOLS_ENV) }));
 
 // 只借给外部引擎、本项目自己的模型看不到的工具定义。
 //
@@ -127,7 +102,7 @@ function lentDefs() {
   let gui = false;
   try { gui = !!require("../platform/render/browser-render").available(); } catch {}
   return [...tools.TOOL_DEFS, ...BRIDGE_ONLY].filter(
-    (d) => ALLOW.has(d.name) && LENDABLE.includes(d.name) && (gui || !NEEDS_RENDERER.includes(d.name))
+    (d) => ALLOW.has(d.name) && (gui || !NEEDS_RENDERER.includes(d.name))
   );
 }
 
@@ -291,6 +266,10 @@ async function cli(argv) {
 }
 
 if (require.main === module) {
+  if (TOOLS_ENV === undefined) {
+    process.stderr.write("没拿到 OPENWORKBUDDY_BRIDGE_TOOLS，不知道这次借哪些工具，没有启动。这台服务器由 OpenWorkBuddy 在用本机引擎时拉起\n");
+    process.exit(2);
+  }
   // 这个进程是 CLI 拉起的子进程：在这儿摆出的审批卡，网页、终端、手机都看不见（它们看的是自己进程里那份）。
   // 不当场拒的话，要干等满超时（默认 120 秒）才按「没批」收场，CLI 那头只当工具卡死了
   security.watchApprovals((ev) => { const id = ev.type === "open" && ev.entry && ev.entry.id; if (id) setImmediate(() => security.resolveApproval(id, false)); });
