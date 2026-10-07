@@ -29,6 +29,8 @@
  *      暂停的不转；走网址的不转、在运行页上点名；名字里带 __、带点的改成两个 CLI 都认得的；套的那一层交回退出码、转信号
  *   ⑭ CLI 报上来的工具名归回原名（mcp__openworkbuddy__x、openworkbuddy.x、owb x → x），原叫法留在 raw_name；
  *      主进程真跑一趟：播出去的事件名、标题、结果那条按 id 跟上；别人的连接器、带别的命令的 shell 原样
+ *   ⑮ 桥里的审计每条当场追加一行：命令行入口跑完就退出也不丢、不去盖主进程那份；写不进去原样打到 stderr；
+ *      主进程看列表、导出时按时间并进来，清空时一起清；过 512KB 换一份
  *
  * 真起桥子进程，但不起任何 CLI 引擎、不出网（假生图上游起在 127.0.0.1）。
  *   node test/engine-bridge.js
@@ -89,6 +91,7 @@ function mcpSteps(server, steps) {
     const next = () => {
       while (i < steps.length && typeof steps[i] === "function") steps[i++]();
       if (i >= steps.length) { ch.stdin.end(); return; }
+      if (steps[i].wait) { setTimeout(next, steps[i++].wait); return; } // { wait: 毫秒 }：桥多活一会儿再往下
       send({ id: ++id, ...steps[i++] });
     };
     ch.stderr.on("data", (d) => { err += d; });
@@ -966,6 +969,74 @@ process.stdin.on("data", (d) => {
     } finally {
       engines.BACKENDS.splice(engines.BACKENDS.indexOf(stub), 1);
     }
+  }
+
+  section("⑮ 桥里的审计每条当场追加：跑完马上退出也在，主进程看列表、导出时并进来");
+  {
+    const entry = mod("tool-bridge");
+    const H = path.join(HOME, "审计");
+    fs.mkdirSync(H, { recursive: true });
+    fs.writeFileSync(path.join(H, "config.json"), "{}");
+    const env = { ...process.env, OPENWORKBUDDY_HOME: H, OPENWORKBUDDY_BRIDGE_TOOLS: "render_page", OPENWORKBUDDY_BRIDGE_BASEDIR: "任务_审计" };
+    delete env.OPENWORKBUDDY_BRIDGE_ROOT; delete env.OPENWORKBUDDY_LOG_DIR;
+    // 不是 http 的地址：安全中心当场拦、记一条「网络拦截」，不联网
+    const cli = (url) => spawnSync(process.execPath, [entry, "render_page", JSON.stringify({ url })], { env, encoding: "utf8", timeout: 60000 });
+    const jf = path.join(H, "data", "audit-bridge.jsonl");
+    const mainFile = path.join(H, "data", "audit.json");
+    const rows = (f = jf) => (fs.existsSync(f) ? fs.readFileSync(f, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+    const inMain = (re) => fs.existsSync(mainFile) && re.test(fs.readFileSync(mainFile, "utf8"));
+
+    const p = cli("ftp://audit-a1.invalid/x");
+    const r1 = rows();
+    ok(p.status === 1 && r1.length === 1 && r1[0].type === "网络拦截" && r1[0].action === "拦截" && r1[0].text.includes("audit-a1") && typeof r1[0].ts === "string",
+      "★命令行入口跑完马上退出，这条也落了盘★ 一行一条", { status: p.status, rows: r1, err: String(p.stderr).slice(-300) });
+
+    const m = await mcpSteps({ command: process.execPath, args: [entry], env }, [
+      { method: "tools/call", params: { name: "render_page", arguments: { url: "ftp://audit-m1.invalid/" } } },
+      { method: "tools/call", params: { name: "render_page", arguments: { url: "ftp://audit-m2.invalid/" } } },
+      { wait: 800 }, // 过了主进程那份半秒一落盘的点：追加之外要是还进了内存那份，这会儿就盖进 audit.json 了
+    ]);
+    const r2 = rows();
+    ok(m.results.length === 2 && r2.length === 3 && r2[1].text.includes("audit-m1") && r2[2].text.includes("audit-m2"), "MCP 那条路也是一条一行追加", r2);
+    ok(!inMain(/audit-(?:a1|m1|m2)/), "★不去整份覆盖主进程那份 audit.json★（以前写进去的是桥启动时的旧快照，主进程下一次写又盖回去）");
+
+    // 主进程：看列表、导出时并进来（按时间），清空时一起清
+    const sec = mod("security");
+    const code = [
+      `const fs = require("fs"); const sec = require(${JSON.stringify(sec)});`,
+      `sec.audit("测试", "主进程这条", "放行");`,
+      `const list = sec.auditList(10).map((e) => e.text); const exp = sec.auditExport();`,
+      `sec.auditClear();`,
+      `process.stdout.write("\\nRESULT " + JSON.stringify({ list, exp, gone: !fs.existsSync(${JSON.stringify(jf)}), after: sec.auditList(10).length }) + "\\n");`,
+      `process.exit(0);`,
+    ].join("\n");
+    const q = spawnSync(process.execPath, ["-e", code], { env: { ...process.env, OPENWORKBUDDY_HOME: H }, encoding: "utf8", timeout: 60000 });
+    const line = String(q.stdout || "").split("\n").find((l) => l.startsWith("RESULT "));
+    const res = line ? JSON.parse(line.slice(7)) : null;
+    ok(res && res.list.length === 4 && res.list[0] === "主进程这条" && /audit-m2/.test(res.list[1]) && /audit-a1/.test(res.list[3]),
+      "★审计中心列表里看得见桥那边的★ 跟主进程的按时间排（新的在前）", res || { status: q.status, err: String(q.stderr).slice(-400) });
+    ok(res && /\[网络拦截\]\t拦截\tftp:\/\/audit-a1/.test(res.exp) && /主进程这条/.test(res.exp), "导出也带上", res && res.exp);
+    ok(res && res.gone && res.after === 0, "清空时桥那份一起清", res);
+
+    // 写不进去（codex 的命令沙箱不让写数据目录）：原样打到 stderr，工具照常回话
+    fs.mkdirSync(jf, { recursive: true }); // 占成目录，追加必失败
+    const w = cli("ftp://audit-w1.invalid/");
+    ok(w.status === 1 && /审计记录没写进/.test(w.stderr) && w.stderr.includes(jf) && /\[网络拦截\] 拦截 ftp:\/\/audit-w1/.test(w.stderr) && /没抓成|拦截/.test(w.stdout),
+      "★写不进去就把这条原样打到 stderr★ 文件在哪、哪一条都说清，工具照常回话", { status: w.status, err: w.stderr.slice(-400), out: w.stdout.slice(0, 200) });
+    fs.rmSync(jf, { recursive: true, force: true });
+
+    // 过 512KB 换一份：旧的留一份 .1，并列表时两份都读
+    const old = [];
+    for (let i = 0; old.join("").length < 600 * 1024; i++) old.push(JSON.stringify({ ts: "2026-01-01T00:00:00.000Z", type: "网络访问", text: "旧-" + i + "-" + "x".repeat(80), action: "放行" }) + "\n");
+    fs.writeFileSync(jf, old.join(""));
+    cli("ftp://audit-r1.invalid/");
+    const r3 = rows(), r3old = rows(jf + ".1");
+    ok(r3.length === 1 && /audit-r1/.test(r3[0].text) && r3old.length === old.length, "★过 512KB 换一份★ 新的从空文件记起，旧的整份留在 .1", { now: r3.length, old: r3old.length });
+    const q2 = spawnSync(process.execPath, ["-e", `const sec = require(${JSON.stringify(sec)}); const x = sec.auditExport(); process.stdout.write("\\nRESULT " + JSON.stringify({ old: (x.match(/旧-/g) || []).length, now: /audit-r1/.test(x) }) + "\\n"); process.exit(0);`],
+      { env: { ...process.env, OPENWORKBUDDY_HOME: H }, encoding: "utf8", timeout: 60000 });
+    const l2 = String(q2.stdout || "").split("\n").find((l) => l.startsWith("RESULT "));
+    const res2 = l2 ? JSON.parse(l2.slice(7)) : null;
+    ok(res2 && res2.old === old.length && res2.now, "导出时 .1 那份也并进来", res2 || String(q2.stderr).slice(-300));
   }
 
   console.log(`\n${pass} 通过，${fail} 失败`);

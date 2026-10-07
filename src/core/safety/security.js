@@ -8,7 +8,8 @@
  * - 文件安全：workspace 内默认可用；黑名单永远拦；workspace 外仅白名单目录放行
  * - 命令安全：放行名单直接执行；询问名单挂起等用户在界面上批准（超时/停止即拒绝）
  * - 网络安全：域名黑名单拦截；白名单非空时只允许白名单域名
- * - 审计中心：网络访问/命令执行/拦截记录全部落 data/audit.json（环形 1000 条）
+ * - 审计中心：网络访问/命令执行/拦截记录全部落 data/audit.json（环形 1000 条）；
+ *   本机引擎借工具时那些工具跑在桥那个子进程里，记在 data/audit-bridge.jsonl，看列表、导出时并进来
  */
 
 const fs = require("fs");
@@ -154,9 +155,54 @@ function getSecurity(config) {
 
 // ---------- 审计 ----------
 
+/**
+ * 本机引擎借工具时，工具跑在桥那个子进程里（engines/tool-bridge.js）。那边以前也走下面这份防抖整写，两头吃亏：
+ * 命令行入口跑完一条就 process.exit，500ms 的定时器还没响，这条就没了；MCP 那条路整份覆盖写，
+ * 写进去的是桥启动时读到的旧快照，主进程下一次写又把它盖回去。
+ * 桥里改成每条立刻追加一行到另一份文件；写不进去（codex 的命令沙箱不让写数据目录）就把这条原样打到 stderr。
+ * 主进程看列表、导出时并进来，清空时一起清。过 512KB 换一份，留一份旧的
+ */
+const BRIDGE_AUDIT_FILE = dataPath("data", "audit-bridge.jsonl");
+const BRIDGE_AUDIT_MAX = 512 * 1024;
+let auditSink = "memory";
+/** 桥启动时调一次 setAuditSink("append")；主进程不用管 */
+function setAuditSink(mode) {
+  auditSink = mode === "append" ? "append" : "memory";
+  if (auditSink !== "append") return;
+  try { if (fs.statSync(BRIDGE_AUDIT_FILE).size > BRIDGE_AUDIT_MAX) fs.renameSync(BRIDGE_AUDIT_FILE, BRIDGE_AUDIT_FILE + ".1"); } catch {}
+}
+function appendBridgeAudit(entry) {
+  try {
+    fs.mkdirSync(path.dirname(BRIDGE_AUDIT_FILE), { recursive: true });
+    fs.appendFileSync(BRIDGE_AUDIT_FILE, JSON.stringify(entry) + "\n");
+  } catch (e) {
+    try { process.stderr.write(`审计记录没写进 ${BRIDGE_AUDIT_FILE}（${(e && e.message) || e}），这一条是：${entry.ts} [${entry.type}] ${entry.action} ${entry.text}\n`); } catch {}
+  }
+}
+function bridgeAudit() {
+  const out = [];
+  for (const f of [BRIDGE_AUDIT_FILE + ".1", BRIDGE_AUDIT_FILE]) {
+    let raw;
+    try { raw = fs.readFileSync(f, "utf8"); } catch { continue; }
+    for (const line of raw.split("\n")) {
+      if (!line) continue;
+      try { const e = JSON.parse(line); if (e && typeof e.ts === "string") out.push(e); } catch {} // 写到一半断电的那行不要
+    }
+  }
+  return out;
+}
+/** 主进程这份和桥那份按时间并起来；桥那份是空的就原样 */
+function allAudit() {
+  const b = bridgeAudit();
+  if (!b.length) return auditLog;
+  return auditLog.concat(b).sort((x, y) => (x.ts < y.ts ? -1 : x.ts > y.ts ? 1 : 0));
+}
+
 let auditDirty = false;
 function audit(type, text, action) {
-  auditLog.push({ ts: new Date().toISOString(), type, text: String(text || "").slice(0, 300), action: action || "放行" });
+  const entry = { ts: new Date().toISOString(), type, text: String(text || "").slice(0, 300), action: action || "放行" };
+  if (auditSink === "append") return appendBridgeAudit(entry);
+  auditLog.push(entry);
   if (auditLog.length > 1000) auditLog.splice(0, auditLog.length - 1000);
   if (!auditDirty) {
     auditDirty = true;
@@ -170,16 +216,17 @@ function audit(type, text, action) {
   }
 }
 function auditList(limit) {
-  return auditLog.slice(-(limit || 100)).reverse();
+  return allAudit().slice(-(limit || 100)).reverse();
 }
 function auditClear() {
   auditLog = [];
   try {
     fs.writeFileSync(AUDIT_FILE, "[]", "utf8");
   } catch {}
+  for (const f of [BRIDGE_AUDIT_FILE, BRIDGE_AUDIT_FILE + ".1"]) { try { fs.rmSync(f, { force: true }); } catch {} }
 }
 function auditExport() {
-  return auditLog.map((e) => `${e.ts}\t[${e.type}]\t${e.action}\t${e.text}`).join("\n");
+  return allAudit().map((e) => `${e.ts}\t[${e.type}]\t${e.action}\t${e.text}`).join("\n");
 }
 
 // ---------- 多人部署 ----------
@@ -1650,6 +1697,8 @@ module.exports = {
   auditList,
   auditClear,
   auditExport,
+  setAuditSink, // 桥（engines/tool-bridge.js）启动时切成每条追加
+  BRIDGE_AUDIT_FILE,
   resolvePathWithPolicy,
   PERMISSION_MODES,
   DEFAULT_MODE, // 命令行要用它判断「现在这档是不是默认那档」，决定状态行印不印

@@ -401,6 +401,8 @@ if (require.main === module) {
     process.stderr.write("没拿到 OPENWORKBUDDY_BRIDGE_TOOLS，不知道这次借哪些工具，没有启动。这台服务器由 OpenWorkBuddy 在用本机引擎时拉起\n");
     process.exit(2);
   }
+  // 审计每条当场追加一行（见 security.js 的 setAuditSink）：命令行入口跑完一条就退出，等不到防抖那一下
+  security.setAuditSink("append");
   // 根要在接第一条请求之前定下来：MCP 和命令行两条路都要
   try { setupRoots(); }
   catch (e) {
