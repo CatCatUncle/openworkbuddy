@@ -163,7 +163,8 @@ const TOKEN_FRAMES = `(async (variant) => {
     const stick = { gap: chatScroll.scrollHeight - chatScroll.clientHeight - chatScroll.scrollTop, tall: chatScroll.scrollHeight > chatScroll.clientHeight + 200, has60: text.includes("第 60 行") };
     // 人往上翻着看历史：新字到了不拽他，落屏那一下照样亮「有新内容」
     chatScroll.scrollTop = 0;
-    await sleep(60);
+    // 滚动事件跟着下一帧才派发，CI 那台忙起来 60ms 不一定到：等到 chatStick 真翻过来，最多 2 秒；到点还没翻，下面照样判红
+    for (let k = 0; k < 80 && chatStick; k++) await sleep(25);
     frame();
     toBottom.classList.remove("new");
     const top0 = chatScroll.scrollTop, stuck0 = chatStick;
