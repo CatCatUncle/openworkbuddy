@@ -29,6 +29,7 @@ const ASSETS = [
   "public/pet.html",         // 同上
   "public/index.html",       // 主界面
   "src/engines/tool-bridge.js",  // 被当成子进程 spawn，不走 require
+  "src/engines/mcp-cwd.js",      // 同上：claude 那边插件连接器先切目录再起，少了插件连接器一台也起不来
   "src/platform/render/thumb-worker.js",         // 缩略图编码的 Worker 线程：thumb.js / htmlshot.js 按路径 new Worker，少了封面静默变灰
   "experts.json",            // 首次启动 seed 到 ~/OpenWorkBuddy
   "config.example.json",     // 同上

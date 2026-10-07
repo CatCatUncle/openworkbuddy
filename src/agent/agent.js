@@ -20,6 +20,8 @@ const connectorsLendOff = () => {
   const p = orgPolicy();
   return connectorsWriteOff() || (!!p && (p.allow_shell === false || (p.net_allow || []).length > 0 || (p.net_deny || []).length > 0));
 };
+/** 插件带来的连接器，本机引擎也要挂。插件坏了只是少几台，不拖累任务（哪个插件坏了、为什么，插件页上自己会报） */
+const enginePluginServers = () => { try { return require("../core/ext/plugins").pluginMcpServers(); } catch { return []; } };
 const awake = require("../platform/awake"); // 睡眠治理：任务期间防睡 + 睡了顺延时限
 const engines = require("../engines"); // 底层引擎：内置循环 / 本机 Claude Code / 本机 Codex
 const bridge = require("../engines/bridge"); // 把本项目的工具借给那两个 CLI（MCP）
@@ -2435,8 +2437,10 @@ function modePrompt(mode) {
           ? require("../engines/lendable").LENDABLE.filter((n) => !(skillsWriteOff() && n === "install_skill") && !(connectorsLendOff() && n === "add_connector")
             && !(canvasStore.canvasSessionOf(sessionId) && canvasStore.CANVAS_QUOTE_FIRST.includes(n)))
           : undefined,
-        // 只读那一趟：只借读的工具，用户的连接器一个不挂（它们能干什么这边判断不了），命令行入口也不给
-        extraServers: readOnly ? [] : config.mcp_servers || [],
+        // 只读那一趟：只借读的工具，用户的连接器一个不挂（它们能干什么这边判断不了），命令行入口也不给。
+        // 平时跟内置那边 startAll 同一份：自己配的在前、插件带来的在后；连接器页上关掉的不挂
+        extraServers: readOnly ? [] : [...(config.mcp_servers || []), ...enginePluginServers()],
+        disabled: config.mcp_disabled || [],
         readOnly,
         noShim: !guard.allowShim,
       });
@@ -2444,6 +2448,8 @@ function modePrompt(mode) {
       // 挂不上就照常跑，只是少了那些工具；不能因为桥没搭起来把整个任务毙掉
       emit({ type: "status", text: `本项目工具没能挂给引擎（${e.message}），这次只能用 CLI 自带的工具`, depth: 0 });
     }
+    // 走网址的连接器两个 CLI 写法各不相同，这边没转。不说一句，用户只会看到工具少了几个
+    if (bridged && bridged.skipped.length) emit({ type: "status", text: `这几个连接器走网址，本机引擎挂不上：${bridged.skipped.join("、")}`, depth: 0 });
 
     // 档位收紧了就明说一句。不说的话，用户看到的是「它怎么什么都不肯干」，
     // 而真正的原因在另一个页面上的一颗开关里，隔着两层根本联系不起来

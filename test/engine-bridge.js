@@ -25,6 +25,8 @@
  *      名单被改过也借不出生图；不写 owb 脚本、不挂用户的连接器
  *   ⑫ codex 命令沙箱里 owb 跑不成的（要记账、要写数据目录、要起 Chrome）：开跑前就说、退出码 2、上游不调；
  *      哪几样跑不成逐个点名核对；attach 照这次借出去的点名给提示词；安全档「只看不动」两个引擎都不给 owb
+ *   ⑬ 连接器转给本机引擎：插件带来的照转（claude 那边套一层先切到插件根，codex 直接认 cwd）；连接器页上关掉的、
+ *      暂停的不转；走网址的不转、在运行页上点名；名字里带 __、带点的改成两个 CLI 都认得的；套的那一层交回退出码、转信号
  *
  * 真起桥子进程，但不起任何 CLI 引擎、不出网（假生图上游起在 127.0.0.1）。
  *   node test/engine-bridge.js
@@ -50,7 +52,7 @@ const sorted = (a) => [...a].sort().join(",");
 const SH = process.platform !== "win32"; // owb 脚本是 sh 写的
 
 /** 照 CLI 的样子拉起 MCP 服务器：发 initialize 再发一条请求（id 2），stdin 一关它答完就走 */
-function mcpOnce(server, req, extraEnv = {}) {
+function mcpOnce(server, req, extraEnv = {}, cwd) {
   const input = [
     { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "0" } } },
     { jsonrpc: "2.0", method: "notifications/initialized" },
@@ -58,12 +60,12 @@ function mcpOnce(server, req, extraEnv = {}) {
   ].map((m) => JSON.stringify(m)).join("\n") + "\n";
   const env = { ...process.env, ...(server.env || {}), ...extraEnv };
   for (const [k, v] of Object.entries(env)) if (v === undefined) delete env[k];
-  const p = spawnSync(server.command, server.args || [], { input, env, encoding: "utf8", timeout: 60000 });
+  const p = spawnSync(server.command, server.args || [], { input, env, cwd, encoding: "utf8", timeout: 60000 });
   const msgs = String(p.stdout || "").split("\n").filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return { bad: l }; } });
   return { status: p.status, stdout: String(p.stdout || ""), stderr: String(p.stderr || ""), msgs, res: msgs.find((m) => m.id === 2) };
 }
-function mcpList(server, extraEnv = {}) {
-  const r = mcpOnce(server, { method: "tools/list" }, extraEnv);
+function mcpList(server, extraEnv = {}, cwd) {
+  const r = mcpOnce(server, { method: "tools/list" }, extraEnv, cwd);
   return { ...r, names: r.res && r.res.result ? r.res.result.tools.map((t) => t.name) : null };
 }
 function mcpCall(server, name, args) {
@@ -710,6 +712,166 @@ const serverOf = (att) => JSON.parse(fs.readFileSync(att.runOpts.mcpConfigPath, 
         ok(!n.shimBin && !(n.runOpts.env || {}).PATH && n.lent.length === pick.length && sorted(n.shimBlocked || []) === "",
           `★${id}：noShim（安全档「只看不动」）不写 owb、PATH 里不挂，MCP 照借★`, { shim: n.shimBin, env: n.runOpts.env, lent: n.lent });
       } finally { n.cleanup(); }
+    }
+  }
+
+  section("⑬ 连接器转给本机引擎：插件的照转、在插件根里起；关掉的不转；走网址的点名；名字两个 CLI 都认得");
+  {
+    const node = process.execPath;
+    const plugRoot = path.join(HOME, "插件根");
+    fs.mkdirSync(plugRoot, { recursive: true });
+    // 按相对路径起的服务器（插件里最常见的写法）：不在插件根里起就找不到 server.js。
+    // tools/list 那条的说明里报自己在哪个目录、拿到了什么环境
+    const SERVER = `
+const send = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
+let buf = "";
+process.stdin.on("data", (d) => {
+  buf += d; let i;
+  while ((i = buf.indexOf("\\n")) >= 0) {
+    const l = buf.slice(0, i); buf = buf.slice(i + 1);
+    let m; try { m = JSON.parse(l); } catch { continue; }
+    if (m.method === "initialize") send({ jsonrpc: "2.0", id: m.id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "p", version: "0" } } });
+    else if (m.method === "tools/list") send({ jsonrpc: "2.0", id: m.id, result: { tools: [{ name: "where", inputSchema: { type: "object", properties: {} },
+      description: JSON.stringify({ cwd: process.cwd(), electron: process.env.ELECTRON_RUN_AS_NODE || "", root: process.env.PLUGIN_ROOT || "" }) }] } });
+    else if (m.id != null) send({ jsonrpc: "2.0", id: m.id, result: {} });
+  }
+});
+`;
+    fs.writeFileSync(path.join(plugRoot, "server.js"), SERVER);
+    const where = (r) => { try { return JSON.parse(r.res.result.tools[0].description); } catch { return null; } };
+    const plug = { name: "acme.tools__srv", transport: "stdio", command: node, args: ["server.js"], env: { PLUGIN_ROOT: plugRoot }, cwd: plugRoot, plugin: "acme.tools" };
+    const conns = [
+      { name: "userconn", command: "/bin/echo" },
+      { name: "offconn", command: "/bin/echo" },
+      { name: "paused", command: "/bin/echo", enabled: false },
+      { name: "webconn", transport: "streamable-http", url: "https://example.com/mcp" },
+      { name: "urlonly", url: "https://example.com/mcp2" },
+      // 写了 sse 又留着 command：内置那边按 transport 走网址，这边也不能当 stdio 转
+      { name: "sseconn", transport: "sse", url: "https://example.com/sse", command: "/bin/echo" },
+      { name: "nocmd" },
+      { name: bridge.SERVER_NAME, command: "/bin/echo" },
+      { name: "dup", command: "/bin/echo", args: ["先"] },
+      { name: "my__conn", command: "/bin/echo" },
+      { name: "my.conn", command: "/bin/echo" },
+      { name: "dup", command: "/bin/echo", args: ["后"] },
+      plug,
+    ];
+    const WANT = [bridge.SERVER_NAME, "userconn", "dup", "my_conn", "my_conn-2", "acme_tools_srv"];
+
+    const a = bridge.attach("claude-code", { home: HOME, baseDir: "任务_连接器", user: "t", extraServers: conns, disabled: ["offconn"] });
+    try {
+      const cfgPath = a.runOpts.mcpConfigPath;
+      const all = JSON.parse(fs.readFileSync(cfgPath, "utf8")).mcpServers;
+      ok(sorted(a.runOpts.mcpServerNames) === sorted(WANT) && sorted(Object.keys(all)) === sorted(WANT),
+        "★关掉的、暂停的、没命令的、跟本项目重名的不转；插件的照转★", a.runOpts.mcpServerNames);
+      ok(a.skipped.join(",") === "webconn,urlonly,sseconn", "★走网址的两台点名★ 不转、也不悄悄丢掉", a.skipped);
+      ok(JSON.stringify(all.dup.args) === JSON.stringify(["后"]), "重名的后面那条算数（跟内置那边一个规矩）", all.dup);
+      ok(a.runOpts.mcpServerNames.every((n) => /^[A-Za-z0-9_-]+$/.test(n) && !n.includes("__")),
+        "★名字里带 __ 和点的改成 CLI 认得的★ claude 按 __ 切放行规则，codex 按点切配置键", a.runOpts.mcpServerNames);
+      if (process.platform !== "win32") ok((fs.statSync(cfgPath).mode & 0o777) === 0o600, "mcp 配置里有连接器的 key：文件只给本人读写", (fs.statSync(cfgPath).mode & 0o777).toString(8));
+      const p = all.acme_tools_srv;
+      ok(p && p.args[0] === bridge.CWD_ENTRY && p.args[1] === plugRoot && p.args[2] === node && p.args[3] === "server.js" && !("cwd" in p),
+        "★claude 那边插件的连接器套一层先切目录★ 它的 mcp.json 不认 cwd", p);
+      // 从一个没有 server.js 的目录起（仓库根里就有一个，是本项目自己的服务器，不能让它被误起）
+      const r = mcpList(p, { ELECTRON_RUN_AS_NODE: "1" }, HOME);
+      const w = where(r);
+      ok(w && w.cwd === fs.realpathSync(plugRoot) && w.root === plugRoot, "★真起一台：在插件根里起、stdio 原样接上★ 相对路径的 server.js 找得到", { w, err: r.stderr.slice(-300) });
+      ok(w && w.electron === "", "套的那一层是借 ELECTRON_RUN_AS_NODE 起的：传给真服务器之前摘掉", w);
+      const bare = mcpList({ command: node, args: ["server.js"], env: plug.env }, {}, HOME);
+      ok(!bare.names, "反向对照：不套那一层、在别的目录起，相对路径的 server.js 找不到", { status: bare.status, err: bare.stderr.slice(-200) });
+    } finally { a.cleanup(); }
+
+    const cx = bridge.attach("codex", { home: HOME, baseDir: "任务_连接器", user: "t", extraServers: conns, disabled: ["offconn"] });
+    try {
+      const flat = cx.runOpts.mcpArgs.join("\n");
+      const keys = [...new Set([...flat.matchAll(/^mcp_servers\.([^.=]+)\./gm)].map((m) => m[1]))];
+      ok(sorted(keys) === sorted(WANT) && cx.skipped.join(",") === "webconn,urlonly,sseconn", "codex 那边转的、点名的一样", { keys, skipped: cx.skipped });
+      ok(flat.includes(`mcp_servers.acme_tools_srv.command=${JSON.stringify(node)}`) && flat.includes(`mcp_servers.acme_tools_srv.cwd=${JSON.stringify(plugRoot)}`) && !flat.includes(bridge.CWD_ENTRY),
+        "★codex 认 cwd：插件的连接器直接在插件根里起★ 不套那一层", flat.split("\n").filter((l) => /acme/.test(l)));
+      ok(!/mcp_servers\.(acme|my)\.|mcp_servers\.my__conn/.test(flat), "带点、带 __ 的原名一个没漏进配置键", flat.split("\n").filter((l) => /acme|my/.test(l)));
+    } finally { cx.cleanup(); }
+
+    const ro = bridge.attach("claude-code", { home: HOME, baseDir: "任务_连接器", user: "t", extraServers: conns, disabled: ["offconn"], readOnly: true });
+    try {
+      ok(sorted(ro.runOpts.mcpServerNames) === bridge.SERVER_NAME && ro.skipped.length === 0, "只读那一趟一台不挂，也就不点名", { names: ro.runOpts.mcpServerNames, skipped: ro.skipped });
+    } finally { ro.cleanup(); }
+    // 自动放行那一道：claude 的 --allowed-tools 照 mcpServerNames 逐台给（上面已经只剩本项目这台），
+    // codex 的放行写在每台自己的配置里——只读那一趟整台放行的只能是本项目这台，它那头还照只读表拦着
+    const rox = bridge.attach("codex", { home: HOME, baseDir: "任务_连接器", user: "t", extraServers: conns, disabled: ["offconn"], readOnly: true });
+    try {
+      const approved = rox.runOpts.mcpArgs.filter((a) => /\.default_tools_approval_mode="approve"$/.test(a)).map((a) => a.split(".")[1]);
+      ok(approved.join(",") === bridge.SERVER_NAME && rox.skipped.length === 0, "★只读那一趟 codex 只放行本项目这台★ 连接器一台没挂、也没放行", approved);
+    } finally { rox.cleanup(); }
+
+    // 套的那一层自己：退出码原样交回、起不来说清、信号转给真服务器不留孤儿
+    const W = (args, o = {}) => spawnSync(node, [bridge.CWD_ENTRY, ...args], { encoding: "utf8", timeout: 30000, ...o });
+    ok(W([plugRoot, node, "-e", "process.exit(7)"]).status === 7, "真服务器的退出码原样交回");
+    // 命令不带目录：系统原话里只有命令名，目录得是这一层自己说的
+    const miss = W([plugRoot, "没有这个命令-7d1"]);
+    ok(miss.status === 1 && /起不来/.test(miss.stderr) && miss.stderr.includes("没有这个命令-7d1") && miss.stderr.includes(plugRoot), "命令起不来：退出码 1，说清哪个命令、哪个目录", miss.stderr);
+    ok(W([]).status === 2, "参数不全：退出码 2、打用法");
+    if (process.platform !== "win32") {
+      const pidFile = path.join(HOME, "mcp-cwd-child.pid");
+      const ch = spawn(node, [bridge.CWD_ENTRY, plugRoot, node, "-e", `require("fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000)`], { stdio: "ignore" });
+      const t0 = Date.now();
+      while (!fs.existsSync(pidFile) && Date.now() - t0 < 20000) await new Promise((r) => setTimeout(r, 50));
+      const childPid = Number(fs.readFileSync(pidFile, "utf8"));
+      const closed = new Promise((r) => ch.on("close", (code, sig) => r({ code, sig })));
+      ch.kill("SIGTERM");
+      // 这一层要是把信号吞了，它自己也不会退：等 10 秒还没退就判失败，别把整套测试挂住
+      const res = await Promise.race([closed, new Promise((r) => setTimeout(() => r({ hung: true }), 10000))]);
+      if (res.hung) try { ch.kill("SIGKILL"); } catch {}
+      const alive = () => { try { process.kill(childPid, 0); return true; } catch { return false; } };
+      const t1 = Date.now();
+      while (alive() && Date.now() - t1 < 5000) await new Promise((r) => setTimeout(r, 50));
+      const still = alive();
+      if (still) try { process.kill(childPid, "SIGKILL"); } catch {}
+      ok(!still && res.sig === "SIGTERM", "★CLI 收工停这一层：信号转给真服务器，不留孤儿★ 这一层也照这个信号退", { res, still });
+    }
+
+    // 主进程真跑一趟（桩引擎）：自己配的在前、插件带来的在后，连接器页上关掉的不挂，走网址的在运行页上说一句
+    const engines = require(mod("engines"));
+    const { createAgentRuntime } = require(mod("agent"));
+    const { McpManager } = require(mod("mcp"));
+    const plugins = require(mod("plugins"));
+    const plugDir = path.join(HOME, "plugins", "acme.tools");
+    fs.mkdirSync(plugDir, { recursive: true });
+    fs.writeFileSync(path.join(plugDir, "plugin.json"), JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name: "acme.tools" }));
+    fs.writeFileSync(path.join(plugDir, "mcp.json"), JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json", mcpServers: {
+      srv: { type: "stdio", command: "node", args: ["server.js"] },
+      web: { type: "streamable-http", url: "https://example.com/mcp" },
+    } }));
+    fs.writeFileSync(path.join(plugDir, "server.js"), SERVER);
+    let seen = null;
+    const stub = {
+      id: "t-conn", label: "连接器桩", bin: null, note: "", install: "", launchHeader: "", supportsResume: false, models: [],
+      async detect() { return { id: "t-conn", installed: true, path: "", version: "0" }; },
+      async run(o) {
+        try { seen = { names: o.mcpServerNames || [], servers: JSON.parse(fs.readFileSync(o.mcpConfigPath, "utf8")).mcpServers }; } catch (e) { seen = { err: e.message }; }
+        return { finalText: "好", usage: {}, stopped: null, sessionId: null };
+      },
+    };
+    engines.BACKENDS.push(stub);
+    const fakeLLM = { provider: "mock", model: "scripted", async chat() { return { text: "内置答的", toolCalls: [], stopReason: "end" }; } };
+    const config = { mcp_servers: [{ name: "userconn", command: "/bin/echo" }, { name: "offconn", command: "/bin/echo" }], mcp_disabled: ["offconn"],
+      agent: { engine: "t-conn", max_steps: 3, engine_options: { "t-conn": { model: "m1" } } } };
+    const rt = createAgentRuntime({ config, llm: fakeLLM, mcpManager: new McpManager(), experts: [] });
+    try {
+      ok(plugins.pluginMcpServers().some((s) => s.name === "acme.tools__srv"), "自检：插件装上了、连接器认得出", plugins.loadPlugins().map((p) => p.error || p.warnings));
+      const st = [];
+      seen = null;
+      await rt.runTask({ history: [{ role: "user", content: "干活" }], emit(e) { if (e && e.type === "status") st.push(e.text); } });
+      const names = (seen && seen.names) || [];
+      ok(names.includes("userconn") && names.includes("acme_tools_srv") && !names.includes("offconn"), "★插件带来的连接器本机引擎也挂上；连接器页上关掉的不挂★", seen);
+      const ps = seen && seen.servers && seen.servers.acme_tools_srv;
+      ok(ps && ps.args[0] === bridge.CWD_ENTRY && fs.realpathSync(ps.args[1]) === fs.realpathSync(plugDir), "插件的那台在插件根里起", ps);
+      ok(st.some((t) => /走网址/.test(t) && t.includes("acme.tools__web")), "★走网址的那台在运行页上点名★ 名字照连接器页上的说", st);
+      seen = null; st.length = 0;
+      await rt.runTask({ history: [{ role: "user", content: "问问" }], mode: "ask", emit(e) { if (e && e.type === "status") st.push(e.text); } });
+      ok(seen && sorted(seen.names) === bridge.SERVER_NAME && !st.some((t) => /走网址/.test(t)), "反向对照：问答那一趟一台不挂，也不点名", { seen, st });
+    } finally {
+      engines.BACKENDS.splice(engines.BACKENDS.indexOf(stub), 1);
+      fs.rmSync(plugDir, { recursive: true, force: true });
     }
   }
 

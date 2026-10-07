@@ -10,8 +10,9 @@
  *         真正危险的动作由本项目自己的安全中心把关，不靠 CLI 那道弹窗。
  * codex： 认 `-c mcp_servers.<名>.command=...` 这种点号覆盖，值按 TOML 解析。
  *
- * 用户自己在设置里配的 MCP 连接器一并塞进去：切到本机引擎之后，
+ * 用户自己在设置里配的 MCP 连接器、插件带来的连接器一并塞进去：切到本机引擎之后，
  * 那些连接器不该跟着消失——它们本来就是 MCP，转手给 CLI 是最直接的做法。
+ * 连接器页上关掉的（config.mcp_disabled）不塞：内置引擎那边不连，换了引擎也不该连。
  *
  * 两个 CLI 上 MCP 都是主路：MCP 服务器由 CLI 直接拉起，不在 codex 给命令套的沙箱里，
  * 命令不能联网、不能写数据目录时，借过去的工具照样能生图、能记东西。
@@ -29,6 +30,7 @@ const path = require("path");
 const { lentFor, toEnv, SANDBOX_BLOCKED } = require("./lendable");
 
 const BRIDGE_ENTRY = path.join(__dirname, "tool-bridge.js");
+const CWD_ENTRY = path.join(__dirname, "mcp-cwd.js");
 const SERVER_NAME = "openworkbuddy";
 
 /** 起 bridge 用哪个 node：Electron 打包版里 process.execPath 是应用本体，得让它以 node 模式跑 */
@@ -50,11 +52,12 @@ function nodeLauncher() {
  * @param {{base?:string, mount?:string}} [o.library] 这个人的资料库根、当前项目挂载的子目录。不传 = 数据目录下那份整库
  * @param {string} [o.user]    当前用户名（记忆按人隔离）
  * @param {string[]} [o.tools] 借出去的工具名；不传就是 lendable.js 整张表，空数组就是一个不借
- * @param {Array} [o.extraServers] 用户自己配的 MCP 连接器（config.mcp_servers 的形状）
+ * @param {Array} [o.extraServers] 用户自己配的、插件带来的 MCP 连接器（config.mcp_servers 的形状，插件的多一个 cwd）
+ * @param {string[]} [o.disabled] 连接器页上关掉的名字（config.mcp_disabled）
  * @param {boolean} [o.readOnly] 问答 / 计划那一趟：只借读的工具，桥那头再拦一道，用户的连接器一个不挂
  *                               （连接器能干什么这边判断不了，只读这一趟就不冒这个险）
  */
-function buildServers({ home, root = "", baseDir = "", user = "", tools, library = null, extraServers = [], readOnly = false }) {
+function buildServers({ home, root = "", baseDir = "", user = "", tools, library = null, extraServers = [], disabled = [], readOnly = false }) {
   const lib = library || {};
   const { command, env: nodeEnv } = nodeLauncher();
   const servers = {
@@ -77,15 +80,47 @@ function buildServers({ home, root = "", baseDir = "", user = "", tools, library
       },
     },
   };
-  for (const s of readOnly ? [] : extraServers || []) {
-    if (!s || !s.name || s.enabled === false) continue;
-    if (s.name === SERVER_NAME) continue; // 不许顶掉自己这台
-    // 只转发 stdio 那种：HTTP 端点两个 CLI 的写法各不相同，认错了还不如不挂
-    if (s.transport && s.transport !== "stdio") continue;
-    if (!s.command) continue;
-    servers[s.name] = { command: s.command, args: s.args || [], ...(s.env ? { env: s.env } : {}) };
+  const taken = new Set([SERVER_NAME]);
+  for (const s of readOnly ? [] : forwardable(extraServers, disabled).keep) {
+    servers[cliName(s.name, taken)] = { command: s.command, args: s.args || [], ...(s.env ? { env: s.env } : {}), ...(s.cwd ? { cwd: s.cwd } : {}) };
   }
   return servers;
+}
+
+/**
+ * 转给 CLI 的服务器名只留字母、数字、_、-，连着的下划线并成一个。插件带来的叫「插件名__id」，
+ * 插件名里还可能有点：claude 认放行规则 mcp__<名> 时按 __ 切，名字里带 __ 的那台工具放不行（2.1.291 实测：
+ *   plug__srv、acme.tools__srv 每次调用都被拦下要权限，plug_srv 放行）；
+ * codex 的 -c 键按点切，带点的名字会被拆成好几层。改完撞了名就在后面补 -2、-3
+ */
+function cliName(name, taken) {
+  const base = String(name).replace(/[^A-Za-z0-9_-]+/g, "_").replace(/_{2,}/g, "_").replace(/^_+|_+$/g, "") || "mcp";
+  let n = base;
+  for (let i = 2; taken.has(n); i++) n = `${base}-${i}`;
+  taken.add(n);
+  return n;
+}
+
+/**
+ * 连接器里哪些转给 CLI。keep：照转；skipped：开着、但走网址的那几台，名字留着给运行页说一句。
+ * 关掉的、没名字的、跟本项目这台重名的、配置不全的，不转也不提（连接器页上自己会显示）。
+ */
+function forwardable(extraServers = [], disabled = []) {
+  const off = new Set((disabled || []).map(String));
+  // 重名的后面那条算数，跟内置那边 startAll 一个规矩（自配的在前、插件的在后）
+  const plan = new Map();
+  for (const s of extraServers || []) if (s && s.name) { plan.delete(s.name); plan.set(s.name, s); }
+  const keep = [], skipped = [];
+  for (const s of plan.values()) {
+    if (s.enabled === false || off.has(String(s.name))) continue;
+    if (s.name === SERVER_NAME) continue; // 不许顶掉自己这台
+    // 只转发 stdio 那种：HTTP 端点两个 CLI 的写法各不相同，认错了还不如不挂。
+    // 判法跟 mcp.js 起连接器的一致：写了别的 transport，或者只有 url 没有 command
+    if ((s.transport && s.transport !== "stdio") || (!s.command && s.url)) { skipped.push(String(s.name)); continue; }
+    if (!s.command) continue;
+    keep.push(s);
+  }
+  return { keep, skipped };
 }
 
 /**
@@ -105,13 +140,25 @@ function tempDir(prefix) {
 }
 
 /**
+ * claude 的 mcp.json 不认 cwd（实测 2.1.291：写了也照样在它自己的工作目录里起）。
+ * 要在别处起的那几台（插件的，默认在插件根里）套一层 mcp-cwd.js：先切目录再起
+ */
+function claudeEntry(s) {
+  if (!s.cwd) return s;
+  const { command, env: nodeEnv } = nodeLauncher();
+  return { command, args: [CWD_ENTRY, s.cwd, s.command, ...(s.args || [])], env: { ...(s.env || {}), ...nodeEnv } };
+}
+
+/**
  * 落一份 mcp-config 临时文件给 claude 用。
+ * 里面有连接器 env 里的 key：目录是 mkdtemp 建的 0700，文件自己也只给本人读写
  * @returns {{path:string, cleanup:function, names:string[]}}
  */
 function writeMcpConfig(servers) {
   const { dir, rm } = tempDir("owb-mcp-");
   const p = path.join(dir, "mcp.json");
-  fs.writeFileSync(p, JSON.stringify({ mcpServers: servers }, null, 2));
+  const mcpServers = Object.fromEntries(Object.entries(servers).map(([name, s]) => [name, claudeEntry(s)]));
+  fs.writeFileSync(p, JSON.stringify({ mcpServers }, null, 2), { mode: 0o600 });
   return {
     path: p,
     names: Object.keys(servers),
@@ -130,6 +177,8 @@ function codexArgs(servers) {
       const body = Object.entries(s.env).map(([k, v]) => `${k} = ${JSON.stringify(String(v))}`).join(", ");
       out.push("-c", `mcp_servers.${name}.env={ ${body} }`);
     }
+    // codex 认 cwd（实测 0.154），插件的连接器直接在插件根里起，用不着 claude 那边那一层
+    if (s.cwd) out.push("-c", `mcp_servers.${name}.cwd=${JSON.stringify(s.cwd)}`);
     // codex exec 的审批策略是 never：要审批的 MCP 工具不会问人，直接判拒绝，
     // 模型看得见工具却一次也调不成。跟 Claude Code 那边 --allowed-tools mcp__<name> 对齐，整台放行。
     out.push("-c", `mcp_servers.${name}.default_tools_approval_mode="approve"`);
@@ -165,11 +214,14 @@ function writeShim(server) {
  * 一次性把桥接接到某个引擎上：拼服务器表 → 落文件 / 拼参数 → 给出要传给 run() 的那几项。
  * 调用方只要 `...attached.runOpts` 展开，收尾时调一次 cleanup 就行。
  *
- * @returns {{runOpts:object, names:string[], toolCount:number, cleanup:function}}
+ * skipped：开着、但这次没转过去的连接器名（走网址的），调用方在运行页上说一句
+ * @returns {{runOpts:object, names:string[], toolCount:number, skipped:string[], cleanup:function}}
  */
-function attach(engineId, { home, root = "", baseDir = "", user = "", tools, library = null, extraServers = [], readOnly = false, noShim = false } = {}) {
-  const servers = buildServers({ home, root, baseDir, user, tools, library, extraServers, readOnly });
+function attach(engineId, { home, root = "", baseDir = "", user = "", tools, library = null, extraServers = [], disabled = [], readOnly = false, noShim = false } = {}) {
+  const servers = buildServers({ home, root, baseDir, user, tools, library, extraServers, disabled, readOnly });
   const names = Object.keys(servers);
+  // 只读那一趟本来就一个不挂，不算「没转过去」
+  const skipped = readOnly ? [] : forwardable(extraServers, disabled).skipped;
   // 跟 buildServers 写进环境变量的是同一份：提示词里列的、owb list 打出来的、MCP 挂上的，三处一致
   const lent = lentFor({ tools, renderer: false, readOnly });
   // 只读那一趟不给命令行入口：只读档的 CLI 本来就不该跑命令，借出去的读工具走 MCP 就够了。
@@ -187,7 +239,7 @@ function attach(engineId, { home, root = "", baseDir = "", user = "", tools, lib
   // 在那个沙箱里 owb 不跑的（tool-bridge.js 的 sandboxBlock）：提示词照这份点名，别让它先撞一次
   const shimBlocked = shimSandboxed && shim.bin ? lent.filter((n) => SANDBOX_BLOCKED[n]) : [];
   // engine：提示词按它教看图（claude 用 Read、codex 用 view_image）
-  const common = { engine: engineId, readOnly, names, lent, toolCount: lent.length, shim: shim.path, shimDir: shim.dir, shimBin: shim.bin, shimIsPrimary, shimSandboxed, shimBlocked };
+  const common = { engine: engineId, readOnly, names, skipped, lent, toolCount: lent.length, shim: shim.path, shimDir: shim.dir, shimBin: shim.bin, shimIsPrimary, shimSandboxed, shimBlocked };
   if (engineId === "codex") {
     return {
       // 不再把数据根加进可写目录：那等于让引擎里的任何命令都能改配置和账号。
@@ -205,4 +257,4 @@ function attach(engineId, { home, root = "", baseDir = "", user = "", tools, lib
   };
 }
 
-module.exports = { SERVER_NAME, BRIDGE_ENTRY, buildServers, writeMcpConfig, writeShim, codexArgs, nodeLauncher, attach };
+module.exports = { SERVER_NAME, BRIDGE_ENTRY, CWD_ENTRY, buildServers, forwardable, cliName, writeMcpConfig, writeShim, codexArgs, nodeLauncher, attach };
