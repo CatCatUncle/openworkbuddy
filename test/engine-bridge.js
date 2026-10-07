@@ -12,7 +12,8 @@
  *   ⑤ 主进程 require bridge.js / agent.js 不再顺带 require tool-bridge.js（那会把主进程的 console 改道 stderr）。
  *      这里只查得到顶层的 require；写在函数里、开跑才执行的，由 layers 的 require-spawn 检查兜住
  *   ⑥ 产物落在这趟任务的根下面，资料库只看得见这个人的、只看得见项目挂的那一块；给了根却用不了就不启动
- *   ⑦ 主进程真跑一趟（假引擎）：租户的根、资料库根、项目挂载都传到了桥那头
+ *   ⑦ 主进程真跑一趟（假引擎）：租户的根、资料库根、项目挂载都传到了桥那头；
+ *      属主在引擎设置里写了 PATH 也挤不掉打头的 owb 目录
  *
  * 真起桥子进程，但不起任何 CLI 引擎、不出网。
  *   node test/engine-bridge.js
@@ -271,7 +272,11 @@ const serverOf = (att) => JSON.parse(fs.readFileSync(att.runOpts.mcpConfigPath, 
       async detect() { return { id: "t-roots", installed: true, path: "", version: "0" }; },
       // 配置文件跑完就删，只能在 run() 里读
       async run(o) {
-        try { seen = { env: JSON.parse(fs.readFileSync(o.mcpConfigPath, "utf8")).mcpServers[bridge.SERVER_NAME].env, cwd: o.cwd }; }
+        // owb 脚本所在的目录也是跑完就删：PATH 打头的是不是它，得趁现在看
+        const first = String((o.env && o.env.PATH) || "").split(path.delimiter)[0];
+        let shimFirst = false;
+        try { shimFirst = !!first && fs.readdirSync(first).some((n) => /^owb(\.cmd)?$/i.test(n)); } catch {}
+        try { seen = { env: JSON.parse(fs.readFileSync(o.mcpConfigPath, "utf8")).mcpServers[bridge.SERVER_NAME].env, cwd: o.cwd, runEnv: o.env || {}, shimFirst }; }
         catch (e) { seen = { err: e.message }; }
         return { finalText: "好", usage: {}, stopped: null, sessionId: null };
       },
@@ -294,6 +299,16 @@ const serverOf = (att) => JSON.parse(fs.readFileSync(att.runOpts.mcpConfigPath, 
       const env2 = (seen && seen.env) || {};
       ok(env2.OPENWORKBUDDY_BRIDGE_ROOT === tools.getWorkspaceDir() && env2.OPENWORKBUDDY_BRIDGE_LIB_ROOT === tools.LIB_DIR,
         "反向对照：不在租户的链上就是默认根和数据目录下那份资料库", { env: env2, ws: tools.getWorkspaceDir(), lib: tools.LIB_DIR });
+      ok(seen && seen.shimFirst, "属主没写 PATH：owb 那个目录在 PATH 最前面", seen && seen.runEnv);
+
+      // 属主在引擎设置里写了 PATH：拼在 owb 目录后面，不能把它整个顶掉
+      seen = null;
+      const OWNER = path.join(HOME, "属主的bin");
+      const rt2 = createAgentRuntime({ config: { agent: { engine: "t-roots", max_steps: 3, engine_options: { "t-roots": { model: "m1", env: { PATH: OWNER, FOO: "属主的" } } } } }, llm: fakeLLM, mcpManager: new McpManager(), experts: [] });
+      await rt2.runTask({ history: [{ role: "user", content: "干活" }], emit() {} });
+      const runEnv = (seen && seen.runEnv) || {};
+      ok(seen && seen.shimFirst, "★属主在引擎设置里写了 PATH：owb 那个目录还在最前面★", runEnv);
+      ok(String(runEnv.PATH || "").split(path.delimiter)[1] === OWNER && runEnv.FOO === "属主的", "属主写的 PATH 接在它后面，别的变量照传", runEnv);
     } finally { engines.BACKENDS.splice(engines.BACKENDS.indexOf(stub), 1); }
   }
 

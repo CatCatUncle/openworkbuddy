@@ -28,7 +28,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { execFile } = require("../platform/win"); // 不直接用 child_process 的：Windows 上 .cmd 垫片起不来、还闪黑窗
-const { runJsonl, probeVersion, probeOption, probeHelp } = require("./jsonl");
+const { runJsonl, probeVersion, probeOption, probeHelp, enginePath } = require("./jsonl");
 const thinking = require("../core/model/thinking");
 const { resolveBin } = require("../platform/which");
 const { buildChildEnv } = require("../platform/child-env");
@@ -97,7 +97,8 @@ const modelLists = new Map();
 function localModels(bin) {
   if (modelLists.has(bin)) return modelLists.get(bin);
   const p = new Promise((resolve) => {
-    execFile(bin, ["--help"], { env: buildChildEnv(), timeout: 10000 }, (_err, stdout) => {
+    // PATH 补全跟正式跑同一份：npm 装的 claude 开头是 `#!/usr/bin/env node`，双击启动时那份 PATH 里找不到 node
+    execFile(bin, ["--help"], { env: buildChildEnv({ PATH: enginePath() }), timeout: 10000 }, (_err, stdout) => {
       const seg = (/--model <model>([\s\S]*?)(?:\n\s*-{1,2}[a-z]|$)/.exec(String(stdout || "")) || [])[1] || "";
       const aliases = [...seg.matchAll(/'([a-z][a-z0-9.\-\[\]]*)'/g)].map((m) => m[1]).filter((a) => !/^claude-/.test(a));
       const set = [...aliases, ...ALIAS_FALLBACK];

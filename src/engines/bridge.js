@@ -174,7 +174,9 @@ function attach(engineId, { home, root = "", baseDir = "", user = "", tools, lib
   const shimIsPrimary = false;
   // 脚本目录挂到子进程 PATH 最前面，模型敲裸 `owb` 就能调到——带绝对路径的写法会被两个
   // CLI 的权限层拦下（见 writeShim 上面那段），裸命令加一条放行规则才通得了。
-  const shimEnv = { PATH: shim.dir + path.delimiter + (process.env.PATH || "") };
+  // 只给这一个目录：补全过的完整搜索路径由起进程那层接在后面（jsonl.js 的 enginePath）。
+  // 以前这里拼的是本进程原样的 PATH，到了那一层反倒把补全的那份整个盖掉了
+  const shimEnv = { PATH: shim.dir };
   // codex 的命令跑在它自己的沙箱里（只写工作区、默认不联网），owb 脚本也在里面；MCP 服务器不在
   const shimSandboxed = engineId === "codex";
   const common = { names, lent, toolCount: lent.length, shim: shim.path, shimDir: shim.dir, shimBin: shim.bin, shimIsPrimary, shimSandboxed };

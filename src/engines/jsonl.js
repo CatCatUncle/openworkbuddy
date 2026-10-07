@@ -21,6 +21,7 @@ const { spawn } = require("child_process");
 const { augmentedPath } = require("../platform/which");
 const win = require("../platform/win");
 const { buildChildEnv, keyLike } = require("../platform/child-env");
+const { appPath } = require("../platform/paths");
 const security = require("../core/safety/security");
 
 /** stderr 只留尾巴：CLI 报错前可能刷了几万行日志，全留住等于把内存喂给一次失败 */
@@ -49,6 +50,68 @@ function callerEnv(env) {
   return out;
 }
 
+/** Windows 上 Path 和 PATH 是同一个变量；别的平台只认 PATH 这一种写法 */
+const isPathKey = (k, platform) => (platform === "win32" ? String(k).toUpperCase() === "PATH" : k === "PATH");
+
+/**
+ * 两份追加的环境变量叠成一份：后一份照常盖前一份，只有 PATH 是拼——前一份的目录在前，后一份的接在后面。
+ * 桥给的 PATH 只有 owb 那一个目录，属主在引擎设置里写了 PATH 也不能把它挤掉，挤掉了模型敲 owb 就找不到
+ * @param {Record<string, unknown> | null | undefined} first
+ * @param {Record<string, unknown> | null | undefined} second
+ * @param {string} [platform] 测试用
+ */
+function mergeEnv(first, second, platform = process.platform) {
+  /** @type {Record<string, unknown>} */
+  const out = {};
+  /** @type {string[]} */
+  const dirs = [];
+  for (const src of [first, second]) {
+    for (const [k, v] of Object.entries(src || {})) {
+      if (isPathKey(k, platform)) { if (v != null && v !== "") dirs.push(String(v)); continue; }
+      out[k] = v;
+    }
+  }
+  if (dirs.length) out.PATH = dirs.join(platform === "win32" ? ";" : ":");
+  return out;
+}
+
+/**
+ * 引擎子进程最终用的 PATH：调用方给的目录打头（桥的 owb 目录必须排第一），补全过的完整搜索路径接在后面，
+ * 重复的只留第一次出现的那个（Windows 上不分大小写、不管结尾斜杠）。
+ * 以前调用方一给 PATH 就整个盖掉补全那份：双击启动的应用自己的 PATH 是残的，借了工具的那趟，
+ * 装在 nvm / homebrew 里、开头是 `#!/usr/bin/env node` 的 CLI 连 node 都找不到
+ * @param {string} [callerPath]
+ * @param {string} [platform] 测试用
+ * @param {Record<string, string|undefined>} [env] 测试用
+ */
+function enginePath(callerPath = "", platform = process.platform, env = process.env) {
+  const w = platform === "win32";
+  const sep = w ? ";" : ":";
+  const seen = new Set();
+  /** @type {string[]} */
+  const out = [];
+  for (const raw of [...String(callerPath || "").split(sep), ...augmentedPath(platform, env).split(sep)]) {
+    const d = w ? raw.trim() : raw;
+    if (!d) continue;
+    const k = w ? d.toLowerCase().replace(/[\\/]+$/, "") : d;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(d);
+  }
+  return out.join(sep);
+}
+
+/**
+ * 程序自带的 node_modules 打头：引擎在对话目录里写的 node 脚本 require("pptxgenjs" / "docx" / "exceljs") 靠它找到。
+ * 打包版的数据目录跟程序目录分开，从对话目录往上找不到程序那份。用户自己设过的接在后面
+ * @param {Record<string, string|undefined>} [env]
+ */
+function engineNodePath(env = process.env) {
+  const sep = process.platform === "win32" ? ";" : ":";
+  const mine = appPath("node_modules");
+  return [mine, ...String(env.NODE_PATH || "").split(sep).filter((d) => d && d !== mine)].join(sep);
+}
+
 /**
  * @param {object}   o
  * @param {string}   o.bin           可执行文件路径
@@ -68,15 +131,16 @@ function runJsonl({ bin, args, cwd, env, stdin, onLine, deadline, stopSignal }) 
     // Windows 上 npm 装出来的是 claude.cmd 这种垫片，Node 18.20.2 起直接 spawn 它会 EINVAL；
     // 而经 cmd.exe 转发又扛不住上万字的系统提示词（8191 上限）。plan 负责挑一条真能走通的路
     const plan = win.launchPlan(bin, args);
+    const extra = mergeEnv(plan.env, callerEnv(env));
     let child;
     try {
       child = spawn(plan.bin, plan.args, {
         cwd,
         // PATH 得补全：CLI 自己还要去调 node / git / ripgrep，双击启动的 GUI 进程
-        // 那份残废 PATH 传下去，claude 起来了照样在第一个工具调用上死掉。
+        // 那份残废 PATH 传下去，claude 起来了照样在第一个工具调用上死掉。调用方给的 PATH 拼在前面，不是盖掉（见 enginePath）。
         // 别的变量只给白名单里的：引擎自带 shell，环境里的 Key 它一句 echo 就拿走了。
         // 属主清单照样生效——单人用「环境变量 Key」登 claude / codex 的，把那个名字写进清单
-        env: buildChildEnv({ PATH: augmentedPath(), ...plan.env, ...callerEnv(env) }),
+        env: buildChildEnv({ NODE_PATH: engineNodePath(), ...extra, PATH: enginePath(/** @type {string} */ (extra.PATH)) }),
         stdio: ["pipe", "pipe", "pipe"],
         ...plan.opts,
       });
@@ -242,4 +306,4 @@ function firstVersionLine(raw) {
   return line.slice(0, 80);
 }
 
-module.exports = { runJsonl, killAll, probeVersion, probeOption, probeHelp, callerEnv };
+module.exports = { runJsonl, killAll, probeVersion, probeOption, probeHelp, callerEnv, mergeEnv, enginePath };

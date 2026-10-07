@@ -23,6 +23,7 @@ const connectorsLendOff = () => {
 const awake = require("../platform/awake"); // 睡眠治理：任务期间防睡 + 睡了顺延时限
 const engines = require("../engines"); // 底层引擎：内置循环 / 本机 Claude Code / 本机 Codex
 const bridge = require("../engines/bridge"); // 把本项目的工具借给那两个 CLI（MCP）
+const { mergeEnv } = require("../engines/jsonl");
 const canvasStore = require("../tools/canvas"); // 画布任务先报价：哪些会话、哪几个工具不借（CANVAS_QUOTE_FIRST）
 const prefs = require("../core/config/prefs"); // 底层引擎 / 思考档是按账号存的，跑任务时得看**发起人**的那份
 const HK = require("./hooks"); // 用户配的钩子：done 没过不许收尾
@@ -2463,6 +2464,8 @@ function modePrompt(mode) {
         thinking: prefs.agentCfg(config).thinking || "auto",
         ...(bridged ? bridged.runOpts : {}),
         ...opts, // 用户在设置里给这个引擎填的 model / bin / extraArgs 等，最后覆盖
+        // env 例外，不整个盖：属主在引擎设置里写了 PATH 的话，桥挂在最前面的 owb 目录会被顶掉，模型敲 owb 就找不到
+        env: mergeEnv(bridged ? bridged.runOpts.env : null, opts.env),
         onWrite: (abs) => noteWrote(abs, runToken),
       });
       let r;

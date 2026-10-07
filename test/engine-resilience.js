@@ -16,6 +16,8 @@
  *   ⑦ 开跑前的闸（engines/gate.js）：组织关了命令行就不起外部引擎、也不退回内置；
  *      型号必须钉死或在属主放行的列表里；附加参数不许换型号/供应商；多人共用默认关、属主打开才放行；
  *      codex 默认不联网、可写目录里没有数据根；多人共用时像 Key 的环境变量不往引擎里传
+ *   ⑧ PATH：调用方给的（桥的 owb 目录、属主写的）拼在补全那份前面，不再整个盖掉——
+ *      双击启动、PATH 残缺时，开头是 `#!/usr/bin/env node` 的 CLI 借了工具照样起得来；NODE_PATH 指向程序自带的 node_modules
  *
  * 引擎全是本地假的，不出网。
  *   node test/engine-resilience.js
@@ -623,6 +625,84 @@ process.stdout.write(JSON.stringify({ type: "result", subtype: "success", is_err
   }
 }
 
+async function partPath() {
+  console.log("\n— ⑧ PATH：调用方给的目录在前，补全的那份不丢 —");
+  const { enginePath, mergeEnv } = require(mod("jsonl"));
+  const { appPath } = require(mod("paths"));
+  const codex = require(mod("codex"));
+  const bridge = require(mod("bridge"));
+
+  ok(same(mergeEnv({ PATH: "/桥" }, { PATH: "/属主/bin", FOO: "1" }, "darwin"), { FOO: "1", PATH: "/桥:/属主/bin" }),
+    "★属主也写了 PATH：拼起来，桥的在前★ 不再整个盖掉");
+  ok(same(mergeEnv({ PATH: "/桥", A: "1" }, { A: "2" }, "darwin"), { A: "2", PATH: "/桥" }), "别的变量照旧后一份盖前一份");
+  ok(same(mergeEnv(null, undefined, "darwin"), {}), "两份都没有：空的，不凭空写一个 PATH");
+  ok(same(mergeEnv({ PATH: "/桥" }, { Path: "/x" }, "darwin"), { Path: "/x", PATH: "/桥" }), "反向对照：Mac 上 Path 是另一个变量，不当 PATH 拼");
+
+  if (process.platform === "win32") return; // 下面靠 `#!/usr/bin/env node` 找 node；Windows 的 Path / PATH 在 win-env 里验
+  const ep = enginePath("/调用方/一:/调用方/二:/调用方/一").split(":");
+  ok(ep[0] === "/调用方/一" && ep[1] === "/调用方/二", "调用方给的目录打头、顺序不变", ep.slice(0, 3));
+  ok(new Set(ep).size === ep.length, "重复的只留第一次出现的那个", ep);
+  ok(ep.includes("/opt/homebrew/bin") && ep.includes("/usr/local/bin"), "补全的常见安装位置接在后面", ep);
+
+  // 双击启动的应用：PATH 里一个有用的目录都没有，node 只在「常见安装位置」里（这里借 ~/bin 那一格）
+  const fakeHome = path.join(home, "家");
+  const nodeDir = path.join(fakeHome, "bin");
+  fs.mkdirSync(nodeDir, { recursive: true });
+  fs.symlinkSync(process.execPath, path.join(nodeDir, "node"));
+  const empty = path.join(home, "空的PATH");
+  fs.mkdirSync(empty);
+  // 问账号能用哪些型号（debug models）那一下也得起得来：环境里只带了 CODEX_HOME，记号只能写死路径
+  const probed = path.join(home, "codex-debug-ran");
+  const bin = fakeBin("codex-env", `
+const fs = require("fs");
+if (process.argv[2] === "debug") {
+  fs.writeFileSync(${JSON.stringify(probed)}, "1");
+  process.stdout.write(JSON.stringify({ models: [{ slug: "gpt-test" }] }));
+  process.exit(0);
+}
+let input = "";
+process.stdin.on("data", (d) => { input += d; }).on("end", () => {
+  fs.writeFileSync(process.env.FAKE_LOG, JSON.stringify({ PATH: process.env.PATH || "", NODE_PATH: process.env.NODE_PATH || "" }));
+  const out = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
+  out({ type: "thread.started", thread_id: "th-path" });
+  out({ type: "item.completed", item: { id: "m1", type: "agent_message", text: "好" } });
+  out({ type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } });
+});
+`);
+  const srcHome = path.join(home, "codex-src-path");
+  fs.mkdirSync(srcHome, { recursive: true });
+  const logFile = path.join(home, "codex-path.json");
+  const cwd = path.join(home, "对话-PATH");
+  fs.mkdirSync(cwd, { recursive: true });
+  const saved = { PATH: process.env.PATH, HOME: process.env.HOME };
+  let a = null, r = null, err = null, shimDir = "";
+  try {
+    process.env.PATH = empty;
+    process.env.HOME = fakeHome;
+    a = bridge.attach("codex", { home: process.env.OPENWORKBUDDY_HOME, baseDir: "任务_PATH", user: "", tools: ["gen_diagram"] });
+    shimDir = a.shimDir;
+    try {
+      r = await codex.run({
+        prompt: "干活", cwd, bin, model: "gpt-test", emit() {}, onWrite() {},
+        ...a.runOpts,
+        env: mergeEnv(a.runOpts.env, { CODEX_HOME: srcHome, FAKE_LOG: logFile }),
+      });
+    } catch (e) { err = e; }
+  } finally {
+    process.env.PATH = saved.PATH;
+    if (saved.HOME === undefined) delete process.env.HOME; else process.env.HOME = saved.HOME;
+    if (a) a.cleanup();
+  }
+  ok(!err && r && r.finalText === "好", "★PATH 残缺、开头是 #!/usr/bin/env node 的 codex，借了工具照样起得来★", err ? err.message : r);
+  const got = fs.existsSync(logFile) ? JSON.parse(fs.readFileSync(logFile, "utf8")) : { PATH: "", NODE_PATH: "" };
+  const dirs = got.PATH.split(":");
+  ok(!!shimDir && dirs[0] === shimDir, "owb 那个目录还在 PATH 最前面（模型敲裸命令靠它）", dirs.slice(0, 3));
+  ok(dirs.indexOf(nodeDir) > 0, "补全的常见安装位置接在后面，node 就是从那儿找到的", dirs);
+  ok(new Set(dirs).size === dirs.length, "没有重复的目录", dirs);
+  ok(fs.existsSync(probed), "★开跑前问账号型号的那一下（codex debug models）也找得到 node★ 以前它拿的是本进程那份残缺的 PATH");
+  ok(got.NODE_PATH.split(":")[0] === appPath("node_modules"), "★NODE_PATH 打头的是程序自带的 node_modules★ 引擎写的脚本 require 得到 pptxgenjs", got.NODE_PATH);
+}
+
 (async () => {
   try {
     await partResultErrors();
@@ -632,6 +712,7 @@ process.stdout.write(JSON.stringify({ type: "result", subtype: "success", is_err
     partTempDirs();
     await partStaleResume();
     await partGate();
+    await partPath();
     console.log(`\n引擎韧性：${pass} 项全过`);
   } finally {
     fs.rmSync(home, { recursive: true, force: true });

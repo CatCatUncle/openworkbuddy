@@ -9,6 +9,7 @@
  *    进程里的 PATH 定格在启动那一刻，安装器改的是注册表（src/platform/which 的 refreshWinPath）
  *  - 模型照 Mac 的习惯写 `python3 x.py`、行尾 `\` 续行，在 cmd 里一条都跑不起来（agent.js 的 shellNote）
  *  - 文件名带英文逗号，explorer 把它拆开、打开的是默认文件夹，还一声不吭（server.js 的 openWithSystem）
+ *  - 本机引擎的子进程：属主写的 Path 和桥给的 PATH 是同一个变量，得拼成一个（engines/jsonl 的 mergeEnv / enginePath）
  *
  * 这台机器多半不是 Windows：平台、环境变量、读注册表、起进程、桌面主进程全换成假的，只验判断逻辑。
  * 每一节都配反向对照——换成 darwin / linux、或者没走修过的那条路，断言就得变红。
@@ -180,6 +181,18 @@ const USR_KEY = "HKEY_CURRENT_USER\\Environment";
     const macPath = tools.shellPath("darwin");
     ok(!macPath.includes("Git\\cmd") && !/WinGet/.test(macPath), "反向对照：Mac 上的 PATH 里没有注册表那份");
     ok(macPath.split(":").includes("/opt/homebrew/bin"), "反向对照：Mac 上照旧补 homebrew");
+    which._resetWinPath();
+
+    // ── ④b 本机引擎子进程的 PATH ───────────────────────────────────────
+    console.log("\n④b 本机引擎子进程的 PATH（engines/jsonl 的 mergeEnv / enginePath）");
+    const { mergeEnv, enginePath } = require(mod("jsonl"));
+    same(mergeEnv({ PATH: "C:\\桥" }, { Path: "D:\\tools", FOO: "1" }, "win32"), { FOO: "1", PATH: "C:\\桥;D:\\tools" },
+      "★Windows：属主写的 Path 跟桥给的 PATH 是同一个变量，拼成一个★ 两个都留着的话子进程拿到哪个看运气");
+    await which.refreshWinPath({ platform: "win32", env: REG_ENV, regQuery: fakeReg(GOOD), log: () => {} });
+    const ep = enginePath("C:\\桥;c:\\program files\\git\\cmd\\", "win32", REG_ENV).split(";");
+    eq(ep[0], "C:\\桥", "调用方给的目录打头");
+    eq(ep.filter((d) => /^c:\\program files\\git\\cmd\\?$/i.test(d)).length, 1, "★大小写、结尾斜杠不一样的算同一个，只留一个★");
+    ok(ep.indexOf("C:\\Windows\\system32") > 1, "注册表那份接在后面", ep.slice(0, 4));
     which._resetWinPath();
 
     // ── ⑤ 提示词里怎么说 shell ─────────────────────────────────────────

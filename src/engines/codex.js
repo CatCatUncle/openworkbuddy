@@ -27,7 +27,7 @@
  * 不再拿 ~/.codex/config.toml 里的默认型号顶上，没给就报错。
  */
 
-const { runJsonl, probeVersion } = require("./jsonl");
+const { runJsonl, probeVersion, enginePath } = require("./jsonl");
 const thinking = require("../core/model/thinking");
 const { resolveBin } = require("../platform/which");
 const fs = require("fs");
@@ -122,8 +122,9 @@ function accountModels(bin, env) {
   const hit = accountModelsCache.get(key);
   if (hit && Date.now() - hit.at < ACCOUNT_MODELS_TTL) return Promise.resolve(hit.list);
   return new Promise((resolve) => {
-    // 只带 CODEX_HOME 过去：env 是整份环境（找登录目录要用），原样给子进程就把里面的 Key 一起送出去了
-    execFile(bin, ["debug", "models"], { env: buildChildEnv({ CODEX_HOME: env.CODEX_HOME }), timeout: 10000, maxBuffer: 16 * 1024 * 1024 }, (err, stdout) => {
+    // 只带 CODEX_HOME 过去：env 是整份环境（找登录目录要用），原样给子进程就把里面的 Key 一起送出去了。
+    // PATH 照样补全：npm 装的 codex 开头是 `#!/usr/bin/env node`，双击启动时那份 PATH 里找不到 node
+    execFile(bin, ["debug", "models"], { env: buildChildEnv({ PATH: enginePath(), CODEX_HOME: env.CODEX_HOME }), timeout: 10000, maxBuffer: 16 * 1024 * 1024 }, (err, stdout) => {
       let list = null;
       if (!err) {
         try {
