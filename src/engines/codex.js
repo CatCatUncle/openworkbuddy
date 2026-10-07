@@ -168,6 +168,57 @@ function openWorkBuddyCodexHome(env = process.env) {
   return { env: { ...env, CODEX_HOME: home } };
 }
 
+/**
+ * 宿主机上的技能，OWB 拉起的 codex 一个都不加载，只留 imagegen（自带生图的说明）：
+ *   · ~/.agents/skills 下用户给别的工具装的——描述全塞进上下文，挤掉本项目的说明和借出去的工具，
+ *     装得多了 codex 还会吐那条「技能描述被压缩」的 error item；
+ *   · codex 自带的系统技能（建技能、装技能、查文档……）——在这里用不上，装技能还会写到隔离运行窝里去。
+ * 用户在终端里直接用 codex 不受影响；工作目录里项目自带的技能照常加载。
+ *
+ * 0.154 的写法：skills.config 是一张表，每项 { name = "...", enabled = false }，name 认 SKILL.md 头上那个。
+ * 隔离运行窝头一次起来时 skills/.system 还没铺开，系统那几样按名字先写上。
+ * 名字太多时 Windows 的命令行有长度上限，超出 SKILLS_ARG_MAX 的不再往上加：系统的排前面，用户的按名字排序（结果稳定）
+ */
+const KEEP_SKILLS = new Set(["imagegen"]);
+const SYSTEM_SKILLS = ["openai-docs", "plugin-creator", "review-agent", "skill-creator", "skill-installer"];
+const SKILLS_ARG_MAX = 16 * 1024;
+
+function skillName(dir) {
+  let head = "";
+  try {
+    const fd = fs.openSync(path.join(dir, "SKILL.md"), "r");
+    try {
+      const buf = Buffer.alloc(4096);
+      head = buf.toString("utf8", 0, fs.readSync(fd, buf, 0, buf.length, 0));
+    } finally { fs.closeSync(fd); }
+  } catch { return ""; } // 没有 SKILL.md 就不是技能
+  const fm = /^﻿?---\r?\n([\s\S]*?)\r?\n---/.exec(head);
+  const m = fm && /^name:[ \t]*(.+?)[ \t]*$/m.exec(fm[1]);
+  return (m ? m[1].replace(/^(["'])(.*)\1$/, "$2").trim() : "") || path.basename(dir);
+}
+
+function skillNamesIn(root) {
+  let names = [];
+  try { names = fs.readdirSync(root); } catch { return []; }
+  return names.filter((n) => !n.startsWith(".")).map((n) => skillName(path.join(root, n))).filter(Boolean);
+}
+
+/** @param {{ codexHome: string, userHome?: string }} where */
+function skillsOffArgs({ codexHome, userHome }) {
+  const system = [...SYSTEM_SKILLS, ...skillNamesIn(path.join(codexHome, "skills", ".system"))].sort();
+  const user = (userHome ? skillNamesIn(path.join(userHome, ".agents", "skills")) : []).sort();
+  const items = [];
+  let len = 0;
+  for (const n of new Set([...system, ...user])) {
+    if (KEEP_SKILLS.has(n)) continue;
+    const item = `{ name = ${JSON.stringify(n)}, enabled = false }`;
+    if (len + item.length > SKILLS_ARG_MAX) break;
+    items.push(item);
+    len += item.length + 2;
+  }
+  return items.length ? ["-c", `skills.config=[${items.join(", ")}]`] : [];
+}
+
 /** file_change 这条改了哪些文件（绝对路径）；别的 item 一个都不算 */
 function changedPaths(item, cwd) {
   if (!item || item.type !== "file_change") return [];
@@ -285,11 +336,43 @@ function toolOf(item) {
   }
 }
 
+/**
+ * codex 自己说某项设置「不再支持」时（比如 `wire_api = "chat"`），那一行连同它给的
+ * How to fix / More info 原样交出去：怎么改它说得比我们准，转述一遍反而走样
+ */
+function noLongerSupported(s) {
+  const lines = String(s || "").split(/\r?\n/);
+  const i = lines.findIndex((l) => /is no longer supported/i.test(l));
+  if (i < 0) return "";
+  const out = [lines[i].trim()];
+  for (let j = i + 1; j < lines.length && out.length < 3; j++) {
+    const l = lines[j].trim();
+    if (!/^(How to fix|More info)\b/i.test(l)) break;
+    out.push(l);
+  }
+  return out.join("\n");
+}
+
+/**
+ * 退出时的 stderr、turn.failed 带的那句共用的几条认法；认不出返回空串。
+ * 只有 codex 明说没登录（或让人重跑 codex login）才说「没登录」：光一个 401，
+ * 也可能是自配的网关 Key 不对、账号被停——原话带上，不替人下结论
+ */
+function explainKnown(s, model, available) {
+  if (MODEL_UNSUPPORTED.test(s)) return explainModel(model, available);
+  const gone = noLongerSupported(s);
+  if (gone) return `本机 Codex 不再支持当前的一项设置，它的原话：\n${gone}`;
+  if (/not logged in|not signed in|codex login/i.test(s))
+    return "本机 Codex 还没登录。先在终端里跑一次 `codex login`，再回来重试。";
+  if (/\b401\b|Unauthorized/i.test(s))
+    return `本机 Codex 的请求被上游拒了（401）。原话：${s.trim().slice(-400)}`;
+  return "";
+}
+
 function explain(stderr, code, model, available) {
   const s = String(stderr || "");
-  if (MODEL_UNSUPPORTED.test(s)) return explainModel(model, available);
-  if (/not logged in|codex login|401|Unauthorized/i.test(s))
-    return "本机 Codex 还没登录。先在终端里跑一次 `codex login`，再回来重试。";
+  const known = explainKnown(s, model, available);
+  if (known) return known;
   if (/rate.?limit|429|quota/i.test(s))
     return "本机 Codex 撞到限流或额度上限了，等窗口重置后再跑。";
   if (/ENOENT|command not found/i.test(s))
@@ -400,6 +483,9 @@ async function run({
   // 思考模式：跟 app 设置页那个下拉框同一个档位（codex 这边是 model_reasoning_effort，
   // 关掉就是 none）。auto 不发，配置文件里怎么写就怎么来
   for (const a of thinking.planForEngine(ID, thinkingLevel).args) args.push(a);
+  // 宿主机上的技能只留 imagegen（理由见 skillsOffArgs）。家目录跟子进程看到的那个走：调用方给了 HOME 就认它。
+  // 排在 extraArgs 前面：属主手填了 skills.config 的，以他的为准
+  for (const a of skillsOffArgs({ codexHome: isolated.env.CODEX_HOME, userHome: (env && env.HOME) || os.homedir() })) args.push(a);
   // 排在 extraArgs 前面：用户在设置里自己填了 developer_instructions 的，以他的为准
   const instr = instructionsPlan(systemPrompt, resumeId);
   for (const a of instr.args) args.push(a);
@@ -507,7 +593,7 @@ async function run({
 
   if (r.killed === "stopped") return { finalText, usage, stopped: "已手动停止", sessionId };
   if (r.killed === "deadline") return { finalText, usage, stopped: "已达最大运行时间", sessionId };
-  if (failure) throw new Error(MODEL_UNSUPPORTED.test(failure) ? explainModel(effectiveModel, available) : failure);
+  if (failure) throw new Error(explainKnown(failure, effectiveModel, available) || failure);
   if (!turnDone || r.code !== 0) {
     if (finalText && r.code === 0) return { finalText, usage, stopped: null, sessionId };
     throw new Error(explain(r.stderr, r.code, effectiveModel, available));
@@ -516,7 +602,7 @@ async function run({
 }
 
 module.exports = {
-  changedPaths, instructionsPlan, pickupImages,
+  changedPaths, instructionsPlan, pickupImages, skillsOffArgs,
   id: ID,
   label: "本机 Codex",
   bin: "codex",

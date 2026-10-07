@@ -24,6 +24,8 @@
  *      安全档「只看不动」干活模式下两个引擎都不给 owb（以前 codex 照给）；codex 的提示词点名沙箱里 owb 跑不成的
  *   ⑩ 用量：codex 的 turn.completed 是整条线程的累计值，按线程记起算点取差值（找不到起算点、不增反减记 0）；
  *      claude 一次调用拆成好几条 assistant，按 message.id 只记一份，被停、超时等不到 result 就拿它兜底
+ *   ⑪ codex：宿主机上的技能（~/.agents/skills、自带的系统技能）一个都不加载，只留 imagegen；属主手填的 skills.config 以他的为准。
+ *      报错：光一个 401 不说「还没登录」，原话带上；codex 说哪项设置「不再支持」，那几行原样带出来
  *
  * 引擎全是本地假的，不出网。
  *   node test/engine-resilience.js
@@ -957,6 +959,126 @@ else setInterval(() => {}, 1000);
   }
 }
 
+async function partCodexHostAndErrors() {
+  console.log("\n— ⑪ codex：宿主机上的技能只留 imagegen；报错照原话说，不替人猜 —");
+  const codex = require(mod("codex"));
+  const skill = (root, dir, fm) => {
+    fs.mkdirSync(path.join(root, dir), { recursive: true });
+    fs.writeFileSync(path.join(root, dir, "SKILL.md"), fm == null ? "没有头\n" : `---\n${fm}\n---\n\n正文\n`);
+  };
+  const off = (args) => {
+    const a = args.find((x) => typeof x === "string" && x.startsWith("skills.config="));
+    return a ? [...a.matchAll(/\{ name = ("(?:[^"\\]|\\.)*"), enabled = false \}/g)].map((m) => JSON.parse(m[1])) : null;
+  };
+
+  const ch = path.join(home, "skills-codexhome");
+  const uh = path.join(home, "skills-userhome");
+  const sys = path.join(ch, "skills", ".system");
+  skill(sys, "imagegen", "name: imagegen\ndescription: 生图");
+  skill(sys, "skill-creator", "name: skill-creator\ndescription: 建技能");
+  skill(sys, "sys-new", "name: sys-new-name\ndescription: 以后新加的系统技能");
+  const ag = path.join(uh, ".agents", "skills");
+  skill(ag, "alpha-dir", "name: alpha\ndescription: 头上的名字为准");
+  skill(ag, "quoted-dir", "name: \"quoted\"\ndescription: 带引号");
+  skill(ag, "noname-dir", "description: 没写名字");
+  skill(ag, "nohead-dir", null);
+  skill(ag, ".hidden", "name: hidden");
+  fs.mkdirSync(path.join(ag, "not-a-skill"), { recursive: true });
+  fs.writeFileSync(path.join(ag, "README.md"), "x");
+
+  const args = codex.skillsOffArgs({ codexHome: ch, userHome: uh });
+  ok(args[0] === "-c" && args.length === 2, "★下发一条 -c skills.config★", args);
+  ok(same(off(args), ["openai-docs", "plugin-creator", "review-agent", "skill-creator", "skill-installer", "sys-new-name", "alpha", "nohead-dir", "noname-dir", "quoted"]),
+    "★~/.agents/skills 和系统技能全关、只留 imagegen★ 名字认 SKILL.md 头上的（引号去掉），没写就用目录名；隐藏目录、没有 SKILL.md 的不算", off(args));
+  const bare = codex.skillsOffArgs({ codexHome: path.join(home, "skills-empty") });
+  ok(same(off(bare), ["openai-docs", "plugin-creator", "review-agent", "skill-creator", "skill-installer"]),
+    "隔离运行窝头一次起来、系统技能还没铺开：按名字先关上", off(bare));
+
+  const many = path.join(home, "skills-many");
+  for (let i = 0; i < 600; i++) skill(path.join(many, ".agents", "skills"), "s" + String(i).padStart(3, "0") + "-" + "x".repeat(40), null);
+  const big = codex.skillsOffArgs({ codexHome: ch, userHome: many });
+  const bigNames = off(big) || [];
+  const SYS = ["openai-docs", "plugin-creator", "review-agent", "skill-creator", "skill-installer", "sys-new-name"];
+  ok(big[1].length <= 16 * 1024 + 64 && bigNames.length > 100 && bigNames.length < 600 && same(bigNames.slice(0, SYS.length), SYS) &&
+    bigNames.includes("s000-" + "x".repeat(40)) && !bigNames.includes("s599-" + "x".repeat(40)),
+    "★名字太多：参数不超过上限（Windows 命令行有长度上限）★ 系统技能排前面一个不落，用户的按名字取前面的", { len: big[1].length, n: bigNames.length, head: bigNames.slice(0, 8) });
+
+  // 假 codex：记下参数；turn.failed 的那句照 FAKE_FAIL 报，FAKE_STDERR 有就写进 stderr 并以 1 退出
+  const bin = fakeBin("codex-host", `
+const fs = require("fs");
+const a = process.argv.slice(2);
+if (a[0] === "debug") process.exit(1);
+process.stdin.on("data", () => {}).on("end", () => {
+  if (process.env.FAKE_LOG) fs.writeFileSync(process.env.FAKE_LOG, JSON.stringify(a));
+  if (process.env.FAKE_STDERR) { process.stderr.write(process.env.FAKE_STDERR); process.exit(1); }
+  const out = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
+  out({ type: "thread.started", thread_id: "th-host" });
+  out({ type: "turn.started" });
+  if (process.env.FAKE_FAIL) { out({ type: "turn.failed", error: { message: process.env.FAKE_FAIL } }); return; }
+  out({ type: "item.completed", item: { id: "m1", type: "agent_message", text: "好" } });
+  out({ type: "turn.completed", usage: {} });
+});
+`);
+  const cwd = path.join(home, "宿主");
+  fs.mkdirSync(cwd, { recursive: true });
+  const srcHome = path.join(home, "codex-src-host");
+  fs.mkdirSync(srcHome, { recursive: true });
+  const log = path.join(home, "codex-host-argv.json");
+  const go = async (extra = {}, opts = {}) => {
+    try { fs.rmSync(log, { force: true }); } catch {}
+    try {
+      const r = await codex.run({ prompt: "hi", cwd, bin, model: "gpt-test", ...opts, env: { CODEX_HOME: srcHome, HOME: uh, FAKE_LOG: log, ...extra } });
+      return { r, argv: JSON.parse(fs.readFileSync(log, "utf8")) };
+    } catch (e) { return { e }; }
+  };
+
+  {
+    const { r, e, argv } = await go({}, { extraArgs: ["-c", 'skills.config=[{ name = "alpha", enabled = true }]'] });
+    const mine = argv ? argv.findIndex((x) => /^skills\.config=\[\{ name = "openai-docs", enabled = false/.test(x)) : -1;
+    const theirs = argv ? argv.findIndex((x) => x === 'skills.config=[{ name = "alpha", enabled = true }]') : -1;
+    ok(!e && r.finalText === "好" && mine > 0 && off(["", argv[mine]]).includes("alpha") && off(["", argv[mine]]).includes("skill-creator") && !off(["", argv[mine]]).includes("imagegen"),
+      "★真跑一趟：关技能的参数下发了★ 家目录认调用方给的 HOME", e ? e.message : argv);
+    ok(theirs > mine && argv[argv.length - 1] === "-", "属主手填的 skills.config 排在后面，以他的为准", argv);
+  }
+
+  const WIRE = 'Error loading config.toml: `wire_api = "chat"` is no longer supported.\nHow to fix: set `wire_api = "responses"` in your provider config.\nMore info: https://github.com/openai/codex/discussions/7782\n后面别的日志\n';
+  const W3 = WIRE.split("\n").slice(0, 3).join("\n");
+  {
+    const { e } = await go({ FAKE_STDERR: WIRE });
+    ok(e && e.message.includes(W3) && !/后面别的日志/.test(e.message), "★「不再支持」那一行连同怎么改、去哪看原样带出来★ 后面不相干的不带", e && e.message);
+  }
+  {
+    const { e } = await go({ FAKE_STDERR: 'Error loading config.toml: `wire_api = "chat"` is no longer supported.\n后面别的日志\nMore info: 不是紧跟着的不算\n' });
+    ok(e && /is no longer supported\.$/m.test(e.message) && !/后面别的日志|不是紧跟着的不算/.test(e.message), "codex 没给怎么改：只带「不再支持」那一行，紧跟着的不相干的那行就停", e && e.message);
+  }
+  {
+    const { e } = await go({ FAKE_STDERR: "Error: unexpected status 401 Unauthorized: Incorrect API key provided: sk-te****" });
+    ok(e && /被上游拒了（401）/.test(e.message) && /Incorrect API key provided/.test(e.message) && !/还没登录/.test(e.message),
+      "★光一个 401 不说「还没登录」★ 说被拒了、原话带上", e && e.message);
+  }
+  {
+    const { e } = await go({ FAKE_STDERR: "Error: Not logged in" });
+    ok(e && /还没登录/.test(e.message) && /codex login/.test(e.message), "反向对照：codex 明说没登录，照旧说「还没登录」", e && e.message);
+  }
+  {
+    const { e } = await go({ FAKE_FAIL: "unexpected status 401 Unauthorized: workspace deactivated" });
+    ok(e && /被上游拒了（401）/.test(e.message) && /workspace deactivated/.test(e.message) && !/还没登录/.test(e.message),
+      "turn.failed 带出来的 401 一样：不猜没登录，原话带上", e && e.message);
+  }
+  {
+    const { e } = await go({ FAKE_FAIL: WIRE });
+    ok(e && e.message.includes(W3) && !/后面别的日志/.test(e.message), "turn.failed 带出来的「不再支持」也原样带", e && e.message);
+  }
+  {
+    const { e } = await go({ FAKE_FAIL: "ChatGPT account ID not available, please re-run `codex login`" });
+    ok(e && /还没登录/.test(e.message), "turn.failed 里 codex 让人重跑 codex login：说「还没登录」", e && e.message);
+  }
+  {
+    const { e } = await go({ FAKE_FAIL: "stream disconnected before completion" });
+    ok(e && e.message === "stream disconnected before completion", "反向对照：认不出的照原话报，不加料", e && e.message);
+  }
+}
+
 (async () => {
   try {
     await partResultErrors();
@@ -969,6 +1091,7 @@ else setInterval(() => {}, 1000);
     await partPath();
     await partReadOnly();
     await partUsage();
+    await partCodexHostAndErrors();
     console.log(`\n引擎韧性：${pass} 项全过`);
   } finally {
     fs.rmSync(home, { recursive: true, force: true });
