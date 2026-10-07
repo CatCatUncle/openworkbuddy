@@ -282,6 +282,14 @@ The diagram doubles as a reading order: start at `server.js`, then see how `src/
 
 ## What's new
 
+- **Oct 8** Tools lent to local Claude Code / Codex (image generation, library…) can run inside the main app instead: approval cards show up everywhere and usage is billed to whoever started the run; owner-only box, off by default
+- **Oct 8** Local Claude Code / Codex can pull PDFs, images and Word files from your library: they're copied into the run's working folder first, and only your own library is reachable
+- **Oct 7** Local Claude Code can hand actions that need approval to the Security Center: list-allowed ones run, anything needing a person's yes is refused; owner-only box, off by default
+- **Oct 7** Videos from local engines: after a stop or an early CLI exit, jobs the provider already accepted are collected in the background and land in the original chat; no new order is ever placed
+- **Oct 7** Stopping a local engine also stops the browsers and other descendant processes its scripts started, leaving no orphans
+- **Oct 7** The run page for local engines reads clearly: tools keep their real names, generated images show up mid-run, long silences get a still-running note, and deliverables are checked at the end
+- **Oct 7** Local engine usage is counted right: Codex resumes no longer recount the whole thread, and subscription runs are logged without spending credits; Ask and Plan runs are always read-only
+- **Oct 7** Lent tools are more dependable: outputs land in the run's own folder, the library shows only your own, and connectors from plugins are attached too
 - **Oct 7** "Open route" carries the whole day's stops into the map in order, under the same names as on the card; China opens AMap by default with a switch to Google, up to 15 stops a day
 - **Oct 7** Trip-card pins open a small place card you can page through stop by stop; "Navigate ▾" between two stops picks walking, transit, cycling or driving, and a QR code sends it to your phone
 - **Oct 7** Safer canvas spending: the Agent only hands over a to-generate list and nothing is charged until you click "Run"; a dropped connection no longer charges twice, and anything that may already be paid for is never re-bought automatically
