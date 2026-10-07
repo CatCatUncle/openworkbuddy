@@ -22,6 +22,8 @@
  *      属主在引擎设置里手填的档位、沙箱、全局连接器、放宽权限的附加参数这一趟不认，运行页上说一句（只报参数名）；
  *      只借读的工具、不给 owb、不挂用户的连接器。反向对照：干活模式下属主手填的照旧以它为准；
  *      安全档「只看不动」干活模式下两个引擎都不给 owb（以前 codex 照给）；codex 的提示词点名沙箱里 owb 跑不成的
+ *   ⑩ 用量：codex 的 turn.completed 是整条线程的累计值，按线程记起算点取差值（找不到起算点、不增反减记 0）；
+ *      claude 一次调用拆成好几条 assistant，按 message.id 只记一份，被停、超时等不到 result 就拿它兜底
  *
  * 引擎全是本地假的，不出网。
  *   node test/engine-resilience.js
@@ -862,6 +864,99 @@ process.stdin.on("end", () => {
   }
 }
 
+async function partUsage() {
+  console.log("\n— ⑩ 用量：codex 按线程取差值；claude 一次调用只记一份，等不到 result 拿它兜底 —");
+  const codex = require(mod("codex"));
+  const claude = require(mod("claude-code"));
+
+  // 假 codex：thread_id 照 FAKE_THREAD 报，turn.completed 的 usage 照 FAKE_USAGE 原样报（空 = 不报这一条）
+  const cxBin = fakeBin("codex-usage", `
+const a = process.argv.slice(2);
+if (a[0] === "debug") process.exit(1);
+process.stdin.on("data", () => {}).on("end", () => {
+  const out = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
+  out({ type: "thread.started", thread_id: process.env.FAKE_THREAD });
+  out({ type: "turn.started" });
+  out({ type: "item.completed", item: { id: "m1", type: "agent_message", text: "好" } });
+  if (process.env.FAKE_USAGE) out({ type: "turn.completed", usage: JSON.parse(process.env.FAKE_USAGE) });
+});
+`);
+  const srcHome = path.join(home, "codex-src-usage");
+  fs.mkdirSync(srcHome, { recursive: true });
+  const cwd = path.join(home, "用量");
+  fs.mkdirSync(cwd, { recursive: true });
+  const U = (i, c, o, reason) => ({ input_tokens: i, cached_input_tokens: c, output_tokens: o, ...(reason != null ? { reasoning_output_tokens: reason } : {}) });
+  const cx = async (thread, resumeId, cum) => {
+    const r = await codex.run({
+      prompt: "hi", cwd, bin: cxBin, resumeId, model: "gpt-test",
+      env: { CODEX_HOME: srcHome, FAKE_THREAD: thread, FAKE_USAGE: cum ? JSON.stringify(cum) : "" },
+    });
+    return [r.usage.prompt, r.usage.cached, r.usage.completion];
+  };
+
+  let u = await cx("th-u1", null, U(100, 40, 10, 4));
+  ok(same(u, [100, 40, 10]), "新线程从 0 算；reasoning 本来就算在 output 里，不再另加（以前记 14）", u);
+  u = await cx("th-u1", "th-u1", U(250, 100, 25, 9));
+  ok(same(u, [150, 60, 15]), "★续跑：只记这一趟多出来的★ 以前照单全加，记 250——前面几轮又算一遍", u);
+  u = await cx("th-u1", "th-u1", U(400, 160, 40));
+  ok(same(u, [150, 60, 15]), "再续一趟，照样只记差值", u);
+  u = await cx("th-u1", "th-u1", null);
+  ok(same(u, [0, 0, 0]), "这一趟没报 turn.completed：记 0，起算点不动", u);
+  u = await cx("th-u1", "th-u1", U(550, 200, 55));
+  ok(same(u, [150, 40, 15]), "下一趟接着上一次报过的数算", u);
+
+  u = await cx("th-old", "th-old", U(5000, 1000, 300));
+  ok(same(u, [0, 0, 0]), "★续跑一条以前的线程、找不到起算点：记 0★ 不拿整条线程的累计值充这一趟", u);
+  u = await cx("th-old", "th-old", U(5200, 1100, 330));
+  ok(same(u, [200, 100, 30]), "那一趟把起算点记下了，往后照常取差值", u);
+  u = await cx("th-old", "th-old", U(100, 10, 5));
+  ok(same(u, [0, 0, 0]), "累计值不增反减：记 0，不记负数", u);
+  u = await cx("th-old", "th-old", U(160, 20, 9));
+  ok(same(u, [60, 10, 4]), "起算点换成那次报的，往后照常", u);
+  u = await cx("th-u2", null, U(70, 0, 7));
+  ok(same(u, [70, 0, 7]), "另一条新线程从 0 算，不受别的线程影响", u);
+
+  const baseDir = path.join(process.env.OPENWORKBUDDY_HOME, "data", "runtime", "codex-usage");
+  let saved = null;
+  try { saved = JSON.parse(fs.readFileSync(path.join(baseDir, "th-u1.json"), "utf8")); } catch {}
+  ok(same(saved, U(550, 200, 55)), "起算点记在应用自己的数据目录里，是最后一次报的累计值", saved);
+  const walk = (d) => { try { return fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(d, e.name)) : [e.name])); } catch { return []; } };
+  const codexHome = path.join(process.env.OPENWORKBUDDY_HOME, "data", "runtime", "codex");
+  ok(![...walk(srcHome), ...walk(codexHome)].includes("th-u1.json"), "没往 codex 自己的目录里写");
+  try { await cx("../../evil", "../../evil", U(10, 0, 1)); } catch {}
+  ok(!fs.existsSync(path.join(process.env.OPENWORKBUDDY_HOME, "data", "evil.json")) && !walk(path.join(process.env.OPENWORKBUDDY_HOME, "data")).includes("evil.json"),
+    "线程 id 不像个 id（带 ../）：不拿它拼路径写文件");
+
+  // 假 claude：一次调用（msg_1）拆成一段字、一个工具两条吐，带同一份 usage（输出数随写随涨）；
+  // FAKE_RESULT 有就收尾报 result，没有就一直挂着等人按停止
+  const ccBin = fakeBin("cc-usage", `
+const out = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
+out({ type: "system", subtype: "init", session_id: "s-usage" });
+const asst = (id, u, content) => out({ type: "assistant", message: { id, usage: u, content } });
+asst("msg_1", { input_tokens: 10, cache_creation_input_tokens: 5, cache_read_input_tokens: 100, output_tokens: 3 }, [{ type: "text", text: "先看看" }]);
+asst("msg_1", { input_tokens: 10, cache_creation_input_tokens: 5, cache_read_input_tokens: 100, output_tokens: 7 }, [{ type: "tool_use", id: "t1", name: "Read", input: { file_path: "a.txt" } }]);
+asst("msg_2", { input_tokens: 20, cache_creation_input_tokens: 0, cache_read_input_tokens: 200, output_tokens: 8 }, [{ type: "text", text: "好" }]);
+if (process.env.FAKE_RESULT) out({ type: "result", subtype: "success", is_error: false, result: "好", num_turns: 4, usage: { input_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 2, output_tokens: 3 } });
+else setInterval(() => {}, 1000);
+`);
+  {
+    const ctrl = new AbortController();
+    let steps = 0;
+    const p = claude.run({ prompt: "hi", cwd: home, bin: ccBin, model: "sonnet", emit: (e) => { if (e.type === "step_start") steps++; }, stopSignal: ctrl.signal });
+    ok(await until(() => steps >= 3), "假 claude 吐完三条 assistant");
+    ctrl.abort();
+    const r = await p;
+    const got = [r.usage.prompt, r.usage.cached, r.usage.completion, r.usage.calls];
+    ok(r.stopped === "已手动停止" && same(got, [335, 300, 15, 2]),
+      "★按了停止、等不到 result：拿每次调用的用量兜底，同一个 message.id 只记一份★ 以前记 0", { stopped: r.stopped, got });
+  }
+  {
+    const r = await claude.run({ prompt: "hi", cwd: home, bin: ccBin, model: "sonnet", env: { FAKE_RESULT: "1" } });
+    const got = [r.usage.prompt, r.usage.cached, r.usage.completion, r.usage.calls];
+    ok(same(got, [3, 2, 3, 4]), "等到了 result：以它为准（整趟的权威值），不跟前面几条叠加", got);
+  }
+}
+
 (async () => {
   try {
     await partResultErrors();
@@ -873,6 +968,7 @@ process.stdin.on("end", () => {
     await partGate();
     await partPath();
     await partReadOnly();
+    await partUsage();
     console.log(`\n引擎韧性：${pass} 项全过`);
   } finally {
     fs.rmSync(home, { recursive: true, force: true });

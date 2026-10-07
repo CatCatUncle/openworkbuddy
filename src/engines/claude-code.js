@@ -165,6 +165,19 @@ async function detect(opts) {
   };
 }
 
+const CC_FIELDS = ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"];
+/**
+ * Anthropic 的用量换成本项目的口径。input_tokens 不含缓存读写那两块，要加回来才是「这次真的喂进去多少」（跟 llm.js 同口径）。
+ * 以前没加：缓存读 3 万、非缓存 1 千，界面就算出「缓存命中 3209%」
+ */
+function ccUsage(u) {
+  return {
+    prompt: Number(u.input_tokens || 0) + Number(u.cache_creation_input_tokens || 0) + Number(u.cache_read_input_tokens || 0),
+    completion: Number(u.output_tokens || 0),
+    cached: Number(u.cache_read_input_tokens || 0),
+  };
+}
+
 /**
  * @returns {Promise<{finalText:string, usage:object, stopped:string|null, sessionId:string|null}>}
  */
@@ -251,6 +264,11 @@ async function run({
   // 以前一律填空串，复盘挖掘器看到的就是「（空名）报错 49 次」：最大的一类信号却说不出是哪个工具
   const toolNames = new Map();
   const usage = { prompt: 0, completion: 0, cached: 0, calls: 0, elapsed_ms: 0 };
+  // 每次模型调用（message.id）的用量。一次调用拆成好几条 assistant 吐（一段字一条、一个工具一条），
+  // 带的是同一份 usage：同一个 id 只记一份，各格取最大的。result 那条是整趟的权威值，来了以它为准；
+  // 按了停止、跑超时等不到 result，就拿这份加起来兜底（以前 void 掉，记 0）
+  const perCall = new Map();
+  let resultUsage = false;
   const startedAt = Date.now();
 
   const onLine = (m) => {
@@ -265,8 +283,11 @@ async function run({
       step += 1;
       emit({ type: "step_start", step, depth: 0 });
       const u = m.message.usage || {};
-      // 每条 assistant 消息都带一次累计用量；这里按增量记，最后 result 那条会给权威值
-      usage.calls += 1;
+      const key = String(m.message.id || "step-" + step);
+      const was = perCall.get(key) || {};
+      const cur = {};
+      for (const k of CC_FIELDS) cur[k] = Math.max(Number(was[k]) || 0, Number(u[k]) || 0);
+      perCall.set(key, cur);
       for (const b of m.message.content || []) {
         if (!b || typeof b !== "object") continue;
         if (b.type === "text" && b.text) emit({ type: "text", delta: b.text, depth: 0 });
@@ -278,7 +299,6 @@ async function run({
           if (onWrite && typeof target === "string" && target) { try { onWrite(path.resolve(cwd, target)); } catch {} }
         }
       }
-      void u;
       return;
     }
     if (m.type === "user" && m.message) {
@@ -295,12 +315,10 @@ async function run({
     }
     if (m.type === "result") {
       resultSeen = true;
-      const u = m.usage || {};
-      // Anthropic 的 input_tokens 不含缓存读的那部分，要加回来才是「这次真的喂进去多少」（跟 llm.js 同口径）。
-      // 以前没加：缓存读 3 万、非缓存 1 千，界面就算出「缓存命中 3209%」
-      usage.prompt = Number(u.input_tokens || 0) + Number(u.cache_creation_input_tokens || 0) + Number(u.cache_read_input_tokens || 0);
-      usage.completion = Number(u.output_tokens || 0);
-      usage.cached = Number(u.cache_read_input_tokens || 0);
+      if (m.usage && typeof m.usage === "object") {
+        Object.assign(usage, ccUsage(m.usage));
+        resultUsage = true;
+      }
       if (m.num_turns > 0) usage.calls = m.num_turns;
       const said = typeof m.result === "string" ? m.result.trim() : "";
       if (m.subtype === "error_max_turns") stopped = `已达最大步数（${maxTurns || m.num_turns} 步）`;
@@ -316,6 +334,12 @@ async function run({
 
   const r = await runJsonl({ bin: exe, args, cwd, env, stdin: prompt, onLine, deadline, stopSignal });
   usage.elapsed_ms = Date.now() - startedAt;
+  if (!resultUsage) {
+    const sum = {};
+    for (const k of CC_FIELDS) sum[k] = [...perCall.values()].reduce((t, c) => t + c[k], 0);
+    Object.assign(usage, ccUsage(sum));
+  }
+  if (!(usage.calls > 0)) usage.calls = perCall.size;
 
   if (r.killed === "stopped") return { finalText, usage, stopped: "已手动停止", sessionId };
   if (r.killed === "deadline") return { finalText, usage, stopped: "已达最大运行时间", sessionId };

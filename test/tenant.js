@@ -467,6 +467,39 @@ async function login(username, password) {
   eq(me.credits, 980, "剩下的 20 才走加油包");
   eq(me.balance, 980, "余额 = 月剩余 + 加油包");
 
+  console.log("\n【13.5】本机订阅跑的（Claude Code / Codex）只记不扣");
+  // token 是用户自己的订阅出的，再扣本项目的积分等于收两遍钱。流水照记，用量照样看得见
+  const rowsOf = (sid) => account._internals.loadUsage().filter((x) => x.sessionId === sid);
+  let spent135 = account.chargeRun({ username: "xiaoyuan" },
+    { prompt: 30000, completion: 2000, calls: 3, model: "gpt-4o", provider: "codex", source: "web", sessionId: "s135-local", local: true });
+  eq(spent135, 0, "★本机订阅跑的：一分积分不扣★");
+  me = account.listMembers(org2).find((m) => m.username === "xiaoyuan");
+  eq(me.credits, 980, "加油包没动");
+  const localRow = rowsOf("s135-local")[0];
+  ok(localRow && localRow.local === true && localRow.credits === 0 && localRow.prompt === 30000,
+    "流水照记：用量看得见、标着本机、积分 0", localRow);
+  ok(localRow && localRow.cost === 0 && localRow.cost_unknown === false,
+    "钱记 0、不是「不知道」：型号名查得着 API 价也不按它算，这趟没走 API", localRow);
+  spent135 = account.chargeRun({ username: "xiaoyuan" }, {
+    prompt: 32000, completion: 2000, calls: 4, model: "m1", provider: "p1", source: "web", sessionId: "s135-mix",
+    usageBy: [{ provider: "codex", model: "gpt-4o", usage: { prompt: 30000, completion: 2000, calls: 3, local: true } }],
+  });
+  eq(spent135, 2, "★一趟里混着跑：只按走 API 的那 2000 字扣 2 分★ 以前整趟 32000 字一起扣");
+  me = account.listMembers(org2).find((m) => m.username === "xiaoyuan");
+  eq(me.credits, 978, "加油包只少 2");
+  const mix = rowsOf("s135-mix");
+  ok(mix.length === 2 && mix.some((x) => x.local === true && x.credits === 0 && x.provider === "codex")
+    && mix.some((x) => !x.local && x.credits === 2 && x.provider === "p1"),
+    "流水一段一行：本机那段标着本机、不扣；走 API 那段扣整趟的数", mix);
+  spent135 = account.chargeRun({ username: "xiaoyuan" },
+    { prompt: 30000, completion: 2000, calls: 3, model: "m1", provider: "p1", source: "web", sessionId: "s135-api" });
+  eq(spent135, 32, "反向对照：同样的量走 API 照扣 32（判据真在生效）");
+  {
+    const st2 = account._internals.loadUsers();
+    st2.users.find((x) => x.username === "xiaoyuan").credits = 980;
+    account._internals.saveUsers(st2);
+  }
+
   console.log("\n【14】用量只看得到本组织的账");
   r = await call("GET", "/api/admin/usage", { cookie: fen });
   const users = r.json.by_user.map((x) => x.key);
@@ -1167,6 +1200,8 @@ async function login(username, password) {
      "accountedRuntime 透传调用方身份，没登录态（飞书/定时任务）才退回管理员");
   ok(/account\.chargeRun\(owner,/.test(SRV),
      "钱还是记在管理员头上：「记谁的账」和「用谁的记忆」是两件事，别一起改");
+  ok(/if \(r\.usage\.local\) spentMixed = true;/.test(SRV),
+     "网页任务里本机引擎跑的那一轮按段记：本机那段只记不扣，标题那几句走 API 的照扣（不分段就整趟当一笔 API 扣）");
 
 
   // ============================================================================

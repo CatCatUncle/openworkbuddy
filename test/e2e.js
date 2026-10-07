@@ -15421,6 +15421,8 @@ async function testFeedbackAndUsage() {
   has("server", /feedback = evolve\.readFeedback\(\)\.filter\(\(f\) => f\.session === req\.params\.id\)/, "/api/session/:id 没把该会话的反馈带回去，回放时 👍👎 亮不回来");
   has("agent", /return \{ finalText, usage, stopped: r\.stopped \|\| null, sessionId: r\.sessionId \|\| null, engine: backend\.id, model: opts\.model \|\| backend\.label, provider: backend\.id \}/, "runViaEngine 没把「真跑的是哪个引擎」返回给上层");
   has("app01", /Math\.min\(100, Math\.round\(\(u\.cached \/ Math\.max\(1, u\.prompt\)\) \* 100\)\)/, "回复操作条的命中率没封顶 100%");
+  has("app01", /u\.local \? " · 用量未记录" : ""/, "本机引擎没报上用量时界面没写「用量未记录」（0 是没记上，不是没花）");
+  has("app01", /turn\._usage\.local = !!\(turn\._usage\.local && ev\.local\)/, "插队几轮里有一轮走了 API，界面照样整条写「不扣积分」");
   has("app03", /Math\.min\(100, Math\.round\(\(x\.cached \|\| 0\) \/ x\.cachedOf \* 100\)\)/, "用量页的命中率没封顶 100%");
   has("app02", /replayFeedback = new Map\(\(data\.feedback \|\| \[\]\)/, "回放没把之前点的 👍👎 装进 replayFeedback");
   has("app02", /finally \{ isReplaying = false; replayFeedback = null; \}/, "回放结束没清 replayFeedback（下一个新回合会误亮）");

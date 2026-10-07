@@ -1011,10 +1011,12 @@ function chargeRun(user, info) {
   const parts = splitByChannel(info);
   if (!parts) return chargeOne(user, info);
   // 积分是「所有模型一个价」的字数折算，按整趟算一次（拆开算会多出几次「不足 1 按 1」）；
-  // 钱按每段的型号各算各的，流水里一段一行
-  const whole = fixLegacyCache(info);
+  // 钱按每段的型号各算各的，流水里一段一行。本机订阅跑的那几段只记不扣（见 chargeOne），不算进积分
+  const paid = parts.filter((p) => !p.local);
+  const add = (k) => paid.reduce((t, p) => t + p[k], 0);
+  const whole = fixLegacyCache(paid.length === parts.length ? info : { prompt: add("prompt"), cached: add("cached"), completion: add("completion") });
   let spent = 0;
-  parts.forEach((p, i) => { spent += chargeOne(user, p, i === 0 ? creditsFor(whole) : 0); });
+  parts.forEach((p) => { spent += chargeOne(user, p, p === paid[0] ? creditsFor(whole) : 0); });
   return spent;
 }
 
@@ -1025,7 +1027,7 @@ function splitByChannel(info) {
   const { usageBy, ...base } = info;
   const n = (v) => Math.max(0, +v || 0);
   const parts = by.map((x) => ({
-    ...base, model: String(x.model || ""), provider: String(x.provider || ""),
+    ...base, model: String(x.model || ""), provider: String(x.provider || ""), local: !!(x.local || x.usage.local),
     prompt: n(x.usage.prompt), cached: n(x.usage.cached), completion: n(x.usage.completion), calls: n(x.usage.calls), elapsed_ms: 0,
   }));
   const sum = (k) => parts.reduce((t, p) => t + p[k], 0);
@@ -1042,12 +1044,15 @@ function splitByChannel(info) {
 /** 记一笔。credits 给了就按它扣积分（拆段时只在第一段扣整趟的数），不给按这一笔的 tokens 折算 */
 function chargeOne(user, info, credits) {
   info = fixLegacyCache(info);
+  // 本机订阅跑的（Claude Code / Codex，usage.local）：token 是真的，钱是用户自己的订阅出的。
+  // 不扣本项目的积分，也不按 API 价算钱（0 元、查得着价，不是「不知道」）；流水照记，用量照样看得见
+  const local = !!info.local;
   const st = loadUsers();
   const u = st.users.find((x) => x.username === user.username);
   // 「这个组织开没开用量限额」要按**账本里**的那条记录判，不能按调用方手上那个对象判：
   // 定时任务、IM 入站传进来的 user 可能是几小时前取的，缺 org 字段就会被当成默认组织，
   // 于是整条任务一分不扣——账对不上还查不出来。以库里的为准，传进来的只当兜底。
-  const spent = creditsEnabled(u || user) ? (credits === undefined ? creditsFor(info) : credits) : 0;
+  const spent = !local && creditsEnabled(u || user) ? (credits === undefined ? creditsFor(info) : credits) : 0;
   // 真金白银那一笔，跟积分各算各的、一起记。
   // 为什么不用积分代替钱：积分是「所有模型一个价」的字数折算（creditsFor 那一行），
   // 拿它排「这个月谁花得多」，排出来的是「谁的字数多」——而 Opus 的输出价是
@@ -1056,8 +1061,8 @@ function chargeOne(user, info, credits) {
   // 所有人的配额会跟着莫名其妙地变多变少。所以两本账并排记，各回答各的问题。
   // 算钱这一步绝不能把一次成功的调用搅黄——价目表读坏了、组织设置里塞了个怪值，
   // 都只应该让这一格空着，不应该让用户看见「任务失败」。所以整段吞异常。
-  let cost = null;
-  try {
+  let cost = local ? { yuan: 0, unknown: false, key: "__local__", discount: 1 } : null;
+  if (!local) try {
     const o = org.getOrg(org.orgIdOf(u || user));
     cost = pricing.costOf(info, { config: store.readJson(CONFIG_FILE, {}), discount: org.settingsOf(o).price_discount });
   } catch {}
@@ -1094,6 +1099,7 @@ function chargeOne(user, info, credits) {
     sessionId: info.sessionId || "",
     model: info.model || "",
     provider: info.provider || "",
+    ...(local ? { local: true } : {}),
     prompt: info.prompt || 0,
     // 其中命中缓存的部分。llm.js 已经把三家不同的字段名统一读了出来，可这一格以前没记，
     // 于是「有没有在反复全价重买同一段上下文」这个问题一出任务就再也查不到了。

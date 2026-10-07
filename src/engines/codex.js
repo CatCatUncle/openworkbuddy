@@ -315,6 +315,40 @@ async function detect(opts) {
   };
 }
 
+/**
+ * codex 的 turn.completed 报的是整条线程的累计用量：续跑一次，前面几轮又全报一遍
+ * （10-06 一条会话每轮从 49 万涨到 70 万）。以前照单全加，账本虚高好几倍。
+ * 这里按线程记下上一趟的累计值，这一趟只记差值。记在应用自己的数据目录里，不碰 codex 的文件。
+ * 新线程从 0 算；续跑却找不到上一趟的数（这个版本以前的线程），或者累计值不增反减，
+ * 这一趟就记 0。0 在账本里是「没记上」，界面写「未记录」，不拿猜的数充数。
+ */
+const USAGE_FIELDS = ["input_tokens", "cached_input_tokens", "output_tokens"];
+const USAGE_ZERO = { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0 };
+function usageBaseFile(threadId) {
+  return /^[\w-]+$/.test(String(threadId || "")) ? dataPath("data", "runtime", "codex-usage", threadId + ".json") : "";
+}
+function readUsageBase(threadId) {
+  const f = usageBaseFile(threadId);
+  if (!f) return null;
+  try { const o = JSON.parse(fs.readFileSync(f, "utf8")); return o && typeof o === "object" ? o : null; } catch { return null; }
+}
+function writeUsageBase(threadId, cum) {
+  const f = usageBaseFile(threadId);
+  if (!f) return;
+  try { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, JSON.stringify(cum)); } catch {}
+}
+/** 这次的累计 − 上一趟的累计。base 为 null（不知道从哪儿起算）或有一格变小了，回 null */
+function usageDelta(cum, base) {
+  if (!base) return null;
+  const d = {};
+  for (const k of USAGE_FIELDS) {
+    const v = cum[k] - (Number(base[k]) || 0);
+    if (!(v >= 0)) return null;
+    d[k] = v;
+  }
+  return d;
+}
+
 async function run({
   prompt, cwd, emit = () => {}, deadline, stopSignal,
   model, allowedModels = [], resumeId, bin, sandbox, network = false, guard = {}, mcpArgs = [], writableRoots = [], env, extraArgs = [],
@@ -378,6 +412,7 @@ async function run({
   let failure = null;
   let turnDone = false;
   const usage = { prompt: 0, completion: 0, cached: 0, calls: 0, elapsed_ms: 0 };
+  let usageBase; // 上一趟结束时这条线程的累计值（见 usageDelta），头一次 turn.completed 时才读
   const startedAt = Date.now();
   const announced = new Set(); // item.started 报过的工具，completed 时别重复报一遍卡片
 
@@ -398,9 +433,18 @@ async function run({
     if (m.type === "turn.completed") {
       turnDone = true;
       const u = m.usage || {};
-      usage.prompt += Number(u.input_tokens || 0);
-      usage.completion += Number(u.output_tokens || 0) + Number(u.reasoning_output_tokens || 0);
-      usage.cached += Number(u.cached_input_tokens || 0);
+      // 线程累计值，取差值记（见 usageDelta）。reasoning_output_tokens 本来就算在 output_tokens 里，不再另加
+      const cum = {};
+      for (const k of USAGE_FIELDS) cum[k] = Math.max(0, Number(u[k]) || 0);
+      if (usageBase === undefined) usageBase = resumeId ? readUsageBase(resumeId) : USAGE_ZERO;
+      const d = usageDelta(cum, usageBase);
+      if (d) {
+        usage.prompt += d.input_tokens;
+        usage.cached += d.cached_input_tokens;
+        usage.completion += d.output_tokens;
+      }
+      usageBase = cum;
+      writeUsageBase(sessionId, cum);
       return;
     }
     if (m.type === "turn.failed") {

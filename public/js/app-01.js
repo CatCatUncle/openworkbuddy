@@ -1814,6 +1814,8 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
         turn._usage.cached = (turn._usage.cached || 0) + (ev.cached || 0);
         turn._usage.calls += ev.calls || 0;
         turn._usage.elapsed_ms += ev.elapsed_ms || 0;
+        // 插队那几轮有一轮走的是 API，就不能整条写「不扣积分」
+        turn._usage.local = !!(turn._usage.local && ev.local);
       }
     } else if (ev.type === "trace") {
       // 这趟任务在 Langfuse 上的地址，开了执行追踪才会来。来了就挂在回复下面——
@@ -2065,10 +2067,12 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
       const hit = u.cached ? Math.min(100, Math.round((u.cached / Math.max(1, u.prompt)) * 100)) : 0;
       meta.title =
         `输入 ${u.prompt.toLocaleString()} + 输出 ${u.completion.toLocaleString()} tokens · ${u.calls} 次模型调用` +
-        (u.cached ? `\n其中命中缓存 ${u.cached.toLocaleString()}（${hit}%），这部分按约 1/10 计费` : "");
+        (u.cached ? `\n其中命中缓存 ${u.cached.toLocaleString()}（${hit}%），这部分按约 1/10 计费` : "") +
+        (u.local ? "\n用本机订阅跑的，不扣积分" : "");
       if (hit) meta.textContent += ` · 缓存命中 ${hit}%`;
     } else if (u) {
-      meta.textContent = `${u.provider || ""}（${u.model || ""}）`;
+      // 本机引擎没报上用量：0 是「没记上」，不是「没花」
+      meta.textContent = `${u.provider || ""}（${u.model || ""}）${u.local ? " · 用量未记录" : ""}`;
     }
     if (turn._credits) {
       meta.textContent += `${meta.textContent ? " · " : ""}扣 ${turn._credits.spent} 积分（余 ${(+turn._credits.balance).toLocaleString()}）`;

@@ -7366,7 +7366,11 @@ app.post("/api/chat", async (req, res) => {
         addUsage(total, r && r.usage);
         if (r && r.provider) ranLLM = { model: r.model || r.provider, provider: r.provider };
         if (r && Array.isArray(r.usageBy)) { spentBy.push(...r.usageBy); spentMixed = true; }
-        else if (r && r.usage) spentBy.push({ provider: ranLLM.provider, model: ranLLM.model, usage: r.usage });
+        else if (r && r.usage) {
+          spentBy.push({ provider: ranLLM.provider, model: ranLLM.model, usage: r.usage });
+          // 本机引擎跑的这一轮只记不扣（account.chargeOne 认 usage.local）：分段记，标题那几句走 API 的照扣
+          if (r.usage.local) spentMixed = true;
+        }
         if (r && r.sessionId) lanes.rememberEngineSession(sess, r.engine || laneEngine, r.sessionId);
         if (r && r.finalText) lastFinal = r.finalText;
         if (r && r.stopped) roundStopped = r.stopped;
