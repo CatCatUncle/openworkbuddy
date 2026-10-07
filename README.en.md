@@ -185,14 +185,18 @@ The hard part isn't drawing a person — it's keeping the same person across all
 **"I'm spending three days in Beijing — plan the trip for me, and use the map card."**
 
 <p align="center">
- <img src="docs/images/case-trip-map.jpg" width="860" alt="Map view of a three-day Beijing trip card: day 1's Temple of Heaven, Tiananmen, the Forbidden City, Jingshan and Qianmen pinned in order, with photo place cards and a navigation link for each stop on the right">
+ <img src="docs/images/case-trip-map.jpg" width="860" alt="Map view of a three-day Beijing trip card: day 1's Temple of Heaven, Tiananmen, the Forbidden City, Jingshan and Qianmen pinned in order, with photo place cards on the right and “Open route” and “Send to phone” at the top">
 </p>
 
 <p align="center">
- <img src="docs/images/case-trip-timeline.jpg" width="860" alt="The same trip card switched to the timeline: day 1 from the Temple of Heaven in the morning to Qianmen Street in the evening">
+ <img src="docs/images/case-trip-route.jpg" width="860" alt="Day 1 after “Open route”, switched to Google Maps: the Temple of Heaven, Tiananmen Square, the Palace Museum, Jingshan Park and Qianmen Street joined into one route in order, under the same names as on the trip card">
 </p>
 
-The itinerary in the answer becomes a trip card: switch between days, every stop is pinned on the map in order, the place cards on the right come with photos and a "Navigate" link; flip to "Timeline" at the top right and the day runs from morning to evening. Works without a Key; add an AMap Key in Settings → Map and places in China get more accurate.
+<p align="center">
+ <img src="docs/images/case-trip-timeline.jpg" width="860" alt="The same trip card switched to the timeline: day 3 from the Summer Palace in the morning to Nanluoguxiang">
+</p>
+
+The itinerary in the answer becomes a trip card: switch between days, every stop is pinned on the map in order, and the place cards on the right come with photos. "Open route" carries the day's stops into the map in order, under the same names as on the card; in China it opens AMap by default with a switch to Google (that's the second shot), abroad it opens Google Maps; "Send to phone" shows a QR code to carry on from your phone. Flip to "Timeline" at the top right and the day runs from morning to evening. Works without a Key; add an AMap Key in Settings → Map and places in China get more accurate.
 
 **"Every morning at seven, send me today's weather and what I should watch out for, on Feishu."**
 
@@ -278,6 +282,7 @@ The diagram doubles as a reading order: start at `server.js`, then see how `src/
 
 ## What's new
 
+- **Oct 7** "Open route" carries the whole day's stops into the map in order, under the same names as on the card; China opens AMap by default with a switch to Google, up to 15 stops a day
 - **Oct 7** Trip-card pins open a small place card you can page through stop by stop; "Navigate ▾" between two stops picks walking, transit, cycling or driving, and a QR code sends it to your phone
 - **Oct 7** Safer canvas spending: the Agent only hands over a to-generate list and nothing is charged until you click "Run"; a dropped connection no longer charges twice, and anything that may already be paid for is never re-bought automatically
 - **Oct 7** Deleted or cleared canvases can be brought back; Undo only undoes your own step; drag timeline cells to reorder shots, and one-click compose follows that order

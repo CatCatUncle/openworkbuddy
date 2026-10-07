@@ -10,7 +10,7 @@
  *   POST /api/geo/legs     { pairs }        相邻两站之间的路线 / 直线距离
  *   GET  /api/geo/tile/:src/:z/:x/:y        底图瓦片，本机记盘（src/domains/geo/tiles.js）
  *   GET  /api/geo/img?u=                    地点照片，只代理名单里的图床
- *   GET  /api/geo/qr?u=                     「发到手机」的二维码（SVG）。只编卡片自己生成的那两种导航链接，别的一律 400
+ *   GET  /api/geo/qr?u=                     「发到手机」的二维码（SVG）。只编卡片自己生成的那几种导航链接，别的一律 400
  *   POST /api/geo/test     { key? }         设置页「测一下」。在 admin.PLATFORM_WRITE 里：拿的是整台服务器那把 Key
  *
  * 查地点、取瓦片谁都能用（看自己的聊天记录就要用到）；配 Key、测 Key 归平台管理员，走 /api/settings 那道闸。
@@ -62,12 +62,12 @@ router.get("/api/geo/img", (req, res) => sendImg(res, () => tiles.image(String(r
 
 /**
  * 「发到手机」只编行程卡自己生成的导航链接（public/tripcard.js 的 legNavUrl / dayNavUrl / stopNavUrl）：
- * 高德 https://uri.amap.com/navigation、Google 地图 https://www.google.com/maps/dir/。
- * 不是这两种的不编——不然它就是一台替任何人把任意网址做成二维码的机器，扫的人看不出指向哪。
+ * 高德 https://uri.amap.com/navigation、高德网页版路线规划 https://www.amap.com/dir（一天四站以上）、
+ * Google 地图 https://www.google.com/maps/dir/。不是这几种的不编——不然它就是一台替任何人把任意网址做成二维码的机器，扫的人看不出指向哪。
  * 编进去的是解析后再拼回的地址（x.href），跟这里检查过的是同一串。
  */
 const QR_MAX = 2000;
-const NAV_LINKS = /** @type {Record<string, string>} */ ({ "uri.amap.com": "/navigation", "www.google.com": "/maps/dir/" });
+const NAV_LINKS = /** @type {Record<string, string>} */ ({ "uri.amap.com": "/navigation", "www.amap.com": "/dir", "www.google.com": "/maps/dir/" });
 /** @param {unknown} u @returns {string} 能编的地址；不能编的抛 400 */
 function navLink(u) {
   const bad = (m) => Object.assign(new Error(m), { status: 400 });

@@ -237,39 +237,63 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
       "国内两站：高德导航，坐标原样（本来就是 GCJ-02），步行", leg);
     const legW = TC.legNavUrl({ ...A, datum: "wgs84" }, B, "driving");
     ok(!legW.includes("from=102.703,25.048,") && legW.includes("&mode=car"), "给的是 WGS-84 的点：先换成 GCJ-02 再交给高德", legW);
-    const g = TC.legNavUrl(P1, P2, "walking");
-    ok(g.startsWith("https://www.google.com/maps/dir/?api=1&origin=48.8584,2.2945&destination=48.8606,2.3376") && g.includes("travelmode=walking"),
-      "国外：Google 地图，纬度在前", g);
+    const enc = encodeURIComponent;
+    const PC1 = { ...P1, city: "巴黎" }, PC2 = { ...P2, city: "巴黎" };
+    const g = TC.legNavUrl(PC1, PC2, "walking");
+    eq(g, "https://www.google.com/maps/dir/?api=1&origin=" + enc("埃菲尔铁塔, 巴黎") + "&destination=" + enc("卢浮宫, 巴黎") + "&travelmode=walking",
+      "国外：Google 地图，每站写「站名, 城市」——只给坐标它会换成旁边商户的名字，只给站名又可能搜到别的城市");
+    eq(TC.legNavUrl(P1, P2, "walking"), "https://www.google.com/maps/dir/?api=1&origin=" + enc("48.8584,2.2945") + "&destination=" + enc("48.8606,2.3376") + "&travelmode=walking",
+      "不知道在哪个城市：退回坐标，纬度在前");
     // 段间菜单的四种走法：高德 mode 只认 car / bus / walk / ride，Google travelmode 只认 driving / walking / bicycling / transit
     eq(TC.NAV_MODES.map(([m, t]) => m + t), ["walking步行", "transit公交", "bicycling骑行", "driving驾车"], "段间菜单：步行、公交、骑行、驾车四种");
     eq(TC.NAV_MODES.map(([m]) => /&mode=(\w+)&/.exec(TC.legNavUrl(A, B, m))[1]), ["walk", "bus", "ride", "car"], "国内：四种走法对上高德的 mode");
     eq(TC.NAV_MODES.map(([m]) => /travelmode=(\w+)$/.exec(TC.legNavUrl(P1, P2, m))[1]), ["walking", "transit", "bicycling", "driving"], "国外：四种走法对上 Google 的 travelmode");
     // 每站「导航到这」：只给终点，不给起点，导航应用从手机当前位置出发
     const sa = TC.stopNavUrl(A);
-    eq(sa, "https://uri.amap.com/navigation?to=102.703,25.048," + encodeURIComponent("翠湖公园") + "&coordinate=gaode&callnative=1", "国内一站：高德，只有 to，坐标原样（GCJ-02）");
+    eq(sa, "https://uri.amap.com/navigation?to=102.703,25.048," + enc("翠湖公园") + "&coordinate=gaode&callnative=1", "国内一站：高德，只有 to，坐标原样（GCJ-02）");
     const saW = TC.stopNavUrl({ ...A, datum: "wgs84" });
     ok(saW.startsWith("https://uri.amap.com/navigation?to=") && !saW.includes("to=102.703,25.048,") && !/from=|mode=/.test(saW), "给的是 WGS-84 的点：换成 GCJ-02 再交给高德，不带 from、不带走法", saW);
-    eq(TC.stopNavUrl(P1), "https://www.google.com/maps/dir/?api=1&destination=48.8584,2.2945", "国外一站：Google，只有 destination，没有 origin、没有走法");
+    eq(TC.stopNavUrl(PC1), "https://www.google.com/maps/dir/?api=1&destination=" + enc("埃菲尔铁塔, 巴黎"), "国外一站：Google，只有 destination（站名, 城市），没有 origin、没有走法");
+    eq(TC.stopNavUrl(P1), "https://www.google.com/maps/dir/?api=1&destination=" + enc("48.8584,2.2945"), "国外一站、不知道城市：坐标");
     // 只有直线（国外、没填 Key）时按直线距离定：两公里内步行，再远开车
     const P3 = { lng: 2.2950, lat: 48.8738, datum: "wgs84", name: "凯旋门" };
     ok(TC.legNavUrl(P1, P3, "line").includes("travelmode=walking"), "国外只有直线、两站 1.7 公里：步行", TC.legNavUrl(P1, P3, "line"));
     ok(TC.legNavUrl(P1, P2, "line").includes("travelmode=driving"), "国外只有直线、两站 3 公里多：开车（反向对照）", TC.legNavUrl(P1, P2, "line"));
     ok(TC.legNavUrl(A, B, "line").includes("&mode=walk") && TC.legNavUrl(A, D, "line").includes("&mode=car"), "国内没 Key 只有直线：一样按两公里分步行和开车");
+    // 一整天
     ok(TC.dayNavUrl([A]) === "", "一天只有一站：不给整天路线");
-    ok(/^https:\/\/uri\.amap\.com\/navigation\?/.test(TC.dayNavUrl([A, B])) && !TC.dayNavUrl([A, B]).includes("via="), "国内两站：高德，没有途经点");
-    ok(TC.dayNavUrl([A, B, C]).includes("&via=102.71,25.04," + encodeURIComponent("南强街")), "国内三站：中间那站当途经点");
-    ok(TC.dayNavUrl([A, B]).includes("&mode=walk") && TC.dayNavUrl([A, B, C, D]).includes("travelmode=walking"), "一天里每两站都在两公里内：整天按步行");
-    ok(TC.dayNavUrl([A, D]).includes("&mode=car"), "有一段超过两公里：整天按开车（反向对照）", TC.dayNavUrl([A, D]));
+    ok(/^https:\/\/uri\.amap\.com\/navigation\?/.test(TC.dayNavUrl([A, B])) && !TC.dayNavUrl([A, B]).includes("via="), "国内两站：高德（手机上直接拉起高德 App），没有途经点");
+    ok(TC.dayNavUrl([A, B]).includes("&mode=walk"), "两站在两公里内：步行");
+    ok(TC.dayNavUrl([A, D]).includes("&mode=car"), "两站超过两公里：开车（反向对照）", TC.dayNavUrl([A, D]));
+    const cn3 = TC.dayNavUrl([A, B, C]);
+    ok(cn3.includes("&via=102.71,25.04," + enc("南强街")) && cn3.includes("&mode=car"), "国内三站：中间那站当途经点；高德一按步行就把途经点丢了，所以三站都近也开车", cn3);
     const cn4 = TC.dayNavUrl([A, B, C, D]);
-    ok(cn4 === "https://www.google.com/maps/dir/?api=1&origin=25.048,102.703&destination=25.02,102.73&waypoints=" + encodeURIComponent("25.04,102.71|25.03,102.72") + "&travelmode=walking",
-      "国内四站：高德网页导航只认一个途经点，改交 Google，坐标用 GCJ-02（Google 国内底图也是这套）", cn4);
-    const gd = TC.dayNavUrl([P1, P2, P1, P2]);
-    ok(gd.startsWith("https://www.google.com/maps/dir/") && gd.includes("&waypoints=" + encodeURIComponent("48.8606,2.3376|48.8584,2.2945")), "国外四站：Google，带途经点", gd);
+    eq(cn4, "https://www.amap.com/dir?type=car&from[name]=" + enc("翠湖公园") + "&from[lnglat]=102.703,25.048&to[name]=" + enc("滇池") + "&to[lnglat]=102.73,25.02"
+      + "&via[0][name]=" + enc("南强街") + "&via[0][lnglat]=102.71,25.04&via[1][name]=" + enc("金马碧鸡坊") + "&via[1][lnglat]=102.72,25.03&platform=pc",
+      "国内四站：高德网页版路线规划，每站带名字和 GCJ-02 坐标，按顺序排途经点；platform=pc 让手机别跳去只留一个途经点的手机版");
+    const cn4w = TC.dayNavUrl([{ ...A, datum: "wgs84" }, B, C, D]);
+    ok(cn4w.startsWith("https://www.amap.com/dir?") && !cn4w.includes("from[lnglat]=102.703,25.048&"), "给的是 WGS-84 的点：换成 GCJ-02 再交给高德网页版", cn4w);
+    const cn15 = TC.dayNavUrl(Array.from({ length: 15 }, (x, i) => (i % 2 ? A : B)));
+    ok(cn15.includes("&via[12][name]=") && !cn15.includes("via[13]") && TC.dayNavUrl(Array.from({ length: 16 }, () => A)) === "",
+      "国内一天 15 站（卡片的上限）照样整条给高德，再多不给", cn15.length);
+    const AC = { ...A, city: "昆明" }, BC = { ...B, city: "昆明" }, CC = { ...C, city: "昆明市" }, DC = { ...D, name: "昆明滇池", city: "昆明" };
+    eq(TC.dayNavUrl([AC, BC, CC, DC], "google"), "https://www.google.com/maps/dir/?api=1&origin=" + enc("翠湖公园, 昆明") + "&destination=" + enc("昆明滇池")
+      + "&waypoints=" + enc("南强街, 昆明") + "%7C" + enc("金马碧鸡坊, 昆明市") + "&travelmode=walking",
+      "国内选了 Google：照样整条给，每站「站名, 城市」；站名里已经有城市就不重复；每两站都在两公里内按步行");
+    ok(TC.legNavUrl(AC, BC, "walking", "google").startsWith("https://www.google.com/maps/dir/?api=1&origin=" + enc("翠湖公园, 昆明"))
+      && TC.stopNavUrl(AC, "google") === "https://www.google.com/maps/dir/?api=1&destination=" + enc("翠湖公园, 昆明"), "选了 Google：段间导航、「导航到这」也跟着去 Google");
+    ok(TC.dayNavUrl(Array.from({ length: 11 }, () => AC), "google") === "" && TC.dayNavUrl(Array.from({ length: 11 }, () => AC)) !== "", "国内 11 站：Google 带不下（途经点有上限）不给，高德照给");
+    const gd = TC.dayNavUrl([PC1, PC2, PC1, PC2]);
+    ok(gd.startsWith("https://www.google.com/maps/dir/") && gd.includes("&waypoints=" + enc("卢浮宫, 巴黎") + "%7C" + enc("埃菲尔铁塔, 巴黎")) && TC.dayNavUrl([PC1, PC2, PC1, PC2], "amap") === gd,
+      "国外四站：Google，途经点也是站名；国外没得选高德", gd);
+    ok(TC.dayNavUrl([{ ...PC1, name: "A|B" }, PC2, PC2]).includes("&origin=" + enc("A B, 巴黎") + "&"), "站名里的竖线换成空格（竖线在 Google 那儿是途经点的分隔）");
     const mix = TC.dayNavUrl([A, P1]);
-    ok(mix.startsWith("https://www.google.com/maps/dir/?api=1&origin=25.048,102.703&destination=48.8584,2.2945") && mix.includes("travelmode=driving"), "国内外混着：Google，国内那站 GCJ-02、国外那站原样", mix);
+    ok(mix.startsWith("https://www.google.com/maps/dir/?api=1&origin=" + enc("25.048,102.703") + "&destination=" + enc("48.8584,2.2945")) && mix.includes("travelmode=driving"),
+      "国内外混着：Google，国内那站 GCJ-02、国外那站原样", mix);
     const mixLeg = TC.legNavUrl({ ...A, datum: "wgs84" }, P1, "driving");
-    ok(mixLeg.startsWith("https://www.google.com/maps/dir/") && !mixLeg.includes("origin=25.048,102.703&"), "两站一国内一国外：Google，国内那站 WGS-84 先换成 GCJ-02", mixLeg);
-    ok(TC.dayNavUrl(Array.from({ length: 10 }, () => P1)) !== "" && TC.dayNavUrl(Array.from({ length: 11 }, () => P1)) === "", "十站给，超过 10 站不给（Google 途经点有上限）");
+    ok(mixLeg.startsWith("https://www.google.com/maps/dir/") && !mixLeg.includes("origin=" + enc("25.048,102.703") + "&"), "两站一国内一国外：Google，国内那站 WGS-84 先换成 GCJ-02", mixLeg);
+    ok(TC.dayNavUrl(Array.from({ length: 10 }, () => P1)) !== "" && TC.dayNavUrl(Array.from({ length: 11 }, () => P1)) === "", "国外十站给，超过 10 站不给（Google 途经点有上限）");
+    eq([cn3, cn4, gd, ""].map(TC.navApp), ["高德地图", "高德地图", "Google 地图", "Google 地图"], "卡片上写的是哪家：认得出高德的两种链接");
     eq([5, 834, 1234, 12345, NaN].map(TC.fmtDist), ["10 米", "830 米", "1.2 公里", "12 公里", ""], "距离：米取整十、公里一位小数、十公里以上取整");
     eq([0, 30, 600, 3600, 5400, NaN].map(TC.fmtDur), ["", "约 1 分钟", "约 10 分钟", "约 1 小时", "约 1 小时 30 分", ""], "用时：分钟 / 小时几分");
 
@@ -823,8 +847,11 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
     const A = { lng: 102.703, lat: 25.048, datum: "gcj02", name: "翠湖公园" }, B = { lng: 102.71, lat: 25.04, datum: "gcj02", name: "南强街" };
     const C = { lng: 102.72, lat: 25.03, datum: "gcj02", name: "金马碧鸡坊" };
     const P1 = { lng: 2.2945, lat: 48.8584, datum: "wgs84", name: "埃菲尔铁塔" }, P2 = { lng: 2.3376, lat: 48.8606, datum: "wgs84", name: "卢浮宫" };
+    const PC1 = { ...P1, city: "巴黎" }, PC2 = { ...P2, city: "巴黎" };
     const links = [...TC.NAV_MODES.flatMap(([m]) => [TC.legNavUrl(A, B, m), TC.legNavUrl(P1, P2, m)]), TC.legNavUrl(A, B, "line"),
-      TC.dayNavUrl([A, B]), TC.dayNavUrl([A, B, C]), TC.dayNavUrl([P1, P2, P1, P2]), TC.stopNavUrl(A), TC.stopNavUrl({ ...A, datum: "wgs84" }), TC.stopNavUrl(P1)];
+      TC.dayNavUrl([A, B]), TC.dayNavUrl([A, B, C]), TC.dayNavUrl([A, B, C, A, B]), TC.dayNavUrl(Array.from({ length: 15 }, (x, i) => (i % 2 ? A : B))),
+      TC.dayNavUrl([P1, P2, P1, P2]), TC.dayNavUrl([PC1, PC2, PC1, PC2]), TC.dayNavUrl([A, B, C, A], "google"),
+      TC.stopNavUrl(A), TC.stopNavUrl({ ...A, datum: "wgs84" }), TC.stopNavUrl(P1), TC.stopNavUrl(PC1)];
     const nh = hits.length;
     const qrBad = [];
     for (const u of links) {
@@ -833,7 +860,7 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
       const want = await require("qrcode").toString(u, QR_OPTS);
       if (r.status !== 200 || r.headers.get("content-type") !== "image/svg+xml; charset=utf-8" || body !== want || /<script/i.test(body) || navLink(u) !== u) qrBad.push([u, r.status, body.slice(0, 80)]);
     }
-    ok(links.length === 15 && qrBad.length === 0, `卡片生成的 ${links.length} 种导航链接（段间四种走法、整天路线、导航到这；国内高德、国外 Google）都编得出二维码，编进去的就是那条链接本身`, qrBad);
+    ok(links.length === 20 && links.every(Boolean) && qrBad.length === 0, `卡片生成的 ${links.length} 种导航链接（段间四种走法、整天路线、导航到这；国内高德两种、国外 Google）都编得出二维码，编进去的就是那条链接本身`, qrBad);
     const q1 = await fetch(API + "/api/geo/qr?u=" + encodeURIComponent(links[0]));
     ok(/private/.test(q1.headers.get("cache-control") || "") && q1.headers.get("x-content-type-options") === "nosniff", "二维码：private 缓存，nosniff");
     const nope = [
@@ -844,6 +871,8 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
       ["带端口", "https://uri.amap.com:8443/navigation?to=1,2"],
       ["带用户名", "https://someone@uri.amap.com/navigation?to=1,2"],
       ["高德别的页面", "https://uri.amap.com/marker?position=1,2"],
+      ["高德网页版别的页面", "https://www.amap.com/search?query=x"],
+      ["高德网页版不带 www", "https://amap.com/dir?type=car"],
       ["Google 别的页面", "https://www.google.com/search?q=x"],
       ["Google 别的子域名", "https://maps.google.com/maps/dir/?api=1&destination=1,2"],
       ["javascript:", "javascript:alert(1)"],

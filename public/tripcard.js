@@ -271,56 +271,82 @@
   // Google 地图 maps/dir 的 travelmode=walking/transit/bicycling/driving。Google 的 two-wheeler（摩托）国内没有对应，不给
   const NAV_MODES = [["walking", "步行"], ["transit", "公交"], ["bicycling", "骑行"], ["driving", "驾车"]];
   const AMAP_MODE = { walking: "walk", transit: "bus", bicycling: "ride", driving: "car" };
+  // 一天最多几站能整条打开：高德网页版实测 15 站照样出路线；Google 的途经点最多 8 个
+  const DAY_MAX = { amap: 15, google: 10 };
   /** 给 Google 地图的点：国内给 GCJ-02（Google 的国内路网就是这套，给 WGS-84 会偏几百米），国外给 WGS-84 */
   function gPt(p) {
     const w = convert(p.lng, p.lat, p.datum, "wgs84");
     const q = inChina(w[0], w[1]) ? convert(p.lng, p.lat, p.datum, "gcj02") : w;
     return `${fx(q[1])},${fx(q[0])}`;
   }
-  /** 两站之间：都在国内去高德（GCJ-02），否则去 Google 地图 */
-  function legNavUrl(a, b, mode) {
+  const bareCity = (c) => String(c || "").trim().replace(/(特别行政区|自治州|自治区|地区|盟|市|省|县|区)$/, "");
+  /**
+   * 给 Google 地图的地点写「站名, 城市」：只给坐标，它会把每一站换成离那儿最近的商户名（天坛公园成了「月季园」）；
+   * 只给站名又可能跑去别的城市（「故宫博物院」搜到台北）。不知道在哪个城市才退回坐标。
+   */
+  function gPlace(p) {
+    const n = String(p.name || "").replace(/\|/g, " ").trim(), c = bareCity(p.city);
+    if (!n || !c) return gPt(p);
+    return n.includes(c) ? n : `${n}, ${String(p.city).trim()}`;
+  }
+  const amapOk = (prov, ws) => prov !== "google" && ws.every(([x, y]) => inChina(x, y));
+  /** 两站之间：都在国内去高德（GCJ-02），否则去 Google 地图。prov === "google"：人选了 Google，国内也给 Google */
+  function legNavUrl(a, b, mode, prov) {
     const pa = convert(a.lng, a.lat, a.datum, "wgs84"), pb = convert(b.lng, b.lat, b.datum, "wgs84");
     // 没查到路线（国外、没填 Key）只有直线：跟查路线时一样，两公里内按步行，别让几百米也去开车
     if (!AMAP_MODE[mode]) mode = distance(pa[0], pa[1], pb[0], pb[1]) < WALK_M ? "walking" : "driving";
-    if (inChina(pa[0], pa[1]) && inChina(pb[0], pb[1])) {
+    if (amapOk(prov, [pa, pb])) {
       const ga = convert(a.lng, a.lat, a.datum, "gcj02"), gb = convert(b.lng, b.lat, b.datum, "gcj02");
       return `https://uri.amap.com/navigation?from=${fx(ga[0])},${fx(ga[1])},${encodeURIComponent(a.name)}&to=${fx(gb[0])},${fx(gb[1])},${encodeURIComponent(b.name)}`
         + `&mode=${AMAP_MODE[mode] || "car"}&coordinate=gaode&callnative=1`;
     }
-    return `https://www.google.com/maps/dir/?api=1&origin=${gPt(a)}&destination=${gPt(b)}&travelmode=${mode}`;
+    return `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(gPlace(a))}&destination=${encodeURIComponent(gPlace(b))}&travelmode=${mode}`;
   }
   /**
    * 「导航到这」：只给终点。两家都是不给起点就从手机当前位置出发；走法也不给，让人到导航应用里自己选。
    */
-  function stopNavUrl(p) {
+  function stopNavUrl(p, prov) {
     const w = convert(p.lng, p.lat, p.datum, "wgs84");
-    if (inChina(w[0], w[1])) {
+    if (amapOk(prov, [w])) {
       const g = convert(p.lng, p.lat, p.datum, "gcj02");
       return `https://uri.amap.com/navigation?to=${fx(g[0])},${fx(g[1])},${encodeURIComponent(p.name)}&coordinate=gaode&callnative=1`;
     }
-    return `https://www.google.com/maps/dir/?api=1&destination=${fx(w[1])},${fx(w[0])}`;
+    return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(gPlace(p))}`;
   }
   /** 「发到手机」的二维码：服务端只编上面这几个函数生成的链接 */
   const qrUrl = (u) => "/api/geo/qr?u=" + encodeURIComponent(u);
+  const QR_BIG = 600;
   /**
-   * 一整天的路线。每两站都在两公里内就按步行，否则开车。
-   * 国内三站以内交给高德（它的网页导航只认一个途经点）；再多、或者在国外，交给 Google 地图（途经点最多 8 个，所以十站封顶）。
+   * 一整天的路线，每站带着名字。国内给高德，国外（或者人选了 Google）给 Google 地图。
+   * 高德两三站走 uri.amap.com（手机上直接拉起高德 App），它只认一个途经点，而且一按步行就把途经点丢了，
+   * 所以只有两站、又在两公里内才按步行。四站以上走高德网页版的路线规划（via[0]、via[1]…排下去），
+   * 网页版也只有驾车带得了途经点；加 platform=pc 是因为手机打开它会跳去手机版，手机版只留第一个途经点。
+   * Google 每两站都在两公里内就按步行，否则开车。
    */
-  function dayNavUrl(pts) {
-    if (pts.length < 2 || pts.length > 10) return "";
+  function dayNavUrl(pts, prov) {
+    if (pts.length < 2) return "";
     const wgs = pts.map((p) => convert(p.lng, p.lat, p.datum, "wgs84"));
-    const walk = wgs.every((w, i) => i === 0 || distance(wgs[i - 1][0], wgs[i - 1][1], w[0], w[1]) < WALK_M);
-    if (pts.length <= 3 && wgs.every(([x, y]) => inChina(x, y))) {
+    const near = (i) => distance(wgs[i - 1][0], wgs[i - 1][1], wgs[i][0], wgs[i][1]) < WALK_M;
+    const last = pts.length - 1;
+    if (amapOk(prov, wgs)) {
+      if (pts.length > DAY_MAX.amap) return "";
       const g = pts.map((p) => convert(p.lng, p.lat, p.datum, "gcj02"));
-      const last = g.length - 1;
-      const via = g.length === 3 ? `&via=${fx(g[1][0])},${fx(g[1][1])},${encodeURIComponent(pts[1].name)}` : "";
-      return `https://uri.amap.com/navigation?from=${fx(g[0][0])},${fx(g[0][1])},${encodeURIComponent(pts[0].name)}&to=${fx(g[last][0])},${fx(g[last][1])},${encodeURIComponent(pts[last].name)}${via}`
-        + `&mode=${walk ? "walk" : "car"}&coordinate=gaode&callnative=1`;
+      const ll = (i) => `${fx(g[i][0])},${fx(g[i][1])}`, nm = (i) => encodeURIComponent(pts[i].name);
+      if (pts.length <= 3) {
+        return `https://uri.amap.com/navigation?from=${ll(0)},${nm(0)}&to=${ll(last)},${nm(last)}${last === 2 ? `&via=${ll(1)},${nm(1)}` : ""}`
+          + `&mode=${last === 1 && near(1) ? "walk" : "car"}&coordinate=gaode&callnative=1`;
+      }
+      let u = `https://www.amap.com/dir?type=car&from[name]=${nm(0)}&from[lnglat]=${ll(0)}&to[name]=${nm(last)}&to[lnglat]=${ll(last)}`;
+      for (let i = 1; i < last; i++) u += `&via[${i - 1}][name]=${nm(i)}&via[${i - 1}][lnglat]=${ll(i)}`;
+      return u + "&platform=pc";
     }
-    const ll = pts.map(gPt);
-    const mid = ll.slice(1, -1);
-    return `https://www.google.com/maps/dir/?api=1&origin=${ll[0]}&destination=${ll[ll.length - 1]}${mid.length ? "&waypoints=" + encodeURIComponent(mid.join("|")) : ""}&travelmode=${walk ? "walking" : "driving"}`;
+    if (pts.length > DAY_MAX.google) return "";
+    const q = pts.map((p) => encodeURIComponent(gPlace(p)));
+    const walk = pts.every((p, i) => i === 0 || near(i));
+    return `https://www.google.com/maps/dir/?api=1&origin=${q[0]}&destination=${q[last]}${last > 1 ? "&waypoints=" + q.slice(1, -1).join("%7C") : ""}&travelmode=${walk ? "walking" : "driving"}`;
   }
+  /** 链接是哪家的：卡片上写「在高德地图里打开」还是「Google 地图」 */
+  const navApp = (u) => (/^https:\/\/(uri|www)\.amap\.com\//.test(u) ? "高德地图" : "Google 地图");
 
   // ---------------- 静态占位（renderMd 里用） ----------------
   function staticHtml(it) {
@@ -428,6 +454,14 @@
   function saveLayout(v) {
     try { root.localStorage.setItem(LAYOUT_KEY, JSON.stringify(v)); } catch (e) { /* 存不了就只管这一张 */ }
   }
+  // 国内的路线用哪家地图打开：默认高德，点过 Google 就记在本机，下一张卡片照这个来
+  const MAPS_KEY = "owb.tripcard.maps";
+  function loadProv() {
+    try { return root.localStorage.getItem(MAPS_KEY) === "google" ? "google" : "amap"; } catch (e) { return "amap"; }
+  }
+  function saveProv(v) {
+    try { root.localStorage.setItem(MAPS_KEY, v); } catch (e) { /* 存不了就只管这一张 */ }
+  }
 
   // ---------------- 墨卡托 ----------------
   const TS = 256;
@@ -488,6 +522,7 @@
       pop: -1,                           // 地图上弹着小卡的那一站（当天第几站），-1 没弹
       nav: -1,                           // 列表里展开了「导航」菜单的那一段，-1 没展开
       qr: null,                          // 「发到手机」的二维码开在哪：{ at: "leg"|"day"|"pop", i, mode }
+      prov: loadProv(),                  // 国内的导航链接给哪家："amap" | "google"（国外只有 Google）
       moved: false,                      // 拖过、缩放过、点过地点：别再自作主张地重新取景
     };
     const tiles = new Map();
@@ -547,22 +582,46 @@
 
     // ---- 右侧卡片 ----
     function stopPlace(d, i) { const p = st.places[d]; return p ? p[i] : undefined; }
+    /** 第 i 站给导航链接用的样子：地点 + 行程里写的站名 + 城市（Google 地图靠「站名, 城市」认地方） */
+    function navPt(d, i) {
+      const p = stopPlace(d, i), s = it.days[d].stops[i];
+      return p ? { ...p, name: s.name, city: s.city || it.city } : null;
+    }
+    /** 这一天每一站；缺一站就是 null——缺一站的整天路线是错的，宁可不给（每两站之间那条「导航」还在） */
+    function dayPts(d) {
+      const ps = it.days[d].stops.map((s, i) => navPt(d, i));
+      return ps.length && ps.every(Boolean) ? ps : null;
+    }
     /** 整天的「打开路线」：每站都找到了才给 */
-    function dayNav(d) {
-      const day = it.days[d];
-      const located = day.stops.map((s, i) => { const p = stopPlace(d, i); return p ? { ...p, name: s.name } : null; }).filter(Boolean);
-      return located.length === day.stops.length ? dayNavUrl(located) : "";
+    function dayNav(d) { const ps = dayPts(d); return ps ? dayNavUrl(ps, st.prov) : ""; }
+    /** 选哪家地图：只在这一天整个在国内时给（国外高德没有路网）。选了就记住，连段间导航、「导航到这」一起换 */
+    function setProv(v) {
+      if (v === st.prov) return;
+      st.prov = v;
+      saveProv(v);
+      if (st.qr && st.qr.at === "day" && !dayNav(st.day)) st.qr = null;   // 换过去给不了整条路线，二维码一起收（开着的别的照新链接重编）
+      renderPanel();
+      if (st.pop >= 0) renderPop();   // 地图上开着的小卡里那条「导航到这」也换
+      const b = panel.querySelector(`.tc-prov[data-prov="${v}"]`);
+      if (b) b.focus({ preventScroll: true });
     }
     function renderPanel() {
       const d = st.day, day = it.days[d];
-      // 缺一站的整天路线是错的，宁可不给（每两站之间那条「导航」还在）
-      const nav = dayNav(d);
+      const pts = dayPts(d), nav = pts ? dayNavUrl(pts, st.prov) : "";
+      const cn = !!pts && pts.length > 1 && pts.every((p) => { const w = convert(p.lng, p.lat, p.datum, "wgs84"); return inChina(w[0], w[1]); });
+      // Google 地图一趟带不下这么多站：整条路线给不了，照实说，切回高德就有
+      const full = !nav && cn && st.prov === "google" && pts.length > DAY_MAX.google;
       const dayQr = !!nav && !!st.qr && st.qr.at === "day";
-      const app = nav.startsWith("https://uri.amap.com/") ? "高德地图" : "Google 地图";
+      const app = navApp(nav);
+      const provs = cn ? `<span class="tc-provs" role="group" aria-label="用哪家地图打开">${[["amap", "高德"], ["google", "Google"]].map(([v, t]) =>
+        `<button type="button" class="tc-prov" data-prov="${v}" aria-pressed="${st.prov === v}">${t}</button>`).join("")}</span>` : "";
       let h = `<div class="tc-dh"><div class="tc-dl">${esc(dayLabel(day, d))}</div>${day.title ? `<div class="tc-dt">${esc(day.title)}</div>` : ""}`
         + (day.summary ? `<div class="tc-ds">${esc(day.summary)}</div>` : "")
-        + (nav ? `<div class="tc-acts"><a class="tc-open" href="${esc(nav)}" target="_blank" rel="noopener" title="在${app}里打开这一天的路线">${ICON.nav}打开路线</a>`
-          + `<button type="button" class="tc-qr" data-at="day" aria-expanded="${dayQr}">发到手机</button><span class="tc-app">${app}</span></div>` : "")
+        + (nav || full ? `<div class="tc-acts">`
+          + (nav ? `<a class="tc-open" href="${esc(nav)}" target="_blank" rel="noopener" title="在${/^[A-Z]/.test(app) ? " " : ""}${app}里打开这一天的路线">${ICON.nav}打开路线</a>`
+            + `<button type="button" class="tc-qr" data-at="day" aria-expanded="${dayQr}">发到手机</button>`
+            : `<span class="tc-app">Google 地图一次最多 ${DAY_MAX.google} 站，这天 ${pts.length} 站</span>`)
+          + (provs || `<span class="tc-app">${app}</span>`) + `</div>` : "")
         + (dayQr ? qrHtml(nav) : "") + `</div>`;
       let seg = null;
       day.stops.forEach((s, i) => {
@@ -613,10 +672,7 @@
     const legBits = (leg) => [MODE[leg.mode] || "", fmtDist(leg.distance), fmtDur(leg.duration)].filter(Boolean).join(" · ");
     /** 这一段默认按哪种走法：查到了步行 / 驾车就照着；只有直线的，两公里以内算步行（跟服务端挑路线同一条线） */
     const legMode = (leg) => (leg.mode === "walking" || leg.mode === "driving" ? leg.mode : leg.distance < WALK_M ? "walking" : "driving");
-    function legUrl(d, i, mode) {
-      const s = it.days[d].stops;
-      return legNavUrl({ ...stopPlace(d, i), name: s[i].name }, { ...stopPlace(d, i + 1), name: s[i + 1].name }, mode);
-    }
+    function legUrl(d, i, mode) { return legNavUrl(navPt(d, i), navPt(d, i + 1), mode, st.prov); }
     /**
      * 两站之间那一行：路程用时 +「导航 ▾」。点开是四种走法（各自一条链接，新窗口打开）和「发到手机」。
      * 菜单就地展开在这一行底下，不浮在列表上——列表自己会滚，浮层会被它切掉。
@@ -643,7 +699,8 @@
     function qrHtml(u, mode) {
       const modes = mode ? `<div class="tc-qrms" role="group" aria-label="走法">${NAV_MODES.map(([m, t]) =>
         `<button type="button" class="tc-qrm" data-m="${m}" aria-pressed="${m === mode}">${t}</button>`).join("")}</div>` : "";
-      return `<div class="tc-qrbox">${modes}<img class="tc-qrimg" alt="导航链接的二维码" width="148" height="148" src="${esc(qrUrl(u))}">`
+      // 站多的高德链接一千多个字符，二维码格子密，放大些手机才扫得出
+      return `<div class="tc-qrbox">${modes}<img class="tc-qrimg${u.length > QR_BIG ? " big" : ""}" alt="导航链接的二维码" width="148" height="148" src="${esc(qrUrl(u))}">`
         + `<div class="tc-qrt">用手机扫一下，在手机上接着导航</div>`
         + `<div class="tc-qract"><a href="${esc(u)}" target="_blank" rel="noopener">在这台电脑上打开 ↗</a><button type="button" class="tc-qrx">收起</button></div></div>`;
     }
@@ -1103,9 +1160,10 @@
       }
       h += `<div class="tc-src">${esc(srcLine(p, s.name))}</div>`;
       const qr = !!st.qr && st.qr.at === "pop";
-      h += `<div class="tc-pact"><a class="tc-go" href="${esc(stopNavUrl({ ...p, name: s.name }))}" target="_blank" rel="noopener" title="从你现在的位置出发">导航到这 ↗</a>`
+      const to = stopNavUrl(navPt(st.day, i), st.prov);
+      h += `<div class="tc-pact"><a class="tc-go" href="${esc(to)}" target="_blank" rel="noopener" title="从你现在的位置出发">导航到这 ↗</a>`
         + `<button type="button" class="tc-qr" data-at="pop" aria-expanded="${qr}">发到手机</button></div>`
-        + (qr ? qrHtml(stopNavUrl({ ...p, name: s.name })) : "");
+        + (qr ? qrHtml(to) : "");
       // 上一站 / 下一站：跳过地图上没找到的站。紧挨着的写上这一段怎么走、多远
       let pv = i - 1, nx = i + 1;
       while (pv >= 0 && !ps[pv]) pv--;
@@ -1228,8 +1286,8 @@
     function qrLink(q) {
       if (q.at === "day") return dayNav(st.day);
       if (q.at === "leg") return stopPlace(st.day, q.i) && stopPlace(st.day, q.i + 1) ? legUrl(st.day, q.i, q.mode) : "";
-      const p = stopPlace(st.day, st.pop);
-      return p ? stopNavUrl({ ...p, name: it.days[st.day].stops[st.pop].name }) : "";
+      const p = navPt(st.day, st.pop);
+      return p ? stopNavUrl(p, st.prov) : "";
     }
     /** 开 / 换 / 收「发到手机」的二维码，同一时间只开一个 */
     function showQr(q) {
@@ -1310,7 +1368,8 @@
         const same = st.qr && st.qr.at === q.at && st.qr.i === q.i;
         const leg = q.at === "leg" ? st.legs[st.day][q.i] : null;
         showQr(same ? null : { ...q, mode: leg ? legMode(leg) : "" });
-      } else if (t.classList.contains("tc-qrm") && st.qr) {
+      } else if (t.classList.contains("tc-prov")) setProv(t.dataset.prov === "google" ? "google" : "amap");
+      else if (t.classList.contains("tc-qrm") && st.qr) {
         showQr({ ...st.qr, mode: t.dataset.m });
         const b = qrHost(st.qr).querySelector(`.tc-qrm[data-m="${t.dataset.m}"]`);
         if (b) b.focus({ preventScroll: true });
@@ -1618,7 +1677,7 @@
 
   root.TripCard = {
     parse, normalize, whyBad, moreText, segmentOf, dayLabel, cardHtml, staticHtml, staticOf, unescHtml, hashKey,
-    wgsToGcj, gcjToWgs, convert, inChina, distance, legNavUrl, dayNavUrl, stopNavUrl, NAV_MODES, fmtDist, fmtDur,
+    wgsToGcj, gcjToWgs, convert, inChina, distance, legNavUrl, dayNavUrl, stopNavUrl, navApp, NAV_MODES, DAY_MAX, fmtDist, fmtDur,
     hydrate, hydrateAll, resetConfig, LIMIT, _live: live,
   };
 })(window);

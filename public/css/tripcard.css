@@ -184,6 +184,12 @@ html[data-theme="dark"] .tc-rc { stroke: #101114; }
 .tc-w .tc-open:focus-visible { outline: 2px solid var(--owb-brand); outline-offset: 2px; }
 .tc-navi { width: 14px; height: 14px; fill: currentColor; }
 .tc-app { color: var(--owb-text-3); font-size: 12px; }
+/* 国内的路线用哪家地图打开：高德 / Google 两格，按下的那格是白底 */
+.tc-provs { display: inline-flex; padding: 2px; border-radius: var(--radius-full); background: var(--owb-bg-side); }
+.tc-w .tc-prov { padding: 3px 10px; border-radius: var(--radius-full); color: var(--owb-text-3); font-size: 12px; transition: color var(--owb-t-fast); }
+.tc-w .tc-prov:hover { color: var(--owb-text); }
+.tc-w .tc-prov[aria-pressed="true"] { background: var(--owb-card); color: var(--owb-text); box-shadow: var(--owb-shadow-sm); }
+.tc-w .tc-prov:focus-visible { outline: 2px solid var(--owb-brand); outline-offset: 1px; }
 .tc-seg { margin: 18px 0 2px; font-size: 14px; font-weight: 700; }
 .tc-dh + .tc-card { margin-top: 12px; }
 
@@ -237,6 +243,7 @@ html[data-theme="dark"] .tc-star { color: #f0b04a; }
 .tc-w .tc-qrm[aria-pressed="true"] { border-color: var(--owb-text); background: var(--owb-text); color: var(--owb-bg); }
 /* 二维码自己要白底黑块，深色模式也不反相，不然有的手机扫不出来 */
 .tc-qrimg { display: block; width: 148px; height: 148px; margin: 0 auto; border-radius: var(--radius-sm); background: #fff; }
+.tc-qrimg.big { width: min(232px, 100%); height: auto; aspect-ratio: 1; }
 .tc-qrt { margin-top: 6px; }
 .tc-qract { display: flex; justify-content: center; gap: 12px; margin-top: 4px; }
 .tc-w .tc-qract a { color: var(--owb-brand-text); }

@@ -6601,8 +6601,27 @@ const TRIP_CHECKS = `
     && w.querySelector('.tc-tabs [data-d="1"]').getAttribute("aria-selected") === "true");
   ok("第二天已经顺手查好了，切过去不再问服务端", calls("/api/geo/places") === placesBefore);
   const open = panel.querySelector(".tc-open");
-  ok("这天每站都找到了：给「打开路线」，旁边写明去哪个地图（国内两站：高德）", !!open && /^https:\\/\\/uri\\.amap\\.com\\/navigation\\?/.test(open.href) && open.target === "_blank"
-    && open.textContent === "打开路线" && txt(panel, ".tc-app") === "高德地图", open && open.href);
+  const provs = () => [...panel.querySelectorAll(".tc-prov")].map((b) => b.textContent + (b.getAttribute("aria-pressed") === "true" ? "✓" : "")).join();
+  ok("这天每站都找到了：给「打开路线」（国内两站：高德），旁边能换成 Google，默认高德", !!open && /^https:\\/\\/uri\\.amap\\.com\\/navigation\\?/.test(open.href) && open.target === "_blank"
+    && open.textContent === "打开路线" && open.title === "在高德地图里打开这一天的路线" && provs() === "高德✓,Google" && !panel.querySelector(".tc-app"), open && open.href);
+  panel.querySelector('.tc-prov[data-prov="google"]').click();
+  const gOpen = panel.querySelector(".tc-open"), navAs = [...panel.querySelectorAll(".tc-navm a")];
+  ok("点「Google」：整天路线换成 Google 地图，每站写「站名, 昆明」（只给坐标它会换成旁边商户的名字）；段间导航跟着换；焦点留在按钮上；记在本机",
+    !!gOpen && gOpen.href.indexOf("https://www.google.com/maps/dir/?api=1&origin=" + encodeURIComponent("海埂大坝, 昆明") + "&destination=" + encodeURIComponent("西山龙门, 昆明") + "&") === 0
+    && gOpen.title === "在 Google 地图里打开这一天的路线" && provs() === "高德,Google✓" && navAs.length === 4 && navAs.every((a) => a.href.indexOf("https://www.google.com/maps/dir/") === 0)
+    && document.activeElement === panel.querySelector('.tc-prov[data-prov="google"]') && localStorage.getItem("owb.tripcard.maps") === "google", gOpen && gOpen.href);
+  panel.querySelector('.tc-prov[data-prov="amap"]').click();
+  ok("点回「高德」：换回来", /^https:\\/\\/uri\\.amap\\.com\\//.test(panel.querySelector(".tc-open").href) && provs() === "高德✓,Google" && localStorage.getItem("owb.tripcard.maps") === "amap");
+  // 小卡开着时换地图：小卡里那条「导航到这」也得跟着换，不能还指着上一家
+  w.querySelector('.tc-pin[data-i="0"]').click();
+  await tick();
+  const pop2 = w.querySelector(".tc-pop");
+  panel.querySelector('.tc-prov[data-prov="google"]').click();
+  const gGo = pop2.querySelector(".tc-go");
+  ok("小卡开着时换成 Google：「导航到这」跟着换，写「站名, 昆明」，小卡不收", !pop2.hidden && !!gGo
+    && gGo.href === "https://www.google.com/maps/dir/?api=1&destination=" + encodeURIComponent("海埂大坝, 昆明"), gGo && gGo.href);
+  panel.querySelector('.tc-prov[data-prov="amap"]').click();
+  ok("  换回高德，小卡跟着换回来", !pop2.hidden && pop2.querySelector(".tc-go").href.indexOf("https://uri.amap.com/navigation?to=") === 0, pop2.querySelector(".tc-go").href);
 
   // 时间线
   w.querySelector('[data-v="timeline"]').click();
@@ -6788,7 +6807,7 @@ const TRIP_CHECKS = `
   // 复制回答：卡片换成按天排好的文字
   const copied = renderedCopy([ref]);
   ok("复制回答：卡片变成按天排的文字，不带地图上那些按钮", copied.plain.indexOf("第1天 · 老昆明慢逛") >= 0
-    && copied.plain.indexOf("上午 · 翠湖公园：湖边散步") >= 0 && copied.plain.indexOf("打开路线") < 0 && copied.plain.indexOf("找到 5 个地点") < 0 && copied.plain.indexOf("时间线") < 0 && copied.html.indexOf("tc-w") < 0,
+    && copied.plain.indexOf("上午 · 翠湖公园：湖边散步") >= 0 && copied.plain.indexOf("打开路线") < 0 && copied.plain.indexOf("Google") < 0 && copied.plain.indexOf("找到 5 个地点") < 0 && copied.plain.indexOf("时间线") < 0 && copied.html.indexOf("tc-w") < 0,
     copied.plain.slice(0, 200));
   ok("复制不改屏幕上那张（复制的是克隆）", ref.querySelector(".tc-w") === w);
 
