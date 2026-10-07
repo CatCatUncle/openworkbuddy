@@ -11,7 +11,8 @@
  *   ④ 桥被拉起时没拿到名单就不启动（按整张表兜底等于把关掉的工具又借出去）；名单里混进不该借的名字也不认
  *   ⑤ 主进程 require bridge.js / agent.js 不再顺带 require tool-bridge.js（那会把主进程的 console 改道 stderr）。
  *      这里只查得到顶层的 require；写在函数里、开跑才执行的，由 layers 的 require-spawn 检查兜住
- *   ⑥ 产物落在这趟任务的根下面，资料库只看得见这个人的、只看得见项目挂的那一块；给了根却用不了就不启动
+ *   ⑥ 产物落在这趟任务的根下面，资料库只看得见这个人的、只看得见项目挂的那一块，取素材也只取得到自己的；
+ *      给了根却用不了就不启动
  *   ⑦ 主进程真跑一趟（假引擎）：租户的根、资料库根、项目挂载都传到了桥那头；
  *      属主在引擎设置里写了 PATH 也挤不掉打头的 owb 目录
  *   ⑧ 借出去生图（假上游）：回执给相对引擎当前目录的路径 + 完整路径，不说「工作空间内的相对路径」；
@@ -20,7 +21,7 @@
  *      系统日志里留一条；文件不在照常跑；MCP 那条路上文件改好了下一条就执行
  *   ⑩ 提示词说真话（主进程真跑一趟，桩引擎拿真名）：列的工具 = MCP 挂的 = owb list = 借出名单；技能一个不落、
  *      每条带正文的完整路径；claude「自动改文件」档说清命令会被拒、被拒就停；看图按引擎分；
- *      owb 的 --help 写在哪都认；敲错工具名给近似名；借出去的 library_read 不指没借出的 library_import
+ *      owb 的 --help 写在哪都认；敲错工具名给近似名；借出去的 library_read 不指没借出的 library_import，借了就指它
  *   ⑪ 问答 / 计划那一趟（readOnly）：只借读的那几个（跟内置引擎这两档的只读工具对齐），桥那头照表再拦一道，
  *      名单被改过也借不出生图；不写 owb 脚本、不挂用户的连接器
  *   ⑫ codex 命令沙箱里 owb 跑不成的（要记账、要写数据目录、要起 Chrome）：开跑前就说、退出码 2、上游不调；
@@ -250,7 +251,7 @@ const serverOf = (att) => JSON.parse(fs.readFileSync(att.runOpts.mcpConfigPath, 
     mk(path.join(libA, "客户A", "需求.md"), "客户A的需求");
     mk(path.join(libB, "乙方报价.md"), "乙的报价正文");
     mk(path.join(HOME, "data", "library", "主人的.md"), "机器主人的资料");
-    const lend = ["gen_diagram", "library_list", "library_read"];
+    const lend = ["gen_diagram", "library_list", "library_read", "library_import"];
     const dot = (f) => JSON.stringify({ kind: "dot", source: "digraph{A->B}", filename: f });
 
     const a = bridge.attach("claude-code", { home: HOME, root: rootA, baseDir: "任务_根", user: "甲", tools: lend, library: { base: libA, mount: "" } });
@@ -260,6 +261,13 @@ const serverOf = (att) => JSON.parse(fs.readFileSync(att.runOpts.mcpConfigPath, 
         "MCP 配置里带上了这趟任务的根和资料库根；没挂子目录就不写挂载", sv.env);
       const c = mcpCall(sv, "gen_diagram", JSON.parse(dot("经MCP.png")));
       ok(c.ok && fs.existsSync(path.join(rootA, "任务_根", "经MCP.png")), "MCP 调出来的图落在这趟任务的根下面", c);
+      // 取素材：只从这个人的资料库复制进这一趟的目录
+      const li = mcpCall(sv, "library_import", { name: "甲方合同.md" });
+      const got = path.join(rootA, "任务_根", "甲方合同.md");
+      ok(li.ok && fs.existsSync(got) && fs.readFileSync(got, "utf8") === "甲的合同正文", "甲取素材：复制进这一趟任务的目录", li);
+      const bad = ["乙方报价.md", "../乙/乙方报价.md", "主人的.md", "../../library/主人的.md"].map((name) => ({ name, r: mcpCall(sv, "library_import", { name }) }));
+      ok(bad.every((x) => !x.r.ok) && !fs.existsSync(path.join(rootA, "任务_根", "乙方报价.md")) && !fs.existsSync(path.join(rootA, "任务_根", "主人的.md")),
+        "★甲取不到乙的、也取不到机器主人的★ 按名字、带 ../ 都不行", bad.map((x) => [x.name, x.r.ok, x.r.text.slice(0, 80)]));
       if (SH) {
         const g = owb(a.shim, ["gen_diagram", dot("经owb.png")]);
         ok(g.code === 0 && fs.existsSync(path.join(rootA, "任务_根", "经owb.png")), "owb 调出来的图也落在这趟任务的根下面", g);
@@ -539,7 +547,7 @@ const serverOf = (att) => JSON.parse(fs.readFileSync(att.runOpts.mcpConfigPath, 
       if (SH) ok(s.owb && sorted(s.owb) === sorted(want), "owb list 打出来的 = 借出名单", s.owb);
       ok(!/library_list[^\n]*技能库/.test(s.prompt) && /library_list[^\n]*资料库/.test(s.prompt), "library_list 标的是资料库，不再叫「技能库」", s.prompt.match(/.*library_list.*/g));
       ok(/check_page[^\n]*不开浏览器/.test(s.prompt) && !/check_page[^\n]*控制台报错，/.test(s.prompt), "check_page 说的是这条路上真做得到的（静态体检，不开浏览器）", s.prompt.match(/.*check_page.*/g));
-      ok(!/library_import/.test(s.prompt), "提示词里不叫它用没借出去的 library_import");
+      ok(/mcp__openworkbuddy__library_import {2}资料库：把一个文件复制进这一趟的工作目录/.test(s.prompt), "★借出去的 library_import 提示词里列着，说清是复制进这一趟的工作目录★", s.prompt.match(/.*library_import.*/g));
       ok(!/挂不上 MCP/.test(s.prompt), "「挂不上 MCP、命令行是唯一入口」那段死分支没了");
       ok(/owb <工具名> --help/.test(s.prompt), "命令行入口告诉它怎么看一个工具的完整说明");
 
@@ -602,6 +610,14 @@ const serverOf = (att) => JSON.parse(fs.readFileSync(att.runOpts.mcpConfigPath, 
       } finally { a.cleanup(); }
       const own = await tools.withLibraryBase(lib, () => tools.executeTool("library_read", { name: "图.png" }, {}));
       ok(/library_import/.test(own.content), "反向对照：内置引擎那边照旧指到 library_import", own.content);
+      const b2 = bridge.attach("claude-code", { home: HOME, baseDir: "任务_取素材", user: "看图的", tools: ["library_read", "library_import"], library: { base: lib, mount: "" } });
+      try {
+        const r = mcpCall(serverOf(b2), "library_read", { name: "图.png" });
+        ok(/library_import/.test(r.text) && !/拖进对话/.test(r.text), "★借了 library_import：读到二进制就指它★", r.text);
+        const c = mcpCall(serverOf(b2), "library_import", { name: "图.png" });
+        const at = path.join(HOME, "workspace", "任务_取素材", "图.png");
+        ok(c.ok && fs.existsSync(at) && fs.readFileSync(at).equals(fs.readFileSync(path.join(lib, "图.png"))), "取素材原样落在这一趟的目录里", { c, at });
+      } finally { b2.cleanup(); }
     }
   }
 
@@ -614,7 +630,7 @@ const serverOf = (att) => JSON.parse(fs.readFileSync(att.runOpts.mcpConfigPath, 
     const builtin = [...roLine.matchAll(/"(\w+)"/g)].map((m) => m[1]);
     ok(builtin.length > 5 && sorted(lendable.READ_ONLY) === sorted(lendable.LENDABLE.filter((n) => builtin.includes(n))),
       "★只读名单 = 内置引擎问答档的只读工具 ∩ 能借的★ 换了底层引擎能做的事不变多", { READ_ONLY: lendable.READ_ONLY, builtin });
-    ok(RO.length > 0 && ["generate_image", "remember", "install_skill", "gen_diagram"].every((n) => !RO.includes(n)), "只读那一趟没有生图、记忆、装技能、出图表", RO);
+    ok(RO.length > 0 && ["generate_image", "remember", "install_skill", "gen_diagram", "library_import"].every((n) => !RO.includes(n)), "只读那一趟没有生图、记忆、装技能、出图表、取素材（要往工作目录写）", RO);
 
     const conn = [{ name: "userconn", command: "/bin/echo" }];
     const a = bridge.attach("claude-code", { home: HOME, baseDir: "任务_只读", user: "t", extraServers: conn, readOnly: true });
@@ -661,7 +677,7 @@ const serverOf = (att) => JSON.parse(fs.readFileSync(att.runOpts.mcpConfigPath, 
     ok(sorted(Object.entries(SANDBOX_BLOCKED).map((e) => e.join(":"))) === sorted(Object.entries(want).map((e) => e.join(":"))),
       "★沙箱里跑不成的逐个点名★ 要花钱的、要写数据目录的、要起 Chrome 的", SANDBOX_BLOCKED);
     const free = LENDABLE.filter((n) => !SANDBOX_BLOCKED[n] && !NEEDS_RENDERER.includes(n));
-    ok(sorted(free) === sorted(["delivery_page", "gen_diagram", "read_document", "check_page", "library_list", "library_read", "canvas_manage"]),
+    ok(sorted(free) === sorted(["delivery_page", "gen_diagram", "read_document", "check_page", "library_list", "library_read", "library_import", "canvas_manage"]),
       "★沙箱里照跑的也逐个点名★ 写工作区的、只读的；新借的工具不进两张表之一就红", free);
 
     const pick = ["generate_image", "remember", "library_list", "record_web_demo", "canvas_manage"];

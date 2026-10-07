@@ -27,6 +27,7 @@ const LENDABLE = [
   "web_search",       // 走本项目配的搜索渠道
   "library_list",     // 资料库：列出参考文件和灵感笔记（不是技能，技能在 skills 目录）
   "library_read",     // 资料库：读其中一个文本文件
+  "library_import",   // 资料库：把一个文件复制进这一趟的工作目录。PDF、图片、Word 这些不是文本，CLI 自己够不着资料库，不借就只能叫用户拖进来
   "save_skill",       // 这次趟出来的做法存成技能
   "install_skill",    // 用户让装 GitHub 上的技能：不借的话 CLI 只会照上游 README 装进它自己的 ~/.claude/skills
   "add_connector",    // 用户让接某个 MCP：不借的话 CLI 只会手改 config.json，或者装进它自己的配置，连接器页上都看不见
@@ -51,7 +52,7 @@ const NEEDS_RENDERER = ["html_to_image", "render_page"];
  *   paid：要花钱，花了要记账；账本在数据目录里，沙箱只写工作区。硬跑的话上游的钱花了，流水一笔没记上
  *   data：要往数据目录里存（记忆、技能、连接器设置），同样写不进去
  *   chrome：要起本机 Chrome，沙箱里一起就 Abort trap: 6
- * 画布、交付页写的是工作区，读资料库、读文档只读，这几样在沙箱里照跑，不在表里。
+ * 画布、交付页、取素材（资料库复制进工作区）写的是工作区，读资料库、读文档只读，这几样在沙箱里照跑，不在表里。
  * 新借一个工具，先想清它在沙箱里跑不跑得成再定进不进表（engine-bridge 的测试逐个点名核对）。
  * @type {Record<string, "paid"|"data"|"chrome">}
  */

@@ -2778,6 +2778,7 @@ function modePrompt(mode) {
       web_search: "联网搜索，返回标题、链接、摘要",
       library_list: "资料库：列出用户放进来的参考文件和灵感笔记（翻不到技能）",
       library_read: "资料库：读其中一个文本文件",
+      library_import: "资料库：把一个文件复制进这一趟的工作目录（PDF、图片、Word 先复制过来再读）",
       save_skill: "把这次趟出来的做法存成技能（进本软件的技能库）",
       install_skill: "用户让装 GitHub 上的技能时用它（装进本软件的技能库，不是 ~/.claude/skills）",
       add_connector: "用户让接某个 MCP 时用它（进本软件的连接器页，别手改 config.json）",

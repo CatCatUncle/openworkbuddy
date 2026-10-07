@@ -1763,7 +1763,7 @@ function libraryRead(name, canImport = true) {
   try { buf = fs.readFileSync(abs); }
   catch { return { text: `资料库里没有「${base}」。先用 library_list 看看到底有哪些文件，名字要一字不差。`, bad: true }; }
   if (looksBinary("", buf)) {
-    // 本机引擎借不到 library_import（见 lendable.js），叫它用就是指一条走不通的路
+    // 这一趟没借到 library_import（问答 / 计划那一趟只借读的，见 lendable.js），叫它用就是指一条走不通的路
     if (!canImport) {
       return { text: `${base} 不是文本文件（${(buf.length / 1024).toFixed(0)} KB，按文本读只会得到乱码）。这条路上没有把资料库文件复制出来的工具：请用户把它拖进对话，放进工作目录后再读。`, bad: true };
     }
