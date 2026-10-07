@@ -28,6 +28,7 @@ const path = require("path");
 // 名单是纯数据，require 它不会碰 console、不读配置（tool-bridge.js 会，所以这里不 require 它）。
 // 下面一律 renderer:false：桥由 nodeLauncher 以纯 node 拉起，那头永远没有浏览器
 const { lentFor, toEnv, SANDBOX_BLOCKED } = require("./lendable");
+const { ENV: RELAY_ENV } = require("./tool-relay"); // 借出去的工具交回主进程跑时桥认的那个变量（值是凭据文件的路径）
 
 const BRIDGE_ENTRY = path.join(__dirname, "tool-bridge.js");
 const CWD_ENTRY = path.join(__dirname, "mcp-cwd.js");
@@ -226,7 +227,7 @@ function writeShim(server) {
  * skipped：开着、但这次没转过去的连接器名（走网址的），调用方在运行页上说一句
  * @returns {{runOpts:object, names:string[], toolCount:number, skipped:string[], cleanup:function}}
  */
-function attach(engineId, { home, root = "", baseDir = "", user = "", run = "", tools, library = null, extraServers = [], disabled = [], readOnly = false, noShim = false, approve = false } = {}) {
+function attach(engineId, { home, root = "", baseDir = "", user = "", run = "", tools, library = null, extraServers = [], disabled = [], readOnly = false, noShim = false, approve = false, relayFile = "" } = {}) {
   const servers = buildServers({ home, root, baseDir, user, run, tools, library, extraServers, disabled, readOnly });
   const names = Object.keys(servers);
   // 只读那一趟本来就一个不挂，不算「没转过去」
@@ -235,7 +236,12 @@ function attach(engineId, { home, root = "", baseDir = "", user = "", run = "", 
   const lent = lentFor({ tools, renderer: false, readOnly });
   // 只读那一趟不给命令行入口：只读档的 CLI 本来就不该跑命令，借出去的读工具走 MCP 就够了。
   // 安全档「只看不动」也不给（noShim，见 security.engineGuard 的 allowShim），两个引擎一样
+  // 借出去的工具交回主进程跑（engines/tool-relay.js，属主在引擎卡上勾）：MCP 那台一律交回去。
+  // owb 脚本看引擎：claude 的命令行跟 MCP 一样交回去；codex 的命令沙箱连本机套接字都不让连（实测 EPERM），
+  // 它的 owb 照老样子自己跑（sandboxBlock 照旧拦那几样），只有 MCP 交回去
+  if (relayFile && engineId !== "codex") servers[SERVER_NAME].env[RELAY_ENV] = relayFile;
   const shim = readOnly || noShim ? { path: "", dir: "", bin: "", cleanup() {} } : writeShim(servers[SERVER_NAME]);
+  if (relayFile && engineId === "codex") servers[SERVER_NAME].env[RELAY_ENV] = relayFile;
   // 要审批的动作交给安全中心判（engines/approve.js）：只有 claude 有这个口子；只读那一趟要审批的本来就一律不批。
   // 开关写在 owb 脚本烘好之后：命令行那条路不收审批，模型拿 owb 给自己批不了
   const ap = approve === true && engineId === "claude-code" && !readOnly;
@@ -252,7 +258,7 @@ function attach(engineId, { home, root = "", baseDir = "", user = "", run = "", 
   // 在那个沙箱里 owb 不跑的（tool-bridge.js 的 sandboxBlock）：提示词照这份点名，别让它先撞一次
   const shimBlocked = shimSandboxed && shim.bin ? lent.filter((n) => SANDBOX_BLOCKED[n]) : [];
   // engine：提示词按它教看图（claude 用 Read、codex 用 view_image）
-  const common = { engine: engineId, readOnly, approve: ap, names, skipped, lent, toolCount: lent.length, shim: shim.path, shimDir: shim.dir, shimBin: shim.bin, shimIsPrimary, shimSandboxed, shimBlocked };
+  const common = { engine: engineId, readOnly, approve: ap, relay: !!relayFile, names, skipped, lent, toolCount: lent.length, shim: shim.path, shimDir: shim.dir, shimBin: shim.bin, shimIsPrimary, shimSandboxed, shimBlocked };
   if (engineId === "codex") {
     return {
       // 不再把数据根加进可写目录：那等于让引擎里的任何命令都能改配置和账号。

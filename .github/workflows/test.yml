@@ -26,16 +26,17 @@ jobs:
             label: 快跑（除 e2e 外全跑）
             # 这条腿装了 ffmpeg（见下面 apt 那步），真 ffmpeg 那几段找不到就算红，不许悄悄跳过
             require_ffmpeg: "1"
-            cmd: node test/all.js --only repo-hygiene,lint,typecheck,data-guard,layout-invariants,layers,icons,lanes,md-tty,doctor,cli-args,cli-attach,cli-live,cli-ask,cli-approve,cli-toolview,im-card,im-attach,im-reply,trip-card,im-feishu-media,cli-pty,cli-oneshot,engine-resilience,engine-bridge,engine-approve,repl-commands,session-search,systemone,decide-tool,task-doubt,continue-gate,cmd-risk,cmd-gate,memory-gate,push-gate,ask-gate,skill-gate,perm-gate,desktop-ux,tpl-blanks,ui-copy-length,memory-rules,prefs,chat-models,api-formats,media-models,media-health,gen-cache,tool-jobs,upload-name,canvas-store,tts-segments,sweep,quota,media-metering,memory-embed,relay,totp,auth-2fa,skill-guard,skills-cache,toolward,rbac,tenant,lifecycle,prompt-tpls,ops,deploy,trace,term-image,office-tools,remote,checkpoints,shot-history,web-demo,cdp,agent-loop,explore,code-tools,self-check,run-reap,launcher-log,slash-review,hooks,workflow,recipes,workflow-panel,worktree,deps-guard,child-env,net-guard,sandbox,sandbox-win,eval,stop,task-dirs,memory,search-providers,model-probe,media-probe,library-ws,library-cover,library-favs,ql-thumb,video-frame,brand-kit,motion,timeline-compose,delivery-page,backup-auto,skill-sync,license,retention,live-abort,electron-bridge,server-supervisor,main-stall,server-stall,win-ui,win-main,win-paths,win-tools,win-env
+            cmd: node test/all.js --only repo-hygiene,lint,typecheck,data-guard,layout-invariants,layers,icons,lanes,md-tty,doctor,cli-args,cli-attach,cli-live,cli-ask,cli-approve,cli-toolview,im-card,im-attach,im-reply,trip-card,im-feishu-media,cli-pty,cli-oneshot,engine-resilience,engine-bridge,engine-approve,engine-tool-relay,repl-commands,session-search,systemone,decide-tool,task-doubt,continue-gate,cmd-risk,cmd-gate,memory-gate,push-gate,ask-gate,skill-gate,perm-gate,desktop-ux,tpl-blanks,ui-copy-length,memory-rules,prefs,chat-models,api-formats,media-models,media-health,gen-cache,tool-jobs,upload-name,canvas-store,tts-segments,sweep,quota,media-metering,memory-embed,relay,totp,auth-2fa,skill-guard,skills-cache,toolward,rbac,tenant,lifecycle,prompt-tpls,ops,deploy,trace,term-image,office-tools,remote,checkpoints,shot-history,web-demo,cdp,agent-loop,explore,code-tools,self-check,run-reap,launcher-log,slash-review,hooks,workflow,recipes,workflow-panel,worktree,deps-guard,child-env,net-guard,sandbox,sandbox-win,eval,stop,task-dirs,memory,search-providers,model-probe,media-probe,library-ws,library-cover,library-favs,ql-thumb,video-frame,brand-kit,motion,timeline-compose,delivery-page,backup-auto,skill-sync,license,retention,live-abort,electron-bridge,server-supervisor,main-stall,server-stall,win-ui,win-main,win-paths,win-tools,win-env
           - os: macos-latest
             label: 全套（含 e2e）
             cmd: npm test
           # Windows 系统沙箱靠完整性级别，这层只有真 Windows 上才立得起来：
-          # 降权起命令、打标记、读不到 Key、写不了应用目录，都在这条腿上真跑一遍，不许跳过
+          # 降权起命令、打标记、读不到 Key、写不了应用目录，都在这条腿上真跑一遍，不许跳过。
+          # 借给本机引擎的工具交回主进程跑（engine-tool-relay），在 Windows 上走的是命名管道，也在这儿真跑一遍
           - os: windows-latest
             label: Windows 沙箱
             sandbox_win: "1"
-            cmd: node test/sandbox-win.js
+            cmd: node test/sandbox-win.js && node test/engine-tool-relay.js
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
     # 兜底的保险丝。GitHub 默认给 6 小时，2026-09-13 那次就是这么烧掉的：

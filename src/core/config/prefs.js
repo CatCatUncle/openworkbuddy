@@ -124,7 +124,7 @@ function merge(base, patch) {
  * /api/settings 的处理器靠它把请求体拆成两半。两处共用一张表，才不会出现
  * 「闸放行了、处理器没接、于是静默不生效」这种最难查的岔子。
  *
- * 特地不收的：engine_options 里的 bin / permissionMode / sandbox / network / approval / extraArgs / enabled / models。
+ * 特地不收的：engine_options 里的 bin / permissionMode / sandbox / network / approval / relay / extraArgs / enabled / models。
  * bin 是「起哪个可执行文件」，在多人服务器上等于任意命令执行；permissionMode 到 extraArgs 是那个 CLI 的权限档，
  * 谁都能改的话，组织设置里那个 allow_shell=false 就成了摆设；enabled / models 是属主给的开关和型号放行列表，
  * 成员自己能改就等于没放行这回事。成员挑的 model 也得落在属主那张列表里（engines/gate.js 核）。

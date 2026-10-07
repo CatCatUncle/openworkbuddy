@@ -36,6 +36,7 @@ const BRIDGE_WAIT_MS = 20 * 60 * 1000;
 
 let POLL_MS = 5000;
 const busy = new Set();        // 这个进程里正在收的（按台账文件名）
+const held = new Set();        // 这个进程里还有一单在等片子（交回主进程跑的，engines/tool-relay.js）：后台那一路先别占
 const all = new AbortController(); // 测试收尾、服务关停时一把停掉
 
 // 跟 org.js、brand-kit.js 一样认 OPENWORKBUDDY_DATA_DIR：数据目录挪了位置，台账跟着走
@@ -184,7 +185,14 @@ function bill(e, cfg, actor) {
 }
 
 /**
- * 占住一条接着收。桥还活着就先等它（它可能自己还在等这一单）；占不到就是别人在收。
+ * 交回主进程跑的那一单自己还在等片子：台账写的是本进程的 pid，take 里「桥还活着就先等」那道认不出它。
+ * 占住到 release，后台 sweep、收尾那一路先等着，不重复收
+ * @param {string} file @returns {() => void}
+ */
+function hold(file) { const k = path.basename(file); held.add(k); return () => { held.delete(k); }; }
+
+/**
+ * 占住一条接着收。桥还活着就先等它（它可能自己还在等这一单）；交回主进程跑的那一单还占着（hold）也等；占不到就是别人在收。
  * 结果一律进系统日志：后台吞掉的事，事后得查得到
  * @param {{file: string, entry: any}} x
  * @param {{media?: any, actor?: any, onDone?: (r: any, entry: any) => void}} [o]
@@ -195,7 +203,7 @@ async function take({ file, entry }, { media, actor = null, onDone } = {}) {
   busy.add(key);
   const signal = all.signal;
   try {
-    while (entry.pid && entry.pid !== process.pid && alive(entry.pid) && Date.now() - (+entry.at || 0) < BRIDGE_WAIT_MS) {
+    while (((entry.pid && entry.pid !== process.pid && alive(entry.pid)) || held.has(key)) && Date.now() - (+entry.at || 0) < BRIDGE_WAIT_MS) {
       await nap(POLL_MS, signal);
       if (signal.aborted) return;
     }
@@ -299,9 +307,9 @@ function sweepSoon({ media, ms = 30000 } = {}) {
 
 module.exports = {
   DIR_NAME, CAN_CANCEL, pendingDir, chanKey, entryName, writeEntry, dropEntry, readEntry, listEntries,
-  findChannel, freeName, collect, afterRun, sweep, sweepSoon,
+  findChannel, freeName, collect, afterRun, sweep, sweepSoon, hold,
   _internals: {
-    setPollMs: (ms) => { POLL_MS = ms; }, stopAll: () => all.abort(), busy, take, WAIT_MS, GIVE_UP_MS, BRIDGE_WAIT_MS,
+    setPollMs: (ms) => { POLL_MS = ms; }, stopAll: () => all.abort(), busy, held, take, WAIT_MS, GIVE_UP_MS, BRIDGE_WAIT_MS,
     // 测试用：排上了没有；还没到点的那次撤掉（免得半路插进来抢台账）
     sweepArmed: () => sweepArmed, cancelSweep: () => { if (sweepTimer) clearTimeout(sweepTimer); sweepTimer = null; },
   },

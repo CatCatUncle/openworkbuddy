@@ -3144,6 +3144,7 @@ function engineExtraHtml(e, ctx = {}) {
       <input type="text" data-k="models" placeholder="不填 = 成员只能用上面钉的那个" value="${esc(allowed.filter((m) => m !== g.pinned).join(", "))}" autocomplete="off"></label>` : ""}
     ${owner && e.id === "codex" ? `<label class="eng-chk"><input type="checkbox" data-k="network"${g.network ? " checked" : ""}> <span>引擎里的命令能联网</span><span style="color:var(--owb-text-3)">（默认关，只管它在沙箱里跑的命令）</span></label>` : ""}
     ${owner && e.id === "claude-code" ? `<label class="eng-chk"><input type="checkbox" data-k="approval"${g.approval ? " checked" : ""}> <span>要审批的动作交给安全中心判</span><span style="color:var(--owb-text-3)">（默认关；不开时名单外的命令多半被拒。用的是 claude 没公开的参数）</span></label>` : ""}
+    ${owner && (e.id === "claude-code" || e.id === "codex") ? `<label class="eng-chk"><input type="checkbox" data-k="relay"${g.relay ? " checked" : ""}> <span>借给它的工具（生图、资料库等）在这边执行</span><span style="color:var(--owb-text-3)">${e.id === "codex" ? "（默认关；开了审批、记账跟内置引擎一样，它命令行里的 owb 除外）" : "（默认关；开了审批、记账、组织规矩跟内置引擎一样）"}</span></label>` : ""}
     <label>${esc(e.thinkingLabel || "思考模式")}<span style="color:var(--owb-text-3)">（只对这个引擎生效；「跟随全局」= 用助理设置里的思考模式）</span>
       <select data-k="thinking">${ENGINE_THINK_LEVELS.map(([v, l]) => `<option value="${v}"${(o.thinking || "") === v ? " selected" : ""}>${l}</option>`).join("")}</select></label>
     <div class="eng-row">

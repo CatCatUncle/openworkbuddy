@@ -152,6 +152,7 @@ function gateView(id, config) {
     allowed: gate.allowedModels(owner),
     network: owner.network === true,
     approval: owner.approval === true, // claude 要审批的动作交给安全中心判（engines/approve.js）
+    relay: owner.relay === true, // 借出去的工具交回主进程跑（engines/tool-relay.js）
   };
 }
 

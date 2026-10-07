@@ -15,6 +15,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { AsyncLocalStorage } = require("async_hooks");
 const security = require("../core/safety/security");
 const mediaModels = require("../core/model/media-models"); // 图/视频/语音/视觉的多模型选择（同一把 Key 配多个型号）
 const genCache = require("../domains/media/gen-cache"); // 生图/生视频/配音的内容寻址缓存：同一格重跑不再烧第二次钱
@@ -569,7 +570,7 @@ async function lookAtImage(opts, input, timeoutMs, resolveFile, stop, meter) {
  * 每个还白烧一轮 ls + 一轮 find。提示词里写"别 cp 到根目录"拦不住，因为模型不是想复制，
  * 是真找不到；把落点说准，它就没有复制的理由了。
  */
-function savedAt(saveDir, fname, P = path, root = replyBase || ws()) {
+function savedAt(saveDir, fname, P = path, root = replyBaseDir() || ws()) {
   // Windows 上 relative 给的是反斜杠，拼出来是 任务_X\子目录/图.png 这种两样分隔符混着的，
   // 模型照抄进 Markdown、HTML 里就是一条坏链接。统一成 /，Windows 自己也认
   const rel = P.relative(root, saveDir || root).split(P.sep).join("/");
@@ -577,13 +578,23 @@ function savedAt(saveDir, fname, P = path, root = replyBase || ws()) {
 }
 
 // 回执里的路径相对谁。平时是工作空间根，主进程里的模型就站在那儿。
-// 借给本机引擎时（只有 tool-bridge 设它）是引擎自己的当前目录，也就是这趟任务的根/baseDir：
-// 照相对工作空间根的路径去找，前面多出一截「任务_X/」，找不着就编一句「已显示在上方」交差
+// 借给本机引擎时是引擎自己的当前目录，也就是这趟任务的根/baseDir：
+// 照相对工作空间根的路径去找，前面多出一截「任务_X/」，找不着就编一句「已显示在上方」交差。
+// 桥（tool-bridge）一个进程只伺候一趟，整个进程设一次；交回主进程跑的（engines/tool-relay.js）同一个进程里
+// 好几趟、还有内置引擎的对话一起跑，只能按这一单设（withReplyBase），不碰全局那份
 /** @type {string | null} */
 let replyBase = null;
+/** @type {AsyncLocalStorage<string | null>} */
+const replyAls = new AsyncLocalStorage();
 /** @param {string | null | undefined} dir */
 function setReplyBase(dir) { replyBase = dir ? path.resolve(dir) : null; }
-const replyBaseDir = () => replyBase;
+/** @returns {string | null} */
+function replyBaseDir() { const s = replyAls.getStore(); return s !== undefined ? s : replyBase; }
+/**
+ * 这一单的回执照 dir 说（null = 照工作空间根），只管 fn 里面
+ * @template T @param {string | null | undefined} dir @param {() => T} fn @returns {T}
+ */
+function withReplyBase(dir, fn) { return replyAls.run(dir ? path.resolve(dir) : null, fn); }
 
 /**
  * 成功回执里「路径（说明」那一截。平时说是工作空间内的相对路径；借给本机引擎时报相对它当前目录的，
@@ -592,7 +603,7 @@ const replyBaseDir = () => replyBase;
  * @param {string} fname
  */
 function savedRef(saveDir, fname) {
-  if (!replyBase) return `${savedAt(saveDir, fname)}（工作空间内的相对路径`;
+  if (!replyBaseDir()) return `${savedAt(saveDir, fname)}（工作空间内的相对路径`;
   return `${savedAt(saveDir, fname)}（完整路径 ${path.join(saveDir || ws(), fname)}`;
 }
 
@@ -1327,7 +1338,7 @@ async function withGenCache(kind, cap, opts, input, dir, resolveFile, hold, run)
   const swap = (c, from, to) => String(c).split(from).join(to);
   if (k) {
     const hit = genCache.get(k, ws());
-    if (hit && replyBase) hit.content = swap(hit.content, plain(hit.file), savedRef(dir, hit.file));
+    if (hit && replyBaseDir()) hit.content = swap(hit.content, plain(hit.file), savedRef(dir, hit.file));
     if (hit) {
       // 命中缓存 = 一个子儿没花，所以刚才那笔预扣要当场退回去。
       // 不退的话，一个反复重跑同一张图的任务会把预算“占”到拦人，而账单上什么都没发生。
@@ -1356,7 +1367,7 @@ async function withGenCache(kind, cap, opts, input, dir, resolveFile, hold, run)
     quota.undo(hold);   // 渠道挂了 / 参数错了，同样一分没花
   }
   if (k) {
-    const keep = replyBase && out && !out.isError && out.file
+    const keep = replyBaseDir() && out && !out.isError && out.file
       ? { ...out, content: swap(out.content, savedRef(dir, out.file), plain(out.file)) }
       : out;
     genCache.put(k, keep, dir, ws(), model);
@@ -1420,7 +1431,7 @@ function asrModelOf(media, want) {
 module.exports = {
   bindWorkspace,
   OUT_EXT_ALIAS, safeOutName, anySignal, within, sleepFor, stoppedError, fetchRetry, mediaKey, downloadToWorkspace,
-  IMAGE_EXT, shrinkForVision, readImageInput, imageDataUri, mainCanSee, pickEye, eyeRoute, lookAtImage, savedAt, savedRef, setReplyBase, replyBaseDir, postWantClean,
+  IMAGE_EXT, shrinkForVision, readImageInput, imageDataUri, mainCanSee, pickEye, eyeRoute, lookAtImage, savedAt, savedRef, setReplyBase, replyBaseDir, withReplyBase, postWantClean,
   refImageUris, I2V_RE, T2V_RE, WAN_ASYNC_T2I, wanAsyncImage, generateImage, generateVideo, htmlToImage, textToSpeech, AUDIO_EXT, ASR_MAX_BYTES,
   videoTaskCheck, videoTaskFailed, minimaxFileUrl, videoChanKey, cancelVideoTask,
   srtTime, transcribeAudio, withGenCache, unitsFor, mediaProviderOf, asrModelOf, speaksDashscope,

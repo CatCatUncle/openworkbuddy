@@ -6,7 +6,7 @@
  * 主 Agent 是"协调者"：可直接干活，也可通过 delegate_to_expert 把子任务委派给专家子智能体。
  */
 
-const { TOOL_DEFS, executeTool, outputFiles, turnSnapshot, statOutputs, isUserInput, filesScope, getWorkspaceDir, withWorkspace, orgPolicy, badToolArgs, libBase, getLibraryDir } = require("./tools");
+const { TOOL_DEFS, executeTool, outputFiles, turnSnapshot, statOutputs, isUserInput, filesScope, getWorkspaceDir, withWorkspace, orgPolicy, badToolArgs, libBase, getLibraryDir, withReplyBase } = require("./tools");
 const { loadSkills, SKILLS_DIR, PLUGINS_DIR } = require("../core/ext/skills");
 /** 这一趟的人装不了技能：技能整台服务器一份，接口那边归平台管理员（admin.js 的 tenantScope 把这条放进策略） */
 const skillsWriteOff = () => !!orgPolicy() && orgPolicy().skills_write === false;
@@ -311,6 +311,7 @@ let brandRuntimeSeq = 0; // 见 createAgentRuntime 里的 brandRunPrefix
 const evolve = require("./evolve");
 const mediaModels = require("../core/model/media-models"); // 各路媒体模型：把「默认那条 + 还能选谁」一起交给工具
 const harvest = require("../engines/harvest"); // 本机引擎出视频：上游收了单、这一趟没收回来的，后台接着收
+const toolRelay = require("../engines/tool-relay"); // 借出去的工具交回主进程跑（属主在引擎卡上勾，默认关）
 const scheduler = require("../core/automation/scheduler"); // 排期表：只取那个插座（activeScheduler），实例是 server 插上来的
 
 // ================= 成果核验（治「幻觉执行」） =================
@@ -2437,7 +2438,7 @@ function modePrompt(mode) {
    * 「已达最大步数 / 已达最大运行时间 / 已手动停止」这三种收尾原样报出去——
    * task-verdict 那层认的就是这几个词，翻译对了，假绿判定在 CLI 引擎上照样生效。
    */
-  async function runViaEngine({ backend, opts = {}, history, emit = () => {}, mode, deadline, stopSignal, baseDir, engineSession, user, projectContext, lang, sessionId }) {
+  async function runViaEngine({ backend, opts = {}, history, emit = () => {}, mode, deadline, stopSignal, baseDir, engineSession, user, projectContext, lang, sessionId, sec, taskLabel }) {
     const cwd = safeWorkspaceDir(baseDir);
     try { fs.mkdirSync(cwd, { recursive: true }); } catch {}
     if (!deadline) deadline = Date.now() + (config.agent.max_runtime_ms || 1800000);
@@ -2472,6 +2473,8 @@ function modePrompt(mode) {
     // 借出去的工具在 CLI 那头换了叫法，归回原名再往外播：图标、短标、桌宠那句「正在用…」认的都是原名。
     // 结果那条不一定带得出是哪个工具（命令行入口那种只有 Bash），认调用 id 跟上
     const renamed = new Map();
+    // 交回主进程跑的那一单（见下面的 relayExec）要对上这张卡，进度条才挂得上：按工具名排队，结果来了就划掉
+    const openCards = toolRelay.cards();
     const wrapped = (raw) => {
       let ev = raw;
       if (ev && ev.type === "tool_use") {
@@ -2479,11 +2482,12 @@ function modePrompt(mode) {
         if (n.raw_name) {
           ev = { ...ev, name: n.name, raw_name: n.raw_name };
           if (!ev.title) ev.title = engineToolTitle(n.name, ev.purpose);
-          if (ev.id) renamed.set(ev.id, n);
+          if (ev.id) { renamed.set(ev.id, n); openCards.open(n.name, ev.id); }
         }
       } else if (ev && ev.type === "tool_result") {
         const n = (ev.id && renamed.get(ev.id)) || toolNames.normalizeToolName(ev.name);
         if (n.raw_name) ev = { ...ev, name: n.name, raw_name: n.raw_name };
+        if (ev.id) openCards.close(n.name, ev.id);
       }
       if (beat) beat.touch();
       emit(ev);
@@ -2502,6 +2506,38 @@ function modePrompt(mode) {
     const baseGuard = security.engineGuard(security.getSecurity(config));
     const guard = readOnly ? security.readOnlyGuard(baseGuard) : baseGuard;
     let bridged = null;
+    // 属主在引擎卡上勾了「借给它的工具在这边执行」（engine_options[引擎].relay: true，默认关，见 engines/tool-relay.js）：
+    // 桥只管收发，每一单回到这儿、在这一趟的上下文里跑。审批卡摆在网页 / 终端 / 手机都看得见的那份里，
+    // 记账记在跑这一趟的人名下，组织策略、钩子、工具卡上的进度都跟内置引擎一样（execOpts 同一份）。
+    // 跟桥那边对齐的三处：回执路径照引擎的当前目录说；叫停时上游已收的单不撤，收尾那步按实情办；看图不拿内置的对话模型兜底
+    const relayExec = async (name, args, { signal }) => {
+      const callId = openCards.take(name); // 对不上（结果先到、同名并发）就不报进度，不影响执行
+      // 生视频上游收了单就记一笔台账，跟桥那边一样。这一单还在这儿等片子时占住，后台那一路先别抢去重复收
+      let pending = "";
+      let release = () => {};
+      const onSubmitted = (info) => {
+        try {
+          pending = harvest.writeEntry(harvest.pendingDir(), { ...info, tool: name, run: engineRun, user: user || "", pid: process.pid, at: Date.now() });
+          release = harvest.hold(pending);
+        } catch (e) { console.warn(`[agent] 视频收单的台账没写上，这一单要是没交到手就没人接着收了：${(e && e.message) || e}`); }
+      };
+      try {
+        const r = await withReplyBase(cwd, () => executeTool(name, args, {
+          ...execOpts({ depth: 0, deadline, stopSignal, signal, taskLabel, user, baseDir, sec, sessionId, callId, name, emit: callId ? wrapped : undefined, onSubmitted }),
+          knownTools: (bridged && bridged.lent) || [],
+          visionFallback: undefined,
+          keepUpstreamOnStop: true,
+        }));
+        // 交到手了，或者上游明说失败：台账删掉。停了的、带着任务号出错的留着，收尾时接着收
+        if (pending && !(r && r.isError && (r.stopped || r.submitted))) harvest.dropEntry(pending);
+        return r;
+      } finally { release(); }
+    };
+    let relay = null;
+    if (opts.relay === true) {
+      try { relay = await toolRelay.open({ exec: relayExec, stopSignal, deadline: () => deadline, readOnly }); }
+      catch (e) { emit({ type: "status", notice: true, text: `借出去的工具没能改由主进程跑（${(e && e.message) || e}），这次照老样子由桥自己跑`, depth: 0 }); }
+    }
     try {
       bridged = bridge.attach(backend.id, {
         home: DATA_DIR,
@@ -2527,11 +2563,16 @@ function modePrompt(mode) {
         noShim: !guard.allowShim,
         // 要审批的动作交给安全中心判（engines/approve.js）：属主在引擎设置里勾了才挂，只认布尔 true
         approve: backend.id === "claude-code" && opts.approval === true && !readOnly,
+        // 交回主进程跑：桥只拿凭据文件的路径（见上面的 relay）
+        relayFile: relay ? relay.ticketFile : "",
       });
     } catch (e) {
       // 挂不上就照常跑，只是少了那些工具；不能因为桥没搭起来把整个任务毙掉
       emit({ type: "status", notice: true, text: `本项目工具没能挂给引擎（${e.message}），这次只能用 CLI 自带的工具`, depth: 0 });
+      if (relay) { relay.close().catch(() => {}); relay = null; }
     }
+    // 交回来的只认这一趟借出去的那几样（跟桥那头同一份名单）
+    if (relay) relay.allow(bridged.lent);
     // 走网址的连接器两个 CLI 写法各不相同，这边没转。不说一句，用户只会看到工具少了几个
     if (bridged && bridged.skipped.length) emit({ type: "status", notice: true, text: `这几个连接器走网址，本机引擎挂不上：${bridged.skipped.join("、")}`, depth: 0 });
 
@@ -2628,6 +2669,8 @@ function modePrompt(mode) {
       if (beat) beat.stop();
       filesOut.stop(); // 尾随的那次要是烧到 SSE 关掉之后才响，就是往已经断掉的连接里写
       if (bridged) bridged.cleanup();
+      // 先吊销再收台账：迟到的调用一律拒，手上那几单叫停、等它们回完，没交到手的视频台账才轮得到下面接着收
+      if (relay) { try { await relay.close(); } catch (e) { console.warn(`[agent] 收起交回主进程的口子时出错：${(e && e.message) || e}`); } }
       // 视频上游收了单、这一趟没交到手的（停了、CLI 的时限到了、断网）：说一句，后台按任务号接着收。
       // 用户点了停止的，能撤单的那两家先去撤。跑在 finally 里：停下、出错都得走到
       try {
@@ -2933,7 +2976,7 @@ function modePrompt(mode) {
         try {
           const out = await runViaEngine({
             backend: picked.backend, opts: picked.opts,
-            history, emit, mode, deadline, stopSignal, baseDir, engineSession, user, projectContext, lang, sessionId,
+            history, emit, mode, deadline, stopSignal, baseDir, engineSession, user, projectContext, lang, sessionId, sec, taskLabel,
           });
           sp.end({ output: out.finalText || "", usage: out.usage, metadata: { stopped: out.stopped || "", engine_session: out.sessionId || "" } });
           if (ownsTrace) tr.end({ output: out.finalText || "", usage: out.usage, metadata: { engine: picked.backend.id } });

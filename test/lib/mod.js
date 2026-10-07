@@ -209,6 +209,7 @@ const TABLE = Object.freeze({
   lendable: "src/engines/lendable.js",
   "tool-bridge": "src/engines/tool-bridge.js",
   "tool-names": "src/engines/tool-names.js",
+  "tool-relay": "src/engines/tool-relay.js",
   which: "src/platform/which.js",
   win: "src/platform/win.js",
   // routes

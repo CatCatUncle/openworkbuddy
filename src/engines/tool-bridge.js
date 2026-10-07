@@ -33,6 +33,8 @@
  *                                  主进程收尾时按它认出是这一趟留下的、还没收回来的那几条
  *   OPENWORKBUDDY_BRIDGE_APPROVE   「1」= 这台还兼做本机 Claude Code 的审批工具（engines/approve.js）。只写进 MCP 配置，
  *                                  owb 脚本里不烘：模型从命令行调不到它
+ *   OPENWORKBUDDY_RELAY_TICKET_FILE  有它 = 借出去的工具交回主进程跑（engines/tool-relay.js）：这里只管收发，
+ *                                  不读设置、不在本进程执行。值是凭据文件的路径，凭据本身不进环境变量
  *
  * 协议：换行分隔的 JSON-RPC，跟 mcp.js 那台客户端用的是同一种框法。
  *
@@ -66,6 +68,7 @@ const security = require("../core/safety/security");
 const mediaModels = require("../core/model/media-models");
 const harvest = require("./harvest"); // 视频上游收了单、片子还没交到手：台账记一笔，主进程接着收
 const approve = require("./approve"); // claude 要审批时来问（--permission-prompt-tool），照安全中心的规则判
+const toolRelay = require("./tool-relay"); // 属主在引擎卡上勾了：借出去的工具交回主进程跑，这里只管收发
 
 const PROTOCOL_VERSION = "2025-06-18";
 
@@ -113,6 +116,8 @@ const TOOLS_ENV = process.env.OPENWORKBUDDY_BRIDGE_TOOLS;
 const READONLY = process.env.OPENWORKBUDDY_BRIDGE_READONLY === "1";
 // 属主勾了「要审批的动作交给安全中心判」、这一趟又是 claude：tools/list 多一个 approve。它不算借出去的工具，不进 ALLOW
 const APPROVE = process.env.OPENWORKBUDDY_BRIDGE_APPROVE === "1";
+// 交回主进程跑（engines/tool-relay.js）：值是凭据文件的路径。有它时借出去的工具一律交回去，本进程不读设置、不执行
+const RELAY_FILE = process.env[toolRelay.ENV] || "";
 const ALLOW = new Set(lentFor({ tools: TOOLS_ENV === undefined ? undefined : parseList(TOOLS_ENV), readOnly: READONLY }));
 
 // 只借给外部引擎、本项目自己的模型看不到的工具定义。
@@ -190,6 +195,21 @@ function notLent(name) {
 }
 
 /**
+ * 交回主进程跑一单（engines/tool-relay.js）。连不上（那头收工了、凭据吊销了）就明说这一步没做成——
+ * 不退回本进程自己跑：那等于绕开属主要的审批和记账
+ * @param {string} name @param {any} args @param {AbortSignal|undefined} signal
+ */
+async function relayCall(name, args, signal) {
+  let r;
+  try { r = await toolRelay.call(RELAY_FILE, name, args || {}, { signal }); }
+  catch (e) {
+    if (e && e.connect) throw Object.assign(new Error(`${name} 这次没有执行：交不回 OpenWorkBuddy 主进程（${e.message}）。如实告诉用户这一步没做成。`), { relayDown: true, why: e.message });
+    throw e;
+  }
+  return { content: [{ type: "text", text: r.text }], isError: r.isError };
+}
+
+/**
  * @param {string} name
  * @param {any} args
  * @param {{signal?: AbortSignal}} [o] CLI 叫停这一单（notifications/cancelled、SIGTERM）
@@ -199,6 +219,8 @@ async function callTool(name, args, { signal } = {}) {
     throw new Error(`这一趟是问答 / 计划模式，按只读跑，只借读的那几个工具；${name} 不在其中，没有执行`);
   }
   if (!ALLOW.has(name)) throw new Error(notLent(name));
+  // 交回主进程跑：设置、安全策略、审批卡、记账都在那边照这一趟的上下文办，这里不读设置也不执行
+  if (RELAY_FILE) return relayCall(name, args, signal);
   if (loaded.error) { loaded = loadConfig(); config = loaded.config; }
   if (loaded.error) {
     const file = dataPath("config.json");
@@ -431,6 +453,7 @@ function dataWritable() {
 function sandboxBlock(name) {
   const why = SANDBOX_BLOCKED[name];
   if (!why || !ALLOW.has(name)) return ""; // 没借的交给 callTool 说「没有借给」
+  if (RELAY_FILE) return ""; // 交回主进程跑的不在这个进程里写数据目录、起 Chrome
   const inCodex = !!process.env.CODEX_SANDBOX;
   const via = `改用 mcp__openworkbuddy__${name}（那条路不在沙箱里）；手上没有这个工具，就如实告诉用户这一步没做成。`;
   if (why === "chrome") return inCodex ? `${name} 没有执行：它要起本机 Chrome，这条命令行入口跑在 codex 的命令沙箱里，起不来。${via}` : "";
@@ -461,7 +484,13 @@ async function cli(argv) {
   // 命令行这条路被叫停是整个进程挨 SIGTERM（Bash 超时、CLI 收工），开关同样挂在 live 上
   const ac = new AbortController();
   live.set("cli", ac);
-  const r = await callTool(cmd, readArgs(rest[0]), { signal: ac.signal });
+  let r;
+  try { r = await callTool(cmd, readArgs(rest[0]), { signal: ac.signal }); }
+  catch (e) {
+    // 交不回主进程：这一单没发出去。跟 sandboxBlock 一样退出码 2、话写在 stdout（模型看得见），指一条还走得通的路
+    if (e && e.relayDown) { process.stdout.write(`${cmd} 没有执行：交不回 OpenWorkBuddy 主进程（${e.why}）。改用 mcp__openworkbuddy__${cmd}；手上没有这个工具，就如实告诉用户这一步没做成。\n`); return 2; }
+    throw e;
+  }
   process.stdout.write((r.content[0].text || "") + "\n");
   return r.isError ? 1 : 0;
 }
