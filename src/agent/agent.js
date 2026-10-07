@@ -2525,6 +2525,8 @@ function modePrompt(mode) {
         disabled: config.mcp_disabled || [],
         readOnly,
         noShim: !guard.allowShim,
+        // 要审批的动作交给安全中心判（engines/approve.js）：属主在引擎设置里勾了才挂，只认布尔 true
+        approve: backend.id === "claude-code" && opts.approval === true && !readOnly,
       });
     } catch (e) {
       // 挂不上就照常跑，只是少了那些工具；不能因为桥没搭起来把整个任务毙掉
@@ -2577,7 +2579,7 @@ function modePrompt(mode) {
         // env 例外，不整个盖：属主在引擎设置里写了 PATH 的话，桥挂在最前面的 owb 目录会被顶掉，模型敲 owb 就找不到
         env: mergeEnv(bridged ? bridged.runOpts.env : null, opts.env),
         // 只读那一趟，opts 里能放宽的几项盖回去：必须写在 ...opts 后面，不然属主手填的一句就把只读盖了
-        ...(readOnly ? { permissionMode: undefined, sandbox: undefined, globalMcp: false, network: false, extraArgs: loose.keep } : {}),
+        ...(readOnly ? { permissionMode: undefined, sandbox: undefined, globalMcp: false, network: false, permissionPromptTool: undefined, extraArgs: loose.keep } : {}),
         onWrite: (abs) => noteWrote(abs, runToken),
       });
       beat = engineHeartbeat({ label: backend.label, emit });
@@ -2697,8 +2699,12 @@ function modePrompt(mode) {
     // claude 按「自动改文件」跑（acceptEdits）：改文件不用问，命令要审批——而 -p 是非交互的，没人点得了同意。
     // 不说的话它被拒一次就换个写法再试，一趟能撞十几回，最后交付里只剩一句「环境限制」
     const stopLoss = extra.engine === "claude-code" && extra.claudeMode === "acceptEdits"
-      ? `这一趟的档位是「自动改文件」：改文件不用问；命令行里${bridged && bridged.lent.length ? "除了 owb，" : ""}只有少数只读命令（ls、cat 这类）能直接跑，别的多半会被拒——这条路没人能点同意。` +
-        "被拒一次就别换个写法再试：停下来，在交付里写清楚卡在哪条命令、它要干什么，让用户决定是自己在终端里跑，还是把安全档位调到「全自动」。"
+      ? bridged && bridged.approve
+        // 属主勾了「要审批的动作交给安全中心判」（engines/approve.js）：命令照名单裁决，要人点头的那几类照样没人批
+        ? "这一趟的档位是「自动改文件」：改文件不用问；命令按安全中心的名单裁决，名单放行的直接跑，删除、sudo 这类要人点头的会被拒——这条路没人能点同意。" +
+          "被拒一次就别换个写法再试：停下来，在交付里写清楚卡在哪条命令、它要干什么，让用户决定是自己在终端里跑，还是在 设置 → 安全中心 的名单里预先放行这类。"
+        : `这一趟的档位是「自动改文件」：改文件不用问；命令行里${bridged && bridged.lent.length ? "除了 owb，" : ""}只有少数只读命令（ls、cat 这类）能直接跑，别的多半会被拒——这条路没人能点同意。` +
+          "被拒一次就别换个写法再试：停下来，在交付里写清楚卡在哪条命令、它要干什么，让用户决定是自己在终端里跑，还是把安全档位调到「全自动」。"
       : "";
     const modeLine =
       mode === "ask" ? "本次只回答问题，不改文件、不执行有副作用的命令。"

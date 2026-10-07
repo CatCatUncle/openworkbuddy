@@ -82,9 +82,9 @@ function modelArg(args, engineId = "") {
 // 只读那一趟要摘掉的附加参数：放宽权限 / 沙箱、多挂工具或目录的。平时属主手填的以它为准，
 // 问答 / 计划那一趟不认——那是这趟任务的性质，不是档位偏好
 const CC_LOOSE_FLAG = /^--(dangerously-skip-permissions|allow-dangerously-skip-permissions)$/;
-const CC_LOOSE_ONE = /^--(permission-mode|plugin-dir)$/;
+const CC_LOOSE_ONE = /^--(permission-mode|permission-prompt-tool|plugin-dir)$/;
 const CC_LOOSE_MANY = /^--(allowed-tools|allowedTools|mcp-config)$/; // 变长：后面不带 - 的都是它的值
-const CC_LOOSE_EQ = /^--(permission-mode|plugin-dir|allowed-tools|allowedTools|mcp-config)=/;
+const CC_LOOSE_EQ = /^--(permission-mode|permission-prompt-tool|plugin-dir|allowed-tools|allowedTools|mcp-config)=/;
 const CX_LOOSE_FLAG = /^--(full-auto|dangerously-bypass-approvals-and-sandbox|yolo)$/;
 const CX_LOOSE_ONE = /^(-s|-a|--sandbox|--ask-for-approval|--add-dir)$/;
 const CX_LOOSE_EQ = /^--(sandbox|ask-for-approval|add-dir)=/;

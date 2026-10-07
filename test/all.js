@@ -109,6 +109,7 @@ const SUITES = [
   ["cli-oneshot", "一次性跑和脚本调用：stdin 开着不关、--session 打错、--json 列会话/引擎、--help 不加载大件、被 kill 时落盘、多端并写不丢"],
   ["engine-resilience", "本机引擎出岔子：result 里的报错、按停止当场杀、临时目录退出即删、续跑 id 失效重开一根"],
   ["engine-bridge", "借给本机引擎的工具：只有一份名单，提示词、MCP、owb 三处一致；一个不借就真不借，桥没拿到名单不启动"],
+  ["engine-approve", "本机 Claude Code 要审批时问安全中心：跟内置引擎同一套规则，没人能批的照拒，设置读不出来一律拒，属主勾了才挂"],
   ["repl-commands", "REPL 命令表"],
   ["session-search", "任务历史检索：正文 / 产出文件名 / 意思相近"],
   ["systemone", "判断模型 Jev：题目怎么拼、回答怎么读、确定度不够就不许照做"],
@@ -227,8 +228,8 @@ const SUITES = [
 // 这几个套件自己起临时家（单独 `node test/xxx.js` 也不碰真目录）。挂着护栏时 all.js 故意不给它们
 // 临时家和 trace 账本，照单独跑的样子跑：哪天谁删了那一行，护栏当场拦下判红。
 // 给了的话整轮的临时家会替它兜住，漏洞只在单独跑时现身——写真账本的错还被吞掉，谁也看不见。
-// 前八个是实测来的：不设 OPENWORKBUDDY_HOME / TRACE_FILE 单独跑、护栏拦到过的就是它们；后面几个（win-*、engine-bridge）是写的时候就自己起临时家的。
-const SELF_ISOLATED = new Set(["hooks", "decide-tool", "relay", "cli-approve", "agent-loop", "continue-gate", "ask-gate", "engine-resilience", "win-paths", "win-tools", "win-env", "engine-bridge"]);
+// 前八个是实测来的：不设 OPENWORKBUDDY_HOME / TRACE_FILE 单独跑、护栏拦到过的就是它们；后面几个（win-*、engine-bridge、engine-approve）是写的时候就自己起临时家的。
+const SELF_ISOLATED = new Set(["hooks", "decide-tool", "relay", "cli-approve", "agent-loop", "continue-gate", "ask-gate", "engine-resilience", "win-paths", "win-tools", "win-env", "engine-bridge", "engine-approve"]);
 const ISOLATION_ENV = ["OPENWORKBUDDY_HOME", "OPENWORKBUDDY_DATA_DIR", "OPENWORKBUDDY_TRACE_FILE"];
 {
   const typo = [...SELF_ISOLATED].filter((n) => !SUITES.some(([s]) => s === n));

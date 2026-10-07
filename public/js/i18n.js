@@ -2440,6 +2440,8 @@
       "不填 = 成员只能用上面钉的那个": "Blank = members can only use the pinned one",
       "引擎里的命令能联网": "Commands in the engine can reach the network",
       "（默认关，只管它在沙箱里跑的命令）": "(off by default; only affects commands it runs in its sandbox)",
+      "要审批的动作交给安全中心判": "Let the Security Center decide actions that need approval",
+      "（默认关；不开时名单外的命令多半被拒。用的是 claude 没公开的参数）": "(off by default; when off, most commands outside the lists get refused. Uses an undocumented claude option)",
       "本组织关了命令行，外部引擎自带命令行，所以也不能用。": "Your organization turned off the command line. External engines come with one, so they're off too.",
       "多人共用时默认关着，勾上下面这项才能用。": "Off by default on shared servers. Tick the box below to turn it on.",
       "多人共用时默认关着，平台属主打开后才能用。": "Off by default on shared servers. Usable once the platform owner turns it on.",

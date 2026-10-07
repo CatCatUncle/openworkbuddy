@@ -2229,6 +2229,7 @@ app.post("/api/settings", (req, res) => {
             cur.thinking = lv; // 空串 = 这个引擎跟随全局档位
           }
           if (v.network !== undefined) cur.network = !!v.network;
+          if (v.approval !== undefined) cur.approval = !!v.approval; // claude 要审批的动作交给安全中心判（engines/approve.js）
           if (Array.isArray(v.extraArgs)) cur.extraArgs = v.extraArgs.map((x) => String(x)).slice(0, 20);
         }
       }

@@ -151,6 +151,7 @@ function gateView(id, config) {
     pinned: typeof owner.model === "string" ? owner.model.trim() : "",
     allowed: gate.allowedModels(owner),
     network: owner.network === true,
+    approval: owner.approval === true, // claude 要审批的动作交给安全中心判（engines/approve.js）
   };
 }
 

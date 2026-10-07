@@ -31,6 +31,8 @@
  *   OPENWORKBUDDY_BRIDGE_USER      当前用户名（记忆按人隔离用）
  *   OPENWORKBUDDY_BRIDGE_RUN       这一趟的编号。生视频上游收了单就记一笔台账（engines/harvest.js），
  *                                  主进程收尾时按它认出是这一趟留下的、还没收回来的那几条
+ *   OPENWORKBUDDY_BRIDGE_APPROVE   「1」= 这台还兼做本机 Claude Code 的审批工具（engines/approve.js）。只写进 MCP 配置，
+ *                                  owb 脚本里不烘：模型从命令行调不到它
  *
  * 协议：换行分隔的 JSON-RPC，跟 mcp.js 那台客户端用的是同一种框法。
  *
@@ -63,6 +65,7 @@ const tools = require("../agent/tools");
 const security = require("../core/safety/security");
 const mediaModels = require("../core/model/media-models");
 const harvest = require("./harvest"); // 视频上游收了单、片子还没交到手：台账记一笔，主进程接着收
+const approve = require("./approve"); // claude 要审批时来问（--permission-prompt-tool），照安全中心的规则判
 
 const PROTOCOL_VERSION = "2025-06-18";
 
@@ -108,6 +111,8 @@ const TOOLS_ENV = process.env.OPENWORKBUDDY_BRIDGE_TOOLS;
 // 问答 / 计划那一趟（bridge.js 传 readOnly）：名单本来就只有读的，这里照 READ_ONLY 再滤一道，
 // 名单被人改过、多写了生图之类，照样借不出去
 const READONLY = process.env.OPENWORKBUDDY_BRIDGE_READONLY === "1";
+// 属主勾了「要审批的动作交给安全中心判」、这一趟又是 claude：tools/list 多一个 approve。它不算借出去的工具，不进 ALLOW
+const APPROVE = process.env.OPENWORKBUDDY_BRIDGE_APPROVE === "1";
 const ALLOW = new Set(lentFor({ tools: TOOLS_ENV === undefined ? undefined : parseList(TOOLS_ENV), readOnly: READONLY }));
 
 // 只借给外部引擎、本项目自己的模型看不到的工具定义。
@@ -236,6 +241,30 @@ async function callTool(name, args, { signal } = {}) {
   return { content: [{ type: "text", text }], isError: !!(r && r.isError) };
 }
 
+/**
+ * claude 要审批时来问。每次现读设置：安全中心里改了档位、放行了一类命令，下一条就认，不用重开引擎。
+ * 读不出来一律拒：照默认放行，等于用户写的名单整个不算数
+ * @param {any} req claude 递过来的 {tool_name, input, tool_use_id}
+ */
+async function approveCall(req) {
+  const lc = loadConfig();
+  let d;
+  if (lc.error) {
+    const file = dataPath("config.json");
+    if (loggedErr !== lc.error) {
+      loggedErr = lc.error;
+      appLog.error("engine-bridge", "设置文件读不出来，本机引擎要审批的一律拒", { file, err: lc.error, tool: String((req && req.tool_name) || "") });
+    }
+    d = { behavior: "deny", message: `设置文件 ${file} ${lc.error}。读不到安全策略，按拒绝处理，没有执行；文件改好后，下一次会重新读` };
+  } else {
+    loggedErr = "";
+    const root = tools.getWorkspaceDir();
+    d = await approve.decide(req, { sec: security.getSecurity({ security: lc.config.security }), readOnly: READONLY, root, base: path.join(root, BASE_DIR) });
+  }
+  // 答法是 claude 定的：判词整个 JSON 塞进一段文字
+  return { content: [{ type: "text", text: JSON.stringify(d) }] };
+}
+
 // ---- JSON-RPC over stdio ----
 
 function send(msg) {
@@ -289,9 +318,10 @@ async function handle(msg) {
         result = {};
         break;
       case "tools/list":
-        result = { tools: listTools() };
+        result = { tools: APPROVE ? [...listTools(), approve.DEF] : listTools() };
         break;
       case "tools/call": {
+        if (APPROVE && (params || {}).name === approve.TOOL) { result = await approveCall((params || {}).arguments); break; }
         const key = JSON.stringify(id);
         const ac = new AbortController();
         live.set(key, ac);

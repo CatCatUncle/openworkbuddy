@@ -3143,6 +3143,7 @@ function engineExtraHtml(e, ctx = {}) {
     ${owner && ctx.multi ? `<label>成员可选的型号<span style="color:var(--owb-text-3)">（逗号隔开；上面钉的那个总能选。成员只能在这些里挑）</span>
       <input type="text" data-k="models" placeholder="不填 = 成员只能用上面钉的那个" value="${esc(allowed.filter((m) => m !== g.pinned).join(", "))}" autocomplete="off"></label>` : ""}
     ${owner && e.id === "codex" ? `<label class="eng-chk"><input type="checkbox" data-k="network"${g.network ? " checked" : ""}> <span>引擎里的命令能联网</span><span style="color:var(--owb-text-3)">（默认关，只管它在沙箱里跑的命令）</span></label>` : ""}
+    ${owner && e.id === "claude-code" ? `<label class="eng-chk"><input type="checkbox" data-k="approval"${g.approval ? " checked" : ""}> <span>要审批的动作交给安全中心判</span><span style="color:var(--owb-text-3)">（默认关；不开时名单外的命令多半被拒。用的是 claude 没公开的参数）</span></label>` : ""}
     <label>${esc(e.thinkingLabel || "思考模式")}<span style="color:var(--owb-text-3)">（只对这个引擎生效；「跟随全局」= 用助理设置里的思考模式）</span>
       <select data-k="thinking">${ENGINE_THINK_LEVELS.map(([v, l]) => `<option value="${v}"${(o.thinking || "") === v ? " selected" : ""}>${l}</option>`).join("")}</select></label>
     <div class="eng-row">

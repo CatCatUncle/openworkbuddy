@@ -1398,6 +1398,29 @@ const ENG_CHECKS = `
   await wait(60);
   const og = ((JSON.parse(window.SAVES[0] || "{}").agent || {}).engine_options || {}).codex || {};
   ok("★属主存：成员列表按逗号拆成数组、联网存布尔★", og.model === "gpt-5.4" && JSON.stringify(og.models) === JSON.stringify(["gpt-5.4-mini", "o4", "o4"]) && og.network === true, window.SAVES);
+  // claude 那张卡：要审批的动作交给安全中心判（engines/approve.js）。codex 没有这个口子
+  ok("codex 卡上没有「交给安全中心判」那一勾", !xo.querySelector('[data-k="approval"]'));
+  await renderGate("claude-code", { multiUser: false }, { "claude-code": { ...G0, approval: true } });
+  const ccx = card("claude-code").querySelector(".eng-x");
+  const apv = ccx && ccx.querySelector('input[data-k="approval"]');
+  ok("属主：claude 卡上有「交给安全中心判」，照存的勾上", !!apv && apv.checked === true);
+  {
+    // 模板里的短文案闸门只要九成，漏一句照样过：这一勾和后面那句说明逐句过真词典
+    // 真 i18n.js 关在一个假 window 里：不碰这一页的 DOM
+    const I18 = new Function("window", ${JSON.stringify(I18N_SRC)} + "\\n;return window.I18N;")({});
+    const said = [...ccx.querySelectorAll('label.eng-chk span')].map((n) => n.textContent).filter((t) => /安全中心判|没公开的参数/.test(t));
+    const zh = said.filter((t) => { const o = I18.tr(t, "en"); return o === t || /[一-鿿]/.test(o); });
+    ok("英文界面：「交给安全中心判」那一勾连说明都翻得动", said.length === 2 && zh.length === 0, JSON.stringify({ said, zh }));
+  }
+  if (apv) {
+    apv.checked = false;
+    ccx.querySelector('input[data-k="model"]').value = "sonnet";
+    window.SAVES = [];
+    ccx.querySelector('[data-act="save"]').click();
+    await wait(60);
+  }
+  const ag = ((JSON.parse(window.SAVES[0] || "{}").agent || {}).engine_options || {})["claude-code"] || {};
+  ok("★属主存：这一勾存布尔★ 去掉勾存的是 false，不是不发", ag.approval === false && ag.model === "sonnet", window.SAVES);
   await renderGate("codex", { multiUser: false }, { codex: CX });
   ok("单机桌面：没有开关、不写默认关着；成员列表也不出（没有成员）",
     box.querySelectorAll(".eng-gate").length === 0 && !offNote("claude-code") && !card("codex").querySelector('input[data-k="models"]'));
@@ -1408,6 +1431,8 @@ const ENG_CHECKS = `
   ok("成员：没开的那张说要等属主打开", [...card("claude-code").querySelectorAll(".eng-i")].some((n) => /平台属主打开后才能用/.test(n.textContent)));
   ok("成员：型号下拉只列属主放行的，占位写属主钉的那个",
     [...xs.querySelectorAll("datalist option")].map((o) => o.value).join() === "gpt-5.4,gpt-5.4-mini" && xs.querySelector('input[data-k="model"]').placeholder === "gpt-5.4");
+  await renderGate("claude-code", { multiUser: true }, { "claude-code": { ...G0, enabled: true, approval: true } });
+  ok("★成员：claude 卡上也没有「交给安全中心判」★", !!card("claude-code").querySelector(".eng-x") && !box.querySelector('[data-k="approval"]'));
   settingsCache.platform_owner = true;
   await renderGate("builtin", { multiUser: false, shellOff: true }, { codex: CX });
   ok("组织关了命令行：两张外部引擎卡都写明不能用，内置那张不写",

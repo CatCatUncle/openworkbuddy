@@ -65,6 +65,10 @@ function explain(stderr, code) {
     return "本机 Claude Code 账号额度不够了。";
   if (/ENOENT|command not found/i.test(s))
     return "找不到 claude 命令。装一个（npm i -g @anthropic-ai/claude-code）或在设置里填绝对路径。";
+  // 「要审批的动作交给安全中心判」靠的是 claude 没写进 --help 的参数：它不认、或者说找不到那个工具，当场就退出。
+  // 只点名是哪个开关、去哪关，原话照附
+  if (/permission-prompt-tool/.test(s) && /not found|unknown option/i.test(s))
+    return `本机 Claude Code 没接住「要审批的动作交给安全中心判」这一项，先到 ${gate.WHERE} 里把这一勾去掉再跑。它的原话：${s.slice(-600)}`;
   return s ? s.slice(-600) : `claude 异常退出（退出码 ${code}）且没有任何输出`;
 }
 
@@ -185,6 +189,7 @@ async function run({
   prompt, cwd, emit = () => {}, deadline, stopSignal,
   model, systemPrompt, resumeId, maxTurns, mcpConfigPath, mcpServerNames = [], shimBin = "", bin, permissionMode, guard = {}, env, extraArgs = [],
   globalMcp = false,
+  permissionPromptTool = "",
   thinking: thinkingLevel, addDirs = [],
   onWrite = null,
 }) {
@@ -236,6 +241,9 @@ async function run({
     // 不放行的话工具挂上了也调不动，模型看见一堆用不了的名字反而更糟。
     // 真正危险的动作由本项目自己的安全中心把关（工具是从这台桥回流的）。
     for (const n of mcpServerNames) args.push("--allowed-tools", "mcp__" + n);
+    // 要审批时先问桥上那个 approve（属主勾了才有，见 engines/approve.js）。只跟着 --mcp-config 走：
+    // 指到一台没挂上的服务器，claude 当场退出
+    if (permissionPromptTool) args.push("--permission-prompt-tool", permissionPromptTool);
   }
   // 命令行那条路也得放行，否则模型敲了也白敲。实测（2026-09-08）：acceptEdits 下
   // `echo` 这种它自己判得出安全的命令能直接跑，但调一个它没见过的可执行文件会返回

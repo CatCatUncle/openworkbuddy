@@ -226,7 +226,7 @@ function writeShim(server) {
  * skipped：开着、但这次没转过去的连接器名（走网址的），调用方在运行页上说一句
  * @returns {{runOpts:object, names:string[], toolCount:number, skipped:string[], cleanup:function}}
  */
-function attach(engineId, { home, root = "", baseDir = "", user = "", run = "", tools, library = null, extraServers = [], disabled = [], readOnly = false, noShim = false } = {}) {
+function attach(engineId, { home, root = "", baseDir = "", user = "", run = "", tools, library = null, extraServers = [], disabled = [], readOnly = false, noShim = false, approve = false } = {}) {
   const servers = buildServers({ home, root, baseDir, user, run, tools, library, extraServers, disabled, readOnly });
   const names = Object.keys(servers);
   // 只读那一趟本来就一个不挂，不算「没转过去」
@@ -236,6 +236,10 @@ function attach(engineId, { home, root = "", baseDir = "", user = "", run = "", 
   // 只读那一趟不给命令行入口：只读档的 CLI 本来就不该跑命令，借出去的读工具走 MCP 就够了。
   // 安全档「只看不动」也不给（noShim，见 security.engineGuard 的 allowShim），两个引擎一样
   const shim = readOnly || noShim ? { path: "", dir: "", bin: "", cleanup() {} } : writeShim(servers[SERVER_NAME]);
+  // 要审批的动作交给安全中心判（engines/approve.js）：只有 claude 有这个口子；只读那一趟要审批的本来就一律不批。
+  // 开关写在 owb 脚本烘好之后：命令行那条路不收审批，模型拿 owb 给自己批不了
+  const ap = approve === true && engineId === "claude-code" && !readOnly;
+  if (ap) servers[SERVER_NAME].env.OPENWORKBUDDY_BRIDGE_APPROVE = "1";
   // 两边都以 MCP 为主（见文件头）；命令行脚本只是后备
   const shimIsPrimary = false;
   // 脚本目录挂到子进程 PATH 最前面，模型敲裸 `owb` 就能调到——带绝对路径的写法会被两个
@@ -248,7 +252,7 @@ function attach(engineId, { home, root = "", baseDir = "", user = "", run = "", 
   // 在那个沙箱里 owb 不跑的（tool-bridge.js 的 sandboxBlock）：提示词照这份点名，别让它先撞一次
   const shimBlocked = shimSandboxed && shim.bin ? lent.filter((n) => SANDBOX_BLOCKED[n]) : [];
   // engine：提示词按它教看图（claude 用 Read、codex 用 view_image）
-  const common = { engine: engineId, readOnly, names, skipped, lent, toolCount: lent.length, shim: shim.path, shimDir: shim.dir, shimBin: shim.bin, shimIsPrimary, shimSandboxed, shimBlocked };
+  const common = { engine: engineId, readOnly, approve: ap, names, skipped, lent, toolCount: lent.length, shim: shim.path, shimDir: shim.dir, shimBin: shim.bin, shimIsPrimary, shimSandboxed, shimBlocked };
   if (engineId === "codex") {
     return {
       // 不再把数据根加进可写目录：那等于让引擎里的任何命令都能改配置和账号。
@@ -263,7 +267,8 @@ function attach(engineId, { home, root = "", baseDir = "", user = "", run = "", 
   // 模型要多久它自己定；属主自己设过的不动
   const bashEnv = shim.bin && !process.env.BASH_MAX_TIMEOUT_MS ? { BASH_MAX_TIMEOUT_MS: String(TOOL_TIMEOUT_MS) } : {};
   return {
-    runOpts: { mcpConfigPath: w.path, mcpServerNames: names, env: { ...shimEnv, ...bashEnv }, shimBin: shim.bin },
+    runOpts: { mcpConfigPath: w.path, mcpServerNames: names, env: { ...shimEnv, ...bashEnv }, shimBin: shim.bin,
+      ...(ap ? { permissionPromptTool: `mcp__${SERVER_NAME}__${require("./approve").TOOL}` } : {}) },
     ...common,
     cleanup: () => { w.cleanup(); shim.cleanup(); },
   };

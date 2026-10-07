@@ -198,6 +198,7 @@ const TABLE = Object.freeze({
   winname: "src/util/winname.js",
   "ws-browse": "src/domains/library/ws-browse.js",
   // engines
+  approve: "src/engines/approve.js",
   bridge: "src/engines/bridge.js",
   "claude-code": "src/engines/claude-code.js",
   codex: "src/engines/codex.js",
