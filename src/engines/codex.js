@@ -235,7 +235,8 @@ function changedPaths(item, cwd) {
 const IMAGE_NOTE =
   "生图默认用你自带的 image_gen（走用户的 ChatGPT 订阅，不花 API 额度）；只有用户点名要用 OpenWorkBuddy 里配的图像模型时才调 generate_image。\n" +
   "image_gen 出的图默认存在 $CODEX_HOME/generated_images 下，OpenWorkBuddy 的界面看不到那里，也显示不了你的内嵌预览。" +
-  "所以用户要的每一张图都算交付物：生成后复制到当前工作目录，起一个看得懂的文件名，回复里报相对路径；" +
+  "出图后几秒内 OpenWorkBuddy 会把它复制进当前工作目录（文件名 codex-image-月日-时分秒.png），不用你再复制；" +
+  "想起个看得懂的名字就把那个文件改名（mv），别另存一份，回复里报工作目录里的相对路径；" +
   "不要贴 generated_images 下的路径，也不要说「已显示在上方」。";
 
 /**
@@ -276,53 +277,94 @@ function recentFilesBySize(dir, sizes, since, depth = 3, out = [], budget = { le
   return out;
 }
 
-/**
- * 兜底：这一趟 codex 自带生图出了图、模型却一张都没放进工作目录时，替它放进去，按写文件报上去，
- * 产出栏和预览就跟别的产物一样。
- *
- * 只看本线程自己的目录、只认这一趟开跑之后出的：几条对话同时用 codex 时不会互相捡图，
- * 续跑的线程里上一轮的旧图也不会再捡一遍。
- * 模型已经自己复制过任意一张（工作目录里有这一趟写的、内容一模一样的文件），就当它挑过了，
- * 剩下的是弃稿，不动。克隆复制（APFS 上不占额外空间），不覆盖已有文件。
- */
-function pickupImages({ codexHome, threadId, cwd, since }) {
-  if (!codexHome || !threadId || !cwd) return [];
+/** 本线程这一趟出的图（只看本线程自己的目录、只认开跑之后写的），skip 里的不算 */
+function freshImages({ codexHome, threadId, since, skip }) {
+  if (!codexHome || !threadId) return [];
   const dir = path.join(codexHome, "generated_images", path.basename(String(threadId)));
   let names = [];
   try { names = fs.readdirSync(dir); } catch { return []; }
   const fresh = [];
   for (const n of names.filter((x) => IMAGE_EXT.test(x)).sort()) {
+    if (skip && skip.has(n)) continue;
     const src = path.join(dir, n);
     try { const st = fs.statSync(src); if (st.isFile() && st.size > 0 && st.mtimeMs >= since) fresh.push({ src, n, size: st.size, mtime: st.mtimeMs }); } catch {}
   }
-  if (!fresh.length) return [];
+  return fresh;
+}
+
+/** 工作目录里有没有这一趟写的、内容跟这张一模一样的文件（模型自己复制过了） */
+function placedByModel(cwd, f, since) {
   // 文件系统的时间精度有粗有细，留一秒余量，别把模型刚复制过去的那张漏掉
-  const placed = recentFilesBySize(cwd, new Set(fresh.map((f) => f.size)), since - 1000);
-  for (const f of fresh) {
-    let buf = null;
-    try { buf = fs.readFileSync(f.src); } catch { continue; }
-    for (const p of placed) {
-      try { if (fs.statSync(p).size === f.size && fs.readFileSync(p).equals(buf)) return []; } catch {}
+  const placed = recentFilesBySize(cwd, new Set([f.size]), since - 1000);
+  if (!placed.length) return false;
+  let buf = null;
+  try { buf = fs.readFileSync(f.src); } catch { return false; }
+  for (const p of placed) {
+    try { if (fs.statSync(p).size === f.size && fs.readFileSync(p).equals(buf)) return true; } catch {}
+  }
+  return false;
+}
+
+/** 放一张进工作目录：按出图时间起名，撞名接 _2，不覆盖已有文件。克隆复制（APFS 上不占额外空间） */
+function placeImage(cwd, f) {
+  const ext = path.extname(f.n).toLowerCase();
+  const t = new Date(f.mtime), two = (n) => String(n).padStart(2, "0");
+  const stem = `codex-image-${two(t.getMonth() + 1)}${two(t.getDate())}-${two(t.getHours())}${two(t.getMinutes())}${two(t.getSeconds())}`;
+  for (let i = 1; i < 100; i++) {
+    const dest = path.join(cwd, i === 1 ? stem + ext : `${stem}_${i}${ext}`);
+    try {
+      fs.copyFileSync(f.src, dest, fs.constants.COPYFILE_EXCL | fs.constants.COPYFILE_FICLONE);
+      return dest;
+    } catch (e) {
+      if (e && e.code === "EEXIST") continue;
+      return null; // 复制不了（磁盘满、没权限）就算了：图还在 codex 那边，不能因为兜底把整个任务弄挂
     }
   }
-  const out = [];
-  for (const f of fresh) {
-    const ext = path.extname(f.n).toLowerCase();
-    const t = new Date(f.mtime), two = (n) => String(n).padStart(2, "0");
-    const stem = `codex-image-${two(t.getMonth() + 1)}${two(t.getDate())}-${two(t.getHours())}${two(t.getMinutes())}${two(t.getSeconds())}`;
-    for (let i = 1; i < 100; i++) {
-      const dest = path.join(cwd, i === 1 ? stem + ext : `${stem}_${i}${ext}`);
-      try {
-        fs.copyFileSync(f.src, dest, fs.constants.COPYFILE_EXCL | fs.constants.COPYFILE_FICLONE);
-        out.push(dest);
-        break;
-      } catch (e) {
-        if (e && e.code === "EEXIST") continue;
-        break; // 复制不了（磁盘满、没权限）就算了：图还在 codex 那边，不能因为兜底把整个任务弄挂
+  return null;
+}
+
+/**
+ * 兜底：这一趟 codex 自带生图出了图、模型却一张都没放进工作目录时，替它放进去，按写文件报上去，
+ * 产出栏和预览就跟别的产物一样。
+ *
+ * 只看本线程自己的目录、只认这一趟开跑之后出的：几条对话同时用 codex 时不会互相捡图，
+ * 续跑的线程里上一轮的旧图也不会再捡一遍。跑着的时候已经放过的（skip）不再放。
+ * 模型已经自己复制过剩下的任意一张（工作目录里有这一趟写的、内容一模一样的文件），就当它挑过了，
+ * 剩下的是弃稿，不动。
+ */
+function pickupImages({ codexHome, threadId, cwd, since, skip }) {
+  if (!cwd) return [];
+  const fresh = freshImages({ codexHome, threadId, since, skip });
+  if (!fresh.length) return [];
+  if (fresh.some((f) => placedByModel(cwd, f, since))) return [];
+  return fresh.map((f) => placeImage(cwd, f)).filter(Boolean);
+}
+
+/**
+ * 跑着的时候就把出的图放进对话目录。exec --json 不报 image_gen 这一步（10-06 一趟 795 秒只出过一张卡），
+ * 不在半路捡，用户要等整趟跑完才看得到图。
+ * 连着两轮看到的大小、修改时间都没变才算写完，别把写了一半的图拷过去。
+ * 模型抢先自己复制过的只记下、不再放一份。处理过的记在 taken 里，收尾那次兜底跳过它们
+ */
+function imagePoller({ codexHome, cwd, since }) {
+  const seen = new Map(); // 文件名 → 上一轮看到的「大小:修改时间」
+  const taken = new Set();
+  return {
+    taken,
+    poll(threadId) {
+      if (!cwd) return [];
+      const out = [];
+      for (const f of freshImages({ codexHome, threadId, since, skip: taken })) {
+        const sig = f.size + ":" + f.mtime;
+        if (seen.get(f.n) !== sig) { seen.set(f.n, sig); continue; }
+        taken.add(f.n);
+        if (placedByModel(cwd, f, since)) continue;
+        const dest = placeImage(cwd, f);
+        if (dest) out.push(dest);
       }
-    }
-  }
-  return out;
+      return out;
+    },
+  };
 }
 
 /**
@@ -450,6 +492,7 @@ async function run({
   thinking: thinkingLevel,
   systemPrompt = "",
   onWrite = null,
+  imagePollMs = 2000,
 }) {
   // 闸在上游已经核过；这里再挡一次，护的是绕过 agent 直接调 run() 的那些入口（测试连接、目标拆解）
   const bad = gate.modelArg(extraArgs, ID);
@@ -513,6 +556,8 @@ async function run({
   let usageBase; // 上一趟结束时这条线程的累计值（见 usageDelta），头一次 turn.completed 时才读
   const startedAt = Date.now();
   const announced = new Set(); // item.started 报过的工具，completed 时别重复报一遍卡片
+  const poller = imagePoller({ codexHome: isolated.env.CODEX_HOME, cwd, since: startedAt });
+  let imgSeq = 0;
 
   const onLine = (m) => {
     if (!m || typeof m !== "object") return;
@@ -569,6 +614,20 @@ async function run({
       }
       return;
     }
+    if (item.type === "reasoning") {
+      // 思考摘要：exec --json 里只有它说得出模型在想什么。头一行进思考提示那一行（只是进度，不存档）
+      const head = String(item.text || "").split("\n").map((x) => x.replace(/\*\*/g, "").trim()).find(Boolean);
+      if (m.type === "item.completed" && head) emit({ type: "status", text: "在想：" + shorten(head, 60), depth: 0 });
+      return;
+    }
+    if (item.type === "todo_list") {
+      // 进度清单：跟内置那边 todo_write 一样画成打勾的表。codex 只报做完没做完，没有「正在做」
+      const items = (Array.isArray(item.items) ? item.items : [])
+        .map((x) => ({ content: String((x && (x.text || x.content)) || "").trim(), status: x && (x.completed === true || x.status === "completed") ? "done" : "pending" }))
+        .filter((x) => x.content);
+      if (items.length) emit({ type: "todos", items, depth: 0 });
+      return;
+    }
     const t = toolOf(item);
     if (!t) return;
     if (m.type === "item.started" && !announced.has(item.id)) {
@@ -594,10 +653,25 @@ async function run({
 
   // isolated.env 是整份环境（openWorkBuddyCodexHome 要从里面找原来的登录目录），只把调用方给的和 CODEX_HOME 交下去；
   // 其余的由 runJsonl 按白名单挑，环境里的 Key 不跟着进 codex 和它起的 shell
-  const r = await runJsonl({ bin: exe, args, cwd, env: { ...(env || {}), CODEX_HOME: isolated.env.CODEX_HOME }, stdin: instr.prefix + prompt, onLine, deadline, stopSignal });
+  // 放进去的图按写文件报上去，再出一张卡：卡的结果那条一到，产出栏就去对一次账，图当场就看得到
+  const pollImages = () => {
+    for (const dest of poller.poll(sessionId)) {
+      if (onWrite) { try { onWrite(dest); } catch {} }
+      const id = `codex-image-${++imgSeq}`, name = path.basename(dest);
+      emit({ type: "tool_use", id, name: "image_gen", title: `Codex 自带生图 ${name}`, purpose: name, depth: 0 });
+      emit({ type: "tool_result", id, name: "image_gen", preview: `已放进对话目录：${name}`, depth: 0 });
+    }
+  };
+  const imgTimer = setInterval(() => { try { pollImages(); } catch {} }, imagePollMs);
+  let r;
+  try {
+    r = await runJsonl({ bin: exe, args, cwd, env: { ...(env || {}), CODEX_HOME: isolated.env.CODEX_HOME }, stdin: instr.prefix + prompt, onLine, deadline, stopSignal });
+  } finally {
+    clearInterval(imgTimer);
+  }
   usage.elapsed_ms = Date.now() - startedAt;
   // 停了、超时了、报错了也捡：出了的图是真出了，订阅额度已经用掉了。onWrite 报上去，收尾那次扫描就认得是这条对话的
-  const picked = pickupImages({ codexHome: isolated.env.CODEX_HOME, threadId: sessionId, cwd, since: startedAt });
+  const picked = pickupImages({ codexHome: isolated.env.CODEX_HOME, threadId: sessionId, cwd, since: startedAt, skip: poller.taken });
   if (picked.length) {
     if (onWrite) for (const p of picked) { try { onWrite(p); } catch {} }
     emit({ type: "status", notice: true, text: `Codex 生成的图已放进对话目录：${picked.map((p) => path.basename(p)).join("、")}`, depth: 0 });
@@ -614,7 +688,7 @@ async function run({
 }
 
 module.exports = {
-  changedPaths, instructionsPlan, pickupImages, skillsOffArgs, toolOf,
+  changedPaths, instructionsPlan, pickupImages, imagePoller, skillsOffArgs, toolOf,
   id: ID,
   label: "本机 Codex",
   bin: "codex",

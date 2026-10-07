@@ -9229,6 +9229,8 @@ const TRAIL_CHECKS = `
   const chipTb = uTb.turn.querySelector(".trail [data-name]");
   ok("回放老会话：轨迹条上是「生图」不是一串前缀", !!chipTb && chipTb.textContent.includes(TOOL_SHORT.generate_image) && !/openworkbuddy/.test(chipTb.textContent), chipTb && chipTb.textContent);
   uTb.finish();
+  // codex 自带生图：服务端跑着时把图放进对话目录、出一张 image_gen 卡，短标图标跟内置生图一样
+  ok("codex 自带生图那张卡：短标、图标跟内置生图一样", shortTool("image_gen") === TOOL_SHORT.generate_image && toolIcon("image_gen") === toolIcon("generate_image"), [shortTool("image_gen"), toolIcon("image_gen")]);
 
   // ---- 上游重试倒计时条：status 带 retry 字段（{ kind, attempt, total, delayMs }）----
   // 以前重试只有底下一行转圈的字，说不清在等什么、还要等多久。带了 retry 就在回合顶上倒数，

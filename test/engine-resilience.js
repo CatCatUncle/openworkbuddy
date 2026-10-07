@@ -28,6 +28,8 @@
  *      报错：光一个 401 不说「还没登录」，原话带上；codex 说哪项设置「不再支持」，那几行原样带出来
  *   ⑫ 引擎挂了（起不来、半路退出）记在引擎头上：连挂提示指去换底层引擎，云模型的连挂计数和健康账本不动（真 server.js）
  *   ⑬ 状态播报里是事实的（引擎已启动、标了 notice 的）存盘，重开对话还在；进度播报不存
+ *   ⑭ 跑着就看得见：codex 自带生图出的图半路就放进对话目录、出一张卡（写到一半的不拷，模型抢先复制过的不再放）；
+ *      思考摘要进思考提示、进度清单画成打勾的表；本机 CLI 好一阵不出声，隔一段说一声还在跑，来了新事件重新算
  *
  * 引擎全是本地假的，不出网。
  *   node test/engine-resilience.js
@@ -1230,6 +1232,121 @@ function partStatusPersist() {
     "存的是「已启动」（型号空着也存）和 notice；正在启动、重试、普通进度、专家那层的都不存", kept);
 }
 
+/**
+ * ⑭ 跑着就看得见。codex 的 exec --json 不报 image_gen 这一步，以前图要等整趟跑完才捡；
+ *   一趟跑十几分钟，界面上就一张卡、一行不动的思考提示
+ */
+async function partLive() {
+  console.log("\n⑭ 跑着就看得见：半路捡图、思考摘要、进度清单、心跳");
+  const codex = require(mod("codex"));
+  // 假 codex：先报思考摘要和清单，出一张图（边写边长、写了将近一秒才写完），然后一声不吭等一阵才收尾。
+  // 写的时候每 20ms 长一截、轮询 200ms 一次：两轮之间一定长过，看到「没变」只会是真写完了；
+  // 不核对就拷的话，头一眼看到的一定是半截
+  const bin = fakeBin("codex-live", `
+const fs = require("fs"), path = require("path");
+const a = process.argv.slice(2);
+if (a[0] === "debug") process.exit(1);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let input = "";
+process.stdin.on("data", (d) => { input += d; }).on("end", async () => {
+  const tid = process.env.FAKE_THREAD, mode = process.env.FAKE_MODE || "";
+  const out = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
+  out({ type: "thread.started", thread_id: tid });
+  out({ type: "turn.started" });
+  out({ type: "item.completed", item: { id: "r1", type: "reasoning", text: "**Planning the night scene**\\n\\nI will draw it." } });
+  out({ type: "item.started", item: { id: "t1", type: "todo_list", items: [{ text: "画草图", completed: true }, { text: "上色", completed: false }, { text: "", completed: false }] } });
+  const dir = path.join(process.env.CODEX_HOME, "generated_images", tid);
+  fs.mkdirSync(dir, { recursive: true });
+  const img = path.join(dir, "exec-1.png");
+  fs.writeFileSync(img, "PNG-half");
+  for (let i = 0; i < 40; i++) { await sleep(20); fs.appendFileSync(img, "."); }
+  fs.writeFileSync(img, "PNG-half-and-the-rest-" + tid);
+  if (/copied/.test(mode)) fs.copyFileSync(img, path.join(process.cwd(), "夜景.png"));
+  await sleep(1500);
+  out({ type: "item.completed", item: { id: "m1", type: "agent_message", text: "图好了" } });
+  out({ type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } });
+});
+`);
+  const srcHome = path.join(home, "codex-live-src");
+  fs.mkdirSync(srcHome, { recursive: true });
+  let seq = 0;
+  const go = async (mode, thread) => {
+    const cwd = path.join(home, "live-" + (++seq));
+    fs.mkdirSync(cwd, { recursive: true });
+    const evs = [], wrote = [];
+    const r = await codex.run({
+      prompt: "画一张深圳夜景", cwd, bin, model: "gpt-test", imagePollMs: 200,
+      env: { CODEX_HOME: srcHome, FAKE_THREAD: thread, FAKE_MODE: mode },
+      emit: (e) => evs.push(e), onWrite: (p) => wrote.push(p),
+    });
+    const imgs = fs.readdirSync(cwd).filter((n) => /^codex-image-\d{4}-\d{6}(_\d+)?\.png$/.test(n)).sort();
+    return { cwd, r, evs, wrote, imgs };
+  };
+  {
+    const A = await go("", "live-a");
+    const card = A.evs.findIndex((e) => e.type === "tool_use" && e.name === "image_gen");
+    const res = A.evs.findIndex((e) => e.type === "tool_result" && e.name === "image_gen");
+    const said = A.evs.findIndex((e) => e.type === "text");
+    ok(A.r.finalText === "图好了" && card >= 0 && res > card && card < said, "★图出来就出卡★ 不等整趟跑完（卡排在最后那段话前面）", A.evs.map((e) => e.type + ":" + (e.name || e.text || "")));
+    ok(A.imgs.length === 1 && fs.readFileSync(path.join(A.cwd, A.imgs[0]), "utf8") === "PNG-half-and-the-rest-live-a",
+      "★写到一半的不拷★ 连着两轮大小、时间都没变才算写完，拷过来的是整张", A.imgs.map((n) => fs.readFileSync(path.join(A.cwd, n), "utf8")));
+    ok(same(A.wrote, [path.join(A.cwd, A.imgs[0])]), "放进去的那张按写文件报上去（产出栏靠它认主），收尾那次不再放一份", A.wrote);
+    const c = A.evs[card] || {}, rr = A.evs[res] || {};
+    ok(c.id === rr.id && (c.title || "").includes(A.imgs[0]) && (rr.preview || "").includes(A.imgs[0]), "卡上说的是放进去的那个文件名", [c, rr]);
+    ok(!A.evs.some((e) => e.type === "status" && /已放进对话目录/.test(e.text || "")), "收尾那句兜底不再说（半路已经出过卡）");
+    const think = A.evs.filter((e) => e.type === "status" && /^在想：/.test(e.text || ""));
+    ok(think.length === 1 && think[0].text === "在想：Planning the night scene" && !think[0].notice, "思考摘要只取头一行、去掉加粗，进思考提示（不标 notice、不存档）", think);
+    const todos = A.evs.find((e) => e.type === "todos");
+    ok(todos && same(todos.items, [{ content: "画草图", status: "done" }, { content: "上色", status: "pending" }]), "进度清单画成打勾的表（空的那条不要）", todos);
+  }
+  {
+    const B = await go("copied", "live-b");
+    ok(B.imgs.length === 0 && B.wrote.length === 0 && fs.existsSync(path.join(B.cwd, "夜景.png")) && !B.evs.some((e) => e.name === "image_gen"),
+      "★模型抢先复制过的不再放一份★ 也不出卡", fs.readdirSync(B.cwd));
+  }
+
+  // 心跳：真 agent 跑一个桩引擎，中间一声不吭一阵
+  const agentMod = require(mod("agent"));
+  ok(agentMod.quietFor(30000) === "30 秒" && agentMod.quietFor(60000) === "1 分钟" && agentMod.quietFor(90000) === "1 分 30 秒" && agentMod.quietFor(1) === "1 秒",
+    "多久没出声：秒、整分钟、几分几秒");
+  const engines = require(mod("engines"));
+  const { McpManager } = require(mod("mcp"));
+  const llm = require(mod("llm")).createLLM({ models: [{ name: "桩", provider: "openai", base_url: "http://127.0.0.1:9/v1", api_key: "sk-test-offline", model: "mock", stream: false }] });
+  const stub = {
+    id: "t-beat", label: "本机桩", bin: null, note: "", install: "", launchHeader: "", supportsResume: false, models: [],
+    async detect() { return { id: "t-beat", installed: true, path: "", version: "0" }; },
+    async run(o) {
+      await sleep(650);
+      o.emit({ type: "tool_use", id: "b1", name: "Bash", purpose: "ls", depth: 0 });
+      await sleep(450);
+      return { finalText: "好", usage: {}, stopped: null, sessionId: null };
+    },
+  };
+  engines.BACKENDS.push(stub);
+  agentMod._beat.set(200);
+  try {
+    const rt = agentMod.createAgentRuntime({ config: { agent: { engine: "t-beat", max_steps: 3, engine_options: { "t-beat": { model: "m1" } } } }, llm, mcpManager: new McpManager(), experts: [] });
+    const evs = [];
+    const r = await rt.runTask({ history: [{ role: "user", content: "干活" }], emit: (e) => evs.push(e) });
+    const n0 = evs.length;
+    await sleep(500);
+    const beats = evs.filter((e) => e.type === "status" && /还在运行/.test(e.text || ""));
+    const at = evs.findIndex((e) => e.type === "tool_use");
+    const before = evs.slice(0, at).filter((e) => e.type === "status" && /还在运行/.test(e.text || ""));
+    const after = evs.slice(at).filter((e) => e.type === "status" && /还在运行/.test(e.text || ""));
+    // 安静了 650ms、每 200ms 一段：最多说三次（定时器每 66ms 看一眼，不去重的话要说七八次），一次比一次长
+    ok(r.finalText === "好" && before.length >= 1 && before.length <= 3 && before.every((e, i) => e.quiet_ms === 200 * (i + 1) || (i > 0 && e.quiet_ms > before[i - 1].quiet_ms))
+      && before.every((e) => /^本机桩 还在运行，已 .+没有新输出$/.test(e.text)),
+      "★好一阵不出声就说一声还在跑★ 每安静满一段说一次、不重复说同一句", before);
+    ok(after.length >= 1 && after[0].quiet_ms === 200, "来了新事件就重新算（又从头一段说起）", after);
+    ok(beats.every((e) => !e.notice && e.depth === 0), "心跳只是进度：不标 notice、不存档", beats);
+    ok(evs.length === n0, "跑完就不再说了", evs.slice(n0));
+  } finally {
+    agentMod._beat.set(30000);
+    engines.BACKENDS.splice(engines.BACKENDS.indexOf(stub), 1);
+  }
+}
+
 (async () => {
   try {
     await partResultErrors();
@@ -1245,6 +1362,7 @@ function partStatusPersist() {
     await partCodexHostAndErrors();
     await partBlame();
     partStatusPersist();
+    await partLive();
     console.log(`\n引擎韧性：${pass} 项全过`);
   } finally {
     fs.rmSync(home, { recursive: true, force: true });

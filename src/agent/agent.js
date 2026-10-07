@@ -2415,6 +2415,7 @@ function modePrompt(mode) {
     // CLI 这条路是**每个**工具结果来一次（不像内置引擎是一批一次），所以走节流的那个口子：
     // 一串结果连着回来时合并成一次走树，而不是一个结果扫一遍 500 个文件
     let toolUses = 0; // 续跑失败后能不能重来一次，看的就是它：一个工具都没动过，重来才不会把事做两遍
+    let beat = null; // 好一阵没出声时说一声还在跑（见 engineHeartbeat），开跑时才挂上
     // 借出去的工具在 CLI 那头换了叫法，归回原名再往外播：图标、短标、桌宠那句「正在用…」认的都是原名。
     // 结果那条不一定带得出是哪个工具（命令行入口那种只有 Bash），认调用 id 跟上
     const renamed = new Map();
@@ -2431,6 +2432,7 @@ function modePrompt(mode) {
         const n = (ev.id && renamed.get(ev.id)) || toolNames.normalizeToolName(ev.name);
         if (n.raw_name) ev = { ...ev, name: n.name, raw_name: n.raw_name };
       }
+      if (beat) beat.touch();
       emit(ev);
       if (ev && ev.type === "tool_use") toolUses++;
       if (ev && ev.type === "tool_result") { try { filesOut.push(); } catch {} }
@@ -2524,6 +2526,7 @@ function modePrompt(mode) {
         ...(readOnly ? { permissionMode: undefined, sandbox: undefined, globalMcp: false, network: false, extraArgs: loose.keep } : {}),
         onWrite: (abs) => noteWrote(abs, runToken),
       });
+      beat = engineHeartbeat({ label: backend.label, emit });
       let r;
       try {
         r = await runWith(engineSession);
@@ -2564,6 +2567,7 @@ function modePrompt(mode) {
       // model/provider 一并带回：记账那边以前拿 config 里的模型名记这笔（跑的是 Claude Code，账本却写 deepseek-chat）
       return { finalText, usage, stopped: r.stopped || null, sessionId: r.sessionId || null, engine: backend.id, model: opts.model || backend.label, provider: backend.id };
     } finally {
+      if (beat) beat.stop();
       filesOut.stop(); // 尾随的那次要是烧到 SSE 关掉之后才响，就是往已经断掉的连接里写
       if (bridged) bridged.cleanup();
       unwatchSleep();
@@ -3842,6 +3846,31 @@ const TOOL_VERB = {
  * claude 是挑出来的那一个入参，命令行入口是 `owb 工具名 '{...}'` 整条命令。
  * 解得开 JSON 就跟内置那边一样算（toolHeadline），解不开就「动词 + 那句说明」，前缀不重复带
  */
+/**
+ * 本机 CLI 好一阵不出声时说一声还在跑。codex 的 exec --json 不报生图、看图、等待这几步，claude 跑一条长命令时也一声不吭；
+ * 思考提示那一行半天不动，跟卡死了看不出区别（10-06 一趟 795 秒只出过一张卡）。
+ * 每安静满一段说一次，来了新事件就重新算。只是进度，不存档（recordingEmit 只存 notice 和启动那条）；
+ * 只说多久没有新输出，不猜为什么
+ */
+let ENGINE_BEAT_MS = 30000;
+function engineHeartbeat({ label, emit, everyMs = ENGINE_BEAT_MS }) {
+  let last = Date.now(), said = 0;
+  const tick = setInterval(() => {
+    const n = Math.floor((Date.now() - last) / everyMs);
+    if (n < 1 || n === said) return;
+    said = n;
+    try { emit({ type: "status", text: `${label} 还在运行，已 ${quietFor(n * everyMs)}没有新输出`, quiet_ms: n * everyMs, depth: 0 }); } catch {}
+  }, Math.max(20, Math.min(5000, Math.floor(everyMs / 3))));
+  if (tick.unref) tick.unref();
+  return { touch() { last = Date.now(); said = 0; }, stop() { clearInterval(tick); } };
+}
+function quietFor(ms) {
+  const sec = Math.max(1, Math.round(ms / 1000));
+  if (sec < 60) return `${sec} 秒`;
+  const m = Math.floor(sec / 60), r = sec % 60;
+  return r ? `${m} 分 ${r} 秒` : `${m} 分钟`;
+}
+
 function engineToolTitle(name, purpose) {
   let p = String(purpose || "").trim();
   const shim = /^owb\s+(\S+)\s*/.exec(p);
@@ -4675,4 +4704,4 @@ function makeOwnership() {
   return { claimBaseDir, inForeignDir, mine, wrote, writerOf, _dirOwners: dirOwners, _fileClaims: fileClaims, _writes: writes };
 }
 
-module.exports = { createAgentRuntime, contextBudgetChars, spillToolResult, retryField, SPILL_OVER, SPILL_KEEP, splitParallelRuns, toolHeadline, resultOutcome, missingDeliverables, unseenVisualClaims, unfinishedMilestones, UNFINISHED_RE, trimHistory, historyChars, collectSources, mapPool, PARALLEL_MAX, GEN_TOOLS, DIRECT_TOOLS, GEN_PARALLEL_MAX, makeOwnership, makeFilesEmitter, cedeTo, wroteName, stepSignal, scanOutputs, sweepPlanOffThread, _scan: { stats: scanStats, scanTree, snapOf, filesOf, hubs: scanHubs, runScan, BROKEN_MAX: SCAN_BROKEN_MAX, broken: () => scanBroken, setBroken: (n) => { scanBroken = n; }, worker: () => scanWorker }, deadLoop, findCycle, pausedMediaBlock, reopenedMediaBlock, stopNotice, DEAD_LOOP_LIMITS, TRUNC_STOP, CUT_STOP, cutShortWhy, currentAsk, normalizeEntry, normalizeHistory, closeDanglingCalls, resumeNotice, INTERRUPTED_RESULT, REDO_SAFE_TOOLS, activeChannel, shellNote };
+module.exports = { createAgentRuntime, contextBudgetChars, spillToolResult, retryField, SPILL_OVER, SPILL_KEEP, splitParallelRuns, toolHeadline, resultOutcome, missingDeliverables, unseenVisualClaims, unfinishedMilestones, UNFINISHED_RE, trimHistory, historyChars, collectSources, mapPool, PARALLEL_MAX, GEN_TOOLS, DIRECT_TOOLS, GEN_PARALLEL_MAX, makeOwnership, makeFilesEmitter, cedeTo, wroteName, stepSignal, scanOutputs, sweepPlanOffThread, _scan: { stats: scanStats, scanTree, snapOf, filesOf, hubs: scanHubs, runScan, BROKEN_MAX: SCAN_BROKEN_MAX, broken: () => scanBroken, setBroken: (n) => { scanBroken = n; }, worker: () => scanWorker }, deadLoop, findCycle, pausedMediaBlock, reopenedMediaBlock, stopNotice, DEAD_LOOP_LIMITS, TRUNC_STOP, CUT_STOP, cutShortWhy, currentAsk, normalizeEntry, normalizeHistory, closeDanglingCalls, resumeNotice, INTERRUPTED_RESULT, REDO_SAFE_TOOLS, activeChannel, shellNote, engineHeartbeat, quietFor, _beat: { set: (ms) => { ENGINE_BEAT_MS = ms; } } };
