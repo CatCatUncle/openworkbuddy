@@ -21,8 +21,12 @@
  * CLI 自带的版本更好用，重复挂上去只会占它的上下文，还让模型在两套同名工具间犹豫。
  *
  * 环境变量（由 src/engines/bridge.js 拼好后传进来）：
- *   OPENWORKBUDDY_HOME  数据根目录（config.json / workspace 都在这儿找）
- *   OPENWORKBUDDY_BRIDGE_BASEDIR   本次对话的成果子目录（相对 workspace），产物落这里
+ *   OPENWORKBUDDY_HOME  数据根目录（config.json 在这儿找）
+ *   OPENWORKBUDDY_BRIDGE_ROOT      这趟任务的工作区根（租户、项目各有各的根）。给了却用不了就不启动，
+ *                                  不退回默认根；没给是老调用方，认设置里的 workspace_dir，再不行用数据目录下的 workspace
+ *   OPENWORKBUDDY_BRIDGE_BASEDIR   本次对话的成果子目录（相对上面那个根），产物落这里
+ *   OPENWORKBUDDY_BRIDGE_LIB_ROOT  这个人的资料库根（多账号时一人一份）；没给 = 数据目录下那份
+ *   OPENWORKBUDDY_BRIDGE_LIB_MOUNT 当前项目只挂了资料库的哪一块；没给 = 整个库
  *   OPENWORKBUDDY_BRIDGE_TOOLS     借出去的工具名，逗号分隔；一个不借时是「-」。缺了这个变量不启动
  *   OPENWORKBUDDY_BRIDGE_USER      当前用户名（记忆按人隔离用）
  *
@@ -67,8 +71,11 @@ function loadConfig() {
 }
 
 const config = loadConfig();
+const ROOT = process.env.OPENWORKBUDDY_BRIDGE_ROOT;
 const BASE_DIR = process.env.OPENWORKBUDDY_BRIDGE_BASEDIR || "";
 const USER = process.env.OPENWORKBUDDY_BRIDGE_USER || "";
+const LIB_ROOT = process.env.OPENWORKBUDDY_BRIDGE_LIB_ROOT;
+const LIB_MOUNT = process.env.OPENWORKBUDDY_BRIDGE_LIB_MOUNT || "";
 // 借哪些由主进程定：bridge.js 每次都写这个变量，一个不借时也写（值是 lendable.NONE）。
 // 被拉起时没拿到它，就不是 bridge.js 拉的，按整张表兜底等于把关掉的工具又借出去，所以报错退出（见文件末尾）。
 // 被测试 require 进来时没有它，按整张表算。不在 LENDABLE 里的名字一律不认。
@@ -118,9 +125,31 @@ function listTools() {
   }));
 }
 
+/**
+ * 工作区根对齐到这趟任务的。不对齐的话 executeTool 写进数据目录下的默认 workspace：
+ * 用户改过工作区、开着项目时，产物落在成果面板看不见的地方；多账号时租户的产物落进共用的那份。
+ * 主进程给了根却用不了（不是绝对路径、建不出来）就抛错，不退回默认根——那是别人的地盘。资料库根同理。
+ */
+function setupRoots() {
+  if (ROOT !== undefined) tools.setWorkspaceDir(ROOT);
+  else {
+    // 老调用方没给根：照服务端开机那样先认设置里的 workspace_dir
+    let set = false;
+    if (config.workspace_dir) {
+      try { tools.setWorkspaceDir(config.workspace_dir); set = true; }
+      catch (e) { toErr(`设置里的工作区 ${config.workspace_dir} 用不了（${e.message}），这次用数据目录下的 workspace`); }
+    }
+    if (!set) tools.setWorkspaceDir(dataPath("workspace"));
+  }
+  if (LIB_ROOT !== undefined && !path.isAbsolute(LIB_ROOT)) throw new Error(`资料库目录不是绝对路径：${LIB_ROOT}`);
+  if (BASE_DIR) {
+    try { fs.mkdirSync(path.join(tools.getWorkspaceDir(), BASE_DIR), { recursive: true }); } catch {}
+  }
+}
+
 async function callTool(name, args) {
   if (!ALLOW.has(name)) throw new Error(`工具 ${name} 没有借给本机引擎`);
-  const r = await tools.executeTool(name, args || {}, {
+  const run = () => tools.executeTool(name, args || {}, {
     knownTools: [...ALLOW],
     timeoutMs: ((config.agent || {}).tool_timeout_ms) || 120000,
     search: config.search,
@@ -129,6 +158,9 @@ async function callTool(name, args) {
     baseDir: BASE_DIR,
     memory: { user: USER },
   });
+  // 资料库也照这趟任务的来：一人一份根，项目还可能只挂了其中一块。
+  // 不套这一层，library_list 念出来的是数据目录下那份——多账号时就是别人的合同
+  const r = await tools.withLibraryBase(LIB_ROOT || "", () => tools.withLibraryDir(LIB_MOUNT, run));
   const text = typeof r === "string" ? r : String((r && r.content) != null ? r.content : JSON.stringify(r));
   return { content: [{ type: "text", text }], isError: !!(r && r.isError) };
 }
@@ -206,11 +238,6 @@ async function handle(msg) {
 }
 
 function main() {
-  // 工作区必须先对齐，否则 executeTool 会把产物写到默认 workspace 根目录去
-  tools.setWorkspaceDir(dataPath("workspace"));
-  if (BASE_DIR) {
-    try { fs.mkdirSync(path.join(dataPath("workspace"), BASE_DIR), { recursive: true }); } catch {}
-  }
   let buf = "";
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", (d) => {
@@ -252,8 +279,6 @@ function cliList() {
 }
 
 async function cli(argv) {
-  tools.setWorkspaceDir(dataPath("workspace"));
-  if (BASE_DIR) { try { fs.mkdirSync(path.join(dataPath("workspace"), BASE_DIR), { recursive: true }); } catch {} }
   let [cmd, ...rest] = argv;
   if (cmd === "call") [cmd, ...rest] = rest; // `call x` 和直接 `x` 都收
   if (!cmd || cmd === "list" || cmd === "--help" || cmd === "-h") {
@@ -268,6 +293,12 @@ async function cli(argv) {
 if (require.main === module) {
   if (TOOLS_ENV === undefined) {
     process.stderr.write("没拿到 OPENWORKBUDDY_BRIDGE_TOOLS，不知道这次借哪些工具，没有启动。这台服务器由 OpenWorkBuddy 在用本机引擎时拉起\n");
+    process.exit(2);
+  }
+  // 根要在接第一条请求之前定下来：MCP 和命令行两条路都要
+  try { setupRoots(); }
+  catch (e) {
+    process.stderr.write(`这趟任务的目录用不了，没有启动：${(e && e.message) || e}\n`);
     process.exit(2);
   }
   // 这个进程是 CLI 拉起的子进程：在这儿摆出的审批卡，网页、终端、手机都看不见（它们看的是自己进程里那份）。

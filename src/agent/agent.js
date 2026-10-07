@@ -6,7 +6,7 @@
  * 主 Agent 是"协调者"：可直接干活，也可通过 delegate_to_expert 把子任务委派给专家子智能体。
  */
 
-const { TOOL_DEFS, executeTool, outputFiles, turnSnapshot, statOutputs, isUserInput, filesScope, getWorkspaceDir, withWorkspace, orgPolicy, badToolArgs } = require("./tools");
+const { TOOL_DEFS, executeTool, outputFiles, turnSnapshot, statOutputs, isUserInput, filesScope, getWorkspaceDir, withWorkspace, orgPolicy, badToolArgs, libBase, getLibraryDir } = require("./tools");
 const { loadSkills, SKILLS_DIR } = require("../core/ext/skills");
 /** 这一趟的人装不了技能：技能整台服务器一份，接口那边归平台管理员（admin.js 的 tenantScope 把这条放进策略） */
 const skillsWriteOff = () => !!orgPolicy() && orgPolicy().skills_write === false;
@@ -2415,6 +2415,10 @@ function modePrompt(mode) {
     try {
       bridged = bridge.attach(backend.id, {
         home: DATA_DIR,
+        // 桥是单独的子进程，这趟任务的工作区根、资料库根（都在 ALS 里，按租户、按项目各一份）跟不过去，
+        // 得明着传。不传的话产物落进数据目录下的默认工作区，library_list 念的是数据目录下那份资料库
+        root: getWorkspaceDir(),
+        library: { base: libBase(), mount: getLibraryDir() },
         baseDir: baseDir || "",
         user: user || "",
         // 桥是个单独的子进程，组织策略（ALS）跟不过去：不该有的工具在这儿就别借出去。

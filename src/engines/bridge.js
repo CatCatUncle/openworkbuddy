@@ -43,13 +43,17 @@ function nodeLauncher() {
 /**
  * 拼出这次要给 CLI 的 MCP 服务器表。
  * @param {object} o
- * @param {string} o.home      数据根目录（bridge 靠它找 config.json / workspace）
- * @param {string} [o.baseDir] 本次对话的成果子目录（相对 workspace）
+ * @param {string} o.home      数据根目录（bridge 靠它找 config.json）
+ * @param {string} [o.root]    这趟任务的工作区根（agent.js 给的是 getWorkspaceDir()：租户、项目各有各的根）。
+ *                             桥是单独的子进程，主进程 ALS 里的根跟不过去，得明着传。不传 = 桥自己认默认根
+ * @param {string} [o.baseDir] 本次对话的成果子目录（相对 root）
+ * @param {{base?:string, mount?:string}} [o.library] 这个人的资料库根、当前项目挂载的子目录。不传 = 数据目录下那份整库
  * @param {string} [o.user]    当前用户名（记忆按人隔离）
  * @param {string[]} [o.tools] 借出去的工具名；不传就是 lendable.js 整张表，空数组就是一个不借
  * @param {Array} [o.extraServers] 用户自己配的 MCP 连接器（config.mcp_servers 的形状）
  */
-function buildServers({ home, baseDir = "", user = "", tools, extraServers = [] }) {
+function buildServers({ home, root = "", baseDir = "", user = "", tools, library = null, extraServers = [] }) {
+  const lib = library || {};
   const { command, env: nodeEnv } = nodeLauncher();
   const servers = {
     [SERVER_NAME]: {
@@ -58,6 +62,11 @@ function buildServers({ home, baseDir = "", user = "", tools, extraServers = [] 
       env: {
         ...nodeEnv,
         OPENWORKBUDDY_HOME: home,
+        // 空着就不写：桥那头「没拿到」是老调用方，照老规矩认默认根、整个默认资料库；
+        // 根写成空串反倒成了「给了个用不了的根」，桥会拒绝启动
+        ...(root ? { OPENWORKBUDDY_BRIDGE_ROOT: root } : {}),
+        ...(lib.base ? { OPENWORKBUDDY_BRIDGE_LIB_ROOT: lib.base } : {}),
+        ...(lib.mount ? { OPENWORKBUDDY_BRIDGE_LIB_MOUNT: lib.mount } : {}),
         OPENWORKBUDDY_BRIDGE_BASEDIR: baseDir,
         OPENWORKBUDDY_BRIDGE_USER: user,
         // 每次都写，一个不借也写：桥那头没拿到这个变量就不启动，不会按整张表借
@@ -155,8 +164,8 @@ function writeShim(server) {
  *
  * @returns {{runOpts:object, names:string[], toolCount:number, cleanup:function}}
  */
-function attach(engineId, { home, baseDir = "", user = "", tools, extraServers = [] } = {}) {
-  const servers = buildServers({ home, baseDir, user, tools, extraServers });
+function attach(engineId, { home, root = "", baseDir = "", user = "", tools, library = null, extraServers = [] } = {}) {
+  const servers = buildServers({ home, root, baseDir, user, tools, library, extraServers });
   const names = Object.keys(servers);
   // 跟 buildServers 写进环境变量的是同一份：提示词里列的、owb list 打出来的、MCP 挂上的，三处一致
   const lent = lentFor({ tools, renderer: false });
