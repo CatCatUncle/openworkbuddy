@@ -336,6 +336,15 @@ const PROGRESS_STAGES = new Set(["load", "render", "encode", "tts", "shot", "ste
         [0, 0, 0, [0, 1234, 2034], 4034, 96816], "只改停顿：一句都不重买，时间轴和整轨按新停顿重排");
       ok(m0.segments.every((s) => s.cached) && /3 句参数都没变，全部直接复用、没再花钱/.test(g0.res.content), "清单标明都是复用的，回执说没再花钱", g0.res.content);
 
+      // 借给本机引擎时（tool-bridge 设了回执基准）：回执照引擎当前目录说；清单照旧相对工作空间根，下游工具按它找文件
+      MEDIA.setReplyBase(SAVE);
+      try {
+        const e = await run({ segments: [T1, T2, T3], filename: "旁白.wav" });
+        eq([e.posts, e.res.content.split("\n").slice(1, 4)], [0, ["整轨：旁白.wav", "字幕：旁白.srt", "时长清单：旁白.json"]],
+          "引擎那边：回执里的路径相对它的当前目录");
+        eq([manifestOf("旁白").full, manifestOf("旁白").srt], ["任务_配音/旁白.wav", "任务_配音/旁白.srt"], "清单里的路径不跟着变");
+      } finally { MEDIA.setReplyBase(null); }
+
       const long = "长句" + "测".repeat(28);
       const lr = await run({ segments: [long], filename: "长句.wav" });
       ok(lr.res.content.includes(`「${Array.from(long).slice(0, 24).join("")}…」`), "回执里长句只露前 24 个字，整句在字幕和清单里", lr.res.content);

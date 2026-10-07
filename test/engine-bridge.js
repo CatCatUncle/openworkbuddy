@@ -14,13 +14,16 @@
  *   ⑥ 产物落在这趟任务的根下面，资料库只看得见这个人的、只看得见项目挂的那一块；给了根却用不了就不启动
  *   ⑦ 主进程真跑一趟（假引擎）：租户的根、资料库根、项目挂载都传到了桥那头；
  *      属主在引擎设置里写了 PATH 也挤不掉打头的 owb 目录
+ *   ⑧ 借出去生图（假上游）：回执给相对引擎当前目录的路径 + 完整路径，不说「工作空间内的相对路径」；
+ *      主模型和引擎命中同一条生成缓存，各拿各坐标系里的路径
  *
- * 真起桥子进程，但不起任何 CLI 引擎、不出网。
+ * 真起桥子进程，但不起任何 CLI 引擎、不出网（假生图上游起在 127.0.0.1）。
  *   node test/engine-bridge.js
  */
 const fs = require("fs");
 const path = require("path");
-const { spawnSync, execFileSync } = require("child_process");
+const http = require("http");
+const { spawnSync, execFileSync, execFile } = require("child_process");
 const { mod } = require("./lib/mod");
 // 赶在 require 生产模块之前：桥子进程照 OPENWORKBUDDY_HOME 找数据目录，不能落进用户真在用的那份（见 test/lib/own-home.js）
 const HOME = require("./lib/own-home")("engine-bridge");
@@ -67,6 +70,11 @@ function owb(shim, args) {
   } catch (e) {
     return { code: e.status == null ? -1 : e.status, out: String(e.stdout || "") + String(e.stderr || "") };
   }
+}
+/** 同上，但不卡住事件循环：工具要连本进程里起的假上游 */
+function owbAsync(shim, args) {
+  return new Promise((resolve) => execFile("/bin/sh", [shim, ...args], { encoding: "utf8", timeout: 60000 }, (e, out, err) =>
+    resolve({ code: e ? (typeof e.code === "number" ? e.code : -1) : 0, out: String(out || "") + (e ? String(err || "") : "") })));
 }
 /** owb list 的输出 → 工具名（每条第一行顶格是名字，第二行缩进是说明） */
 const listedNames = (out) => out.split("\n").filter((l) => l && !/^\s/.test(l) && !/^（/.test(l)).map((l) => l.split(/\s/)[0]);
@@ -310,6 +318,71 @@ const serverOf = (att) => JSON.parse(fs.readFileSync(att.runOpts.mcpConfigPath, 
       ok(seen && seen.shimFirst, "★属主在引擎设置里写了 PATH：owb 那个目录还在最前面★", runEnv);
       ok(String(runEnv.PATH || "").split(path.delimiter)[1] === OWNER && runEnv.FOO === "属主的", "属主写的 PATH 接在它后面，别的变量照传", runEnv);
     } finally { engines.BACKENDS.splice(engines.BACKENDS.indexOf(stub), 1); }
+  }
+
+  section("⑧ 回执里的路径照引擎的当前目录说，缓存两边命中也不串坐标系");
+  {
+    // 假生图上游：本机随机端口，回一张 1×1 的 PNG。桥子进程要连它，所以这里拉子进程一律不用同步的
+    const PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+    let hits = 0;
+    const server = http.createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        if (req.method === "POST" && /\/images\/generations$/.test(req.url || "")) {
+          hits++;
+          res.writeHead(200, { "Content-Type": "application/json" });
+          return res.end(JSON.stringify({ data: [{ b64_json: PNG_B64 }] }));
+        }
+        res.writeHead(404); res.end("{}");
+      });
+    });
+    await new Promise((r) => server.listen(0, "127.0.0.1", () => r(null)));
+    // 假上游在本机，别让任何代理设置把请求带出去
+    process.env.NO_PROXY = process.env.no_proxy = "127.0.0.1,localhost";
+    const addr = /** @type {import("net").AddressInfo} */ (server.address());
+    const media = { image: { base_url: `http://127.0.0.1:${addr.port}/v1`, api_key: "sk-test-engine-bridge-0001", model: "dall-e-3" } };
+    const tools = require(mod("tools"));
+    const mm = require(mod("media-models"));
+    const cfg = { media };
+    mm.normalize(cfg);
+    // 桥子进程读家目录下的 config.json，存的是整理过的样子（渠道 + 型号表），跟设置页存下来的一样
+    fs.writeFileSync(path.join(HOME, "config.json"), JSON.stringify(cfg));
+
+    const root = path.join(HOME, "orgs", "丙", "workspace");
+    const task = path.join(root, "任务_回执");
+    const abs = path.join(task, "猫.png");
+    const input = { prompt: "一只猫", filename: "猫.png" };
+    /** @returns {Promise<any>} */
+    const inProc = () => tools.withWorkspace(root, () => tools.executeTool("generate_image", input, { media: mm.resolve(cfg), security: { gateway: false }, baseDir: "任务_回执" }));
+    try {
+      if (SH) {
+        const a = bridge.attach("claude-code", { home: HOME, root, baseDir: "任务_回执", user: "丙", tools: ["generate_image"] });
+        try {
+          const g = await owbAsync(a.shim, ["generate_image", JSON.stringify(input)]);
+          ok(g.code === 0 && fs.existsSync(abs) && hits === 1, "借出去生了一张：落在这趟任务的根下面，上游收到一次", { g, hits });
+          ok(g.out.includes(`图片已生成：猫.png（完整路径 ${abs}，`), "★回执给的是相对引擎当前目录的路径，再附完整路径★", g.out);
+          ok(!/工作空间内的相对路径/.test(g.out) && !g.out.includes("图片已生成：任务_回执/"), "不再说「工作空间内的相对路径」，相对路径也不带当前目录外面那一截「任务_回执/」", g.out);
+        } finally { a.cleanup(); }
+      } else {
+        await inProc(); // owb 脚本是 sh 写的：Windows 上由主进程先生一张，下面照样验引擎命中这条
+      }
+
+      // 同一个对话里主模型接着跑同一格：命中缓存，回执是主进程那套坐标
+      const m = await inProc();
+      ok(m && m.cached === true && hits === 1, "主模型重跑同一格：命中缓存，没再打上游", { hits, m });
+      ok(m && String(m.content).startsWith("图片已生成：任务_回执/猫.png（工作空间内的相对路径，"), "★缓存里存的是平时的写法★ 主模型拿到的不是引擎坐标系里的路径", m && m.content);
+
+      // 反过来：引擎命中主模型存的那条，也换成引擎的坐标
+      tools.setReplyBase(task);
+      const e = await inProc();
+      ok(e && e.cached === true && hits === 1 && String(e.content).startsWith(`图片已生成：猫.png（完整路径 ${abs}，`),
+        "引擎命中缓存：同样换成相对当前目录 + 完整路径", e && e.content);
+    } finally {
+      tools.setReplyBase(null);
+      server.close();
+    }
+    const back = tools.withWorkspace(root, () => tools._internals.savedAt(task, "猫.png"));
+    ok(back === "任务_回执/猫.png", "反向对照：没设的时候（主进程里）照旧报相对工作空间根的路径", back);
   }
 
   console.log(`\n${pass} 通过，${fail} 失败`);

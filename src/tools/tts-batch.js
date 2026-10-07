@@ -447,11 +447,15 @@ async function ttsSegments(ctx, deps = {}) {
     } catch {}
   }
 
-  /** @param {string} abs */
-  const rel = (abs) => {
-    const r = path.relative(wsRoot, abs);
+  /** @param {string} abs @param {string} [root] */
+  const rel = (abs, root = wsRoot) => {
+    const r = path.relative(root, abs);
     return r && !r.startsWith("..") && !path.isAbsolute(r) ? r.split(path.sep).join("/") : path.basename(abs);
   };
+  // 回执里给模型看的路径照它站的地方说（借给本机引擎时是引擎的当前目录，见 media.js 的 replyBase）；
+  // 清单里的路径照旧相对工作空间根，下游工具按它找文件
+  /** @param {string} abs */
+  const say = (abs) => rel(abs, MEDIA.replyBaseDir() || wsRoot);
   const rows = plan.map((p, i) => ({ i: i + 1, text: p.text, voice: p.voice, file: rel(clipAbs[i]), ...times[i], cached: !!reusedAt[i] }));
   const srtAbs = path.join(saveDir, v.stem + ".srt");
   const jsonAbs = path.join(saveDir, v.stem + ".json");
@@ -465,7 +469,7 @@ async function ttsSegments(ctx, deps = {}) {
     store.writeTextAtomic(srtAbs, buildSegSrt(rows), { backup: false });
     store.writeJsonAtomic(jsonAbs, manifest, { pretty: true, backup: false });
   } catch (e) {
-    return { content: `整轨已经拼好（${rel(fullAbs)}），但字幕和时长清单写不进去：${e.message}。原样再调一次，不会再花钱。`, isError: true };
+    return { content: `整轨已经拼好（${say(fullAbs)}），但字幕和时长清单写不进去：${e.message}。原样再调一次，不会再花钱。`, isError: true };
   }
 
   const reused = N - paid;
@@ -475,9 +479,9 @@ async function ttsSegments(ctx, deps = {}) {
     : `${N} 句参数都没变，全部直接复用、没再花钱；要整批重配加 no_cache: true`;
   const lines = [
     `按句配音完成：${N} 句，整轨 ${sec(totalMs)} 秒（句间停顿 ${v.gapMs}ms）`,
-    `整轨：${rel(fullAbs)}`,
-    `字幕：${rel(srtAbs)}`,
-    `时长清单：${rel(jsonAbs)}`,
+    `整轨：${say(fullAbs)}`,
+    `字幕：${say(srtAbs)}`,
+    `时长清单：${say(jsonAbs)}`,
     ...rows.map((r) => `#${r.i}  ${sec(r.ms)}s  ${sec(r.start_ms)}→${sec(r.end_ms)}  「${head(r.text)}」`),
     cost,
     "排镜头：每镜 ≥ 该句 ms + gap_ms（清单里的 slot_ms）",

@@ -145,6 +145,9 @@ function setupRoots() {
   if (BASE_DIR) {
     try { fs.mkdirSync(path.join(tools.getWorkspaceDir(), BASE_DIR), { recursive: true }); } catch {}
   }
+  // 引擎的当前目录就是这趟任务的根/baseDir：回执里的路径照它说，再附完整路径。
+  // 照相对工作空间根说的话，前面多一截「任务_X/」，引擎照着找不着
+  tools.setReplyBase(path.join(tools.getWorkspaceDir(), BASE_DIR));
 }
 
 async function callTool(name, args) {

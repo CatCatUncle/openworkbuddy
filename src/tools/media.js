@@ -569,11 +569,31 @@ async function lookAtImage(opts, input, timeoutMs, resolveFile, stop, meter) {
  * 每个还白烧一轮 ls + 一轮 find。提示词里写"别 cp 到根目录"拦不住，因为模型不是想复制，
  * 是真找不到；把落点说准，它就没有复制的理由了。
  */
-function savedAt(saveDir, fname, P = path, root = ws()) {
+function savedAt(saveDir, fname, P = path, root = replyBase || ws()) {
   // Windows 上 relative 给的是反斜杠，拼出来是 任务_X\子目录/图.png 这种两样分隔符混着的，
   // 模型照抄进 Markdown、HTML 里就是一条坏链接。统一成 /，Windows 自己也认
   const rel = P.relative(root, saveDir || root).split(P.sep).join("/");
   return rel && !rel.startsWith("..") && !P.isAbsolute(rel) ? `${rel}/${fname}` : fname;
+}
+
+// 回执里的路径相对谁。平时是工作空间根，主进程里的模型就站在那儿。
+// 借给本机引擎时（只有 tool-bridge 设它）是引擎自己的当前目录，也就是这趟任务的根/baseDir：
+// 照相对工作空间根的路径去找，前面多出一截「任务_X/」，找不着就编一句「已显示在上方」交差
+/** @type {string | null} */
+let replyBase = null;
+/** @param {string | null | undefined} dir */
+function setReplyBase(dir) { replyBase = dir ? path.resolve(dir) : null; }
+const replyBaseDir = () => replyBase;
+
+/**
+ * 成功回执里「路径（说明」那一截。平时说是工作空间内的相对路径；借给本机引擎时报相对它当前目录的，
+ * 再附完整路径——引擎那头没有「工作空间」这个根，这么说它只会照着拼错
+ * @param {string | null | undefined} saveDir
+ * @param {string} fname
+ */
+function savedRef(saveDir, fname) {
+  if (!replyBase) return `${savedAt(saveDir, fname)}（工作空间内的相对路径`;
+  return `${savedAt(saveDir, fname)}（完整路径 ${path.join(saveDir || ws(), fname)}`;
 }
 
 /**
@@ -758,7 +778,7 @@ async function generateImage(media, input, timeoutMs, saveDir, resolveFile, stop
   // 参考图到底有没有被这条渠道吃进去，回执里必须说一声。说了模型才知道
   // 「像不像」该拿谁去比；不说的话它只能再开一轮 look_at_image 自己对照。
   const refNote = refs.length ? `\n已带 ${refs.length} 张参考图出图；出来的东西像不像，以参考图为准。` : "";
-  return { content: `图片已生成：${savedAt(saveDir, fname)}（工作空间内的相对路径，模型 ${cfg.model}）${refNote}${wmNote}`, isError: false, file: fname };
+  return { content: `图片已生成：${savedRef(saveDir, fname)}，模型 ${cfg.model}）${refNote}${wmNote}`, isError: false, file: fname };
 }
 
 async function generateVideo(media, input, opts = {}) {
@@ -1016,7 +1036,7 @@ async function generateVideo(media, input, opts = {}) {
   const kfNote = firstUri ? (lastUri ? "\n已按给定的首帧和尾帧出片。" : "\n已按给定的首帧出片。") : "";
   // 夹过、没发的参数逐条说：要 10 秒出了 5 秒不说，下游剪辑按 10 秒排就全错位了
   const planNote = plan.notes.length ? "\n" + plan.notes.join("\n") : "";
-  return { content: `视频已生成：${savedAt(opts.saveDir, fname)}（工作空间内的相对路径，模型 ${cfg.model}）${kfNote}${vwNote}${planNote}`, isError: false, file: fname };
+  return { content: `视频已生成：${savedRef(opts.saveDir, fname)}，模型 ${cfg.model}）${kfNote}${vwNote}${planNote}`, isError: false, file: fname };
 }
 
 /**
@@ -1129,7 +1149,7 @@ async function textToSpeech(media, input, timeoutMs, saveDir, stop) {
     fs.writeFileSync(path.join(saveDir || ws(), fname), buf);
   }
   security.audit("语音合成", `${cfg.model}: ${text.slice(0, 80)} → ${fname}`, "放行");
-  return { content: `语音已合成：${savedAt(saveDir, fname)}（工作空间内的相对路径，模型 ${cfg.model}${voice ? "，音色 " + voice : ""}，约 ${text.length} 字）`, isError: false, file: fname };
+  return { content: `语音已合成：${savedRef(saveDir, fname)}，模型 ${cfg.model}${voice ? "，音色 " + voice : ""}，约 ${text.length} 字）`, isError: false, file: fname };
 }
 
 /** 能送去转写的后缀。上游收的就是这几样，多写只会在那边被拒，不如在本机就说清楚 */
@@ -1259,8 +1279,15 @@ async function withGenCache(kind, cap, opts, input, dir, resolveFile, hold, run)
   } catch {
     k = null;
   }
+  // 缓存里的回执一律存平时的写法（相对工作空间根）。同一个对话里主模型和本机引擎会命中同一条：
+  // 引擎那份原样存进去，主模型命中拿到的就是引擎坐标系里的路径；反过来也一样
+  /** @param {string} file */
+  const plain = (file) => `${savedAt(dir, file, path, ws())}（工作空间内的相对路径`;
+  /** @param {unknown} c @param {string} from @param {string} to */
+  const swap = (c, from, to) => String(c).split(from).join(to);
   if (k) {
     const hit = genCache.get(k, ws());
+    if (hit && replyBase) hit.content = swap(hit.content, plain(hit.file), savedRef(dir, hit.file));
     if (hit) {
       // 命中缓存 = 一个子儿没花，所以刚才那笔预扣要当场退回去。
       // 不退的话，一个反复重跑同一张图的任务会把预算“占”到拦人，而账单上什么都没发生。
@@ -1288,7 +1315,12 @@ async function withGenCache(kind, cap, opts, input, dir, resolveFile, hold, run)
   } else {
     quota.undo(hold);   // 渠道挂了 / 参数错了，同样一分没花
   }
-  if (k) genCache.put(k, out, dir, ws(), model);
+  if (k) {
+    const keep = replyBase && out && !out.isError && out.file
+      ? { ...out, content: swap(out.content, savedRef(dir, out.file), plain(out.file)) }
+      : out;
+    genCache.put(k, keep, dir, ws(), model);
+  }
   return out;
 }
 
@@ -1348,7 +1380,7 @@ function asrModelOf(media, want) {
 module.exports = {
   bindWorkspace,
   OUT_EXT_ALIAS, safeOutName, anySignal, within, sleepFor, stoppedError, fetchRetry, mediaKey, downloadToWorkspace,
-  IMAGE_EXT, shrinkForVision, readImageInput, imageDataUri, mainCanSee, pickEye, eyeRoute, lookAtImage, savedAt, postWantClean,
+  IMAGE_EXT, shrinkForVision, readImageInput, imageDataUri, mainCanSee, pickEye, eyeRoute, lookAtImage, savedAt, savedRef, setReplyBase, replyBaseDir, postWantClean,
   refImageUris, I2V_RE, T2V_RE, WAN_ASYNC_T2I, wanAsyncImage, generateImage, generateVideo, htmlToImage, textToSpeech, AUDIO_EXT, ASR_MAX_BYTES,
   srtTime, transcribeAudio, withGenCache, unitsFor, mediaProviderOf, asrModelOf, speaksDashscope,
   TTS_UNSET, ttsExtOf
