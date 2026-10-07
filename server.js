@@ -1057,6 +1057,12 @@ function recordingEmit(send, events, sessionId, { pet = true } = {}) {
       // 第 4 层往下、挤出最新 500 条的产出不在 files 里，在 turn_files 里（两份不重名）：并起来再裁，不然回放时那几张卡画不出来
       const pool = (ev.files || []).concat(ev.turn_files || []);
       if (chg.length) events.push({ type: "files", changed: chg, files: pool.filter((f) => chg.includes(f.name)), partial: true, root: ev.root });
+    } else if (ev.type === "status") {
+      // 状态播报大多是进度（重试中、思考中），过去就过去了，不存。要存的两种是这一趟的事实：
+      // 本机引擎启动成功那条（谁在跑、哪个模型），和标了 notice 的（工具没挂上、连接器挂不上、
+      // 只读模式停用了哪些设置……）。以前一条都不存，重开对话就不知道那趟是怎么跑的
+      if (ev.depth > 0) return;
+      if (ev.notice || ("model" in ev && !ev.starting)) events.push(ev);
     } else if (["tool_use", "tool_result", "parallel", "expert_start", "expert_done", "error", "limit", "auto_continue", "failover", "sleep", "trim", "compact", "usage", "interject", "worktree", "credits", "sources", "ask_user", "ask_answer", "milestones", "todos", "context", "trace"].includes(ev.type)) {
       // 工具事件盖个时间戳（send 已经发出去了，这里只影响存盘）：回放时轨迹条才算得出每步耗时
       if (ev.type === "tool_use" || ev.type === "tool_result") ev.at = ev.at || Date.now();
@@ -7261,6 +7267,9 @@ app.post("/api/chat", async (req, res) => {
   // 这一轮真正干活的模型。本机引擎接管时它不是 sessLLM：以前账本和健康账本都记到 config 里那个
   // 云模型头上——跑的是 Claude Code，账本写 deepseek-chat，DeepSeek 的健康分还替别人挨了刀
   let ranLLM = { model: sessLLM.model, provider: sessLLM.provider };
+  // 这一趟是不是本机引擎跑的（引擎 id）。连挂计数、健康账按它分开记：引擎起不来、半路退出
+  // 跟云模型渠道无关，记到云模型头上，设置里就会提示去换一个其实没毛病的模型
+  let ranEngine = "";
   // 每一轮按真实跑的渠道记一笔。中途换过备用渠道的那轮，agent 把用量按渠道拆开交回来（usageBy），
   // 记账时各按各的价；没换过道就照旧按 ranLLM 记整趟（mixed 为假时不传 usageBy）
   const spentBy = [];
@@ -7365,6 +7374,7 @@ app.post("/api/chat", async (req, res) => {
         mediaReopened = [];   // 只报给这一轮：后面的目标轮/插队不是「人又说了一次话」
         addUsage(total, r && r.usage);
         if (r && r.provider) ranLLM = { model: r.model || r.provider, provider: r.provider };
+        if (r && r.engine) ranEngine = r.engine;
         if (r && Array.isArray(r.usageBy)) { spentBy.push(...r.usageBy); spentMixed = true; }
         else if (r && r.usage) {
           spentBy.push({ provider: ranLLM.provider, model: ranLLM.model, usage: r.usage });
@@ -7414,10 +7424,14 @@ app.post("/api/chat", async (req, res) => {
     }
   } catch (e) {
     runFailed = e.message;
-    const streak = (modelFailStreak.get(ranLLM.provider) || 0) + 1;
-    modelFailStreak.set(ranLLM.provider, streak);
+    if (e && e.engine) ranEngine = e.engine; // agent 给引擎那头的错标了引擎名（engineError）
+    const streakKey = ranEngine ? "engine:" + ranEngine : ranLLM.provider;
+    const streak = (modelFailStreak.get(streakKey) || 0) + 1;
+    modelFailStreak.set(streakKey, streak);
     let emsg = e.message;
-    if (streak >= 2) {
+    if (streak >= 2 && ranEngine) {
+      emsg += `\n\n本机引擎已连续失败 ${streak} 次。要先换回内置引擎，去 设置 → 智能体 → 底层引擎。`;
+    } else if (streak >= 2) {
       emsg += `\n\n模型「${ranLLM.provider}」已连续失败 ${streak} 次。可以点输入框旁的模型按钮给本对话单独换一个，或到 设置 → 模型 换全局默认。`;
     }
     send({ type: "error", message: emsg });
@@ -7432,10 +7446,15 @@ app.post("/api/chat", async (req, res) => {
     try { require("./src/agent/tools").releaseRun(sessionId, { browser: false }).catch(() => {}); } catch {}
     if (global.__openworkbuddyPet) try { global.__openworkbuddyPet.setState(runFailed ? "error" : "done", runFailed ? String(runFailed).slice(0, 80) : "任务完成"); } catch {}
   }
-  if (total.calls > 0) modelFailStreak.delete(ranLLM.provider); // 有成功调用就算这个模型活着，清连挂计数
-  // 健康账本：异常收场记一败；正常收场且真调过模型记一胜（秒停等一次没调的不记，记了是噪声）
-  if (runFailed) recordModelHealth(ranLLM.provider, false, runFailed);
-  else if (total.calls > 0) recordModelHealth(ranLLM.provider, true);
+  // 有成功调用就算这个模型活着，清连挂计数；本机引擎跑完没报错也算活着（它不一定回报调用次数）
+  if (ranEngine) { if (!runFailed) modelFailStreak.delete("engine:" + ranEngine); }
+  else if (total.calls > 0) modelFailStreak.delete(ranLLM.provider);
+  // 健康账本：异常收场记一败；正常收场且真调过模型记一胜（秒停等一次没调的不记，记了是噪声）。
+  // 账本是给「设置 → 模型」挑云模型渠道用的，本机引擎那趟不记：引擎成败跟哪条渠道靠不靠谱无关
+  if (!ranEngine) {
+    if (runFailed) recordModelHealth(ranLLM.provider, false, runFailed);
+    else if (total.calls > 0) recordModelHealth(ranLLM.provider, true);
+  }
 
   // 指标 + 运行期日志。这两行是「出了事能不能知道」的全部来源：
   // 健康账本只留每条渠道最近 20 次，答不了「今天失败率多少」「P95 几秒」；
@@ -7449,7 +7468,7 @@ app.post("/api/chat", async (req, res) => {
     if (runFailed) metrics.bump("model_fail");
     log[runFailed ? "warn" : "info"]("chat", runFailed ? "任务失败" : "任务完成", {
       session: sessionId, user: (user && user.username) || "", provider: ranLLM.provider, model: ranLLM.model,
-      calls: total.calls || 0, tokens: (total.prompt || 0) + (total.completion || 0),
+      engine: ranEngine || undefined, calls: total.calls || 0, tokens: (total.prompt || 0) + (total.completion || 0),
       ms: Date.now() - runStartedAt, err: runFailed || undefined,
     });
   }

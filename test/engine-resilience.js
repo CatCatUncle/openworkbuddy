@@ -26,6 +26,8 @@
  *      claude 一次调用拆成好几条 assistant，按 message.id 只记一份，被停、超时等不到 result 就拿它兜底
  *   ⑪ codex：宿主机上的技能（~/.agents/skills、自带的系统技能）一个都不加载，只留 imagegen；属主手填的 skills.config 以他的为准。
  *      报错：光一个 401 不说「还没登录」，原话带上；codex 说哪项设置「不再支持」，那几行原样带出来
+ *   ⑫ 引擎挂了（起不来、半路退出）记在引擎头上：连挂提示指去换底层引擎，云模型的连挂计数和健康账本不动（真 server.js）
+ *   ⑬ 状态播报里是事实的（引擎已启动、标了 notice 的）存盘，重开对话还在；进度播报不存
  *
  * 引擎全是本地假的，不出网。
  *   node test/engine-resilience.js
@@ -1079,6 +1081,155 @@ process.stdin.on("data", () => {}).on("end", () => {
   }
 }
 
+/**
+ * ⑫ 本机引擎挂了不算到云模型头上（真 server.js）：
+ *   引擎设成 codex（假的：什么都 exit 1），云模型是本机一个只回 401 的假上游。
+ *   连着两趟都挂在引擎那头：第二趟说的是「本机引擎已连续失败 2 次」、指去换底层引擎，
+ *   不是「模型「云模型甲」已连续失败」；跑通一趟就清零；健康账本里云模型一笔都没有（引擎那几趟也不记）。
+ *   ★反向对照★ 换回内置引擎再跑一趟：401 记到云模型头上——账本看得见，上面的「没有」不是没写盘；
+ *   引擎那边攒下的连挂次数也不会串到云模型这句报错里
+ */
+async function partBlame() {
+  console.log("\n⑫ 本机引擎挂了不算到云模型头上（真 server.js）");
+  const http = require("http");
+  const { spawn } = require("child_process");
+  const { entry } = require("./lib/entry");
+  const H = path.join(home, "blame");
+  const dataDir = path.join(H, "data");
+  fs.mkdirSync(dataDir, { recursive: true });
+  const dead = fakeBin("codex-dead", `process.stderr.write("假 codex 起不来：boom-7f3\\n"); process.exit(1);`);
+  // 跑得通的那个：探针一律不认，正经那趟回一句话就收
+  const fine = fakeBin("codex-fine", `
+const a = process.argv.slice(2);
+if (a[0] === "debug") process.exit(1);
+process.stdin.on("data", () => {}).on("end", () => {
+  const out = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
+  out({ type: "thread.started", thread_id: "t-fine" });
+  out({ type: "item.completed", item: { id: "m1", type: "agent_message", text: "跑通了" } });
+  out({ type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } });
+});
+`);
+  let cloudHits = 0;
+  const upstream = http.createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      cloudHits++;
+      res.writeHead(401, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { message: "假上游：key 不对" } }));
+    });
+  });
+  await new Promise((r) => upstream.listen(0, "127.0.0.1", r));
+  const tok = "tk" + Date.now();
+  fs.writeFileSync(path.join(dataDir, "users.json"), JSON.stringify({
+    users: [{ username: "boss", salt: "x", hash: "x", role: "admin", credits: 0, created_at: Date.now() }],
+    tokens: { [tok]: { user: "boss", at: Date.now() } },
+  }));
+  const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, "config.example.json"), "utf8"));
+  cfg.mcp_servers = [];
+  cfg.models = [{ name: "云模型甲", provider: "openai", base_url: `http://127.0.0.1:${upstream.address().port}/v1`, api_key: "sk-test", model: "m", stream: false }];
+  cfg.active_model = "云模型甲";
+  cfg.agent = { ...(cfg.agent || {}), engine: "codex", engine_options: { codex: { enabled: true, model: "m1", bin: dead } } };
+  fs.writeFileSync(path.join(H, "config.json"), JSON.stringify(cfg));
+  // HOME / CODEX_HOME 也挪进临时目录：隔离运行窝不去链用户真的 codex 登录、不扫用户装的技能
+  const fakeHome = path.join(H, "home");
+  fs.mkdirSync(fakeHome, { recursive: true });
+  const env = {
+    ...process.env, ELECTRON_RUN_AS_NODE: "", OPENWORKBUDDY_HOME: H, OPENWORKBUDDY_DATA_DIR: dataDir,
+    HOME: fakeHome, USERPROFILE: fakeHome, CODEX_HOME: path.join(fakeHome, ".codex"), HOST: "127.0.0.1", PORT: "0",
+  };
+  const nodeBin = process.env.OWB_NODE || (process.versions.electron ? "node" : process.execPath);
+  const child = spawn(nodeBin, [entry("server")], { cwd: ROOT, env, stdio: ["ignore", "pipe", "pipe"] });
+  const killChild = () => { try { child.kill("SIGKILL"); } catch {} };
+  process.on("exit", killChild);
+  let log = "";
+  child.stdout.on("data", (c) => (log = (log + c).slice(-20000)));
+  child.stderr.on("data", (c) => (log = (log + c).slice(-20000)));
+  try {
+    let port = 0;
+    for (let i = 0; i < 300 && !port; i++) { const m = /已启动: http:\/\/localhost:(\d+)/.exec(log); if (m) port = +m[1]; else await sleep(200); }
+    ok(port > 0, "server.js 起来了", log.slice(-1500));
+    const call = (method, p, body) => new Promise((resolve, reject) => {
+      const data = body === undefined ? "" : JSON.stringify(body);
+      const rq = http.request({ host: "127.0.0.1", port, path: p, method, headers: {
+        "content-type": "application/json", "content-length": Buffer.byteLength(data), Cookie: "openworkbuddy_token=" + tok,
+      } }, (r) => { let t = ""; r.setEncoding("utf8"); r.on("data", (c) => (t += c)); r.on("end", () => resolve({ status: r.statusCode, text: t })); });
+      rq.on("error", reject);
+      rq.setTimeout(90000, () => rq.destroy(new Error(p + " 90 秒没回完")));
+      rq.end(data);
+    });
+    /** 发一句、等这趟跑完，交回它报的错（SSE 里 type=error 的那几条） */
+    const chat = async (sid, message) => {
+      const r = await call("POST", "/api/chat", { sessionId: sid, message, mode: "craft" });
+      const evs = r.text.split("\n").filter((l) => l.startsWith("data: ")).map((l) => { try { return JSON.parse(l.slice(6)); } catch { return null; } }).filter(Boolean);
+      return { status: r.status, errs: evs.filter((e) => e.type === "error").map((e) => String(e.message || "")).join("\n"), evs };
+    };
+    const healthFile = path.join(dataDir, "model_health.json");
+    const health = () => { try { return JSON.parse(fs.readFileSync(healthFile, "utf8")) || {}; } catch { return {}; } };
+
+    const a = await chat("s_" + Date.now() + "_a", "第一趟");
+    ok(/boom-7f3/.test(a.errs), "第一趟：报的是引擎那头的原话", a.errs || a.evs.slice(-5));
+    ok(!/连续失败/.test(a.errs), "  └ 才一次，不提连挂", a.errs);
+    const b = await chat("s_" + Date.now() + "_b", "第二趟");
+    ok(/本机引擎已连续失败 2 次/.test(b.errs) && /设置 → 智能体 → 底层引擎/.test(b.errs), "★第二趟说本机引擎连挂 2 次★ 指去换底层引擎", b.errs);
+    ok(!/云模型甲/.test(b.errs) && !/设置 → 模型/.test(b.errs), "  └ 没赖到云模型头上、没叫人去换模型", b.errs);
+    // 跑通一趟，连挂次数清零：再挂一次是第 1 次，不提连挂
+    const useBin = (bin) => call("POST", "/api/settings", { agent: { engine_options: { codex: { bin } } } });
+    ok((await useBin(fine)).status === 200, "换上跑得通的假 codex");
+    const d = await chat("s_" + Date.now() + "_d", "第三趟（跑得通）");
+    ok(!d.errs && d.evs.some((e) => e.type === "text" && /跑通了/.test(e.delta || "")), "引擎这趟跑通了", d.errs || d.evs.slice(-5));
+    ok((await useBin(dead)).status === 200, "再换回起不来的那个");
+    const e2 = await chat("s_" + Date.now() + "_e", "第四趟");
+    ok(/boom-7f3/.test(e2.errs) && !/连续失败/.test(e2.errs), "★跑通一趟就清零★ 再挂又从第 1 次算", e2.errs);
+    await sleep(1500); // 健康账本后台写、一秒最多一次
+    const h1 = health();
+    ok(!h1["云模型甲"] && !h1.codex, "★健康账本里云模型一笔都没有★ 引擎那几趟成的败的都不记（账本是挑云模型渠道用的）", h1);
+
+    const sw = await call("POST", "/api/settings", { agent: { engine: "builtin" } });
+    ok(sw.status === 200, "换回内置引擎", sw.text.slice(0, 300));
+    const hitsBefore = cloudHits;
+    const c = await chat("s_" + Date.now() + "_c", "第三趟");
+    ok(cloudHits > hitsBefore && /401/.test(c.errs), "★反向对照★ 内置引擎这趟真打到了云模型、挂在 401 上", { hits: cloudHits - hitsBefore, errs: c.errs });
+    ok(!/连续失败/.test(c.errs), "  └ 引擎那边攒下的次数没串到云模型这句报错里", c.errs);
+    let h2 = {};
+    for (let i = 0; i < 40 && !h2["云模型甲"]; i++) { await sleep(100); h2 = health(); }
+    const rec = h2["云模型甲"] || {};
+    ok(Array.isArray(rec.recent) && rec.recent.length === 1 && rec.recent[0] === 0, "★反向对照★ 云模型自己挂的这一趟记进了账本（账本看得见，上面的「没有」不是没写盘）", h2);
+  } finally {
+    upstream.close();
+    if (child.exitCode === null && child.signalCode === null) {
+      const gone = new Promise((r) => child.once("exit", r));
+      killChild();
+      await gone;
+    }
+    process.removeListener("exit", killChild);
+  }
+}
+
+/**
+ * ⑬ 状态播报存不存盘（切 server.js 的 recordingEmit）：进度不存，事实存——
+ *   标了 notice 的、引擎「已启动」那条（带 model）存；正在启动、重试中、专家那层的不存
+ */
+function partStatusPersist() {
+  console.log("\n⑬ 状态播报：事实存盘、进度不存（重开对话还看得到那趟是怎么跑的）");
+  const SERVER = require("./lib/src").src("server");
+  const i = SERVER.indexOf("function recordingEmit(");
+  const j = SERVER.indexOf("\n}\n", i);
+  ok(i >= 0 && j > i, "server.js 里切得出 recordingEmit");
+  const recordingEmit = new Function("petSay", "autosaveSession", SERVER.slice(i, j + 2) + "\nreturn recordingEmit;")(() => {}, () => {});
+  const events = [];
+  const emit = recordingEmit(() => {}, events, "", { pet: false });
+  emit({ type: "status", starting: true, text: "本机 Codex 正在启动", depth: 0 });
+  emit({ type: "status", text: "本机 Codex 已启动（模型 m1），不消耗 API 额度", model: "m1", depth: 0 });
+  emit({ type: "status", text: "本机 Codex 已启动（模型 默认），不消耗 API 额度", model: "", depth: 0 });
+  emit({ type: "status", notice: true, text: "本项目工具没能挂给引擎（x），这次只能用 CLI 自带的工具", depth: 0 });
+  emit({ type: "status", text: "上游出错，2 秒后自动重试", retry: { kind: "retry", attempt: 1, total: 3, delayMs: 2000 }, depth: 0 });
+  emit({ type: "status", text: "模型 40 秒没吐字，重试中…" });
+  emit({ type: "status", notice: true, text: "专家那层的", depth: 1 });
+  const kept = events.filter((e) => e.type === "status").map((e) => e.text);
+  ok(same(kept, ["本机 Codex 已启动（模型 m1），不消耗 API 额度", "本机 Codex 已启动（模型 默认），不消耗 API 额度", "本项目工具没能挂给引擎（x），这次只能用 CLI 自带的工具"]),
+    "存的是「已启动」（型号空着也存）和 notice；正在启动、重试、普通进度、专家那层的都不存", kept);
+}
+
 (async () => {
   try {
     await partResultErrors();
@@ -1092,6 +1243,8 @@ process.stdin.on("data", () => {}).on("end", () => {
     await partReadOnly();
     await partUsage();
     await partCodexHostAndErrors();
+    await partBlame();
+    partStatusPersist();
     console.log(`\n引擎韧性：${pass} 项全过`);
   } finally {
     fs.rmSync(home, { recursive: true, force: true });

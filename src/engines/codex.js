@@ -588,7 +588,7 @@ async function run({
   const picked = pickupImages({ codexHome: isolated.env.CODEX_HOME, threadId: sessionId, cwd, since: startedAt });
   if (picked.length) {
     if (onWrite) for (const p of picked) { try { onWrite(p); } catch {} }
-    emit({ type: "status", text: `Codex 生成的图已放进对话目录：${picked.map((p) => path.basename(p)).join("、")}`, depth: 0 });
+    emit({ type: "status", notice: true, text: `Codex 生成的图已放进对话目录：${picked.map((p) => path.basename(p)).join("、")}`, depth: 0 });
   }
 
   if (r.killed === "stopped") return { finalText, usage, stopped: "已手动停止", sessionId };

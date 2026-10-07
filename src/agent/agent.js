@@ -815,6 +815,16 @@ function retryField(info) {
 }
 
 /**
+ * 本机引擎那头出的错（引擎名写错、开跑前的闸没过、CLI 起不来、跑到一半退出）标上是哪个引擎。
+ * server 记连挂次数、模型健康账时认它：不标的话，引擎挂了算到 config 里那个云模型头上，
+ * 可那个模型这一趟一次都没被调过
+ */
+function engineError(e, id) {
+  if (e && typeof e === "object" && id && !e.engine) e.engine = id;
+  return e;
+}
+
+/**
  * 系统提示词里注入真实日期：不给的话模型会拿训练截止日当"今天"，凡是"最新/本周"的任务全歪。
  * 只精确到小时——分钟是个昂贵的小数点：system 是所有 provider 缓存前缀的第一段，
  * 写进分钟就等于每过一分钟整段前缀作废，多轮会话里每一轮都在全价重买同样的几十万 token。
@@ -2446,14 +2456,14 @@ function modePrompt(mode) {
       });
     } catch (e) {
       // 挂不上就照常跑，只是少了那些工具；不能因为桥没搭起来把整个任务毙掉
-      emit({ type: "status", text: `本项目工具没能挂给引擎（${e.message}），这次只能用 CLI 自带的工具`, depth: 0 });
+      emit({ type: "status", notice: true, text: `本项目工具没能挂给引擎（${e.message}），这次只能用 CLI 自带的工具`, depth: 0 });
     }
     // 走网址的连接器两个 CLI 写法各不相同，这边没转。不说一句，用户只会看到工具少了几个
-    if (bridged && bridged.skipped.length) emit({ type: "status", text: `这几个连接器走网址，本机引擎挂不上：${bridged.skipped.join("、")}`, depth: 0 });
+    if (bridged && bridged.skipped.length) emit({ type: "status", notice: true, text: `这几个连接器走网址，本机引擎挂不上：${bridged.skipped.join("、")}`, depth: 0 });
 
     // 档位收紧了就明说一句。不说的话，用户看到的是「它怎么什么都不肯干」，
     // 而真正的原因在另一个页面上的一颗开关里，隔着两层根本联系不起来
-    if (guard.note) emit({ type: "status", text: guard.note, depth: 0 });
+    if (guard.note) emit({ type: "status", notice: true, text: guard.note, depth: 0 });
     // 属主在引擎设置里手填的档位、沙箱、放宽权限的附加参数，平时以它为准（手填是更明确的表态）；
     // 只读那一趟不认，在 runWith 里 ...opts 之后盖回去。盖了什么在运行页上说一句，免得属主以为自己的设置没生效是 bug
     const loose = readOnly ? require("../engines/gate").looseArgs(opts.extraArgs, backend.id) : null;
@@ -2464,7 +2474,7 @@ function modePrompt(mode) {
         opts.globalMcp === true && "全局连接器",
         loose.dropped.length && `附加参数 ${loose.dropped.join(" / ")}`,
       ].filter(Boolean);
-      if (off.length) emit({ type: "status", text: `这一趟是${mode === "plan" ? "计划" : "问答"}模式，本机 CLI 按只读跑；引擎设置里手填的${off.join("、")}这次不用`, depth: 0 });
+      if (off.length) emit({ type: "status", notice: true, text: `这一趟是${mode === "plan" ? "计划" : "问答"}模式，本机 CLI 按只读跑；引擎设置里手填的${off.join("、")}这次不用`, depth: 0 });
     }
 
     try {
@@ -2507,7 +2517,7 @@ function modePrompt(mode) {
         // 新线程的 id 由调用方照常记下，盖掉那个失效的。动过工具就不重来——重来等于把事做两遍
         const gone = /No conversation found|session .{0,40}not found|no (such )?(thread|rollout|session)/i.test(String((e && e.message) || ""));
         if (!engineSession || !gone || toolUses > 0 || (stopSignal && stopSignal.aborted)) throw e;
-        emit({ type: "status", text: "引擎那头上次的会话线程已经不在了，这次把对话历史重新带过去，开一根新的", depth: 0 });
+        emit({ type: "status", notice: true, text: "引擎那头上次的会话线程已经不在了，这次把对话历史重新带过去，开一根新的", depth: 0 });
         r = await runWith(null);
       }
       await filesOut.push(true); // 收尾这一下必须立刻发：产出得赶在这一轮结束前落到界面上（出错在里面留痕，不往外抛）
@@ -2814,13 +2824,15 @@ function modePrompt(mode) {
       // 没有请求上下文（定时任务 / IM / 命令行）时 agentView 原样返回 config，行为一字不差。
       // 注意这里不看「这一轮在哪条工作线上」：工作线分的是干哪种活儿（办公 / 工程），
       // 引擎是用户在设置里挑一次、两条线都照着跑的另一件事。绑在一起的话，切个标签能把别人配的模型换掉。
-      const picked = engines.resolve(prefs.agentView(config)); // 引擎名写错会在这里抛错，不会静默退回内置
+      let picked;
+      try { picked = engines.resolve(prefs.agentView(config)); } // 引擎名写错会在这里抛错，不会静默退回内置
+      catch (e) { throw engineError(e, String((prefs.agentCfg(config) || {}).engine || "").trim()); }
       if (picked.backend) {
         // 开跑前过闸（engines/gate.js）：组织关了命令行、多人共用属主没打开、型号没钉或不在放行列表、
         // 附加参数能换型号——当场报错，不退回内置引擎。收原始 config：属主那份不能被个人设置盖掉
         const shellOff = !!(orgPolicy() && orgPolicy().allow_shell === false);
         try { picked.opts = engines.admit(picked.backend.id, config, { shellOff }).opts; }
-        catch (e) { if (ownsTrace) tr.end({ error: (e && e.message) || String(e) }); throw e; }
+        catch (e) { if (ownsTrace) tr.end({ error: (e && e.message) || String(e) }); throw engineError(e, picked.backend.id); }
         const sp = tr.span({
           name: `外部引擎 ${picked.backend.label || picked.backend.id}`,
           input: tracing._internals.messagesOf("", history),
@@ -2843,7 +2855,7 @@ function modePrompt(mode) {
           const why = (e && e.message) || String(e);
           sp.end({ error: why });
           if (ownsTrace) tr.end({ error: why });
-          throw e;
+          throw engineError(e, picked.backend.id);
         }
       }
     }

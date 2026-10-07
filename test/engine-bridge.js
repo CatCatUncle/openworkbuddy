@@ -860,15 +860,27 @@ process.stdin.on("data", (d) => {
       ok(plugins.pluginMcpServers().some((s) => s.name === "acme.tools__srv"), "自检：插件装上了、连接器认得出", plugins.loadPlugins().map((p) => p.error || p.warnings));
       const st = [];
       seen = null;
-      await rt.runTask({ history: [{ role: "user", content: "干活" }], emit(e) { if (e && e.type === "status") st.push(e.text); } });
+      const evs = [];
+      await rt.runTask({ history: [{ role: "user", content: "干活" }], emit(e) { if (e && e.type === "status") { st.push(e.text); evs.push(e); } } });
       const names = (seen && seen.names) || [];
       ok(names.includes("userconn") && names.includes("acme_tools_srv") && !names.includes("offconn"), "★插件带来的连接器本机引擎也挂上；连接器页上关掉的不挂★", seen);
       const ps = seen && seen.servers && seen.servers.acme_tools_srv;
       ok(ps && ps.args[0] === bridge.CWD_ENTRY && fs.realpathSync(ps.args[1]) === fs.realpathSync(plugDir), "插件的那台在插件根里起", ps);
       ok(st.some((t) => /走网址/.test(t) && t.includes("acme.tools__web")), "★走网址的那台在运行页上点名★ 名字照连接器页上的说", st);
+      ok(evs.some((e) => /走网址/.test(e.text) && e.notice === true), "点名那一句标成提示：运行页留在引擎那一行下面，回看也在", evs);
       seen = null; st.length = 0;
       await rt.runTask({ history: [{ role: "user", content: "问问" }], mode: "ask", emit(e) { if (e && e.type === "status") st.push(e.text); } });
       ok(seen && sorted(seen.names) === bridge.SERVER_NAME && !st.some((t) => /走网址/.test(t)), "反向对照：问答那一趟一台不挂，也不点名", { seen, st });
+      // 桥搭不起来：照常跑，只是少了本项目的工具；这句要标成提示，不然回看时就没了
+      const realAttach = bridge.attach;
+      bridge.attach = () => { throw new Error("桥坏了-9c2"); };
+      try {
+        seen = null; evs.length = 0;
+        const r = await rt.runTask({ history: [{ role: "user", content: "干活" }], emit(e) { if (e && e.type === "status") evs.push(e); } });
+        const note = evs.find((e) => /没能挂给引擎/.test(e.text || ""));
+        ok(note && note.notice === true && note.text.includes("桥坏了-9c2") && note.depth === 0, "★桥没搭起来照常跑，运行页上留一句提示★ 原话带上", evs);
+        ok(seen && r && r.finalText === "好", "桥没搭起来任务不毙", { seen, r });
+      } finally { bridge.attach = realAttach; }
     } finally {
       engines.BACKENDS.splice(engines.BACKENDS.indexOf(stub), 1);
       fs.rmSync(plugDir, { recursive: true, force: true });

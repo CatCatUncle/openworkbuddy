@@ -1632,6 +1632,20 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
         if (!isReplaying) showRetryBar(ev);
         return;
       }
+      // 标了 notice 的是这一趟的事实（工具没挂上、连接器挂不上、只读停用了哪些设置、图放哪了）：
+      // 钉成一行常驻小字，排在引擎牌子下面。别进会转的思考提示——下一段正文一来就抹掉，回放也没有
+      if (ev.notice) {
+        if (ev.depth > 0) return;
+        const note = document.createElement("div");
+        note.className = "run-note";
+        note.innerHTML = `${ic("info")}<span></span>`;
+        note.lastChild.textContent = ev.text || "";
+        const notes = body.querySelectorAll(":scope > .run-note");
+        const after = notes[notes.length - 1] || body.querySelector(":scope > .run-eng");
+        if (after) after.after(note);
+        else body.insertBefore(note, body.firstChild);
+        return;
+      }
       // 运行状态直播（重试中/模型长时间没输出）：复用思考提示那一行，别让界面看起来像卡死
       let hint = body.querySelector(".thinking-hint");
       if (!hint) {
@@ -2307,7 +2321,7 @@ function liveActivity(ev, narr) {
     case "sleep": return say("moon", "本机睡过一觉，任务时限已顺延");
     case "ask_user": return say("circle-help", "有事要问你，在等你回答");
     // 带 retry 的是「等几秒自动重试」：换成重试图标，跟回合顶上那条倒计时对得上
-    case "status": return cut(ev.text) ? say(ev.starting ? "monitor" : ev.retry && (ev.retry.kind == null || ev.retry.kind === "retry") ? "refresh-cw" : "loader-circle", cut(ev.text)) : keep;
+    case "status": return cut(ev.text) ? say(ev.starting ? "monitor" : ev.notice ? "info" : ev.retry && (ev.retry.kind == null || ev.retry.kind === "retry") ? "refresh-cw" : "loader-circle", cut(ev.text)) : keep;
     default: return keep;
   }
 }

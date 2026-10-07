@@ -9191,6 +9191,31 @@ const TRAIL_CHECKS = `
   ok("负向控制：普通状态仍走会转的提示行，不许顶掉牌子", !!u10b.turn.querySelector(".thinking-hint .spinner") && u10b.turn.querySelectorAll(".run-eng").length === 1);
   u10b.finish();
 
+  // ---- 引擎这一趟的事实（status 标 notice）：工具没挂上、连接器挂不上、只读停了哪些设置……
+  // 以前跟进度播报一样进那行会转的提示，下一段正文一来就抹掉，重开对话也看不到 ----
+  const uNt = createTurnUI("跑一趟", "craft", "s_t3");
+  uNt.handleEvent({ type: "status", notice: true, text: "本项目工具没能挂给引擎（写不进配置），这次只能用 CLI 自带的工具", depth: 0 });
+  uNt.handleEvent({ type: "status", starting: true, text: "本机 Codex 正在启动（连接工具中，一般 3~8 秒），不消耗 API 额度" });
+  uNt.handleEvent({ type: "status", notice: true, text: "这几个连接器走网址，本机引擎挂不上：远端甲", depth: 0 });
+  const notesNt = [...uNt.turn.querySelectorAll(".run-note")];
+  ok("notice 挂成常驻小字，不进会转的思考提示", notesNt.length === 2 && !uNt.turn.querySelector(".thinking-hint"), notesNt.length);
+  ok("按来的先后排在引擎牌子下面（牌子后到也还在最上面）", uNt.turn.querySelector(".run-eng").nextElementSibling === notesNt[0] && notesNt[0].nextElementSibling === notesNt[1]);
+  ok("原话照写", /远端甲/.test(notesNt[1].textContent) && /CLI 自带的工具/.test(notesNt[0].textContent));
+  uNt.handleEvent({ type: "text", delta: "开始干活" });
+  ok("正文来了还在", uNt.turn.querySelectorAll(".run-note").length === 2);
+  uNt.handleEvent({ type: "status", notice: true, text: "专家那层的", depth: 1 });
+  ok("专家那层的 notice 不挂到这一轮上", uNt.turn.querySelectorAll(".run-note").length === 2);
+  uNt.handleEvent({ type: "status", text: "模型 40 秒没吐字，重试中…" });
+  ok("负向控制：不带 notice 的照旧是会转的提示", !!uNt.turn.querySelector(".thinking-hint .spinner") && uNt.turn.querySelectorAll(".run-note").length === 2);
+  uNt.finish();
+  // 回放：存盘的 notice 照样画；原话当文字放，不当 HTML
+  const uNr = createTurnUI("跑一趟", "craft", "s_t4");
+  isReplaying = true;
+  try { uNr.handleEvent({ type: "status", notice: true, text: "<b>x</b> 这一趟是问答模式", depth: 0 }); } finally { isReplaying = false; }
+  const noteR = uNr.turn.querySelector(".run-note");
+  ok("回放照画", !!noteR && /问答模式/.test(noteR.textContent) && !noteR.querySelector("b"));
+  uNr.finish();
+
   // ---- 上游重试倒计时条：status 带 retry 字段（{ kind, attempt, total, delayMs }）----
   // 以前重试只有底下一行转圈的字，说不清在等什么、还要等多久。带了 retry 就在回合顶上倒数，
   // 正文一来就撤；不带 retry 的老后端一个像素都不变。

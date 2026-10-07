@@ -15414,7 +15414,8 @@ async function testFeedbackAndUsage() {
   not("server", /model: sessLLM\.model, provider: sessLLM\.provider, source: "web"/, "网页任务的账本还按设置页的云模型记（引擎跑的会记到 deepseek 名下）");
   has("server", /recordModelHealth\(ranLLM\.provider, false/, "失败健康统计没按真跑的引擎记");
   has("server", /recordModelHealth\(ranLLM\.provider, true\)/, "成功健康统计没按真跑的引擎记");
-  has("server", /modelFailStreak\.get\(ranLLM\.provider\)/, "失败连击没按真跑的引擎记");
+  has("server", /const streakKey = ranEngine \? "engine:" \+ ranEngine : ranLLM\.provider;/, "失败连击没按真跑的引擎记（本机引擎挂了会算到云模型头上）");
+  has("server", /modelFailStreak\.get\(streakKey\)/, "失败连击没按真跑的引擎记");
   has("server", /const ran = r\.provider \? \{ model: r\.model \|\| r\.provider, provider: r\.provider \} : runLLM/, "IM/定时任务的账本归属没按真跑的引擎记");
   has("server", /app\.get\("\/api\/feedback\/summary"/, "没有反馈汇总接口");
   has("server", /if \(ev\.type === "tool_use" \|\| ev\.type === "tool_result"\) ev\.at = ev\.at \|\| Date\.now\(\);/, "落盘的工具事件没盖时间戳，回放时轨迹条算不出每步耗时");
