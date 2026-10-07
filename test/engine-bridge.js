@@ -27,6 +27,8 @@
  *      哪几样跑不成逐个点名核对；attach 照这次借出去的点名给提示词；安全档「只看不动」两个引擎都不给 owb
  *   ⑬ 连接器转给本机引擎：插件带来的照转（claude 那边套一层先切到插件根，codex 直接认 cwd）；连接器页上关掉的、
  *      暂停的不转；走网址的不转、在运行页上点名；名字里带 __、带点的改成两个 CLI 都认得的；套的那一层交回退出码、转信号
+ *   ⑭ CLI 报上来的工具名归回原名（mcp__openworkbuddy__x、openworkbuddy.x、owb x → x），原叫法留在 raw_name；
+ *      主进程真跑一趟：播出去的事件名、标题、结果那条按 id 跟上；别人的连接器、带别的命令的 shell 原样
  *
  * 真起桥子进程，但不起任何 CLI 引擎、不出网（假生图上游起在 127.0.0.1）。
  *   node test/engine-bridge.js
@@ -884,6 +886,85 @@ process.stdin.on("data", (d) => {
     } finally {
       engines.BACKENDS.splice(engines.BACKENDS.indexOf(stub), 1);
       fs.rmSync(plugDir, { recursive: true, force: true });
+    }
+  }
+
+  section("⑭ CLI 报上来的工具名归回原名，原叫法留在 raw_name");
+  {
+    const tn = require(mod("tool-names"));
+    ok(tn.SERVER === bridge.SERVER_NAME, "自检：认的服务器名就是桥挂上去的那台", tn.SERVER);
+    const T = [
+      // [CLI 报的名字, 目的说明, 归回的名字, raw_name]
+      ["mcp__openworkbuddy__generate_image", "一只猫", "generate_image", "mcp__openworkbuddy__generate_image"],
+      ["openworkbuddy.look_at_image", "a.png", "look_at_image", "openworkbuddy.look_at_image"],
+      ["Bash", "owb generate_image '{\"prompt\":\"猫\"}'", "generate_image", "Bash"],
+      ["run_shell", "  owb library_list", "library_list", "run_shell"],
+      ["run_shell", "owb --help", "run_shell", ""],
+      ["Bash", "cd x && owb generate_image '{}'", "Bash", ""],
+      ["Bash", "owbx generate_image", "Bash", ""],
+      ["mcp__github__create_issue", "", "mcp__github__create_issue", ""],
+      ["github.create_issue", "", "github.create_issue", ""],
+      ["mcp__openworkbuddy__", "", "mcp__openworkbuddy__", ""],
+      ["Read", "owb generate_image", "Read", ""],
+      ["", "", "", ""],
+    ];
+    const bad = T.filter(([n, pu, want, raw]) => { const r = tn.normalizeToolName(n, pu); return r.name !== want || r.raw_name !== raw; })
+      .map(([n, pu]) => [n, pu, tn.normalizeToolName(n, pu)]);
+    ok(bad.length === 0, "★三种叫法都归回原名★ 别人的连接器、带别的命令的 shell、光一个前缀原样", bad);
+    const ev0 = { type: "text", delta: "x" };
+    ok(tn.normalizeToolEvent(ev0) === ev0, "不是工具事件原样返回");
+    // codex 报 MCP 调用时入参是对象（0.154 实测），直接转字符串只剩 [object Object]
+    const codex = require(mod("codex"));
+    const mc = (args) => codex.toolOf({ type: "mcp_tool_call", server: "openworkbuddy", tool: "library_read", arguments: args });
+    const P = [
+      [{ path: "资料/a.md", limit: 20 }, "资料/a.md"],
+      [{ prompt: "一只橘猫", size: "1024x1024" }, "一只橘猫"],
+      [{ n: 2, size: "1024x1024" }, '{"n":2,"size":"1024x1024"}'],
+      ['{"path":"b.md"}', '{"path":"b.md"}'],
+      [{}, ""],
+      [undefined, ""],
+    ];
+    const badP = P.map(([a, want]) => [a, want, mc(a)]).filter(([, want, r]) => r.name !== "openworkbuddy.library_read" || r.purpose !== want);
+    ok(badP.length === 0, "★codex 的 MCP 入参是对象也说得清在干什么★ 先挑人看得懂的那一个，挑不出整段 JSON，不出 [object Object]", badP);
+
+    // 主进程真跑一趟（桩引擎）：claude 那种名字、codex 那种名字、命令行入口各来一条
+    const engines = require(mod("engines"));
+    const { createAgentRuntime } = require(mod("agent"));
+    const { McpManager } = require(mod("mcp"));
+    const stub = {
+      id: "t-names", label: "工具名桩", bin: null, note: "", install: "", launchHeader: "", supportsResume: false, models: [],
+      async detect() { return { id: "t-names", installed: true, path: "", version: "0" }; },
+      async run(o) {
+        o.emit({ type: "tool_use", id: "c1", name: "mcp__openworkbuddy__generate_image", purpose: "一只橘猫", depth: 0 });
+        o.emit({ type: "tool_result", id: "c1", name: "mcp__openworkbuddy__generate_image", preview: "好", depth: 0 });
+        o.emit({ type: "tool_use", id: "c2", name: "openworkbuddy.library_read", purpose: "{\"path\":\"资料/a.md\"}", depth: 0 });
+        o.emit({ type: "tool_use", id: "c3", name: "Bash", purpose: "owb text_to_speech '{\"text\":\"你好\"}'", depth: 0 });
+        o.emit({ type: "tool_result", id: "c3", name: "Bash", preview: "ok", depth: 0 });
+        o.emit({ type: "tool_use", id: "c4", name: "Bash", purpose: "ls -la", depth: 0 });
+        o.emit({ type: "tool_use", id: "c5", name: "mcp__github__create_issue", purpose: "修个 bug", depth: 0 });
+        return { finalText: "好", usage: {}, stopped: null, sessionId: null };
+      },
+    };
+    engines.BACKENDS.push(stub);
+    const fakeLLM = { provider: "mock", model: "scripted", async chat() { return { text: "内置答的", toolCalls: [], stopReason: "end" }; } };
+    const config = { agent: { engine: "t-names", max_steps: 3, engine_options: { "t-names": { model: "m1" } } } };
+    const rt = createAgentRuntime({ config, llm: fakeLLM, mcpManager: new McpManager(), experts: [] });
+    try {
+      const evs = [];
+      await rt.runTask({ history: [{ role: "user", content: "干活" }], emit(e) { if (e && (e.type === "tool_use" || e.type === "tool_result")) evs.push(e); } });
+      const use = (id) => evs.find((e) => e.type === "tool_use" && e.id === id) || {};
+      const res = (id) => evs.find((e) => e.type === "tool_result" && e.id === id) || {};
+      ok(use("c1").name === "generate_image" && use("c1").raw_name === "mcp__openworkbuddy__generate_image", "★claude 那种叫法播出去是原名★ 原叫法留着", use("c1"));
+      ok(/^生图/.test(use("c1").title || "") && (use("c1").title || "").includes("一只橘猫"), "标题跟内置那边一样「生图 …」", use("c1").title);
+      ok(res("c1").name === "generate_image", "结果那条也归回", res("c1"));
+      ok(use("c2").name === "library_read" && /资料\/a\.md/.test(use("c2").title || "") && !/[{}"]|path/.test(use("c2").title || ""), "codex 那种叫法也归回；入参 JSON 解得开就照内置那边算标题（不把整段 JSON 原样贴上去）", use("c2"));
+      ok(use("c3").name === "text_to_speech" && use("c3").raw_name === "Bash" && /你好/.test(use("c3").title || "") && !/owb/.test(use("c3").title || ""),
+        "★命令行入口那条认成调的那个工具★ 标题里不再带 owb 前缀", use("c3"));
+      ok(res("c3").name === "text_to_speech" && res("c3").raw_name === "Bash", "命令行那条的结果只有 Bash：认调用 id 跟上", res("c3"));
+      ok(use("c4").name === "Bash" && !use("c4").raw_name && !use("c4").title, "反向对照：别的命令原样、不加标题", use("c4"));
+      ok(use("c5").name === "mcp__github__create_issue" && !use("c5").raw_name, "反向对照：别人的连接器原样", use("c5"));
+    } finally {
+      engines.BACKENDS.splice(engines.BACKENDS.indexOf(stub), 1);
     }
   }
 

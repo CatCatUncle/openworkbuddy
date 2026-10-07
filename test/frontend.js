@@ -2339,6 +2339,7 @@ const TR_LINKIFY = APP02X.slice(LK0, LK1);
 const TRAIL_SRC = [
   pickLine(/^const TOOL_SHORT = \{.*$/m, "app-01.js 里没有 TOOL_SHORT（轨迹条的短标签表）"),
   pickLine(/^const TOOL_ICON = \{.*$/m, "app-01.js 里没有 TOOL_ICON（每个工具配哪个图标）"),
+  pickLine(/^const toolBase = .*$/m, "app-01.js 里没有 toolBase（CLI 那头的工具叫法归回原名）"),
   pickLine(/^const shortTool = .*$/m, "app-01.js 里没有 shortTool"),
   pickLine(/^const toolIcon = .*$/m, "app-01.js 里没有 toolIcon（过程区每一步的图标）"),
   // 过程区那些「说一句」的提示行（并发了几个、压缩了几条、自动续跑…）都由它画
@@ -9215,6 +9216,19 @@ const TRAIL_CHECKS = `
   const noteR = uNr.turn.querySelector(".run-note");
   ok("回放照画", !!noteR && /问答模式/.test(noteR.textContent) && !noteR.querySelector("b"));
   uNr.finish();
+
+  // ---- 本机引擎借出去的工具：CLI 那头叫 mcp__openworkbuddy__x、openworkbuddy.x。服务端归回原名再播，
+  // 老会话回放时还是原样的叫法，图标、短标照认 ----
+  const shortsTb = [shortTool("mcp__openworkbuddy__generate_image"), shortTool("openworkbuddy.look_at_image")];
+  ok("短标认得 CLI 那头的叫法", shortsTb[0] === TOOL_SHORT.generate_image && shortsTb[1] === TOOL_SHORT.look_at_image, shortsTb);
+  ok("图标也认", toolIcon("mcp__openworkbuddy__generate_image") === toolIcon("generate_image") && toolIcon("generate_image") !== "settings");
+  ok("负向控制：别人的连接器不认成本项目的工具；光一个前缀不剥成空", toolIcon("mcp__github__generate_image") === "settings" && shortTool("openworkbuddy.") !== "", shortTool("openworkbuddy."));
+  const uTb = createTurnUI("跑一趟", "craft", "s_t5");
+  uTb.handleEvent({ type: "step_start", step: 1 });
+  uTb.handleEvent({ type: "tool_use", id: "tb1", name: "mcp__openworkbuddy__generate_image", purpose: "一只猫", depth: 0 });
+  const chipTb = uTb.turn.querySelector(".trail [data-name]");
+  ok("回放老会话：轨迹条上是「生图」不是一串前缀", !!chipTb && chipTb.textContent.includes(TOOL_SHORT.generate_image) && !/openworkbuddy/.test(chipTb.textContent), chipTb && chipTb.textContent);
+  uTb.finish();
 
   // ---- 上游重试倒计时条：status 带 retry 字段（{ kind, attempt, total, delayMs }）----
   // 以前重试只有底下一行转圈的字，说不清在等什么、还要等多久。带了 retry 就在回合顶上倒数，

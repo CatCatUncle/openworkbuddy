@@ -325,11 +325,23 @@ function pickupImages({ codexHome, threadId, cwd, since }) {
   return out;
 }
 
+/**
+ * MCP 调用的入参压成一句目的说明。0.154 报上来的 arguments 是对象（实测），直接转字符串只剩
+ * [object Object]；挑法跟 claude 那边一样，先挑人看得懂的那一个，挑不出再整段 JSON
+ */
+function argPurpose(a) {
+  if (a == null) return "";
+  if (typeof a !== "object") return String(a);
+  const pick = a.file_path || a.path || a.command || a.pattern || a.url || a.query || a.prompt || a.text || a.description;
+  if (pick && typeof pick === "string") return pick;
+  return Object.keys(a).length ? JSON.stringify(a) : "";
+}
+
 /** 把 Codex 的 item 归成 (工具名, 目的说明)；认不出的原样带过去，不假装认识 */
 function toolOf(item) {
   switch (item.type) {
     case "command_execution": return { name: "run_shell", purpose: shorten(item.command) };
-    case "mcp_tool_call": return { name: `${item.server || "mcp"}.${item.tool || ""}`, purpose: shorten(item.arguments || "") };
+    case "mcp_tool_call": return { name: `${item.server || "mcp"}.${item.tool || ""}`, purpose: shorten(argPurpose(item.arguments)) };
     case "web_search": return { name: "web_search", purpose: shorten(item.query) };
     case "file_change": return { name: "edit_file", purpose: shorten((item.changes || []).map((c) => c.path).join(", ")) };
     default: return null;
@@ -602,7 +614,7 @@ async function run({
 }
 
 module.exports = {
-  changedPaths, instructionsPlan, pickupImages, skillsOffArgs,
+  changedPaths, instructionsPlan, pickupImages, skillsOffArgs, toolOf,
   id: ID,
   label: "本机 Codex",
   bin: "codex",

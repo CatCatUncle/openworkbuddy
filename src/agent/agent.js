@@ -25,6 +25,7 @@ const enginePluginServers = () => { try { return require("../core/ext/plugins").
 const awake = require("../platform/awake"); // 睡眠治理：任务期间防睡 + 睡了顺延时限
 const engines = require("../engines"); // 底层引擎：内置循环 / 本机 Claude Code / 本机 Codex
 const bridge = require("../engines/bridge"); // 把本项目的工具借给那两个 CLI（MCP）
+const toolNames = require("../engines/tool-names"); // CLI 那头叫 mcp__openworkbuddy__x / openworkbuddy.x / owb x 的，归回 x
 const { mergeEnv } = require("../engines/jsonl");
 const canvasStore = require("../tools/canvas"); // 画布任务先报价：哪些会话、哪几个工具不借（CANVAS_QUOTE_FIRST）
 const prefs = require("../core/config/prefs"); // 底层引擎 / 思考档是按账号存的，跑任务时得看**发起人**的那份
@@ -2414,7 +2415,22 @@ function modePrompt(mode) {
     // CLI 这条路是**每个**工具结果来一次（不像内置引擎是一批一次），所以走节流的那个口子：
     // 一串结果连着回来时合并成一次走树，而不是一个结果扫一遍 500 个文件
     let toolUses = 0; // 续跑失败后能不能重来一次，看的就是它：一个工具都没动过，重来才不会把事做两遍
-    const wrapped = (ev) => {
+    // 借出去的工具在 CLI 那头换了叫法，归回原名再往外播：图标、短标、桌宠那句「正在用…」认的都是原名。
+    // 结果那条不一定带得出是哪个工具（命令行入口那种只有 Bash），认调用 id 跟上
+    const renamed = new Map();
+    const wrapped = (raw) => {
+      let ev = raw;
+      if (ev && ev.type === "tool_use") {
+        const n = toolNames.normalizeToolName(ev.name, ev.purpose);
+        if (n.raw_name) {
+          ev = { ...ev, name: n.name, raw_name: n.raw_name };
+          if (!ev.title) ev.title = engineToolTitle(n.name, ev.purpose);
+          if (ev.id) renamed.set(ev.id, n);
+        }
+      } else if (ev && ev.type === "tool_result") {
+        const n = (ev.id && renamed.get(ev.id)) || toolNames.normalizeToolName(ev.name);
+        if (n.raw_name) ev = { ...ev, name: n.name, raw_name: n.raw_name };
+      }
       emit(ev);
       if (ev && ev.type === "tool_use") toolUses++;
       if (ev && ev.type === "tool_result") { try { filesOut.push(); } catch {} }
@@ -3820,6 +3836,20 @@ const TOOL_VERB = {
   compose_video: "合成视频",
   delivery_page: "交付页",
 };
+
+/**
+ * 本机引擎借本项目工具那一步的标题。CLI 只报一句目的说明：codex 是整段入参 JSON（可能被截断），
+ * claude 是挑出来的那一个入参，命令行入口是 `owb 工具名 '{...}'` 整条命令。
+ * 解得开 JSON 就跟内置那边一样算（toolHeadline），解不开就「动词 + 那句说明」，前缀不重复带
+ */
+function engineToolTitle(name, purpose) {
+  let p = String(purpose || "").trim();
+  const shim = /^owb\s+(\S+)\s*/.exec(p);
+  if (shim && shim[1] === name) p = p.slice(shim[0].length).replace(/^'(.*)'$/s, "$1").trim();
+  if (p.startsWith("{")) { try { return toolHeadline(name, JSON.parse(p)); } catch {} }
+  const verb = TOOL_VERB[name] || name;
+  return p ? `${verb} ${tailText(p, 46)}` : verb;
+}
 
 /** 太长的路径/命令只留尾巴：前面那截目录对人没信息量，文件名才有 */
 function tailText(v, n) {

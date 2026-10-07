@@ -42,8 +42,11 @@ const TOOL_SHORT = { read_file: "读", read_document: "读文档", write_file: "
 // 以前两者揉成一句 "📄 读"，翻译表得连图一起抄一遍，加个工具就要改两处还容易抄漏。
 const TOOL_ICON = { read_file: "file-text", read_document: "book-open-text", write_file: "file-pen-line", edit_file: "pencil", multi_edit: "pencil", list_files: "folder", search_files: "file-search", find_files: "folder-tree", run_shell: "terminal", shell_output: "scroll-text", shell_kill: "square", todo_write: "list-checks", run_node: "code", web_search: "globe", fetch_url: "link", render_page: "monitor", check_page: "circle-check", html_to_image: "image", render_motion: "clapperboard", record_web_demo: "video", compose_video: "clapperboard", delivery_page: "package", look_at_image: "eye", generate_image: "palette", generate_video: "film", gen_diagram: "chart-column", text_to_speech: "volume-2", transcribe_audio: "file-audio", remember: "brain", forget: "brain", library_list: "book-open", library_read: "book-open", library_import: "download", save_skill: "puzzle", install_skill: "puzzle", add_connector: "plug", desktop_pet: "app-window", notify_user: "send", schedule_task: "timer", list_schedules: "calendar-days", send_email: "mail", explore: "compass", brand_kit_read: "shield-check", brand_kit_save: "shield-check" };
 // 过程区每一步只挂一个图标，动词写在正文里（`读 报告.md`，不是 `run read_file`）
-const toolIcon = (n) => TOOL_ICON[n] || "settings";
-const shortTool = (n) => TOOL_SHORT[n] || String(n || "").replace(/^mcp[_:]/, "").replace(/_/g, " ").slice(0, 12);
+// 本机引擎借出去的工具在 CLI 那头叫 mcp__openworkbuddy__x、openworkbuddy.x。服务端已经归回 x 再播，
+// 老会话回放时事件里还是原样的叫法，这里再认一遍（跟 src/engines/tool-names.js 同一张表）
+const toolBase = (n) => String(n || "").replace(/^(?:mcp__openworkbuddy__|openworkbuddy\.)(?=.)/, "");
+const toolIcon = (n) => TOOL_ICON[toolBase(n)] || "settings";
+const shortTool = (n) => TOOL_SHORT[toolBase(n)] || toolBase(n).replace(/^mcp[_:]/, "").replace(/_/g, " ").slice(0, 12);
 /** 过程区里那种「说一句」的提示行：一个图标 + 一句话。话是拼出来的，只走 textContent，不进 innerHTML */
 /**
  * 上下文余量条。

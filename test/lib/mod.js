@@ -206,6 +206,7 @@ const TABLE = Object.freeze({
   jsonl: "src/engines/jsonl.js",
   lendable: "src/engines/lendable.js",
   "tool-bridge": "src/engines/tool-bridge.js",
+  "tool-names": "src/engines/tool-names.js",
   which: "src/platform/which.js",
   win: "src/platform/win.js",
   // routes
