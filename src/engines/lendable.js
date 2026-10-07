@@ -35,6 +35,13 @@ const LENDABLE = [
   "canvas_manage",    // 画布：改节点、交待生成清单。画布任务里生成工具不借（见 agent.js），不借它的话本机引擎既交不了清单、也改不了提示词
 ];
 
+/**
+ * 只读的那几个。问答 / 计划模式那一趟只借这些（agent.js runViaEngine 传 readOnly）。
+ * 跟内置引擎这两档摆给模型的那份（agent.js 的 READ_ONLY_TOOLS）取交集：同一个档位，换了底层引擎能做的事不该变多。
+ * 桥那头拿到 OPENWORKBUDDY_BRIDGE_READONLY=1 时照这张表再拦一道。
+ */
+const READ_ONLY = ["look_at_image", "read_document", "render_page", "web_search", "library_list", "library_read"];
+
 // 这两个要真浏览器。桥是个纯 node 子进程，没有 Electron，调了必抛「需要桌面版环境」——
 // 挂一个必然失败的工具，比不挂更糟：CLI 那边的模型会先照着做一遍，再回来重想。
 const NEEDS_RENDERER = ["html_to_image", "render_page"];
@@ -44,11 +51,12 @@ const NEEDS_RENDERER = ["html_to_image", "render_page"];
  * @param {object} [o]
  * @param {string[]|null} [o.tools]  调用方挑过的名单。不传 = 整张表；空数组 = 一个不借
  * @param {boolean} [o.renderer]     借出去的那头有没有浏览器，没有就摘掉 NEEDS_RENDERER
+ * @param {boolean} [o.readOnly]     只读的一趟（问答 / 计划）：只留 READ_ONLY 里的
  * @returns {string[]}
  */
-function lentFor({ tools, renderer = true } = {}) {
+function lentFor({ tools, renderer = true, readOnly = false } = {}) {
   const pick = Array.isArray(tools) ? new Set(tools) : null;
-  return LENDABLE.filter((n) => (!pick || pick.has(n)) && (renderer || !NEEDS_RENDERER.includes(n)));
+  return LENDABLE.filter((n) => (!pick || pick.has(n)) && (renderer || !NEEDS_RENDERER.includes(n)) && (!readOnly || READ_ONLY.includes(n)));
 }
 
 // 一个不借时 OPENWORKBUDDY_BRIDGE_TOOLS 写这个，不写空串：cmd 里 `set X=` 就是删掉 X，
@@ -65,4 +73,4 @@ function parseList(s) {
   return String(s == null ? "" : s).split(",").map((x) => x.trim()).filter((x) => x && x !== NONE);
 }
 
-module.exports = { LENDABLE, NEEDS_RENDERER, NONE, lentFor, toEnv, parseList };
+module.exports = { LENDABLE, READ_ONLY, NEEDS_RENDERER, NONE, lentFor, toEnv, parseList };

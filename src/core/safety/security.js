@@ -93,11 +93,24 @@ function engineGuard(sec) {
     mode,
     claudeMode: m.claude,
     codexSandbox: m.codex,
-    // 只看不动 / 每步都问：连本项目借出去的那条命令行入口也不放行，否则等于从后门绕开档位
+    // 只看不动：连本项目借出去的那条命令行入口也不放行，否则等于从后门绕开档位。
+    // 每步都问照放：同一批工具走 MCP 那条路本来就放行（claude-code.js 的 --allowed-tools mcp__…），
+    // 只关命令行这一头什么也没收住；这批工具从桥回流时照样过本项目的安全中心
     allowShim: PERMISSION_MODES[mode].cmd !== "deny",
     disallow: uniq.map((h) => `Bash(${h}:*)`),
     note: notes[mode] || "",
   };
+}
+
+/**
+ * 问答 / 计划模式那一趟：不管安全档位在哪档，本机 CLI 都按只读跑（claude plan、codex read-only），
+ * 借出去的命令行入口也不放。档位是「让它自己动到哪一步」，问答 / 计划是「这一趟本来就不动手」，后者更紧就听后者。
+ * 内置引擎这两档只摆读的工具、清单外的一律不执行；换了底层引擎能做的事不该变多。
+ * 收紧的话已经由任务模式说过了，这里不再挂提示。
+ * @param {ReturnType<typeof engineGuard>} base
+ */
+function readOnlyGuard(base) {
+  return { ...base, claudeMode: ENGINE_MODES.plan.claude, codexSandbox: ENGINE_MODES.plan.codex, allowShim: false, readOnly: true, note: "" };
 }
 
 const DEFAULTS = {
@@ -1642,6 +1655,7 @@ module.exports = {
   DEFAULT_MODE, // 命令行要用它判断「现在这档是不是默认那档」，决定状态行印不印
   permissionMode,
   engineGuard, // 把档位翻成外部 CLI 引擎认的开关（claude -p / codex exec）
+  readOnlyGuard, // 问答 / 计划那一趟：不管档位，本机 CLI 按只读跑
   checkWrite,
   checkCommand,
   checkCode,

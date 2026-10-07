@@ -51,8 +51,10 @@ function nodeLauncher() {
  * @param {string} [o.user]    当前用户名（记忆按人隔离）
  * @param {string[]} [o.tools] 借出去的工具名；不传就是 lendable.js 整张表，空数组就是一个不借
  * @param {Array} [o.extraServers] 用户自己配的 MCP 连接器（config.mcp_servers 的形状）
+ * @param {boolean} [o.readOnly] 问答 / 计划那一趟：只借读的工具，桥那头再拦一道，用户的连接器一个不挂
+ *                               （连接器能干什么这边判断不了，只读这一趟就不冒这个险）
  */
-function buildServers({ home, root = "", baseDir = "", user = "", tools, library = null, extraServers = [] }) {
+function buildServers({ home, root = "", baseDir = "", user = "", tools, library = null, extraServers = [], readOnly = false }) {
   const lib = library || {};
   const { command, env: nodeEnv } = nodeLauncher();
   const servers = {
@@ -70,11 +72,12 @@ function buildServers({ home, root = "", baseDir = "", user = "", tools, library
         OPENWORKBUDDY_BRIDGE_BASEDIR: baseDir,
         OPENWORKBUDDY_BRIDGE_USER: user,
         // 每次都写，一个不借也写：桥那头没拿到这个变量就不启动，不会按整张表借
-        OPENWORKBUDDY_BRIDGE_TOOLS: toEnv(lentFor({ tools, renderer: false })),
+        OPENWORKBUDDY_BRIDGE_TOOLS: toEnv(lentFor({ tools, renderer: false, readOnly })),
+        ...(readOnly ? { OPENWORKBUDDY_BRIDGE_READONLY: "1" } : {}),
       },
     },
   };
-  for (const s of extraServers || []) {
+  for (const s of readOnly ? [] : extraServers || []) {
     if (!s || !s.name || s.enabled === false) continue;
     if (s.name === SERVER_NAME) continue; // 不许顶掉自己这台
     // 只转发 stdio 那种：HTTP 端点两个 CLI 的写法各不相同，认错了还不如不挂
@@ -164,23 +167,24 @@ function writeShim(server) {
  *
  * @returns {{runOpts:object, names:string[], toolCount:number, cleanup:function}}
  */
-function attach(engineId, { home, root = "", baseDir = "", user = "", tools, library = null, extraServers = [] } = {}) {
-  const servers = buildServers({ home, root, baseDir, user, tools, library, extraServers });
+function attach(engineId, { home, root = "", baseDir = "", user = "", tools, library = null, extraServers = [], readOnly = false } = {}) {
+  const servers = buildServers({ home, root, baseDir, user, tools, library, extraServers, readOnly });
   const names = Object.keys(servers);
   // 跟 buildServers 写进环境变量的是同一份：提示词里列的、owb list 打出来的、MCP 挂上的，三处一致
-  const lent = lentFor({ tools, renderer: false });
-  const shim = writeShim(servers[SERVER_NAME]);
+  const lent = lentFor({ tools, renderer: false, readOnly });
+  // 只读那一趟不给命令行入口：只读档的 CLI 本来就不该跑命令，借出去的读工具走 MCP 就够了
+  const shim = readOnly ? { path: "", dir: "", bin: "", cleanup() {} } : writeShim(servers[SERVER_NAME]);
   // 两边都以 MCP 为主（见文件头）；命令行脚本只是后备
   const shimIsPrimary = false;
   // 脚本目录挂到子进程 PATH 最前面，模型敲裸 `owb` 就能调到——带绝对路径的写法会被两个
   // CLI 的权限层拦下（见 writeShim 上面那段），裸命令加一条放行规则才通得了。
   // 只给这一个目录：补全过的完整搜索路径由起进程那层接在后面（jsonl.js 的 enginePath）。
   // 以前这里拼的是本进程原样的 PATH，到了那一层反倒把补全的那份整个盖掉了
-  const shimEnv = { PATH: shim.dir };
+  const shimEnv = shim.dir ? { PATH: shim.dir } : {};
   // codex 的命令跑在它自己的沙箱里（只写工作区、默认不联网），owb 脚本也在里面；MCP 服务器不在
   const shimSandboxed = engineId === "codex";
   // engine：提示词按它教看图（claude 用 Read、codex 用 view_image）
-  const common = { engine: engineId, names, lent, toolCount: lent.length, shim: shim.path, shimDir: shim.dir, shimBin: shim.bin, shimIsPrimary, shimSandboxed };
+  const common = { engine: engineId, readOnly, names, lent, toolCount: lent.length, shim: shim.path, shimDir: shim.dir, shimBin: shim.bin, shimIsPrimary, shimSandboxed };
   if (engineId === "codex") {
     return {
       // 不再把数据根加进可写目录：那等于让引擎里的任何命令都能改配置和账号。

@@ -18,6 +18,9 @@
  *      codex 默认不联网、可写目录里没有数据根；多人共用时像 Key 的环境变量不往引擎里传
  *   ⑧ PATH：调用方给的（桥的 owb 目录、属主写的）拼在补全那份前面，不再整个盖掉——
  *      双击启动、PATH 残缺时，开头是 `#!/usr/bin/env node` 的 CLI 借了工具照样起得来；NODE_PATH 指向程序自带的 node_modules
+ *   ⑨ 问答 / 计划模式：本机 CLI 按只读跑（claude plan、codex read-only），安全档位是「全自动」也一样；
+ *      属主在引擎设置里手填的档位、沙箱、全局连接器、放宽权限的附加参数这一趟不认，运行页上说一句（只报参数名）；
+ *      只借读的工具、不给 owb、不挂用户的连接器。反向对照：干活模式下属主手填的照旧以它为准
  *
  * 引擎全是本地假的，不出网。
  *   node test/engine-resilience.js
@@ -703,6 +706,145 @@ process.stdin.on("data", (d) => { input += d; }).on("end", () => {
   ok(got.NODE_PATH.split(":")[0] === appPath("node_modules"), "★NODE_PATH 打头的是程序自带的 node_modules★ 引擎写的脚本 require 得到 pptxgenjs", got.NODE_PATH);
 }
 
+async function partReadOnly() {
+  console.log("\n— ⑨ 问答 / 计划模式：本机 CLI 按只读跑，属主手填的放宽设置这一趟不认 —");
+  const gate = require(mod("gate"));
+  const lendable = require(mod("lendable"));
+  const { createAgentRuntime } = require(mod("agent"));
+  const { McpManager } = require(mod("mcp"));
+
+  // —— 纯判定：哪些附加参数要摘 ——
+  {
+    const L = gate.looseArgs;
+    ok(same(L(["--permission-mode", "bypassPermissions", "--setting-sources", "user"], "claude-code"), { keep: ["--setting-sources", "user"], dropped: ["--permission-mode"] }),
+      "claude：--permission-mode 连值一起摘，别的照带");
+    ok(same(L(["--dangerously-skip-permissions", "--allowed-tools", "Bash(*)", "Write", "--verbose"], "claude-code"), { keep: ["--verbose"], dropped: ["--dangerously-skip-permissions", "--allowed-tools"] }),
+      "claude：--allowed-tools 是变长的，后面不带 - 的值全摘");
+    ok(same(L(["--allowedTools=Bash", "--mcp-config", "a.json", "--plugin-dir", "/x", "--add-dir", "/y"], "claude-code"), { keep: ["--add-dir", "/y"], dropped: ["--allowedTools", "--mcp-config", "--plugin-dir"] }),
+      "claude：= 连写也认；--add-dir 只多给读的地方，照带");
+    ok(same(L(["--full-auto", "-s", "danger-full-access", "-c", "model_reasoning_effort=high", "-c", 'sandbox_mode="danger-full-access"'], "codex"),
+      { keep: ["-c", "model_reasoning_effort=high"], dropped: ["--full-auto", "-s", "-c sandbox_mode"] }), "codex：--full-auto、-s、-c sandbox_mode 摘掉，思考档照带");
+    const k = L(["-sdanger-full-access", "--sandbox=x", "-c=approval_policy=never", "--config", 'mcp_servers.x.env.K="v-secret"', "-c", "sandbox_workspace_write.network_access=true", "--yolo", "--add-dir", "/z", "--search"], "codex");
+    ok(same(k.keep, ["--search"]) && k.dropped.length === 7, "codex：连写、= 写法、--config、可写目录、联网、多挂 MCP 一个不漏", k);
+    ok(!k.dropped.join(" ").includes("v-secret"), "★摘掉的只记参数名★ 值里可能有 Key，不往运行页上写", k.dropped);
+    ok(same(L(null, "codex"), { keep: [], dropped: [] }) && same(L(["--model", "x"], "claude-code").keep, ["--model", "x"]), "没填 / 跟放宽无关的：原样留着（换型号由开跑前的闸管）");
+  }
+
+  // —— 真跑一趟：真的 claude-code / codex 后端，假的二进制把收到的 argv、MCP 配置、PATH 里有没有 owb 记下来 ——
+  const logFile = path.join(home, "ro-run.json");
+  const ccBin = fakeBin("cc-ro", `
+const fs = require("fs"), path = require("path");
+const a = process.argv.slice(2);
+if (a[0] !== "-p") { process.stdout.write("Usage: claude [options]\\n  --add-dir <directories...>\\n"); process.exit(0); }
+const i = a.indexOf("--mcp-config");
+let mcp = null; try { mcp = JSON.parse(fs.readFileSync(a[i + 1], "utf8")); } catch {}
+const owb = (process.env.PATH || "").split(path.delimiter).filter((d) => d && fs.existsSync(path.join(d, "owb")));
+fs.writeFileSync(process.env.FAKE_LOG, JSON.stringify({ argv: a, mcp, owb }));
+process.stdin.resume();
+process.stdin.on("end", () => process.stdout.write(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "好" }) + "\\n"));
+`);
+  const cxBin = fakeBin("codex-ro", `
+const fs = require("fs"), path = require("path");
+const a = process.argv.slice(2);
+if (a[0] === "debug" || a[0] === "--version") process.exit(1);
+const owb = (process.env.PATH || "").split(path.delimiter).filter((d) => d && fs.existsSync(path.join(d, "owb")));
+fs.writeFileSync(process.env.FAKE_LOG, JSON.stringify({ argv: a, owb }));
+const out = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
+process.stdin.resume();
+process.stdin.on("end", () => {
+  out({ type: "thread.started", thread_id: "th-ro" });
+  out({ type: "item.completed", item: { id: "m1", type: "agent_message", text: "好" } });
+  out({ type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } });
+});
+`);
+  const srcHome = path.join(home, "codex-ro-src");
+  fs.mkdirSync(srcHome, { recursive: true });
+  const fakeLLM = { provider: "mock", model: "scripted", async chat() { return { text: "内置答的", toolCalls: [], stopReason: "end" }; } };
+  const go = async (id, o, mode) => {
+    fs.rmSync(logFile, { force: true });
+    // 安全档位是「全自动」：只读是这一趟任务的性质，跟档位开到多大无关
+    const config = {
+      security: { permission_mode: "full" },
+      mcp_servers: [{ name: "userconn", command: "/bin/echo" }],
+      agent: { engine: id, max_steps: 3, engine_options: { [id]: { ...o, env: { ...(o.env || {}), FAKE_LOG: logFile } } } },
+    };
+    const rt = createAgentRuntime({ config, llm: fakeLLM, mcpManager: new McpManager(), experts: [] });
+    const evs = [];
+    let r = null, err = null;
+    try { r = await rt.runTask({ history: [{ role: "user", content: "看看这个项目怎么样" }], emit: (e) => evs.push(e), mode }); } catch (e) { err = e; }
+    const got = fs.existsSync(logFile) ? JSON.parse(fs.readFileSync(logFile, "utf8")) : null;
+    return { r, err, got, status: evs.filter((e) => e.type === "status").map((e) => e.text).join("\n") };
+  };
+  const valsOf = (argv, flag) => argv.flatMap((x, i) => (x === flag ? [argv[i + 1]] : []));
+  // 照手写的表比，不拿 lentFor 自己算：它被改坏了，期望值跟着坏就验不出来了（render_page 要渲染器，桥上本来就不借）
+  const RO = ["look_at_image", "read_document", "web_search", "library_list", "library_read"];
+
+  const ccOpts = {
+    model: "sonnet", bin: ccBin, permissionMode: "bypassPermissions", globalMcp: true,
+    extraArgs: ["--dangerously-skip-permissions", "--allowed-tools", "Bash(*)", "Write", "--mcp-config", "/x/别的.json", "--setting-sources", "user"],
+  };
+  {
+    const A = await go("claude-code", ccOpts, "ask");
+    ok(!A.err && A.got, "问答模式 + claude：跑通", A.err && A.err.message);
+    const argv = A.got.argv;
+    ok(same(valsOf(argv, "--permission-mode"), ["plan"]), "★--permission-mode 只有一个 plan★ 属主手填的 bypassPermissions、档位「全自动」这一趟都不认", valsOf(argv, "--permission-mode"));
+    ok(!argv.includes("--dangerously-skip-permissions"), "★附加参数里的 --dangerously-skip-permissions 摘掉了★", argv);
+    const allowed = valsOf(argv, "--allowed-tools");
+    ok(allowed.length > 0 && allowed.every((t) => t.startsWith("mcp__")), "★--allowed-tools 只剩 mcp__…★ 附加参数里的 Bash(*)、owb 那条都没有", allowed);
+    ok(!argv.includes("Write") && !argv.includes("/x/别的.json") && valsOf(argv, "--mcp-config").length === 1, "摘的时候连后面跟的值一起摘，--mcp-config 只剩本项目那份", argv);
+    ok(argv.includes("--strict-mcp-config"), "★属主手填的 globalMcp 这一趟不认★ 用户全局的 MCP 不挂", argv);
+    ok(argv[argv.indexOf("--setting-sources") + 1] === "user", "反向对照：跟放宽无关的附加参数照带", argv);
+    const servers = (A.got.mcp && A.got.mcp.mcpServers) || {};
+    ok(same(Object.keys(servers), ["openworkbuddy"]), "★只挂本项目这一台★ 用户配的连接器这一趟不挂", Object.keys(servers));
+    const env = (servers.openworkbuddy || {}).env || {};
+    ok(same(lendable.parseList(env.OPENWORKBUDDY_BRIDGE_TOOLS).sort(), RO.slice().sort()) && env.OPENWORKBUDDY_BRIDGE_READONLY === "1", "★借出去的只有读的那几个★ 桥那头也知道是只读", env.OPENWORKBUDDY_BRIDGE_TOOLS);
+    ok(same(A.got.owb, []), "★PATH 里没有 owb★", A.got.owb);
+    const sp = valsOf(argv, "--append-system-prompt")[0] || "";
+    ok(/mcp__openworkbuddy__read_document/.test(sp) && !/generate_image|owb list|被拒一次就别换个写法再试|require\("pptxgenjs"\)/.test(sp),
+      "提示词照这一趟实际借的说：没有生图、没有 owb、没有「自动改文件」那句、不教它写 PPT", sp.slice(0, 400));
+    ok(/问答模式，本机 CLI 按只读跑/.test(A.status) && /bypassPermissions/.test(A.status) && /--dangerously-skip-permissions/.test(A.status) && /全局连接器/.test(A.status),
+      "★运行页上说一句：手填的哪几样这次不用★ 免得属主以为设置坏了", A.status);
+    ok(!/Bash\(\*\)|别的\.json/.test(A.status), "说的时候只报参数名，不带值", A.status);
+  }
+  {
+    // 属主手填 acceptEdits：平时提示词里有「被拒一次就停」那句，计划模式按 plan 跑，那句不该出现
+    const P = await go("claude-code", { ...ccOpts, permissionMode: "acceptEdits" }, "plan");
+    const argv = (P.got && P.got.argv) || [];
+    const sp = valsOf(argv, "--append-system-prompt")[0] || "";
+    ok(!P.err && same(valsOf(argv, "--permission-mode"), ["plan"]) && sp && !/被拒一次就别换个写法再试/.test(sp),
+      "★计划模式 + 手填 acceptEdits：提示词照 plan 说★ 不出「被拒一次就停」那句", P.err ? P.err.message : sp.slice(0, 300));
+  }
+  {
+    const B = await go("claude-code", ccOpts, "craft");
+    const argv = (B.got && B.got.argv) || [];
+    ok(!B.err && same(valsOf(argv, "--permission-mode"), ["bypassPermissions"]) && argv.includes("--dangerously-skip-permissions") && !argv.includes("--strict-mcp-config"),
+      "反向对照：干活模式下属主手填的档位、附加参数、全局连接器照旧以它为准", B.err ? B.err.message : argv);
+    ok(B.got && B.got.owb.length === 1 && Object.keys(B.got.mcp.mcpServers).includes("userconn"), "反向对照：干活模式照给 owb、挂用户的连接器", B.got);
+    ok(!/按只读跑/.test(B.status), "反向对照：干活模式不说那句", B.status);
+  }
+  {
+    const cxOpts = {
+      model: "gpt-test", bin: cxBin, sandbox: "danger-full-access", network: true, env: { CODEX_HOME: srcHome },
+      extraArgs: ["--full-auto", "-s", "danger-full-access", "-c", "approval_policy=never", "--add-dir", "/tmp", "-c", "model_reasoning_effort=high"],
+    };
+    const C = await go("codex", cxOpts, "plan");
+    ok(!C.err && C.got, "计划模式 + codex：跑通", C.err && C.err.message);
+    const argv = (C.got && C.got.argv) || [];
+    const sm = argv.filter((x) => /^sandbox_mode=/.test(x));
+    ok(sm.length === 1 && sm[0] === 'sandbox_mode="read-only"', "★sandbox_mode 只有一个 read-only★ 属主手填的 danger-full-access 不认", sm);
+    ok(!argv.some((x) => /danger-full-access|approval_policy|network_access/.test(x)) && !argv.includes("--full-auto") && !argv.includes("-s") && !argv.includes("--add-dir"),
+      "★附加参数里放宽沙箱、审批、可写目录的全摘了，联网也关了★", argv);
+    ok(argv.includes("model_reasoning_effort=high"), "反向对照：思考档这类无关的照带", argv);
+    const flat = argv.join("\n");
+    ok(!/mcp_servers\.userconn/.test(flat) && /OPENWORKBUDDY_BRIDGE_READONLY = "1"/.test(flat), "codex：用户的连接器不挂，桥知道是只读", flat.slice(0, 300));
+    ok(same(C.got.owb, []), "codex：PATH 里也没有 owb", C.got.owb);
+    ok(/计划模式，本机 CLI 按只读跑/.test(C.status) && /沙箱 danger-full-access/.test(C.status) && !/approval_policy=never|\/tmp/.test(C.status), "运行页说清这次不用的，只报参数名", C.status);
+    const D = await go("codex", cxOpts, "craft");
+    const dv = (D.got && D.got.argv) || [];
+    ok(!D.err && dv.includes('sandbox_mode="danger-full-access"') && dv.includes("--full-auto"), "反向对照：干活模式照属主手填的跑", D.err ? D.err.message : dv);
+  }
+}
+
 (async () => {
   try {
     await partResultErrors();
@@ -713,6 +855,7 @@ process.stdin.on("data", (d) => { input += d; }).on("end", () => {
     await partStaleResume();
     await partGate();
     await partPath();
+    await partReadOnly();
     console.log(`\n引擎韧性：${pass} 项全过`);
   } finally {
     fs.rmSync(home, { recursive: true, force: true });

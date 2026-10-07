@@ -64,7 +64,7 @@ const mediaModels = require("../core/model/media-models");
 const PROTOCOL_VERSION = "2025-06-18";
 
 // 名单只此一份，在 lendable.js；这里再导出一次只是给老测试用
-const { LENDABLE, NEEDS_RENDERER, lentFor, parseList } = require("./lendable");
+const { LENDABLE, READ_ONLY, NEEDS_RENDERER, lentFor, parseList } = require("./lendable");
 
 /**
  * 读一份设置。文件不在是正常的（还没存过）：安全策略照默认。
@@ -101,7 +101,10 @@ const LIB_MOUNT = process.env.OPENWORKBUDDY_BRIDGE_LIB_MOUNT || "";
 // 被拉起时没拿到它，就不是 bridge.js 拉的，按整张表兜底等于把关掉的工具又借出去，所以报错退出（见文件末尾）。
 // 被测试 require 进来时没有它，按整张表算。不在 LENDABLE 里的名字一律不认。
 const TOOLS_ENV = process.env.OPENWORKBUDDY_BRIDGE_TOOLS;
-const ALLOW = new Set(TOOLS_ENV === undefined ? LENDABLE : lentFor({ tools: parseList(TOOLS_ENV) }));
+// 问答 / 计划那一趟（bridge.js 传 readOnly）：名单本来就只有读的，这里照 READ_ONLY 再滤一道，
+// 名单被人改过、多写了生图之类，照样借不出去
+const READONLY = process.env.OPENWORKBUDDY_BRIDGE_READONLY === "1";
+const ALLOW = new Set(lentFor({ tools: TOOLS_ENV === undefined ? undefined : parseList(TOOLS_ENV), readOnly: READONLY }));
 
 // 只借给外部引擎、本项目自己的模型看不到的工具定义。
 //
@@ -178,6 +181,9 @@ function notLent(name) {
 }
 
 async function callTool(name, args) {
+  if (READONLY && LENDABLE.includes(name) && !READ_ONLY.includes(name)) {
+    throw new Error(`这一趟是问答 / 计划模式，按只读跑，只借读的那几个工具；${name} 不在其中，没有执行`);
+  }
   if (!ALLOW.has(name)) throw new Error(notLent(name));
   if (loaded.error) { loaded = loadConfig(); config = loaded.config; }
   if (loaded.error) {

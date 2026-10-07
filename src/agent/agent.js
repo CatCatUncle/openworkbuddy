@@ -2412,6 +2412,9 @@ function modePrompt(mode) {
     // 挂给 CLI。不挂的话切到本机引擎就等于把这些全丢了 —— 模型只会回一句
     // 「本会话没有任何生图工具」，那不是它偷懒，是真没有。
     // 用户自己配的 MCP 连接器一并转过去，同理：换个底层引擎不该让连接器消失。
+    // 问答 / 计划：不管安全档位是哪档，这一趟按只读跑（见 security.readOnlyGuard）。
+    // 内置引擎这两档只摆读的工具、清单外的一律不执行（runTask 里的 readOnlyMode）；换成本机 CLI，能做的事不该变多
+    const readOnly = mode === "ask" || mode === "plan";
     let bridged = null;
     try {
       bridged = bridge.attach(backend.id, {
@@ -2429,7 +2432,9 @@ function modePrompt(mode) {
           ? require("../engines/lendable").LENDABLE.filter((n) => !(skillsWriteOff() && n === "install_skill") && !(connectorsLendOff() && n === "add_connector")
             && !(canvasStore.canvasSessionOf(sessionId) && canvasStore.CANVAS_QUOTE_FIRST.includes(n)))
           : undefined,
-        extraServers: config.mcp_servers || [],
+        // 只读那一趟：只借读的工具，用户的连接器一个不挂（它们能干什么这边判断不了），命令行入口也不给
+        extraServers: readOnly ? [] : config.mcp_servers || [],
+        readOnly,
       });
     } catch (e) {
       // 挂不上就照常跑，只是少了那些工具；不能因为桥没搭起来把整个任务毙掉
@@ -2438,12 +2443,25 @@ function modePrompt(mode) {
 
     // 档位收紧了就明说一句。不说的话，用户看到的是「它怎么什么都不肯干」，
     // 而真正的原因在另一个页面上的一颗开关里，隔着两层根本联系不起来
-    const guard = security.engineGuard(security.getSecurity(config));
+    const baseGuard = security.engineGuard(security.getSecurity(config));
+    const guard = readOnly ? security.readOnlyGuard(baseGuard) : baseGuard;
     if (guard.note) emit({ type: "status", text: guard.note, depth: 0 });
+    // 属主在引擎设置里手填的档位、沙箱、放宽权限的附加参数，平时以它为准（手填是更明确的表态）；
+    // 只读那一趟不认，在 runWith 里 ...opts 之后盖回去。盖了什么在运行页上说一句，免得属主以为自己的设置没生效是 bug
+    const loose = readOnly ? require("../engines/gate").looseArgs(opts.extraArgs, backend.id) : null;
+    if (loose) {
+      const off = [
+        opts.permissionMode && `档位 ${opts.permissionMode}`,
+        opts.sandbox && `沙箱 ${opts.sandbox}`,
+        opts.globalMcp === true && "全局连接器",
+        loose.dropped.length && `附加参数 ${loose.dropped.join(" / ")}`,
+      ].filter(Boolean);
+      if (off.length) emit({ type: "status", text: `这一趟是${mode === "plan" ? "计划" : "问答"}模式，本机 CLI 按只读跑；引擎设置里手填的${off.join("、")}这次不用`, depth: 0 });
+    }
 
     try {
-      // claude 那边实际用的档位：engine_options 里手填的 permissionMode 最大（见 claude-code.js）
-      const claudeMode = opts.permissionMode || guard.claudeMode;
+      // claude 那边实际用的档位：engine_options 里手填的 permissionMode 最大（见 claude-code.js）；只读那一趟除外
+      const claudeMode = readOnly ? guard.claudeMode : opts.permissionMode || guard.claudeMode;
       const systemPrompt = await engineSystemPrompt(cwd, mode, user, bridged, { projectContext, history, lang, engine: backend.id, claudeMode });
       await filesOut.ready; // 开跑前的基线必须先落定，否则引擎第一步写的文件会被当成「本来就有」
       const runWith = (resumeId) => backend.run({
@@ -2468,6 +2486,8 @@ function modePrompt(mode) {
         ...opts, // 用户在设置里给这个引擎填的 model / bin / extraArgs 等，最后覆盖
         // env 例外，不整个盖：属主在引擎设置里写了 PATH 的话，桥挂在最前面的 owb 目录会被顶掉，模型敲 owb 就找不到
         env: mergeEnv(bridged ? bridged.runOpts.env : null, opts.env),
+        // 只读那一趟，opts 里能放宽的几项盖回去：必须写在 ...opts 后面，不然属主手填的一句就把只读盖了
+        ...(readOnly ? { permissionMode: undefined, sandbox: undefined, globalMcp: false, network: false, extraArgs: loose.keep } : {}),
         onWrite: (abs) => noteWrote(abs, runToken),
       });
       let r;

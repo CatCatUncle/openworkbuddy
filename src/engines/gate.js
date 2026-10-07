@@ -79,6 +79,62 @@ function modelArg(args, engineId = "") {
   return "";
 }
 
+// 只读那一趟要摘掉的附加参数：放宽权限 / 沙箱、多挂工具或目录的。平时属主手填的以它为准，
+// 问答 / 计划那一趟不认——那是这趟任务的性质，不是档位偏好
+const CC_LOOSE_FLAG = /^--(dangerously-skip-permissions|allow-dangerously-skip-permissions)$/;
+const CC_LOOSE_ONE = /^--(permission-mode|plugin-dir)$/;
+const CC_LOOSE_MANY = /^--(allowed-tools|allowedTools|mcp-config)$/; // 变长：后面不带 - 的都是它的值
+const CC_LOOSE_EQ = /^--(permission-mode|plugin-dir|allowed-tools|allowedTools|mcp-config)=/;
+const CX_LOOSE_FLAG = /^--(full-auto|dangerously-bypass-approvals-and-sandbox|yolo)$/;
+const CX_LOOSE_ONE = /^(-s|-a|--sandbox|--ask-for-approval|--add-dir)$/;
+const CX_LOOSE_EQ = /^--(sandbox|ask-for-approval|add-dir)=/;
+/** -c 的键：沙箱、审批、可写目录、多挂 MCP */
+const CX_LOOSE_KEY = /^(sandbox_mode|approval_policy|sandbox_workspace_write|mcp_servers)(\.|$)/;
+
+/**
+ * 附加参数分成两份：只读那一趟照带的、要摘掉的。摘掉的只记参数名（-c 记到键为止），
+ * 要在运行页上说一句——值里可能有 Key（-c mcp_servers.x.env.…），不往对话里写。
+ * @param {unknown} args
+ * @param {string} [engineId]
+ * @returns {{keep: string[], dropped: string[]}}
+ */
+function looseArgs(args, engineId = "") {
+  /** @type {string[]} */
+  const keep = [];
+  /** @type {string[]} */
+  const dropped = [];
+  if (!Array.isArray(args)) return { keep, dropped };
+  const list = args.map((a) => String(a == null ? "" : a));
+  for (let i = 0; i < list.length; i++) {
+    const a = list[i].trim();
+    let eat = -1; // -1 = 不摘；0 = 只摘它自己；n = 连后面 n 个值一起摘
+    let name = a.replace(/=.*$/s, "");
+    if (engineId === "claude-code") {
+      if (CC_LOOSE_FLAG.test(a) || CC_LOOSE_EQ.test(a)) eat = 0;
+      else if (CC_LOOSE_ONE.test(a)) eat = 1;
+      else if (CC_LOOSE_MANY.test(a)) eat = Infinity;
+    } else {
+      if (CX_LOOSE_FLAG.test(a) || CX_LOOSE_EQ.test(a)) eat = 0;
+      else if (CX_LOOSE_ONE.test(a)) eat = 1;
+      else if (/^-[sa]./.test(a)) { eat = 0; name = a.slice(0, 2); } // -sdanger-full-access 连写
+      else {
+        let kv = null;
+        if (a === "-c" || a === "--config") kv = list[i + 1] == null ? "" : list[i + 1];
+        else if (a.startsWith("--config=")) kv = a.slice("--config=".length);
+        else if (/^-c./.test(a)) kv = a.slice(2).replace(/^=/, "");
+        if (kv != null) {
+          const key = String(kv).split("=")[0].trim().replace(/["']/g, "").replace(/\s*\.\s*/g, ".");
+          if (CX_LOOSE_KEY.test(key)) { eat = a === "-c" || a === "--config" ? 1 : 0; name = `-c ${key}`; }
+        }
+      }
+    }
+    if (eat < 0) { keep.push(list[i]); continue; }
+    while (eat > 0 && i + 1 < list.length && !list[i + 1].startsWith("-")) { i++; eat--; }
+    dropped.push(name);
+  }
+  return { keep, dropped };
+}
+
 /**
  * 沙箱可写目录只留工作区：数据根本身、包着数据根的目录、数据根下的 data/（配置、账号、个人设置都在那）
  * 一律剔掉。护的是「引擎里的命令改不动 OpenWorkBuddy 自己的配置和账号」。
@@ -134,4 +190,4 @@ function admit({ id, label, owner, mine, shellOff = false, multi = false }) {
   return { model: want, allowed };
 }
 
-module.exports = { admit, allowedModels, modelArg, safeRoots, WHERE, argsWhere };
+module.exports = { admit, allowedModels, modelArg, looseArgs, safeRoots, WHERE, argsWhere };

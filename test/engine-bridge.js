@@ -21,6 +21,8 @@
  *   ⑩ 提示词说真话（主进程真跑一趟，桩引擎拿真名）：列的工具 = MCP 挂的 = owb list = 借出名单；技能一个不落、
  *      每条带正文的完整路径；claude「自动改文件」档说清命令会被拒、被拒就停；看图按引擎分；
  *      owb 的 --help 写在哪都认；敲错工具名给近似名；借出去的 library_read 不指没借出的 library_import
+ *   ⑪ 问答 / 计划那一趟（readOnly）：只借读的那几个（跟内置引擎这两档的只读工具对齐），桥那头照表再拦一道，
+ *      名单被改过也借不出生图；不写 owb 脚本、不挂用户的连接器
  *
  * 真起桥子进程，但不起任何 CLI 引擎、不出网（假生图上游起在 127.0.0.1）。
  *   node test/engine-bridge.js
@@ -588,6 +590,50 @@ const serverOf = (att) => JSON.parse(fs.readFileSync(att.runOpts.mcpConfigPath, 
       const own = await tools.withLibraryBase(lib, () => tools.executeTool("library_read", { name: "图.png" }, {}));
       ok(/library_import/.test(own.content), "反向对照：内置引擎那边照旧指到 library_import", own.content);
     }
+  }
+
+  section("⑪ 问答 / 计划那一趟：只借读的，桥那头照表再拦一道，不给命令行入口、不挂用户的连接器");
+  {
+    const RO = lendable.lentFor({ renderer: false, readOnly: true });
+    // 跟内置引擎这两档摆给模型的那份对齐：内置那边问答时没有的，换成本机引擎借出去也不该有
+    const agentSrc = fs.readFileSync(require.resolve(mod("agent")), "utf8");
+    const roLine = agentSrc.split("\n").find((l) => /const READ_ONLY_TOOLS = \[/.test(l)) || "";
+    const builtin = [...roLine.matchAll(/"(\w+)"/g)].map((m) => m[1]);
+    ok(builtin.length > 5 && sorted(lendable.READ_ONLY) === sorted(lendable.LENDABLE.filter((n) => builtin.includes(n))),
+      "★只读名单 = 内置引擎问答档的只读工具 ∩ 能借的★ 换了底层引擎能做的事不变多", { READ_ONLY: lendable.READ_ONLY, builtin });
+    ok(RO.length > 0 && ["generate_image", "remember", "install_skill", "gen_diagram"].every((n) => !RO.includes(n)), "只读那一趟没有生图、记忆、装技能、出图表", RO);
+
+    const conn = [{ name: "userconn", command: "/bin/echo" }];
+    const a = bridge.attach("claude-code", { home: HOME, baseDir: "任务_只读", user: "t", extraServers: conn, readOnly: true });
+    try {
+      ok(sorted(a.lent) === sorted(RO) && a.readOnly === true, "attach 给的 lent 只剩读的（提示词照它列）", a.lent);
+      ok(!a.shimBin && !a.shim && !(a.runOpts.env || {}).PATH, "★不写 owb 脚本、不往 PATH 里挂目录★ 只读档的 CLI 本来就不该跑命令", { shim: a.shim, env: a.runOpts.env });
+      ok(sorted(a.runOpts.mcpServerNames) === bridge.SERVER_NAME, "★用户配的连接器不挂★ 它们能干什么这边判断不了", a.runOpts.mcpServerNames);
+      const s = serverOf(a);
+      ok(s.env.OPENWORKBUDDY_BRIDGE_READONLY === "1", "桥那头知道这一趟是只读", Object.keys(s.env));
+      const l = mcpList(s);
+      ok(l.names && sorted(l.names) === sorted(RO), "MCP 挂上的也只有读的", l.names);
+      // 名单被人改过、多写了生图和记忆：桥那头照只读表再滤一道
+      const bad = { OPENWORKBUDDY_BRIDGE_TOOLS: lendable.toEnv(["generate_image", "remember", "web_search"]) };
+      const l2 = mcpList(s, bad);
+      ok(l2.names && sorted(l2.names) === "web_search", "★名单里混进生图、记忆：只读那一趟照样不挂★", l2.names);
+      const c = mcpCall({ ...s, env: { ...s.env, ...bad } }, "generate_image", { prompt: "雪山" });
+      ok(!c.ok && /只读/.test(c.text) && /没有执行/.test(c.text), "★硬调生图：拒，说清这一趟是只读★", c.text);
+      const l3 = mcpList(s, { ...bad, OPENWORKBUDDY_BRIDGE_READONLY: undefined });
+      ok(l3.names && l3.names.includes("generate_image"), "反向对照：不是只读那一趟，同一份名单照借", l3.names);
+    } finally { a.cleanup(); }
+
+    const cx = bridge.attach("codex", { home: HOME, baseDir: "任务_只读", user: "t", extraServers: conn, readOnly: true });
+    try {
+      const flat = cx.runOpts.mcpArgs.join("\n");
+      ok(!/mcp_servers\.userconn/.test(flat) && /OPENWORKBUDDY_BRIDGE_READONLY = "1"/.test(flat), "codex 那边同样：连接器不挂，桥知道是只读", flat.slice(0, 400));
+      ok(!cx.shimBin && !(cx.runOpts.env || {}).PATH, "codex 那边也不给命令行入口", cx.runOpts.env);
+    } finally { cx.cleanup(); }
+
+    const full = bridge.attach("claude-code", { home: HOME, baseDir: "任务_只读", user: "t", extraServers: conn });
+    try {
+      ok(full.shimBin && full.runOpts.mcpServerNames.includes("userconn") && full.lent.includes("generate_image"), "反向对照：平时照借整张表、给 owb、挂连接器", { names: full.runOpts.mcpServerNames, shim: full.shimBin });
+    } finally { full.cleanup(); }
   }
 
   console.log(`\n${pass} 通过，${fail} 失败`);
