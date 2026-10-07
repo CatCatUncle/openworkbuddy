@@ -29,6 +29,7 @@
 
 const path = require("path");
 const { dataPath } = require("../../platform/paths");
+const log = require("../../platform/log");
 const store = require("../../platform/store");
 const usageStore = require("./usage-store");
 const pricing = require("./pricing");
@@ -221,7 +222,8 @@ function check(cap, n = 1, actor) {
   if (!q || !q.enabled) return { ok: true, left: Infinity };
   const meta = CAPS[cap] || { label: cap, unit: "次" };
   let db;
-  try { db = load(); } catch { return { ok: true, left: Infinity }; } // 账本读不出来不该拦住正事
+  // 账本读不出来不该拦住正事：放行，但在系统日志里留一条
+  try { db = load(); } catch (e) { log.warn("quota", "次数账本读不出来，这次没按次数拦", { cap, err: e }); return { ok: true, left: Infinity }; }
   const u = used(db, { org: who.org, cap, user: who.user });
   const need = Math.max(1, Math.floor(+n) || 1);
   const hit = (limit, got, scope) => {
@@ -345,7 +347,7 @@ function gate(cap, { n = 1, model = "", units = 0, provider = "", base_url = "",
     }
     // 预算模块自己坏了（账本读不出来、配置里塞了个怪值）不该拦住正事，
     // 跟 check() 读不出账本时同一个选择：放行，但喊一声。
-    console.warn("[预算] 钱闸没能判（本次放行）：" + (e && e.message));
+    log.warn("quota", "钱闸没能判，本次放行", { cap, err: e });
     return { ok: true, hold: null };
   }
 }
@@ -402,7 +404,7 @@ function record(cap, { n = 1, provider = "", model = "", meta = "", units = 0, b
       cost_unknown: cost ? !!cost.unknown : true,
     });
   } catch (e) {
-    console.warn("[额度] 流水没记上（不影响本次调用）：" + e.message);
+    log.warn("quota", "次数流水没记上（不影响本次调用）", { cap, err: e });
   }
 
   if (!billable(cap)) return;
@@ -429,7 +431,7 @@ function record(cap, { n = 1, provider = "", model = "", meta = "", units = 0, b
       credits: 0, prompt: tk ? tk.prompt : 0, cached: tk ? tk.cached : 0, completion: tk ? tk.completion : 0, calls: cnt,
     });
   } catch (e) {
-    console.warn("[预算] 金额流水没记上（不影响本次调用）：" + e.message);
+    log.warn("quota", "金额流水没记上（不影响本次调用）", { cap, err: e });
   }
 }
 

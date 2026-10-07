@@ -16,6 +16,8 @@
  *      属主在引擎设置里写了 PATH 也挤不掉打头的 owb 目录
  *   ⑧ 借出去生图（假上游）：回执给相对引擎当前目录的路径 + 完整路径，不说「工作空间内的相对路径」；
  *      主模型和引擎命中同一条生成缓存，各拿各坐标系里的路径
+ *   ⑨ 设置文件读不出来（JSON 坏了、最外层不是一组设置）：借来的工具一律不执行，报文件在哪和原话、
+ *      系统日志里留一条；文件不在照常跑；MCP 那条路上文件改好了下一条就执行
  *
  * 真起桥子进程，但不起任何 CLI 引擎、不出网（假生图上游起在 127.0.0.1）。
  *   node test/engine-bridge.js
@@ -23,7 +25,7 @@
 const fs = require("fs");
 const path = require("path");
 const http = require("http");
-const { spawnSync, execFileSync, execFile } = require("child_process");
+const { spawn, spawnSync, execFileSync, execFile } = require("child_process");
 const { mod } = require("./lib/mod");
 // 赶在 require 生产模块之前：桥子进程照 OPENWORKBUDDY_HOME 找数据目录，不能落进用户真在用的那份（见 test/lib/own-home.js）
 const HOME = require("./lib/own-home")("engine-bridge");
@@ -61,6 +63,39 @@ function mcpCall(server, name, args) {
   const r = mcpOnce(server, { method: "tools/call", params: { name, arguments: args } });
   const out = r.res && r.res.result;
   return { status: r.status, ok: !!(out && !out.isError), text: out ? out.content.map((c) => c.text).join("\n") : "", err: r.stderr.slice(-400) };
+}
+
+/** 一个 MCP 会话里按顺序发几条请求，中间可以插一步（函数）。答完一条才发下一条 */
+function mcpSteps(server, steps) {
+  return new Promise((resolve) => {
+    const env = { ...process.env, ...(server.env || {}) };
+    for (const [k, v] of Object.entries(env)) if (v === undefined) delete env[k];
+    const ch = spawn(server.command, server.args || [], { env, stdio: ["pipe", "pipe", "pipe"] });
+    const results = [];
+    let buf = "", id = 1, i = 0, err = "";
+    const timer = setTimeout(() => { try { ch.kill(); } catch {} }, 60000);
+    const send = (m) => ch.stdin.write(JSON.stringify({ jsonrpc: "2.0", ...m }) + "\n");
+    const next = () => {
+      while (i < steps.length && typeof steps[i] === "function") steps[i++]();
+      if (i >= steps.length) { ch.stdin.end(); return; }
+      send({ id: ++id, ...steps[i++] });
+    };
+    ch.stderr.on("data", (d) => { err += d; });
+    ch.stdout.on("data", (d) => {
+      buf += d;
+      let k;
+      while ((k = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, k); buf = buf.slice(k + 1);
+        let m; try { m = JSON.parse(line); } catch { continue; }
+        if (m.id === 1) { send({ method: "notifications/initialized" }); next(); continue; }
+        const out = m.result || {};
+        results.push({ isError: !!out.isError, text: (out.content || []).map((c) => c.text).join("\n") });
+        next();
+      }
+    });
+    ch.on("close", (code) => { clearTimeout(timer); resolve({ code, results, err }); });
+    send({ id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "0" } } });
+  });
 }
 
 /** 跑 owb 脚本，跟引擎里模型敲的一样 */
@@ -383,6 +418,54 @@ const serverOf = (att) => JSON.parse(fs.readFileSync(att.runOpts.mcpConfigPath, 
     }
     const back = tools.withWorkspace(root, () => tools._internals.savedAt(task, "猫.png"));
     ok(back === "任务_回执/猫.png", "反向对照：没设的时候（主进程里）照旧报相对工作空间根的路径", back);
+  }
+
+  section("⑨ 设置文件读不出来：借来的工具一律不执行，报原话、留痕；改好了下一次就认");
+  {
+    const entry = mod("tool-bridge");
+    // 另起一个数据家：⑧ 在 HOME/config.json 里写了生图渠道，这儿不碰它
+    const H = path.join(HOME, "坏设置");
+    fs.mkdirSync(H, { recursive: true });
+    const cfgFile = path.join(H, "config.json");
+    const env = { ...process.env, OPENWORKBUDDY_HOME: H, OPENWORKBUDDY_BRIDGE_TOOLS: "library_list,remember", OPENWORKBUDDY_BRIDGE_BASEDIR: "任务_设置" };
+    delete env.OPENWORKBUDDY_BRIDGE_ROOT; delete env.OPENWORKBUDDY_LOG_DIR;
+    const cli = (name, args) => spawnSync(process.execPath, [entry, name, JSON.stringify(args || {})], { env, encoding: "utf8", timeout: 60000 });
+    const logRows = () => {
+      const dir = path.join(H, "logs");
+      if (!fs.existsSync(dir)) return [];
+      return fs.readdirSync(dir).filter((f) => /^app-.*\.jsonl$/.test(f))
+        .flatMap((f) => fs.readFileSync(path.join(dir, f), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)));
+    };
+
+    fs.writeFileSync(cfgFile, '{ "security": { "gateway": true }, }');   // 结尾多一个逗号
+    const p = cli("library_list");
+    ok(p.status === 1 && p.stdout === "", "JSON 坏了：命令行调用退出码 1，什么都没执行", { status: p.status, out: p.stdout.slice(0, 200) });
+    ok(p.stderr.includes(cfgFile) && /不是合法 JSON/.test(p.stderr) && /不执行/.test(p.stderr), "报错里有文件在哪、解析器的原话、这次不执行", p.stderr);
+    const rows = logRows().filter((r) => r.mod === "engine-bridge" && r.level === "error");
+    ok(rows.length === 1 && rows[0].file === cfgFile && /JSON/.test(String(rows[0].err)), "系统日志里留了一条（设置 → 系统日志看得见）", rows);
+
+    fs.writeFileSync(cfgFile, "null");
+    const n = cli("library_list");
+    ok(n.status === 1 && /不是一组设置/.test(n.stderr), "解析得出来但不是一组设置（null）：同样不执行", n.stderr);
+    fs.writeFileSync(cfgFile, "[]");
+    ok(/不是一组设置/.test(cli("library_list").stderr), "顶层是数组：同样不执行");
+
+    fs.rmSync(cfgFile, { force: true });
+    const miss = cli("library_list");
+    ok(miss.status === 0 && !/不执行/.test(miss.stderr + miss.stdout), "反向对照：还没存过设置（文件不在）照常执行，安全策略按默认", { status: miss.status, err: miss.stderr.slice(0, 300) });
+    fs.writeFileSync(cfgFile, "{}");
+    ok(cli("library_list").status === 0, "反向对照：合法的空设置照常执行");
+
+    // MCP 那条路：同一个进程里，第一条被拒，文件改好之后下一条就执行
+    fs.writeFileSync(cfgFile, "{ 坏");
+    const r = await mcpSteps({ command: process.execPath, args: [entry], env }, [
+      { method: "tools/call", params: { name: "library_list", arguments: {} } },
+      () => fs.writeFileSync(cfgFile, "{}"),
+      { method: "tools/call", params: { name: "library_list", arguments: {} } },
+    ]);
+    const [a, b] = r.results;
+    ok(a && a.isError && /不执行/.test(a.text) && a.text.includes(cfgFile), "MCP：设置坏着时回 isError，人话里有文件在哪", a);
+    ok(b && !b.isError && !/不执行/.test(b.text), "MCP：文件改好后下一条直接执行，不用重开引擎", b);
   }
 
   console.log(`\n${pass} 通过，${fail} 失败`);

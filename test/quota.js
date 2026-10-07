@@ -34,6 +34,9 @@ const { mod } = require("./lib/mod");
 // 账本必须另起一份：不隔离的话这套测试会往用户真正的 data/api-usage.json 里灌假流水
 const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "owb-quota-"));
 process.env.OPENWORKBUDDY_DATA_DIR = HOME;
+// 记账出错的那几条会写系统日志：落进这份临时目录，不落仓库自己的 logs/
+const LOG_DIR = path.join(HOME, "logs");
+process.env.OPENWORKBUDDY_LOG_DIR = LOG_DIR;
 
 const quota = require(mod("quota"));
 
@@ -360,6 +363,38 @@ console.log("\n【11】看图按 token 过两道闸：次数照数，钱按真�
   }
   const g5 = gate(a5, "gpt-4o", remote);
   ok(!g5.ok && /视觉模型看图/.test(g5.why || ""), "次数闸：每人每天 2 次，第三次被拦", g5.why);
+}
+
+console.log("\n【12】记账、读账本出错：照常放行，但在系统日志里留一条");
+{
+  const usage = require(mod("usage-store"));
+  const rowsOf = () => {
+    try {
+      return fs.readdirSync(LOG_DIR).filter((f) => /^app-.*\.jsonl$/.test(f))
+        .flatMap((f) => fs.readFileSync(path.join(LOG_DIR, f), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)))
+        .filter((r) => r.mod === "quota");
+    } catch { return []; }
+  };
+  const L = quota._internals.ledger;
+  const keep = { la: L.append, lr: L.read, ua: usage.append };
+  try {
+    L.append = () => { throw new Error("次数账本写不进-测试"); };
+    usage.append = () => { throw new Error("主账写不进-测试"); };
+    let threw = false;
+    try { quota.record("image", { provider: "t", model: "dall-e-3" }); } catch { threw = true; }
+    const r = rowsOf();
+    ok(!threw, "记账失败不把已经成功的调用判成失败");
+    ok(r.some((x) => x.level === "warn" && /次数流水没记上/.test(x.msg) && x.cap === "image" && /次数账本写不进-测试/.test(x.err)),
+      "次数流水没记上：系统日志里有一条，带原话", r);
+    ok(r.some((x) => x.level === "warn" && /金额流水没记上/.test(x.msg) && /主账写不进-测试/.test(x.err)), "金额流水没记上：同上", r);
+    L.read = () => { throw new Error("账本读坏了-测试"); };
+    const c = quota.withActor(actor("o-log", "u", table("search", { user_daily: 1 })), () => quota.check("search"));
+    ok(c.ok && rowsOf().some((x) => /次数账本读不出来/.test(x.msg) && /账本读坏了-测试/.test(x.err)), "次数账本读不出来：放行，日志里留一条", c);
+  } finally { L.append = keep.la; L.read = keep.lr; usage.append = keep.ua; }
+  const n = rowsOf().length;
+  reset();
+  burn(actor("o-log2", "u", table("search", { user_daily: 5 })), "search", 2);
+  ok(rowsOf().length === n, "反向对照：账本好好的时候一条都不写");
 }
 
 function ok_silent(cond) { if (!cond) { fail++; console.log("  ✗ 关着闸门的时候居然拦了一次"); } }

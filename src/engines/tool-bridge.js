@@ -56,6 +56,7 @@ console.warn = toErr;
 console.debug = toErr;
 
 const { dataPath } = require("../platform/paths");
+const appLog = require("../platform/log");   // 系统日志（设置 → 系统日志）；下面那个 log 是排障用的收发记录
 const tools = require("../agent/tools");
 const security = require("../core/safety/security");
 const mediaModels = require("../core/model/media-models");
@@ -65,12 +66,32 @@ const PROTOCOL_VERSION = "2025-06-18";
 // 名单只此一份，在 lendable.js；这里再导出一次只是给老测试用
 const { LENDABLE, NEEDS_RENDERER, lentFor, parseList } = require("./lendable");
 
+/**
+ * 读一份设置。文件不在是正常的（还没存过）：安全策略照默认。
+ * 读不出来、解析不了、顶层不是一组设置，就不能当空设置用：那样用户写的安全策略整个不算数，
+ * 借出去的工具照默认跑。原话记下来，callTool 一律不执行，每次调用前再读一遍，改好了就认。
+ * 只读不修：拿 .bak 顶、把坏文件隔离是主进程的事，桥不在数据目录里挪文件。
+ * @returns {{ config: any, error: string }}
+ */
 function loadConfig() {
-  try { return JSON.parse(fs.readFileSync(dataPath("config.json"), "utf8")); }
-  catch { return {}; }
+  let text;
+  try { text = fs.readFileSync(dataPath("config.json"), "utf8"); }
+  catch (e) {
+    if (e && e.code === "ENOENT") return { config: {}, error: "" };
+    return { config: {}, error: `读不出来（${(e && e.message) || e}）` };
+  }
+  let v;
+  try { v = JSON.parse(text); }
+  catch (e) { return { config: {}, error: `不是合法 JSON（${(e && e.message) || e}）` }; }
+  if (!v || typeof v !== "object" || Array.isArray(v)) {
+    return { config: {}, error: `不是一组设置（最外层是${v === null ? " null" : Array.isArray(v) ? "数组" : ` ${typeof v}`}）` };
+  }
+  return { config: v, error: "" };
 }
 
-const config = loadConfig();
+let loaded = loadConfig();
+let config = loaded.config;
+let loggedErr = "";   // 同一句原话只往系统日志里记一次
 const ROOT = process.env.OPENWORKBUDDY_BRIDGE_ROOT;
 const BASE_DIR = process.env.OPENWORKBUDDY_BRIDGE_BASEDIR || "";
 const USER = process.env.OPENWORKBUDDY_BRIDGE_USER || "";
@@ -152,6 +173,16 @@ function setupRoots() {
 
 async function callTool(name, args) {
   if (!ALLOW.has(name)) throw new Error(`工具 ${name} 没有借给本机引擎`);
+  if (loaded.error) { loaded = loadConfig(); config = loaded.config; }
+  if (loaded.error) {
+    const file = dataPath("config.json");
+    if (loggedErr !== loaded.error) {
+      loggedErr = loaded.error;
+      appLog.error("engine-bridge", "设置文件读不出来，借来的工具不执行", { file, err: loaded.error, tool: name });
+    }
+    throw new Error(`设置文件 ${file} ${loaded.error}。读不到安全策略，借来的工具一律不执行（这次是 ${name}）；文件改好后，下一次调用会重新读`);
+  }
+  loggedErr = "";
   const run = () => tools.executeTool(name, args || {}, {
     knownTools: [...ALLOW],
     timeoutMs: ((config.agent || {}).tool_timeout_ms) || 120000,
