@@ -26,7 +26,7 @@ const os = require("os");
 const path = require("path");
 // 名单是纯数据，require 它不会碰 console、不读配置（tool-bridge.js 会，所以这里不 require 它）。
 // 下面一律 renderer:false：桥由 nodeLauncher 以纯 node 拉起，那头永远没有浏览器
-const { lentFor, toEnv } = require("./lendable");
+const { lentFor, toEnv, SANDBOX_BLOCKED } = require("./lendable");
 
 const BRIDGE_ENTRY = path.join(__dirname, "tool-bridge.js");
 const SERVER_NAME = "openworkbuddy";
@@ -167,13 +167,14 @@ function writeShim(server) {
  *
  * @returns {{runOpts:object, names:string[], toolCount:number, cleanup:function}}
  */
-function attach(engineId, { home, root = "", baseDir = "", user = "", tools, library = null, extraServers = [], readOnly = false } = {}) {
+function attach(engineId, { home, root = "", baseDir = "", user = "", tools, library = null, extraServers = [], readOnly = false, noShim = false } = {}) {
   const servers = buildServers({ home, root, baseDir, user, tools, library, extraServers, readOnly });
   const names = Object.keys(servers);
   // 跟 buildServers 写进环境变量的是同一份：提示词里列的、owb list 打出来的、MCP 挂上的，三处一致
   const lent = lentFor({ tools, renderer: false, readOnly });
-  // 只读那一趟不给命令行入口：只读档的 CLI 本来就不该跑命令，借出去的读工具走 MCP 就够了
-  const shim = readOnly ? { path: "", dir: "", bin: "", cleanup() {} } : writeShim(servers[SERVER_NAME]);
+  // 只读那一趟不给命令行入口：只读档的 CLI 本来就不该跑命令，借出去的读工具走 MCP 就够了。
+  // 安全档「只看不动」也不给（noShim，见 security.engineGuard 的 allowShim），两个引擎一样
+  const shim = readOnly || noShim ? { path: "", dir: "", bin: "", cleanup() {} } : writeShim(servers[SERVER_NAME]);
   // 两边都以 MCP 为主（见文件头）；命令行脚本只是后备
   const shimIsPrimary = false;
   // 脚本目录挂到子进程 PATH 最前面，模型敲裸 `owb` 就能调到——带绝对路径的写法会被两个
@@ -183,8 +184,10 @@ function attach(engineId, { home, root = "", baseDir = "", user = "", tools, lib
   const shimEnv = shim.dir ? { PATH: shim.dir } : {};
   // codex 的命令跑在它自己的沙箱里（只写工作区、默认不联网），owb 脚本也在里面；MCP 服务器不在
   const shimSandboxed = engineId === "codex";
+  // 在那个沙箱里 owb 不跑的（tool-bridge.js 的 sandboxBlock）：提示词照这份点名，别让它先撞一次
+  const shimBlocked = shimSandboxed && shim.bin ? lent.filter((n) => SANDBOX_BLOCKED[n]) : [];
   // engine：提示词按它教看图（claude 用 Read、codex 用 view_image）
-  const common = { engine: engineId, readOnly, names, lent, toolCount: lent.length, shim: shim.path, shimDir: shim.dir, shimBin: shim.bin, shimIsPrimary, shimSandboxed };
+  const common = { engine: engineId, readOnly, names, lent, toolCount: lent.length, shim: shim.path, shimDir: shim.dir, shimBin: shim.bin, shimIsPrimary, shimSandboxed, shimBlocked };
   if (engineId === "codex") {
     return {
       // 不再把数据根加进可写目录：那等于让引擎里的任何命令都能改配置和账号。

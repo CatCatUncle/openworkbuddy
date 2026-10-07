@@ -20,7 +20,8 @@
  *      双击启动、PATH 残缺时，开头是 `#!/usr/bin/env node` 的 CLI 借了工具照样起得来；NODE_PATH 指向程序自带的 node_modules
  *   ⑨ 问答 / 计划模式：本机 CLI 按只读跑（claude plan、codex read-only），安全档位是「全自动」也一样；
  *      属主在引擎设置里手填的档位、沙箱、全局连接器、放宽权限的附加参数这一趟不认，运行页上说一句（只报参数名）；
- *      只借读的工具、不给 owb、不挂用户的连接器。反向对照：干活模式下属主手填的照旧以它为准
+ *      只借读的工具、不给 owb、不挂用户的连接器。反向对照：干活模式下属主手填的照旧以它为准；
+ *      安全档「只看不动」干活模式下两个引擎都不给 owb（以前 codex 照给）；codex 的提示词点名沙箱里 owb 跑不成的
  *
  * 引擎全是本地假的，不出网。
  *   node test/engine-resilience.js
@@ -760,11 +761,11 @@ process.stdin.on("end", () => {
   const srcHome = path.join(home, "codex-ro-src");
   fs.mkdirSync(srcHome, { recursive: true });
   const fakeLLM = { provider: "mock", model: "scripted", async chat() { return { text: "内置答的", toolCalls: [], stopReason: "end" }; } };
-  const go = async (id, o, mode) => {
+  const go = async (id, o, mode, sec = { permission_mode: "full" }) => {
     fs.rmSync(logFile, { force: true });
-    // 安全档位是「全自动」：只读是这一趟任务的性质，跟档位开到多大无关
+    // 默认安全档位是「全自动」：只读是这一趟任务的性质，跟档位开到多大无关
     const config = {
-      security: { permission_mode: "full" },
+      security: sec,
       mcp_servers: [{ name: "userconn", command: "/bin/echo" }],
       agent: { engine: id, max_steps: 3, engine_options: { [id]: { ...o, env: { ...(o.env || {}), FAKE_LOG: logFile } } } },
     };
@@ -842,6 +843,22 @@ process.stdin.on("end", () => {
     const D = await go("codex", cxOpts, "craft");
     const dv = (D.got && D.got.argv) || [];
     ok(!D.err && dv.includes('sandbox_mode="danger-full-access"') && dv.includes("--full-auto"), "反向对照：干活模式照属主手填的跑", D.err ? D.err.message : dv);
+  }
+  {
+    // 安全档「只看不动」+ 干活模式：命令行入口两个引擎都不给。以前只有 claude 不放行，codex 照样把 owb 挂进 PATH
+    const cxPlain = { model: "gpt-test", bin: cxBin, env: { CODEX_HOME: srcHome } };
+    const P = await go("codex", cxPlain, "craft", { permission_mode: "plan" });
+    ok(!P.err && P.got && same(P.got.owb, []), "★codex + 「只看不动」：PATH 里没有 owb★", P.err ? P.err.message : P.got);
+    const di = ((P.got && P.got.argv) || []).find((x) => /^developer_instructions=/.test(x)) || "";
+    ok(!/owb list/.test(di), "codex + 「只看不动」：提示词里也不提 owb", di.slice(0, 300));
+    const A = await go("codex", cxPlain, "craft", { permission_mode: "auto" });
+    ok(!A.err && A.got && A.got.owb.length === 1, "反向对照：「自动」档照给 owb", A.err ? A.err.message : A.got);
+    const ai = ((A.got && A.got.argv) || []).find((x) => /^developer_instructions=/.test(x)) || "";
+    ok(/2 是这条入口跑不了它/.test(ai) && /generate_image、/.test(ai) && /record_web_demo/.test(ai) && /在沙箱里从这条路调会直接退出/.test(ai),
+      "★codex 提示词点名沙箱里 owb 跑不成的★ 退出码 2 也说清是什么", ai.slice(0, 300));
+    const C = await go("claude-code", { model: "sonnet", bin: ccBin }, "craft", { permission_mode: "plan" });
+    const cv = (C.got && C.got.argv) || [];
+    ok(!C.err && C.got && same(C.got.owb, []) && !cv.some((x) => /Bash\(owb/.test(x)), "claude + 「只看不动」：PATH 里没有 owb，也不放行 Bash(owb", C.err ? C.err.message : cv);
   }
 }
 

@@ -93,7 +93,7 @@ function engineGuard(sec) {
     mode,
     claudeMode: m.claude,
     codexSandbox: m.codex,
-    // 只看不动：连本项目借出去的那条命令行入口也不放行，否则等于从后门绕开档位。
+    // 只看不动：连本项目借出去的那条命令行入口也不放行，否则等于从后门绕开档位（两个引擎都认：搭桥时 noShim）。
     // 每步都问照放：同一批工具走 MCP 那条路本来就放行（claude-code.js 的 --allowed-tools mcp__…），
     // 只关命令行这一头什么也没收住；这批工具从桥回流时照样过本项目的安全中心
     allowShim: PERMISSION_MODES[mode].cmd !== "deny",

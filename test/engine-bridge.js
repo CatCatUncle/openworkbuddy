@@ -23,6 +23,8 @@
  *      owb 的 --help 写在哪都认；敲错工具名给近似名；借出去的 library_read 不指没借出的 library_import
  *   ⑪ 问答 / 计划那一趟（readOnly）：只借读的那几个（跟内置引擎这两档的只读工具对齐），桥那头照表再拦一道，
  *      名单被改过也借不出生图；不写 owb 脚本、不挂用户的连接器
+ *   ⑫ codex 命令沙箱里 owb 跑不成的（要记账、要写数据目录、要起 Chrome）：开跑前就说、退出码 2、上游不调；
+ *      哪几样跑不成逐个点名核对；attach 照这次借出去的点名给提示词；安全档「只看不动」两个引擎都不给 owb
  *
  * 真起桥子进程，但不起任何 CLI 引擎、不出网（假生图上游起在 127.0.0.1）。
  *   node test/engine-bridge.js
@@ -104,16 +106,17 @@ function mcpSteps(server, steps) {
 }
 
 /** 跑 owb 脚本，跟引擎里模型敲的一样 */
-function owb(shim, args) {
+function owb(shim, args, env) {
   try {
-    return { code: 0, out: execFileSync("/bin/sh", [shim, ...args], { encoding: "utf8", timeout: 60000, stdio: ["pipe", "pipe", "pipe"] }) };
+    const opt = { encoding: /** @type {const} */ ("utf8"), timeout: 60000, stdio: /** @type {any} */ (["pipe", "pipe", "pipe"]), env: env ? { ...process.env, ...env } : process.env };
+    return { code: 0, out: execFileSync("/bin/sh", [shim, ...args], opt) };
   } catch (e) {
     return { code: e.status == null ? -1 : e.status, out: String(e.stdout || "") + String(e.stderr || "") };
   }
 }
 /** 同上，但不卡住事件循环：工具要连本进程里起的假上游 */
-function owbAsync(shim, args) {
-  return new Promise((resolve) => execFile("/bin/sh", [shim, ...args], { encoding: "utf8", timeout: 60000 }, (e, out, err) =>
+function owbAsync(shim, args, env) {
+  return new Promise((resolve) => execFile("/bin/sh", [shim, ...args], { encoding: "utf8", timeout: 60000, env: env ? { ...process.env, ...env } : process.env }, (e, out, err) =>
     resolve({ code: e ? (typeof e.code === "number" ? e.code : -1) : 0, out: String(out || "") + (e ? String(err || "") : "") })));
 }
 /** owb list 的输出 → 工具名（每条第一行顶格是名字，第二行缩进是说明） */
@@ -634,6 +637,80 @@ const serverOf = (att) => JSON.parse(fs.readFileSync(att.runOpts.mcpConfigPath, 
     try {
       ok(full.shimBin && full.runOpts.mcpServerNames.includes("userconn") && full.lent.includes("generate_image"), "反向对照：平时照借整张表、给 owb、挂连接器", { names: full.runOpts.mcpServerNames, shim: full.shimBin });
     } finally { full.cleanup(); }
+  }
+
+  section("⑫ codex 命令沙箱里 owb 跑不成的：开跑前就说、退出码 2、不执行；提示词照借出去的点名");
+  {
+    const { SANDBOX_BLOCKED, LENDABLE, NEEDS_RENDERER } = lendable;
+    // 新借一个工具，得先想清它在沙箱里跑不跑得成：表变了这里跟着改，不许悄悄漏掉
+    const want = {
+      generate_image: "paid", generate_video: "paid", text_to_speech: "paid", transcribe_audio: "paid", look_at_image: "paid", web_search: "paid",
+      save_skill: "data", install_skill: "data", add_connector: "data", remember: "data", forget: "data",
+      record_web_demo: "chrome",
+    };
+    ok(sorted(Object.entries(SANDBOX_BLOCKED).map((e) => e.join(":"))) === sorted(Object.entries(want).map((e) => e.join(":"))),
+      "★沙箱里跑不成的逐个点名★ 要花钱的、要写数据目录的、要起 Chrome 的", SANDBOX_BLOCKED);
+    const free = LENDABLE.filter((n) => !SANDBOX_BLOCKED[n] && !NEEDS_RENDERER.includes(n));
+    ok(sorted(free) === sorted(["delivery_page", "gen_diagram", "read_document", "check_page", "library_list", "library_read", "canvas_manage"]),
+      "★沙箱里照跑的也逐个点名★ 写工作区的、只读的；新借的工具不进两张表之一就红", free);
+
+    const pick = ["generate_image", "remember", "library_list", "record_web_demo", "canvas_manage"];
+    const cx = bridge.attach("codex", { home: HOME, baseDir: "任务_沙箱", user: "t", tools: pick });
+    try {
+      ok(sorted(cx.shimBlocked || []) === sorted(["generate_image", "remember", "record_web_demo"]), "codex：提示词点名的 = 这次借出去的里头沙箱跑不成的（没借的不提）", cx.shimBlocked);
+      if (SH) {
+        const inBox = { CODEX_SANDBOX: "seatbelt" };
+        const rec = owb(cx.shim, ["record_web_demo", "{}"], inBox);
+        ok(rec.code === 2 && /没有执行/.test(rec.out) && /Chrome/.test(rec.out) && /mcp__openworkbuddy__record_web_demo/.test(rec.out),
+          "★codex 沙箱里录屏：开跑前就说起不来 Chrome，退出码 2，指到 MCP 那条路★", rec);
+        const recOut = owb(cx.shim, ["record_web_demo", "{}"], { CODEX_SANDBOX: "" });
+        ok(recOut.code !== 2 && !/起不来/.test(recOut.out), "反向对照：不在 codex 沙箱里，录屏不拦（参数不全照常报错）", recOut);
+
+        const dataDir = path.join(HOME, "data");
+        fs.mkdirSync(dataDir, { recursive: true });
+        const mode0 = fs.statSync(dataDir).mode & 0o777;
+        fs.chmodSync(dataDir, 0o555);
+        let locked = false;
+        const probe = path.join(dataDir, ".probe");
+        try { fs.mkdirSync(probe); fs.rmdirSync(probe); } catch { locked = true; }
+        try {
+          if (!locked) console.log("  （跳过：改了权限照样写得进去，多半是 root 在跑）");
+          else {
+            const g = owb(cx.shim, ["generate_image", JSON.stringify({ prompt: "雪山" })], inBox);
+            ok(g.code === 2 && /没有执行（上游没调，没花钱）/.test(g.out) && /写不进去/.test(g.out) && /codex 的命令沙箱/.test(g.out) && /mcp__openworkbuddy__generate_image/.test(g.out),
+              "★数据目录写不进去：生图开跑前就停，上游没调、没花钱，指到 MCP 那条路★ 以前是钱花了、账没记上", g);
+            const r = owb(cx.shim, ["remember", JSON.stringify({ text: "x" })], inBox);
+            ok(r.code === 2 && /存东西/.test(r.out) && !/花钱/.test(r.out), "记忆：同样不执行，说的是存不进去，不扯花钱", r);
+            const g2 = owb(cx.shim, ["generate_image", JSON.stringify({ prompt: "雪山" })], { CODEX_SANDBOX: "" });
+            ok(g2.code === 2 && /写不进去/.test(g2.out) && !/codex 的命令沙箱/.test(g2.out), "不在 codex 沙箱里、数据目录照样写不进去：照停，但不说是沙箱（只说看得见的）", g2);
+            const nv = owb(cx.shim, ["generate_video", JSON.stringify({ prompt: "雪山" })], inBox);
+            ok(nv.code !== 2 && /没有借给/.test(nv.out) && !/mcp__openworkbuddy__generate_video/.test(nv.out), "这次没借的（生视频）：照说没有借给，不指一条不存在的 MCP 工具", nv);
+            const ll = owb(cx.shim, ["library_list"], inBox);
+            ok(ll.code === 0, "反向对照：读资料库不写数据目录，照跑", ll);
+            const cv = owb(cx.shim, ["canvas_manage", JSON.stringify({ action: "list" })], inBox);
+            ok(cv.code !== 2 && !/没有执行/.test(cv.out), "反向对照：画布写的是工作区，不拦", cv);
+            const h = owb(cx.shim, ["generate_image", "--help"], inBox);
+            ok(h.code === 0 && /prompt/.test(h.out), "反向对照：--help 只打说明，不拦", h);
+          }
+        } finally { fs.chmodSync(dataDir, mode0); }
+        const f = owb(cx.shim, ["forget", JSON.stringify({ text: "没有这一条" })], inBox);
+        ok(f.code !== 2 && !/没有执行/.test(f.out), "反向对照：数据目录写得进去时，codex 沙箱里的记忆照跑", f);
+        const g3 = await owbAsync(cx.shim, ["generate_image", "{}"], inBox);
+        ok(g3.code !== 2 && !/没花钱/.test(g3.out), "反向对照：写得进去时生图不拦（参数不全照常报错）", g3);
+      } else console.log("  （Windows：跳过 owb 脚本那几条）");
+    } finally { cx.cleanup(); }
+
+    const cc = bridge.attach("claude-code", { home: HOME, baseDir: "任务_沙箱", user: "t", tools: pick });
+    try {
+      ok(Array.isArray(cc.shimBlocked) && cc.shimBlocked.length === 0 && cc.shimBin, "claude 的 owb 不在 codex 那个沙箱里：不点名、照给", cc.shimBlocked);
+    } finally { cc.cleanup(); }
+    for (const id of ["codex", "claude-code"]) {
+      const n = bridge.attach(id, { home: HOME, baseDir: "任务_沙箱", user: "t", tools: pick, noShim: true });
+      try {
+        ok(!n.shimBin && !(n.runOpts.env || {}).PATH && n.lent.length === pick.length && sorted(n.shimBlocked || []) === "",
+          `★${id}：noShim（安全档「只看不动」）不写 owb、PATH 里不挂，MCP 照借★`, { shim: n.shimBin, env: n.runOpts.env, lent: n.lent });
+      } finally { n.cleanup(); }
+    }
   }
 
   console.log(`\n${pass} 通过，${fail} 失败`);

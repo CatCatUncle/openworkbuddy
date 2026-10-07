@@ -2415,6 +2415,9 @@ function modePrompt(mode) {
     // 问答 / 计划：不管安全档位是哪档，这一趟按只读跑（见 security.readOnlyGuard）。
     // 内置引擎这两档只摆读的工具、清单外的一律不执行（runTask 里的 readOnlyMode）；换成本机 CLI，能做的事不该变多
     const readOnly = mode === "ask" || mode === "plan";
+    // 档位要在搭桥之前定：命令行入口给不给看它。以前 codex 不看，「只看不动」照样把 owb 挂进 PATH
+    const baseGuard = security.engineGuard(security.getSecurity(config));
+    const guard = readOnly ? security.readOnlyGuard(baseGuard) : baseGuard;
     let bridged = null;
     try {
       bridged = bridge.attach(backend.id, {
@@ -2435,6 +2438,7 @@ function modePrompt(mode) {
         // 只读那一趟：只借读的工具，用户的连接器一个不挂（它们能干什么这边判断不了），命令行入口也不给
         extraServers: readOnly ? [] : config.mcp_servers || [],
         readOnly,
+        noShim: !guard.allowShim,
       });
     } catch (e) {
       // 挂不上就照常跑，只是少了那些工具；不能因为桥没搭起来把整个任务毙掉
@@ -2443,8 +2447,6 @@ function modePrompt(mode) {
 
     // 档位收紧了就明说一句。不说的话，用户看到的是「它怎么什么都不肯干」，
     // 而真正的原因在另一个页面上的一颗开关里，隔着两层根本联系不起来
-    const baseGuard = security.engineGuard(security.getSecurity(config));
-    const guard = readOnly ? security.readOnlyGuard(baseGuard) : baseGuard;
     if (guard.note) emit({ type: "status", text: guard.note, depth: 0 });
     // 属主在引擎设置里手填的档位、沙箱、放宽权限的附加参数，平时以它为准（手填是更明确的表态）；
     // 只读那一趟不认，在 runWith 里 ...opts 之后盖回去。盖了什么在运行页上说一句，免得属主以为自己的设置没生效是 bug
@@ -2698,10 +2700,14 @@ function modePrompt(mode) {
       `  ${shim} <工具名> '<JSON 参数>'          # 直接调用，结果打在 stdout`,
       `  ${shim} <工具名> @参数文件.json         # 参数太长、带引号或换行时用这个，别跟 shell 引号硬拼`,
       example,
-      "退出码 0 是成功，1 是失败；失败时 stdout 里就是失败原因原文。",
-      // codex 的命令沙箱只写工作区、默认不联网，owb 脚本跑在里面：要联网、要写数据目录的工具从这条路调不成
+      "退出码 0 是成功，1 是失败，2 是这条入口跑不了它、没有执行；不是 0 时 stdout 里就是原因原文。",
+      // codex 的命令沙箱只写工作区、默认不联网，owb 脚本跑在里面：要记账、要写数据目录、要起 Chrome 的，
+      // owb 开跑前就退出（tool-bridge.js 的 sandboxBlock）。点名是哪几样，省得它先撞一次再回头
       bridged.shimSandboxed &&
-        `${shim} 跑在你的命令沙箱里：写不了 OpenWorkBuddy 的数据目录（记忆、技能存不进去），沙箱没开网时也联不了网（生图、出视频调不成）。这几样用上面的 mcp__openworkbuddy__ 工具。`,
+        `${shim} 跑在你的命令沙箱里：写不了 OpenWorkBuddy 的数据目录，沙箱没开网时也联不了网。` +
+        ((bridged.shimBlocked || []).length
+          ? `${bridged.shimBlocked.join("、")} 在沙箱里从这条路调会直接退出、不执行，这几样只用上面的 mcp__openworkbuddy__ 工具。`
+          : "要存东西、要联网的工具用上面的 mcp__openworkbuddy__ 工具。"),
     ].filter(Boolean).join("\n") : "";
     // 看图：两个 CLI 自己就能看本地图片，look_at_image 要另调一次看图模型，只当兜底
     const eye = !has("look_at_image") ? ""

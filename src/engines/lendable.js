@@ -47,6 +47,21 @@ const READ_ONLY = ["look_at_image", "read_document", "render_page", "web_search"
 const NEEDS_RENDERER = ["html_to_image", "render_page"];
 
 /**
+ * 命令行入口（owb）跑在 codex 的命令沙箱里时调不成的，和为什么。MCP 那条路的服务器在沙箱外，不受影响。
+ *   paid：要花钱，花了要记账；账本在数据目录里，沙箱只写工作区。硬跑的话上游的钱花了，流水一笔没记上
+ *   data：要往数据目录里存（记忆、技能、连接器设置），同样写不进去
+ *   chrome：要起本机 Chrome，沙箱里一起就 Abort trap: 6
+ * 画布、交付页写的是工作区，读资料库、读文档只读，这几样在沙箱里照跑，不在表里。
+ * 新借一个工具，先想清它在沙箱里跑不跑得成再定进不进表（engine-bridge 的测试逐个点名核对）。
+ * @type {Record<string, "paid"|"data"|"chrome">}
+ */
+const SANDBOX_BLOCKED = {
+  generate_image: "paid", generate_video: "paid", text_to_speech: "paid", transcribe_audio: "paid", look_at_image: "paid", web_search: "paid",
+  save_skill: "data", install_skill: "data", add_connector: "data", remember: "data", forget: "data",
+  record_web_demo: "chrome",
+};
+
+/**
  * 这次真借出去的名单，顺序跟 LENDABLE 一致；不在 LENDABLE 里的名字一律不认。
  * @param {object} [o]
  * @param {string[]|null} [o.tools]  调用方挑过的名单。不传 = 整张表；空数组 = 一个不借
@@ -73,4 +88,4 @@ function parseList(s) {
   return String(s == null ? "" : s).split(",").map((x) => x.trim()).filter((x) => x && x !== NONE);
 }
 
-module.exports = { LENDABLE, READ_ONLY, NEEDS_RENDERER, NONE, lentFor, toEnv, parseList };
+module.exports = { LENDABLE, READ_ONLY, NEEDS_RENDERER, SANDBOX_BLOCKED, NONE, lentFor, toEnv, parseList };

@@ -64,7 +64,7 @@ const mediaModels = require("../core/model/media-models");
 const PROTOCOL_VERSION = "2025-06-18";
 
 // 名单只此一份，在 lendable.js；这里再导出一次只是给老测试用
-const { LENDABLE, READ_ONLY, NEEDS_RENDERER, lentFor, parseList } = require("./lendable");
+const { LENDABLE, READ_ONLY, NEEDS_RENDERER, SANDBOX_BLOCKED, lentFor, parseList } = require("./lendable");
 
 /**
  * 读一份设置。文件不在是正常的（还没存过）：安全策略照默认。
@@ -344,6 +344,34 @@ function cliHelp(name) {
   return `${d.name}\n${String(d.description || "").trim()}\n\n参数：\n${params.length ? params.join("\n") : "  （没有参数）"}`;
 }
 
+/** 数据目录这会儿写不写得进去：真建一个空目录再删掉。只看权限位不够，沙箱拦的是真写的那一下 */
+function dataWritable() {
+  try {
+    const d = dataPath("data");
+    fs.mkdirSync(d, { recursive: true });
+    fs.rmdirSync(fs.mkdtempSync(path.join(d, ".owb-probe-")));
+    return true;
+  } catch { return false; }
+}
+
+/**
+ * owb 这条路跑不成的，开跑前就说，退出码 2，不执行。只认看得见的事实：codex 给沙箱里的命令设
+ * CODEX_SANDBOX；数据目录写没写进去当场试一下。以前是硬跑，撞上了报一句 fetch failed / EPERM，
+ * 模型只好瞎猜；要花钱的那几样更糟——上游调成了，账本写不进去，这笔钱在流水上就没了。
+ * @param {string} name
+ * @returns {string} 空串 = 照跑
+ */
+function sandboxBlock(name) {
+  const why = SANDBOX_BLOCKED[name];
+  if (!why || !ALLOW.has(name)) return ""; // 没借的交给 callTool 说「没有借给」
+  const inCodex = !!process.env.CODEX_SANDBOX;
+  const via = `改用 mcp__openworkbuddy__${name}（那条路不在沙箱里）；手上没有这个工具，就如实告诉用户这一步没做成。`;
+  if (why === "chrome") return inCodex ? `${name} 没有执行：它要起本机 Chrome，这条命令行入口跑在 codex 的命令沙箱里，起不来。${via}` : "";
+  if (dataWritable()) return "";
+  return `${name} 没有执行${why === "paid" ? "（上游没调，没花钱）" : ""}：它要往 OpenWorkBuddy 的数据目录（${dataPath("data")}）里${why === "paid" ? "记账" : "存东西"}，`
+    + `这条命令行入口${inCodex ? "跑在 codex 的命令沙箱里，" : ""}这会儿写不进去。${via}`;
+}
+
 async function cli(argv) {
   let [cmd, ...rest] = argv;
   if (cmd === "call") [cmd, ...rest] = rest; // `call x` 和直接 `x` 都收
@@ -361,6 +389,8 @@ async function cli(argv) {
     process.stdout.write(h + "\n");
     return 0;
   }
+  const blocked = sandboxBlock(cmd);
+  if (blocked) { process.stdout.write(blocked + "\n"); return 2; }
   const r = await callTool(cmd, readArgs(rest[0]));
   process.stdout.write((r.content[0].text || "") + "\n");
   return r.isError ? 1 : 0;
@@ -391,4 +421,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { LENDABLE, listTools, callTool, handle, cli, cliList, cliHelp, readArgs, _internals: { lentDefs } };
+module.exports = { LENDABLE, listTools, callTool, handle, cli, cliList, cliHelp, readArgs, _internals: { lentDefs, sandboxBlock } };
