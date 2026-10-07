@@ -32,6 +32,8 @@ const { lentFor, toEnv, SANDBOX_BLOCKED } = require("./lendable");
 const BRIDGE_ENTRY = path.join(__dirname, "tool-bridge.js");
 const CWD_ENTRY = path.join(__dirname, "mcp-cwd.js");
 const SERVER_NAME = "openworkbuddy";
+/** 本项目借出去的那台 MCP 的工具时限：生图、出视频动辄几分钟。两个 CLI 各写各的，数是同一个 */
+const TOOL_TIMEOUT_MS = 900000;
 
 /** 起 bridge 用哪个 node：Electron 打包版里 process.execPath 是应用本体，得让它以 node 模式跑 */
 function nodeLauncher() {
@@ -51,13 +53,14 @@ function nodeLauncher() {
  * @param {string} [o.baseDir] 本次对话的成果子目录（相对 root）
  * @param {{base?:string, mount?:string}} [o.library] 这个人的资料库根、当前项目挂载的子目录。不传 = 数据目录下那份整库
  * @param {string} [o.user]    当前用户名（记忆按人隔离）
+ * @param {string} [o.run]     这一趟的编号：桥记视频收单台账时写上，收尾时主进程按它认领（engines/harvest.js）
  * @param {string[]} [o.tools] 借出去的工具名；不传就是 lendable.js 整张表，空数组就是一个不借
  * @param {Array} [o.extraServers] 用户自己配的、插件带来的 MCP 连接器（config.mcp_servers 的形状，插件的多一个 cwd）
  * @param {string[]} [o.disabled] 连接器页上关掉的名字（config.mcp_disabled）
  * @param {boolean} [o.readOnly] 问答 / 计划那一趟：只借读的工具，桥那头再拦一道，用户的连接器一个不挂
  *                               （连接器能干什么这边判断不了，只读这一趟就不冒这个险）
  */
-function buildServers({ home, root = "", baseDir = "", user = "", tools, library = null, extraServers = [], disabled = [], readOnly = false }) {
+function buildServers({ home, root = "", baseDir = "", user = "", run = "", tools, library = null, extraServers = [], disabled = [], readOnly = false }) {
   const lib = library || {};
   const { command, env: nodeEnv } = nodeLauncher();
   const servers = {
@@ -74,6 +77,7 @@ function buildServers({ home, root = "", baseDir = "", user = "", tools, library
         ...(lib.mount ? { OPENWORKBUDDY_BRIDGE_LIB_MOUNT: lib.mount } : {}),
         OPENWORKBUDDY_BRIDGE_BASEDIR: baseDir,
         OPENWORKBUDDY_BRIDGE_USER: user,
+        ...(run ? { OPENWORKBUDDY_BRIDGE_RUN: run } : {}),
         // 每次都写，一个不借也写：桥那头没拿到这个变量就不启动，不会按整张表借
         OPENWORKBUDDY_BRIDGE_TOOLS: toEnv(lentFor({ tools, renderer: false, readOnly })),
         ...(readOnly ? { OPENWORKBUDDY_BRIDGE_READONLY: "1" } : {}),
@@ -157,7 +161,12 @@ function claudeEntry(s) {
 function writeMcpConfig(servers) {
   const { dir, rm } = tempDir("owb-mcp-");
   const p = path.join(dir, "mcp.json");
-  const mcpServers = Object.fromEntries(Object.entries(servers).map(([name, s]) => [name, claudeEntry(s)]));
+  // 本项目这台给足 15 分钟，跟 codex 那边的 tool_timeout_sec=900 对齐。claude 对 MCP 工具有个「多久没动静就判超时」，
+  // 生视频轮询那几分钟一声不出，没写 timeout（毫秒）就被它半路掐掉——实测 2.1.291 的报错原话就是让按服务器写这一项
+  const mcpServers = Object.fromEntries(Object.entries(servers).map(([name, s]) => {
+    const e = claudeEntry(s);
+    return [name, name === SERVER_NAME ? { ...e, timeout: TOOL_TIMEOUT_MS } : e];
+  }));
   fs.writeFileSync(p, JSON.stringify({ mcpServers }, null, 2), { mode: 0o600 });
   return {
     path: p,
@@ -217,8 +226,8 @@ function writeShim(server) {
  * skipped：开着、但这次没转过去的连接器名（走网址的），调用方在运行页上说一句
  * @returns {{runOpts:object, names:string[], toolCount:number, skipped:string[], cleanup:function}}
  */
-function attach(engineId, { home, root = "", baseDir = "", user = "", tools, library = null, extraServers = [], disabled = [], readOnly = false, noShim = false } = {}) {
-  const servers = buildServers({ home, root, baseDir, user, tools, library, extraServers, disabled, readOnly });
+function attach(engineId, { home, root = "", baseDir = "", user = "", run = "", tools, library = null, extraServers = [], disabled = [], readOnly = false, noShim = false } = {}) {
+  const servers = buildServers({ home, root, baseDir, user, run, tools, library, extraServers, disabled, readOnly });
   const names = Object.keys(servers);
   // 只读那一趟本来就一个不挂，不算「没转过去」
   const skipped = readOnly ? [] : forwardable(extraServers, disabled).skipped;
@@ -250,11 +259,14 @@ function attach(engineId, { home, root = "", baseDir = "", user = "", tools, lib
     };
   }
   const w = writeMcpConfig(servers);
+  // owb 走的是 claude 的 Bash：默认两分钟、模型自己最多只能要到十分钟，出一条视频不够。上限放到 15 分钟，
+  // 模型要多久它自己定；属主自己设过的不动
+  const bashEnv = shim.bin && !process.env.BASH_MAX_TIMEOUT_MS ? { BASH_MAX_TIMEOUT_MS: String(TOOL_TIMEOUT_MS) } : {};
   return {
-    runOpts: { mcpConfigPath: w.path, mcpServerNames: names, env: shimEnv, shimBin: shim.bin },
+    runOpts: { mcpConfigPath: w.path, mcpServerNames: names, env: { ...shimEnv, ...bashEnv }, shimBin: shim.bin },
     ...common,
     cleanup: () => { w.cleanup(); shim.cleanup(); },
   };
 }
 
-module.exports = { SERVER_NAME, BRIDGE_ENTRY, CWD_ENTRY, buildServers, forwardable, cliName, writeMcpConfig, writeShim, codexArgs, nodeLauncher, attach };
+module.exports = { SERVER_NAME, BRIDGE_ENTRY, CWD_ENTRY, TOOL_TIMEOUT_MS, buildServers, forwardable, cliName, writeMcpConfig, writeShim, codexArgs, nodeLauncher, attach };

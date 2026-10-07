@@ -867,12 +867,17 @@ async function generateVideo(media, input, opts = {}) {
   const billedNote = () => `\n上游已经收下这一单（任务号 ${submitted}），多半照样出片、照样扣费。先到渠道控制台按任务号查，别直接重跑——重跑是再下一单。`;
   // 收单那一刻就报出去（opts.onSubmitted，直调接口拿它记台账），不等出片：出片要几分钟，
   // 这期间服务一重启，没报出去的任务号就只剩上游那边知道了
+  // 本机引擎那条路（tool-bridge.js）拿它记台账：片子没收回来就停了的，主进程照这份按任务号接着收（engines/harvest.js）。
+  // 渠道只给地址的哈希，Key 和地址本身都不往外带
   const took = (id) => {
     submitted = String(id);
-    if (typeof opts.onSubmitted === "function") { try { opts.onSubmitted({ taskId: submitted, proto, model: cfg.model }); } catch {} }
+    if (typeof opts.onSubmitted === "function") {
+      try {
+        opts.onSubmitted({ taskId: submitted, proto, model: cfg.model, chan: videoChanKey(base), fname, saveDir: String(opts.saveDir || ""),
+          units: unitsFor("video", input, null, cfg) });
+      } catch {}
+    }
   };
-  // 上游自己回了「这单失败」：一般不收钱，照常可以重试，所以这种不带 submitted
-  const taskFailed = (detail) => Object.assign(new Error("视频任务失败：" + detail), { taskFailed: true });
   try {
     if (proto === "dashscope") {
       // DashScope 万相（wan 系）：异步提交 + /tasks 轮询
@@ -896,13 +901,7 @@ async function generateVideo(media, input, opts = {}) {
       const taskId = ((j || {}).output || {}).task_id;
       if (!r.ok || !taskId) return { content: `视频接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}${kfHint}`, isError: true, ...refused(r.ok) };
       upstream = taskId; took(taskId);
-      videoUrl = await poll(async () => {
-        const s = await askJson(`${base}/tasks/${taskId}`, { headers: auth }, 30000);
-        const st = ((s || {}).output || {}).task_status;
-        if (st === "SUCCEEDED") return s.output.video_url;
-        if (st === "FAILED" || st === "CANCELED") throw taskFailed(JSON.stringify(s.output).slice(0, 200));
-        return null;
-      });
+      videoUrl = await poll(() => videoTaskCheck(proto, base, auth, taskId, askJson));
     } else if (proto === "ark") {
       // 火山方舟（Seedance 系）：contents/generations/tasks 异步 + 轮询
       // 时长 / 画幅 / 分辨率同样是文本指令，接在 --watermark 后面；提示词里自己写了的 videoPlan 已经让掉了
@@ -923,12 +922,7 @@ async function generateVideo(media, input, opts = {}) {
       const j = await r.json().catch(() => ({}));
       if (!r.ok || !j.id) return { content: `视频接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}${kfHint}`, isError: true, ...refused(r.ok) };
       upstream = j.id; took(j.id);
-      videoUrl = await poll(async () => {
-        const s = await askJson(`${base}/contents/generations/tasks/${j.id}`, { headers: auth }, 30000);
-        if (s.status === "succeeded") return ((s.content || {}).video_url) || null;
-        if (s.status === "failed" || s.status === "cancelled") throw taskFailed(JSON.stringify(s.error || s).slice(0, 200));
-        return null;
-      });
+      videoUrl = await poll(() => videoTaskCheck(proto, base, auth, j.id, askJson));
     } else if (proto === "zhipu") {
       // 智谱 CogVideoX：/videos/generations 提交，/async-result/{id} 轮询。
       // 提交回执里的字段名是 id，老一点的型号回 request_id，两个都认一下。
@@ -941,13 +935,7 @@ async function generateVideo(media, input, opts = {}) {
       const id = j.id || j.request_id;
       if (!r.ok || !id) return { content: `视频接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}${kfHint}`, isError: true, ...refused(r.ok) };
       took(id);
-      videoUrl = await poll(async () => {
-        const s = await askJson(`${base}/async-result/${id}`, { headers: auth }, 30000);
-        const st = String((s || {}).task_status || "").toUpperCase();
-        if (st === "SUCCESS") return (((s.video_result || [])[0]) || {}).url || null;
-        if (st === "FAIL") throw taskFailed(JSON.stringify(s).slice(0, 200));
-        return null;
-      });
+      videoUrl = await poll(() => videoTaskCheck(proto, base, auth, id, askJson));
       vWm = "unasked";
     } else if (proto === "minimax") {
       // MiniMax 海螺：提交 → 轮询 → 再拿 file_id 换下载地址，三段，比另外四家多一手。
@@ -965,20 +953,12 @@ async function generateVideo(media, input, opts = {}) {
         return { content: `视频接口错误 ${r.status}${code ? `（base_resp ${code}）` : ""}: ${JSON.stringify(j).slice(0, 300)}${kfHint}`, isError: true, ...refused(r.ok && !(code != null && code !== 0)) };
       }
       took(j.task_id);
-      const fileId = await poll(async () => {
-        const s = await askJson(`${base}/query/video_generation?task_id=${encodeURIComponent(j.task_id)}`,
-          { headers: auth }, 30000);
-        const st = String((s || {}).status || "");
-        if (st === "Success") return s.file_id || null;
-        if (/^fail/i.test(st)) throw taskFailed(JSON.stringify(s).slice(0, 200));
-        return null;
-      });
+      const fileId = await poll(() => videoTaskCheck(proto, base, auth, j.task_id, askJson));
       // 轮询给的是 file_id 不是地址，还得再换一手。换来的地址有时效，换完立刻下载
-      const f = await askJson(`${base}/files/retrieve?file_id=${encodeURIComponent(fileId)}`,
-        { headers: auth }, 30000).catch(() => ({}));
+      const f = await minimaxFileUrl(base, auth, fileId, askJson);
       if (stop && stop.aborted) throw stoppedError();
-      videoUrl = (((f || {}).file || {}).download_url) || "";
-      if (!videoUrl) return { content: `片子出好了，但取不到下载地址（file_id ${fileId}）：${JSON.stringify(f).slice(0, 200)}。到 MiniMax 控制台按这个 file_id 能手动下。`, isError: true, submitted };
+      videoUrl = f.url;
+      if (!videoUrl) return { content: `片子出好了，但取不到下载地址（file_id ${fileId}）：${JSON.stringify(f.raw).slice(0, 200)}。到 MiniMax 控制台按这个 file_id 能手动下。`, isError: true, submitted };
       vWm = "unasked";
     } else if (proto === "siliconflow") {
       // 硅基流动：submit 拿 requestId，查状态是 POST 带 body——这点跟另外四家都不一样，
@@ -992,15 +972,7 @@ async function generateVideo(media, input, opts = {}) {
       const rid = j.requestId || j.request_id;
       if (!r.ok || !rid) return { content: `视频接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}${kfHint}`, isError: true, ...refused(r.ok) };
       took(rid);
-      videoUrl = await poll(async () => {
-        const s = await askJson(`${base}/video/status`, {
-          method: "POST", headers, body: JSON.stringify({ requestId: rid }),
-        }, 30000);
-        const st = String((s || {}).status || "");
-        if (st === "Succeed") return ((((s.results || {}).videos || [])[0]) || {}).url || null;
-        if (/^fail/i.test(st)) throw taskFailed(JSON.stringify(s.reason || s).slice(0, 200));
-        return null;
-      });
+      videoUrl = await poll(() => videoTaskCheck(proto, base, auth, rid, askJson));
       vWm = "unasked";
     } else {
       // 认不出是哪家。把「按什么认的、这次认到了什么」摊开说——中转和自建网关地址里看不出上游，
@@ -1023,6 +995,11 @@ async function generateVideo(media, input, opts = {}) {
     if (!(stop && stop.aborted)) {
       if (submitted && !e.taskFailed) { e.message = String(e.message || e) + billedNote(); e.submitted = submitted; }
       throw e;
+    }
+    // 本机引擎那条路（keepUpstreamOnStop）不撤：桥被 CLI 叫停，分不清是用户点了停止还是 CLI 自己的工具时限到了。
+    // 台账收单时已经记下，主进程收尾时按实情办——用户停的去撤，撤不掉的和没停的接着收（engines/harvest.js）
+    if (submitted && opts.keepUpstreamOnStop) {
+      return { content: `用户已停止任务：视频还没收回来，没有落盘。上游已经收下这一单（任务号 ${submitted}），这边没去撤单。`, isError: true, stopped: true, submitted };
     }
     if (upstream) cancelVideoTask(proto, base, auth, upstream);
     return { content: "用户已停止任务：视频没生成完，没有落盘。", isError: true, stopped: true };
@@ -1049,10 +1026,73 @@ async function generateVideo(media, input, opts = {}) {
 function cancelVideoTask(proto, base, auth, id) {
   const url = proto === "dashscope" ? `${base}/tasks/${encodeURIComponent(id)}/cancel`
     : proto === "ark" ? `${base}/contents/generations/tasks/${encodeURIComponent(id)}` : "";
-  if (!url) return;
-  fetch(url, { method: proto === "ark" ? "DELETE" : "POST", headers: auth, signal: AbortSignal.timeout(5000) })
+  if (!url) return Promise.resolve();
+  return fetch(url, { method: proto === "ark" ? "DELETE" : "POST", headers: auth, signal: AbortSignal.timeout(5000) })
     .then((r) => { if (!r.ok) console.warn(`[tools] 撤销视频任务 ${id} 没成（${r.status}），上游可能照样出片计费`); })
     .catch((e) => console.warn(`[tools] 撤销视频任务 ${id} 没发出去：${e.message}`));
+}
+
+/** 上游自己回了「这单失败」：一般不收钱，照常可以重试，所以这种不带 submitted */
+function videoTaskFailed(detail) {
+  return Object.assign(new Error("视频任务失败：" + detail), { taskFailed: true });
+}
+
+/**
+ * 按任务号查一次单。出片那一趟的轮询和后台收货（engines/harvest.js）用的是这同一份，五家的路数只写一遍。
+ * 出好了回下载地址（海螺回的是 file_id，再走 minimaxFileUrl 换一手）；还在跑回 null；
+ * 上游明说失败了抛 videoTaskFailed。查询本身断网、超时照常抛，调用方当「这一轮没查到」
+ */
+async function videoTaskCheck(proto, base, auth, id, askJson) {
+  if (proto === "dashscope") {
+    const s = (await askJson(`${base}/tasks/${id}`, { headers: auth }, 30000)) || {};
+    const st = (s.output || {}).task_status;
+    if (st === "SUCCEEDED") return s.output.video_url || null;
+    if (st === "FAILED" || st === "CANCELED") throw videoTaskFailed(JSON.stringify(s.output).slice(0, 200));
+    return null;
+  }
+  if (proto === "ark") {
+    const s = (await askJson(`${base}/contents/generations/tasks/${id}`, { headers: auth }, 30000)) || {};
+    if (s.status === "succeeded") return ((s.content || {}).video_url) || null;
+    if (s.status === "failed" || s.status === "cancelled") throw videoTaskFailed(JSON.stringify(s.error || s).slice(0, 200));
+    return null;
+  }
+  if (proto === "zhipu") {
+    const s = (await askJson(`${base}/async-result/${id}`, { headers: auth }, 30000)) || {};
+    const st = String(s.task_status || "").toUpperCase();
+    if (st === "SUCCESS") return (((s.video_result || [])[0]) || {}).url || null;
+    if (st === "FAIL") throw videoTaskFailed(JSON.stringify(s).slice(0, 200));
+    return null;
+  }
+  if (proto === "minimax") {
+    const s = (await askJson(`${base}/query/video_generation?task_id=${encodeURIComponent(id)}`, { headers: auth }, 30000)) || {};
+    const st = String(s.status || "");
+    if (st === "Success") return s.file_id || null;
+    if (/^fail/i.test(st)) throw videoTaskFailed(JSON.stringify(s).slice(0, 200));
+    return null;
+  }
+  if (proto === "siliconflow") {
+    // 查状态是 POST 带 body（见 generateVideo 里提交那段）
+    const s = (await askJson(`${base}/video/status`, {
+      method: "POST", headers: { "Content-Type": "application/json", ...auth }, body: JSON.stringify({ requestId: id }),
+    }, 30000)) || {};
+    const st = String(s.status || "");
+    if (st === "Succeed") return ((((s.results || {}).videos || [])[0]) || {}).url || null;
+    if (/^fail/i.test(st)) throw videoTaskFailed(JSON.stringify(s.reason || s).slice(0, 200));
+    return null;
+  }
+  throw new Error(`认不出的视频协议：${proto}`);
+}
+
+/** 海螺：file_id 换下载地址。换来的地址有时效，换完立刻下载。raw 是对面的原话，取不到地址时给人看 */
+async function minimaxFileUrl(base, auth, fileId, askJson) {
+  const f = await askJson(`${base}/files/retrieve?file_id=${encodeURIComponent(fileId)}`, { headers: auth }, 30000).catch(() => ({}));
+  return { url: (((f || {}).file || {}).download_url) || "", raw: f };
+}
+
+/** 渠道认人用：地址的哈希。台账里只放它，不放地址本身——中转地址里常带着 Key */
+function videoChanKey(baseUrl) {
+  const b = String(baseUrl || "").trim().replace(/\/+$/, "");
+  return require("crypto").createHash("sha1").update(b).digest("hex").slice(0, 16);
 }
 
 /** HTML → PNG：真浏览器离屏渲染（htmlshot.js，只有桌面版才有渲染器） */
@@ -1382,6 +1422,7 @@ module.exports = {
   OUT_EXT_ALIAS, safeOutName, anySignal, within, sleepFor, stoppedError, fetchRetry, mediaKey, downloadToWorkspace,
   IMAGE_EXT, shrinkForVision, readImageInput, imageDataUri, mainCanSee, pickEye, eyeRoute, lookAtImage, savedAt, savedRef, setReplyBase, replyBaseDir, postWantClean,
   refImageUris, I2V_RE, T2V_RE, WAN_ASYNC_T2I, wanAsyncImage, generateImage, generateVideo, htmlToImage, textToSpeech, AUDIO_EXT, ASR_MAX_BYTES,
+  videoTaskCheck, videoTaskFailed, minimaxFileUrl, videoChanKey, cancelVideoTask,
   srtTime, transcribeAudio, withGenCache, unitsFor, mediaProviderOf, asrModelOf, speaksDashscope,
   TTS_UNSET, ttsExtOf
 };

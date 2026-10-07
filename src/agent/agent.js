@@ -310,6 +310,7 @@ const brandKit = require("../domains/content/brand-kit"); // 产品品牌档案�
 let brandRuntimeSeq = 0; // 见 createAgentRuntime 里的 brandRunPrefix
 const evolve = require("./evolve");
 const mediaModels = require("../core/model/media-models"); // 各路媒体模型：把「默认那条 + 还能选谁」一起交给工具
+const harvest = require("../engines/harvest"); // 本机引擎出视频：上游收了单、这一趟没收回来的，后台接着收
 const scheduler = require("../core/automation/scheduler"); // 排期表：只取那个插座（activeScheduler），实例是 server 插上来的
 
 // ================= 成果核验（治「幻觉执行」） =================
@@ -1125,6 +1126,8 @@ function shellNote(platform = process.platform) {
 }
 
 function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = [], llmFactory }) {
+  // 上次没收完的视频（服务重启、进程被杀）开张后接着收，只排一次（engines/harvest.js）
+  harvest.sweepSoon({ media: () => mediaModels.resolve(config) });
   // 备用渠道换道要现造一个 LLM 客户端；懒 require 避免环形依赖，测试时可注入假工厂做零 token 验证
   const makeLLM = llmFactory || ((cfg) => require("../core/model/llm").createLLM(cfg));
   // 执行追踪器。跟 server.js 共用同一个（按 config 认），设置页那份「发出去多少条」才是真账本。
@@ -2454,6 +2457,8 @@ function modePrompt(mode) {
     //   2) 同一版本已被别的任务先认领 → 不是我的（根目录文件只有这一道能拦）。
     const runToken = ++runSeq;
     claimBaseDir(baseDir, runToken);
+    // 桥记视频收单台账时写上它，收尾时按它认出这一趟留下的（engines/harvest.js）。带时间：重启后 runSeq 从头数
+    const engineRun = `${Date.now().toString(36)}-${runToken}`;
     let madeImage = false; // 这一趟有没有新图落进来（收尾核对「如图」用）
     const filesOut = makeFilesEmitter({
       emit, ownership, baseDir, runToken, scan: true,
@@ -2506,6 +2511,7 @@ function modePrompt(mode) {
         library: { base: libBase(), mount: getLibraryDir() },
         baseDir: baseDir || "",
         user: user || "",
+        run: engineRun,
         // 桥是个单独的子进程，组织策略（ALS）跟不过去：不该有的工具在这儿就别借出去。
         // 画布任务也不借生图 / 生视频 / 配音：那边要先交清单、用户点「开跑」才生成（src/tools/canvas.js CANVAS_QUOTE_FIRST），
         // 桥那头不知道是哪条会话，拦不住，只能不借
@@ -2620,6 +2626,11 @@ function modePrompt(mode) {
       if (beat) beat.stop();
       filesOut.stop(); // 尾随的那次要是烧到 SSE 关掉之后才响，就是往已经断掉的连接里写
       if (bridged) bridged.cleanup();
+      // 视频上游收了单、这一趟没交到手的（停了、CLI 的时限到了、断网）：说一句，后台按任务号接着收。
+      // 用户点了停止的，能撤单的那两家先去撤。跑在 finally 里：停下、出错都得走到
+      try {
+        harvest.afterRun({ run: engineRun, media: () => mediaModels.resolve(config), userStopped: !!(stopSignal && stopSignal.aborted), emit, actor: quotaMod.currentActor() });
+      } catch (e) { console.warn(`[agent] 收尾接手没收回的视频时出错：${(e && e.message) || e}`); }
       unwatchSleep();
       releaseAwake();
     }

@@ -29,6 +29,8 @@
  *   OPENWORKBUDDY_BRIDGE_LIB_MOUNT 当前项目只挂了资料库的哪一块；没给 = 整个库
  *   OPENWORKBUDDY_BRIDGE_TOOLS     借出去的工具名，逗号分隔；一个不借时是「-」。缺了这个变量不启动
  *   OPENWORKBUDDY_BRIDGE_USER      当前用户名（记忆按人隔离用）
+ *   OPENWORKBUDDY_BRIDGE_RUN       这一趟的编号。生视频上游收了单就记一笔台账（engines/harvest.js），
+ *                                  主进程收尾时按它认出是这一趟留下的、还没收回来的那几条
  *
  * 协议：换行分隔的 JSON-RPC，跟 mcp.js 那台客户端用的是同一种框法。
  *
@@ -60,6 +62,7 @@ const appLog = require("../platform/log");   // 系统日志（设置 → 系统
 const tools = require("../agent/tools");
 const security = require("../core/safety/security");
 const mediaModels = require("../core/model/media-models");
+const harvest = require("./harvest"); // 视频上游收了单、片子还没交到手：台账记一笔，主进程接着收
 
 const PROTOCOL_VERSION = "2025-06-18";
 
@@ -97,6 +100,7 @@ const BASE_DIR = process.env.OPENWORKBUDDY_BRIDGE_BASEDIR || "";
 const USER = process.env.OPENWORKBUDDY_BRIDGE_USER || "";
 const LIB_ROOT = process.env.OPENWORKBUDDY_BRIDGE_LIB_ROOT;
 const LIB_MOUNT = process.env.OPENWORKBUDDY_BRIDGE_LIB_MOUNT || "";
+const RUN = process.env.OPENWORKBUDDY_BRIDGE_RUN || "";
 // 借哪些由主进程定：bridge.js 每次都写这个变量，一个不借时也写（值是 lendable.NONE）。
 // 被拉起时没拿到它，就不是 bridge.js 拉的，按整张表兜底等于把关掉的工具又借出去，所以报错退出（见文件末尾）。
 // 被测试 require 进来时没有它，按整张表算。不在 LENDABLE 里的名字一律不认。
@@ -180,7 +184,12 @@ function notLent(name) {
   return `工具 ${name} 没有借给本机引擎${guess ? `。名字相近的有 ${guess}` : ""}`;
 }
 
-async function callTool(name, args) {
+/**
+ * @param {string} name
+ * @param {any} args
+ * @param {{signal?: AbortSignal}} [o] CLI 叫停这一单（notifications/cancelled、SIGTERM）
+ */
+async function callTool(name, args, { signal } = {}) {
   if (READONLY && LENDABLE.includes(name) && !READ_ONLY.includes(name)) {
     throw new Error(`这一趟是问答 / 计划模式，按只读跑，只借读的那几个工具；${name} 不在其中，没有执行`);
   }
@@ -195,6 +204,16 @@ async function callTool(name, args) {
     throw new Error(`设置文件 ${file} ${loaded.error}。读不到安全策略，借来的工具一律不执行（这次是 ${name}）；文件改好后，下一次调用会重新读`);
   }
   loggedErr = "";
+  // 生视频：上游收单那一刻落一笔台账。片子交到手里了就删；停了、超时、断网没交到手的留着，
+  // 主进程收尾时按任务号接着收（engines/harvest.js）——不重新下单。写不进去也照跑，系统日志里留一笔
+  let pending = "";
+  const onSubmitted = (info) => {
+    try {
+      pending = harvest.writeEntry(harvest.pendingDir(), { ...info, tool: name, run: RUN, user: USER, pid: process.pid, at: Date.now() });
+    } catch (e) {
+      appLog.warn("engine-bridge", "视频收单的台账没写上：这一单要是没交到手，就没人接着收了", { tool: name, taskId: info && info.taskId, err: e });
+    }
+  };
   const run = () => tools.executeTool(name, args || {}, {
     knownTools: [...ALLOW],
     timeoutMs: ((config.agent || {}).tool_timeout_ms) || 120000,
@@ -203,10 +222,16 @@ async function callTool(name, args) {
     security: config.security,
     baseDir: BASE_DIR,
     memory: { user: USER },
+    signal,
+    // 叫停时上游已收的单不撤：分不清是用户点了停止还是 CLI 自己的时限到了，交给主进程按实情办
+    keepUpstreamOnStop: true,
+    onSubmitted,
   });
   // 资料库也照这趟任务的来：一人一份根，项目还可能只挂了其中一块。
   // 不套这一层，library_list 念出来的是数据目录下那份——多账号时就是别人的合同
   const r = await tools.withLibraryBase(LIB_ROOT || "", () => tools.withLibraryDir(LIB_MOUNT, run));
+  // 交到手了，或者上游明说失败（一般不收钱）：台账删掉。停了的、带着任务号出错的留着
+  if (pending && !(r && r.isError && (r.stopped || r.submitted))) harvest.dropEntry(pending);
   const text = typeof r === "string" ? r : String((r && r.content) != null ? r.content : JSON.stringify(r));
   return { content: [{ type: "text", text }], isError: !!(r && r.isError) };
 }
@@ -219,6 +244,8 @@ function send(msg) {
 }
 
 let inFlight = 0;   // 还没回复的请求数
+/** 手上还没回的 tools/call：请求 id → 叫停用的开关。CLI 发 notifications/cancelled、或者整个桥被 SIGTERM 时用 */
+const live = new Map();
 let stdinEnded = false;
 
 /** stdin 关了不等于可以走人：生图/视频动辄几十秒，这时候退出等于把结果吞了 */
@@ -251,17 +278,27 @@ async function handle(msg) {
         };
         break;
       case "notifications/initialized":
-      case "notifications/cancelled":
         return; // 通知没有 id，不回（finally 会把计数还回去）
+      case "notifications/cancelled": {
+        // CLI 不等这一单了（用户点了停止、它自己的工具时限到了）：真停下，别在后台接着跑完、写进对话目录却没人知道
+        const c = live.get(JSON.stringify((params || {}).requestId));
+        if (c) c.abort();
+        return;
+      }
       case "ping":
         result = {};
         break;
       case "tools/list":
         result = { tools: listTools() };
         break;
-      case "tools/call":
-        result = await callTool((params || {}).name, (params || {}).arguments);
+      case "tools/call": {
+        const key = JSON.stringify(id);
+        const ac = new AbortController();
+        live.set(key, ac);
+        try { result = await callTool((params || {}).name, (params || {}).arguments, { signal: ac.signal }); }
+        finally { live.delete(key); }
         break;
+      }
       default:
         if (!isRequest) return;
         send({ jsonrpc: "2.0", id, error: { code: -32601, message: `不支持的方法：${method}` } });
@@ -391,7 +428,10 @@ async function cli(argv) {
   }
   const blocked = sandboxBlock(cmd);
   if (blocked) { process.stdout.write(blocked + "\n"); return 2; }
-  const r = await callTool(cmd, readArgs(rest[0]));
+  // 命令行这条路被叫停是整个进程挨 SIGTERM（Bash 超时、CLI 收工），开关同样挂在 live 上
+  const ac = new AbortController();
+  live.set("cli", ac);
+  const r = await callTool(cmd, readArgs(rest[0]), { signal: ac.signal });
   process.stdout.write((r.content[0].text || "") + "\n");
   return r.isError ? 1 : 0;
 }
@@ -412,7 +452,16 @@ if (require.main === module) {
   // 这个进程是 CLI 拉起的子进程：在这儿摆出的审批卡，网页、终端、手机都看不见（它们看的是自己进程里那份）。
   // 不当场拒的话，要干等满超时（默认 120 秒）才按「没批」收场，CLI 那头只当工具卡死了
   security.watchApprovals((ev) => { const id = ev.type === "open" && ev.entry && ev.entry.id; if (id) setImmediate(() => security.resolveApproval(id, false)); });
-  if (process.argv.length > 2) {
+  // CLI 收工、用户点了停止、Bash 超时，桥都是挨 SIGTERM。默认是当场被带走：手上那一单的结果没人收，
+  // 生视频这种上游已收单的，片子照出、钱照扣。先把手上的叫停（台账收单时已经落了，主进程接着收），回完再走；
+  // 1.5 秒还没走完就不等了
+  const cliMode = process.argv.length > 2;
+  process.on("SIGTERM", () => {
+    for (const c of live.values()) c.abort();
+    setTimeout(() => process.exit(143), 1500);
+    if (!cliMode) { stdinEnded = true; exitIfIdle(); }
+  });
+  if (cliMode) {
     // 命令行模式下 stdout 不再是协议通道，但 tools.js 的日志仍然只该去 stderr，
     // 免得混进给模型看的结果里。所以上面那几个 console 改道保持不变。
     cli(process.argv.slice(2))

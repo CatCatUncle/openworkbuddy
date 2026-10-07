@@ -638,6 +638,7 @@ console.log("\n【8】仓库里不许有作者本人的痕迹，也不许有真 
     "sk-test-media-metering-0001",                      // media-metering：假上游认的 Key
     "sk-test-memory-embed-0001",                        // memory-embed：假上游认的 Key
     "sk-test-engine-bridge-0001",                       // engine-bridge：假生图上游认的 Key
+    "sk-test-engine-bridge-0015",                       // engine-bridge：假视频上游认的 Key（台账里不许出现）
   ]);
   const KEY_RE = new RegExp([
     "sk-ant-[A-Za-z0-9_-]{20,}", "sk-[A-Za-z0-9_-]{20,}", "ghp_[A-Za-z0-9]{30,}",

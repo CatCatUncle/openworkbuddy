@@ -3217,7 +3217,7 @@
   for (const [zh, en] of [["免费版", "Free"], ["团队版", "Team"], ["专业版", "Pro"], ["旗舰版", "Enterprise"]])
     PATTERNS.en.push([new RegExp("^" + zh + " · (\\d+)/(\\d+) 席 · 建于 (.+)$"), en + " · $1/$2 seats · created $3"]);
 
-  // ---------- 本机引擎运行页上的那些话（2026-10-07）：工具没挂上、只读停了哪些设置、档位收紧、心跳、交付核对 ----------
+  // ---------- 本机引擎运行页上的那些话（2026-10-07）：工具没挂上、只读停了哪些设置、档位收紧、心跳、交付核对、视频后台收回 ----------
   // 服务端推来的整句（agent.js / codex.js / security.js），textContent 直接写进运行页，覆盖率闸门扫不到，
   // 漏翻了英文界面上就钉着一行中文。test/frontend.js「本机引擎那几句的英文」逐句过一遍，源码改了措辞那边当场红
   for (const [zh, en] of Object.entries({
@@ -3254,6 +3254,13 @@
     [/^回复里提到的文件是空的（0 字节）：(.+)$/, (m) => `Files named in the reply are empty (0 bytes): ${zhList(m[1])}`],
     // 引号里是回复的原话，照抄
     [/^回复里说「(.+)」，这一趟没有产出新图片$/, "The reply says “$1”, but this run produced no new image"],
+    // 视频上游收了单、这一趟没收回来的（engines/harvest.js afterRun）
+    [/^有 (\d+) 条视频上游已经收单还没收回（任务号 (.+)），后台接着等，出好了放进对话目录$/,
+      (m) => `${m[1]} video job(s) were accepted upstream but not collected yet. Task IDs: ${zhList(m[2])}. Waiting in the background; they'll go into this chat's folder when ready`],
+    [/^停下时有 (\d+) 条视频上游已经收单（任务号 (.+)）：能撤的已去上游撤单，撤不掉的出好了放进对话目录$/,
+      (m) => `When stopped, ${m[1]} video job(s) had been accepted upstream. Task IDs: ${zhList(m[2])}. Cancellable ones were cancelled upstream; the rest go into this chat's folder when ready`],
+    [/^停下时有 (\d+) 条视频上游已经收单（任务号 (.+)），这家停不掉、照样扣费；出好了放进对话目录$/,
+      (m) => `When stopped, ${m[1]} video job(s) had been accepted upstream. Task IDs: ${zhList(m[2])}. This provider can't cancel them and still charges; they'll go into this chat's folder when ready`],
   );
 
   // 界面上开头那些表情（❌ ⚠️ ✅ 🪪 ⚙️ 🌐 …）正在一处处换成 SVG 图标。图标是 <svg>，

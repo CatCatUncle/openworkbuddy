@@ -31,8 +31,11 @@
  *      主进程真跑一趟：播出去的事件名、标题、结果那条按 id 跟上；别人的连接器、带别的命令的 shell 原样
  *   ⑮ 桥里的审计每条当场追加一行：命令行入口跑完就退出也不丢、不去盖主进程那份；写不进去原样打到 stderr；
  *      主进程看列表、导出时按时间并进来，清空时一起清；过 512KB 换一份
+ *   ⑯ 生视频上游收了单就落台账（不带 Key、不带地址）：CLI 叫停（notifications/cancelled、SIGTERM）桥真停、回话说清、不撤单；
+ *      主进程收尾按任务号后台收回放进对话目录、记账、删台账，绝不重新下单；用户点了停止的能撤就撤；
+ *      同一单只收一次、桥还活着先等它、同名文件不覆盖、认不回渠道台账留着；claude 那边 MCP 和 Bash 的时限给足 15 分钟
  *
- * 真起桥子进程，但不起任何 CLI 引擎、不出网（假生图上游起在 127.0.0.1）。
+ * 真起桥子进程，但不起任何 CLI 引擎、不出网（假生图、假视频上游都起在 127.0.0.1）。
  *   node test/engine-bridge.js
  */
 const fs = require("fs");
@@ -1037,6 +1040,298 @@ process.stdin.on("data", (d) => {
     const l2 = String(q2.stdout || "").split("\n").find((l) => l.startsWith("RESULT "));
     const res2 = l2 ? JSON.parse(l2.slice(7)) : null;
     ok(res2 && res2.old === old.length && res2.now, "导出时 .1 那份也并进来", res2 || String(q2.stderr).slice(-300));
+  }
+
+  section("⑯ 生视频上游收了单：桥被叫停不撤单、台账留着；主进程按任务号后台收回，不重新下单");
+  {
+    const harvest = require(mod("harvest"));
+    const mm = require(mod("media-models"));
+    const quota = require(mod("quota"));
+    const { buildChildEnv } = require(mod("child-env"));
+    harvest._internals.setPollMs(40);
+    // 前面几节造过运行时，开张后排的那次接着收还没到点的话撤掉：别半路插进来抢这一节的台账
+    ok(harvest._internals.sweepArmed(), "造运行时就排上了一次「接着收上次留下的」（只排一次）");
+    harvest._internals.cancelSweep();
+    // 假视频上游（通义万相那门话）：提交回任务号；放行之前查单一直是「跑着」；撤单、下载各记一笔
+    const st = { submits: 0, checks: /** @type {Record<string, number>} */ ({}), cancels: /** @type {string[]} */ ([]), ready: new Set(), downloads: 0, cancelDelay: 0 };
+    let seq = 0, origin = "";
+    const MP4 = Buffer.from("假片子-engine-bridge-16");
+    const vs = http.createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        const u = String(req.url || "");
+        const json = (o) => { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(o)); };
+        let m;
+        if (req.method === "POST" && /\/services\/aigc\/video-generation\/video-synthesis$/.test(u)) { st.submits++; return json({ output: { task_id: `vt-${++seq}`, task_status: "PENDING" } }); }
+        if (req.method === "POST" && (m = /\/tasks\/([^/]+)\/cancel$/.exec(u))) {
+          // cancelDelay：撤单那头慢（真上游跨了公网），撤单落地、回话都晚这么久
+          const id = decodeURIComponent(m[1]);
+          return setTimeout(() => { st.cancels.push(id); json({ request_id: "c" }); }, st.cancelDelay);
+        }
+        if (req.method === "GET" && (m = /\/tasks\/([^/?]+)$/.exec(u))) {
+          const id = decodeURIComponent(m[1]);
+          st.checks[id] = (st.checks[id] || 0) + 1;
+          if (st.cancels.includes(id)) return json({ output: { task_id: id, task_status: "CANCELED" } });
+          if (st.ready.has(id)) return json({ output: { task_id: id, task_status: "SUCCEEDED", video_url: `${origin}/files/${id}.mp4` } });
+          return json({ output: { task_id: id, task_status: "RUNNING" } });
+        }
+        if (req.method === "GET" && u.startsWith("/files/")) { st.downloads++; res.writeHead(200, { "Content-Type": "video/mp4" }); return res.end(MP4); }
+        res.writeHead(404); res.end("{}");
+      });
+    });
+    await new Promise((r) => vs.listen(0, "127.0.0.1", () => r(null)));
+    origin = `http://127.0.0.1:${(/** @type {import("net").AddressInfo} */ (vs.address())).port}`;
+    process.env.NO_PROXY = process.env.no_proxy = "127.0.0.1,localhost";
+    const KEY = "sk-test-engine-bridge-0015";
+    const cfg = {
+      providers: [{ id: "fakev", name: "假视频", kind: "dashscope", base_url: `${origin}/api/v1`, api_key: KEY }],
+      media_models: [{ id: "v1", cap: "video", name: "万相假", provider: "fakev", model: "wan2.2-t2v-plus", default: true }],
+    };
+    mm.normalize(cfg);
+    fs.writeFileSync(path.join(HOME, "config.json"), JSON.stringify(cfg)); // ⑯ 是最后一节，桥子进程读的那份换成视频渠道
+    const media = () => mm.resolve(cfg);
+    const pdir = harvest.pendingDir();
+    const pending = () => { try { return fs.readdirSync(pdir).filter((n) => /\.json$/.test(n)); } catch { return []; } };
+    const until = async (cond, ms = 20000) => { const t0 = Date.now(); while (!cond() && Date.now() - t0 < ms) await new Promise((r) => setTimeout(r, 20)); return !!cond(); };
+    // 收货最多等这么久：改坏了会一直查下去，不能把整个测试挂死，断言照样红
+    const settle = (jobs, ms = 8000) => Promise.race([Promise.all(jobs), new Promise((r) => setTimeout(r, ms).unref())]);
+    const real = (p) => { try { return fs.realpathSync(p); } catch { return p; } };
+    const root = path.join(HOME, "orgs", "丁", "workspace");
+    const task = path.join(root, "任务_视频");
+    fs.mkdirSync(task, { recursive: true });
+    /** 拉起桥（照 CLI 的样子），回话按 id 收着；叫停、关输入、发信号由用例自己来 */
+    const liveBridge = (server) => {
+      const env = { ...process.env, ...(server.env || {}) };
+      for (const [k, v] of Object.entries(env)) if (v === undefined) delete env[k];
+      const ch = spawn(server.command, server.args || [], { env, stdio: ["pipe", "pipe", "pipe"] });
+      const got = new Map();
+      let buf = "", err = "";
+      ch.stderr.on("data", (d) => { err += d; });
+      ch.stdout.on("data", (d) => {
+        buf += d;
+        let k;
+        while ((k = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, k); buf = buf.slice(k + 1);
+          try { const m = JSON.parse(line); if (m.id != null) got.set(m.id, m); } catch {}
+        }
+      });
+      const closed = new Promise((r) => ch.on("close", (code, sig) => r({ code, sig })));
+      const send = (m) => ch.stdin.write(JSON.stringify({ jsonrpc: "2.0", ...m }) + "\n");
+      send({ id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "0" } } });
+      send({ method: "notifications/initialized" });
+      const said = (id) => { const r = ((got.get(id) || {}).result) || {}; return { isError: !!r.isError, text: (r.content || []).map((c) => c.text).join("\n") }; };
+      return { ch, got, closed, send, said, err: () => err };
+    };
+    const call = (b, filename) => b.send({ id: 2, method: "tools/call", params: { name: "generate_video", arguments: { prompt: "一只猫在跑", filename } } });
+    const recs = [];
+    const record0 = quota.record;
+    quota.record = (cap, o) => { recs.push({ cap, ...o }); };
+    try {
+      // —— 叫停（notifications/cancelled）：CLI 不等这一单了 ——
+      const a = bridge.attach("claude-code", { home: HOME, root, baseDir: "任务_视频", user: "丁", run: "run-15a", tools: ["generate_video"] });
+      try {
+        const srv = serverOf(a);
+        ok(srv.env.OPENWORKBUDDY_BRIDGE_RUN === "run-15a", "这一趟的编号带给了桥（台账靠它认是哪一趟留下的）", srv.env);
+        ok(srv.timeout === bridge.TOOL_TIMEOUT_MS && bridge.TOOL_TIMEOUT_MS === 900000, "★claude 那边本项目这台 MCP 写了 timeout 15 分钟★（不写就按它的空闲时限半路掐掉出视频）", srv);
+        const b = liveBridge(srv);
+        call(b, "猫跑.mp4");
+        const polled = await until(() => (st.checks["vt-1"] || 0) >= 1);
+        const ledger = pending();
+        b.send({ method: "notifications/cancelled", params: { requestId: 2, reason: "用户停了" } });
+        const answered = await until(() => b.got.has(2), 8000);
+        if (!answered) b.ch.kill("SIGKILL"); // 叫不停就别等它
+        b.ch.stdin.end();
+        await b.closed;
+        const r = b.said(2);
+        ok(polled && st.submits === 1 && ledger.length === 1, "上游收单那一刻台账就落了一条（片子还在跑）", { st, ledger, err: b.err().slice(-400) });
+        ok(answered && r.isError && r.text.includes("上游已经收下这一单（任务号 vt-1），这边没去撤单"), "★CLI 叫停：桥当场停下，回话说清上游收了、没撤★", { answered, r });
+        ok(st.cancels.length === 0 && st.submits === 1, "桥这头不撤单、不重新下单", st);
+        const f = pending()[0] || "";
+        const e = f ? harvest.readEntry(path.join(pdir, f)) : null;
+        ok(!!e && e.taskId === "vt-1" && e.run === "run-15a" && e.proto === "dashscope" && real(e.saveDir) === real(task) && e.fname === "猫跑.mp4" && e.units > 0 && e.user === "丁",
+          "台账留着：任务号、这一趟的编号、对话目录、文件名、计价量、谁的都在", e);
+        const raw = f ? fs.readFileSync(path.join(pdir, f), "utf8") : "";
+        ok(!!raw && !raw.includes(KEY) && !raw.includes(origin) && !raw.includes("127.0.0.1"), "★台账里没有 Key，也没有渠道地址本身★（只有地址的哈希）", raw);
+
+        // —— 收尾：没停、后台按任务号收回 ——
+        st.ready.add("vt-1");
+        // 别的一趟留下的、还在等出片的：这一趟收尾不认它
+        const decoy = harvest.writeEntry(pdir, { proto: "dashscope", model: "wan2.2-t2v-plus", chan: "0", saveDir: task, units: 5, user: "丁", pid: 0, at: Date.now(), taskId: "vt-x", fname: "别人.mp4", run: "run-15x" });
+        const notes = [];
+        const ar = harvest.afterRun({ run: "run-15a", media, userStopped: false, emit: (ev) => notes.push(ev), actor: { org: "o15", user: "丁" } });
+        ok(ar.count === 1 && notes.length === 1 && notes[0].notice === true && notes[0].text === "有 1 条视频上游已经收单还没收回（任务号 vt-1），后台接着等，出好了放进对话目录",
+          "收尾说一句：几条、任务号、后台接着等（别的一趟留下的不算）", notes);
+        harvest.dropEntry(decoy);
+        await settle(ar.jobs);
+        const out = path.join(task, "猫跑.mp4");
+        ok(fs.existsSync(out) && fs.readFileSync(out).equals(MP4) && st.submits === 1 && st.downloads === 1, "★后台按任务号收回来，放进对话目录；上游只收过一次单★", { st, has: fs.existsSync(out) });
+        ok(pending().length === 0, "收回来了台账就删", pending());
+        ok(recs.length === 1 && recs[0].cap === "video" && recs[0].model === "wan2.2-t2v-plus" && recs[0].units === e.units && /后台收回 猫跑\.mp4/.test(recs[0].meta) && recs[0].actor && recs[0].actor.user === "丁",
+          "收回来记一笔账：照收单时的计价量、记在这一趟的人头上", recs);
+        ok(harvest.afterRun({ run: "run-15a", media, emit: (ev) => notes.push(ev) }).count === 0 && notes.length === 1, "反向对照：没有剩下的就一句不说", notes);
+      } finally { a.cleanup(); }
+
+      // —— 桥挨 SIGTERM（CLI 收工、Bash 超时）+ 用户点了停止：能撤的去撤 ——
+      const a2 = bridge.attach("claude-code", { home: HOME, root, baseDir: "任务_视频", user: "丁", run: "run-15b", tools: ["generate_video"] });
+      try {
+        const b2 = liveBridge(serverOf(a2));
+        call(b2, "狗跑.mp4");
+        await until(() => (st.checks["vt-2"] || 0) >= 1);
+        // Windows 上 kill 就是硬杀，不走 SIGTERM 那段处理：那边改用叫停 + 关输入，照样得回完话、台账留着
+        if (process.platform === "win32") { b2.send({ method: "notifications/cancelled", params: { requestId: 2 } }); if (!(await until(() => b2.got.has(2), 8000))) b2.ch.kill(); b2.ch.stdin.end(); }
+        else { b2.ch.kill("SIGTERM"); setTimeout(() => b2.ch.kill("SIGKILL"), 8000).unref(); }
+        await b2.closed;
+        const r2 = b2.said(2);
+        ok(st.submits === 2 && r2.isError && r2.text.includes("任务号 vt-2") && pending().length === 1, "★桥挨了 SIGTERM：先把手上那单叫停、回完话再走，台账留着★", { r2, st, p: pending(), err: b2.err().slice(-400) });
+        const notes2 = [];
+        const ar2 = harvest.afterRun({ run: "run-15b", media, userStopped: true, emit: (ev) => notes2.push(ev) });
+        await settle(ar2.jobs);
+        ok(st.cancels.includes("vt-2") && (notes2[0] || {}).text === "停下时有 1 条视频上游已经收单（任务号 vt-2）：能撤的已去上游撤单，撤不掉的出好了放进对话目录",
+          "★用户点了停止：万相这家收尾时去上游撤了单，回话照实说★", { st, notes2 });
+        ok(pending().length === 0 && !fs.existsSync(path.join(task, "狗跑.mp4")) && st.downloads === 1, "上游回「已取消」：台账删掉、不落文件、不记账", { p: pending(), recs: recs.length });
+        ok(recs.length === 1, "撤掉的那单不记账", recs);
+      } finally { a2.cleanup(); }
+
+      const v = mm.pick(media(), "video");
+      const chan = harvest.chanKey(v.base_url);
+      const entry = (o) => ({ proto: "dashscope", model: "wan2.2-t2v-plus", chan, saveDir: task, units: 5, user: "丁", pid: 0, at: Date.now(), ...o });
+
+      // —— 撤不掉的那几家：照实说「停不掉、照样扣费」；认不回渠道的台账留着下次再查 ——
+      harvest.writeEntry(pdir, entry({ taskId: "zp-1", proto: "zhipu", model: "cogvideox-x", fname: "鱼.mp4", run: "run-15z" }));
+      const notesZ = [];
+      const arZ = harvest.afterRun({ run: "run-15z", media, userStopped: true, emit: (ev) => notesZ.push(ev) });
+      await settle(arZ.jobs);
+      ok((notesZ[0] || {}).text === "停下时有 1 条视频上游已经收单（任务号 zp-1），这家停不掉、照样扣费；出好了放进对话目录", "停不掉的那家照实说照样扣费", notesZ);
+      ok(pending().length === 1 && harvest.readEntry(path.join(pdir, pending()[0])).taskId === "zp-1", "设置里认不回这条渠道：台账留着（改回原名），下次启动再查", pending());
+      harvest.dropEntry(path.join(pdir, harvest.entryName("zhipu", "zp-1")));
+
+      // —— 同一单只收一次：两份收货的（模拟两个进程）同时伸手，只有一个占得到 ——
+      harvest.writeEntry(pdir, entry({ taskId: "vt-3", fname: "鸟.mp4", run: "run-15c" }));
+      st.ready.add("vt-3");
+      const k = require.resolve(mod("harvest"));
+      const keep = require.cache[k];
+      delete require.cache[k];
+      const other = require(k); // 另一份模块：自己的「正在收」表，模拟另一个进程
+      require.cache[k] = keep;
+      other._internals.setPollMs(40);
+      const x3 = harvest.listEntries(pdir).find((x) => x.entry.taskId === "vt-3");
+      const d0 = st.downloads;
+      await settle([harvest._internals.take(x3, { media }), other._internals.take(x3, { media }), ...harvest.sweep({ media }).jobs]);
+      ok(st.downloads - d0 === 1 && fs.existsSync(path.join(task, "鸟.mp4")) && !fs.existsSync(path.join(task, "鸟_2.mp4")) && (st.checks["vt-3"] || 0) === 1,
+        "★两份收货同时伸手：改名占住，只收一次、只下一次★", { st, d0 });
+      ok(pending().length === 0 && recs.length === 2, "收完台账删掉、记一笔账", { p: pending(), recs: recs.length });
+
+      // —— 桥还活着先等它（它可能自己还在等这一单）；它走了再收 ——
+      const hold = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "ignore" });
+      harvest.writeEntry(pdir, entry({ taskId: "vt-4", fname: "猫跑.mp4", run: "run-15d", pid: hold.pid, at: fs.statSync(path.join(task, "猫跑.mp4")).mtimeMs + 1 }));
+      st.ready.add("vt-4");
+      const x4 = harvest.listEntries(pdir).find((x) => x.entry.taskId === "vt-4");
+      const t4 = harvest._internals.take(x4, { media });
+      await new Promise((r) => setTimeout(r, 300));
+      ok(!st.checks["vt-4"] && pending().length === 1 && fs.existsSync(x4.file), "★桥那个进程还在：不去抢，台账原样★", { st, p: pending() });
+      const gone = new Promise((r) => hold.on("exit", () => r(null)));
+      hold.kill();
+      await gone;
+      await settle([t4]);
+      ok(st.checks["vt-4"] >= 1 && fs.existsSync(path.join(task, "猫跑_2.mp4")) && fs.readFileSync(path.join(task, "猫跑.mp4")).equals(MP4),
+        "它走了再收；★对话目录里同名的是早先那条：另起「猫跑_2.mp4」，不覆盖★", { st, ls: fs.readdirSync(task) });
+
+      // —— 占着却没人收的（占的那个进程没了）：启动时放回来接着收；占的进程还在的不动 ——
+      harvest.writeEntry(pdir, entry({ taskId: "vt-5", fname: "马.mp4", run: "run-15e" }));
+      harvest.writeEntry(pdir, entry({ taskId: "vt-6", fname: "牛.mp4", run: "run-15e" }));
+      st.ready.add("vt-5"); st.ready.add("vt-6");
+      const dead = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+      await new Promise((r) => dead.on("exit", () => r(null)));
+      const f5 = path.join(pdir, harvest.entryName("dashscope", "vt-5")), f6 = path.join(pdir, harvest.entryName("dashscope", "vt-6"));
+      fs.renameSync(f5, `${f5}.claim-${dead.pid}`);
+      fs.renameSync(f6, `${f6}.claim-${process.ppid}`);
+      const sw = harvest.sweep({ media });
+      await settle(sw.jobs);
+      ok(fs.existsSync(path.join(task, "马.mp4")) && !fs.existsSync(f5) && !fs.existsSync(`${f5}.claim-${dead.pid}`), "占的进程没了：放回来、收完、删掉", fs.readdirSync(pdir));
+      ok(!fs.existsSync(path.join(task, "牛.mp4")) && fs.existsSync(`${f6}.claim-${process.ppid}`), "反向对照：占的进程还在，不动", fs.readdirSync(pdir));
+      fs.rmSync(`${f6}.claim-${process.ppid}`, { force: true });
+
+      // —— 上游明说失败：一般不收钱，台账删掉、不落文件 ——
+      harvest.writeEntry(pdir, entry({ taskId: "vt-7", fname: "羊.mp4", run: "run-15f" }));
+      st.cancels.push("vt-7"); // 假上游对它回「已取消」= 失败
+      await settle(harvest.afterRun({ run: "run-15f", media }).jobs);
+      ok(pending().length === 0 && !fs.existsSync(path.join(task, "羊.mp4")) && recs.length === 4, "上游说失败了：台账删掉、不落文件、不记账", { p: pending(), recs: recs.length });
+
+      // —— 主进程真跑一趟：编号带给桥，收尾按它认出这一趟留下的那条，说一句、后台收回 ——
+      {
+        const engines = require(mod("engines"));
+        const { createAgentRuntime } = require(mod("agent"));
+        const { McpManager } = require(mod("mcp"));
+        const runs = [];
+        let during = null;
+        const stub = {
+          id: "t-harvest", label: "收货桩", bin: null, note: "", install: "", launchHeader: "", supportsResume: false, models: [],
+          async detect() { return { id: "t-harvest", installed: true, path: "", version: "0" }; },
+          // 装作桥收了一单视频、没交到手 CLI 就收工了：照桥那份环境变量里的编号落一条台账（配置文件跑完就删，只能在这儿读）
+          async run(o) {
+            let r = "";
+            try { r = JSON.parse(fs.readFileSync(o.mcpConfigPath, "utf8")).mcpServers[bridge.SERVER_NAME].env.OPENWORKBUDDY_BRIDGE_RUN || ""; } catch {}
+            runs.push(r);
+            if (r) harvest.writeEntry(pdir, entry({ taskId: `vt-${7 + runs.length}`, fname: `兔${runs.length}.mp4`, run: r }));
+            if (during) during();
+            const halted = !!(o.stopSignal && o.stopSignal.aborted);
+            return { finalText: halted ? "" : "好", usage: {}, stopped: halted ? "user" : null, sessionId: null };
+          },
+        };
+        engines.BACKENDS.push(stub);
+        try {
+          const fakeLLM = { provider: "mock", model: "scripted", async chat() { return { text: "内置答的", toolCalls: [], stopReason: "end" }; } };
+          const rt = createAgentRuntime({ config: { ...cfg, agent: { engine: "t-harvest", max_steps: 3, engine_options: { "t-harvest": { model: "m1" } } } }, llm: fakeLLM, mcpManager: new McpManager(), experts: [] });
+          st.ready.add("vt-8"); st.ready.add("vt-9");
+          const evs = [];
+          await rt.runTask({ history: [{ role: "user", content: "出条视频" }], emit: (ev) => evs.push(ev) });
+          await rt.runTask({ history: [{ role: "user", content: "再出一条" }], emit() {} });
+          const said = evs.filter((ev) => ev && ev.notice && /视频上游已经收单/.test(ev.text || "")).map((ev) => ev.text);
+          ok(runs.length === 2 && !!runs[0] && !!runs[1] && runs[0] !== runs[1], "★每一趟各有各的编号，带给了桥★", runs);
+          ok(said.length === 1 && said[0] === "有 1 条视频上游已经收单还没收回（任务号 vt-8），后台接着等，出好了放进对话目录",
+            "★收尾按编号只认这一趟留下的那条，说一句★", said);
+          const got = await until(() => fs.existsSync(path.join(task, "兔1.mp4")) && fs.existsSync(path.join(task, "兔2.mp4")) && pending().length === 0, 8000);
+          ok(got && recs.length === 6, "★没交到手的两条，后台按任务号收回进对话目录、记账、删台账★", { p: pending(), recs: recs.length, ls: fs.readdirSync(task) });
+          // 用户点了停止的那一趟：收尾时能撤的去上游撤
+          const ac = new AbortController();
+          during = () => ac.abort();
+          st.cancelDelay = 400;
+          const evs3 = [];
+          await rt.runTask({ history: [{ role: "user", content: "第三条" }], emit: (ev) => evs3.push(ev), stopSignal: ac.signal });
+          during = null;
+          const said3 = evs3.filter((ev) => ev && ev.notice && /视频上游已经收单/.test(ev.text || "")).map((ev) => ev.text);
+          const gone3 = await until(() => fs.readdirSync(pdir).length === 0, 8000);
+          ok(said3[0] === "停下时有 1 条视频上游已经收单（任务号 vt-10）：能撤的已去上游撤单，撤不掉的出好了放进对话目录" && st.cancels.includes("vt-10") && gone3 && !fs.existsSync(path.join(task, "兔3.mp4")),
+            "★用户点了停止的那一趟：收尾认得出是停了的，去上游撤单★", { said3, cancels: st.cancels, p: pending() });
+          st.cancelDelay = 0;
+          ok(st.checks["vt-10"] === 1, "撤单慢也等它发出去了再开始收：头一次查单就看到「已取消」，不白等一轮", st.checks);
+        } finally { engines.BACKENDS.splice(engines.BACKENDS.indexOf(stub), 1); }
+      }
+    } finally {
+      quota.record = record0;
+      harvest._internals.stopAll();
+      vs.close();
+    }
+
+    // —— 时限：claude 的 Bash 给足 15 分钟；codex 那边不加这一项；属主设过的照传给子进程 ——
+    if (SH) {
+      const c1 = bridge.attach("claude-code", { home: HOME, root, baseDir: "任务_视频", user: "丁", tools: ["generate_video"] });
+      const c2 = bridge.attach("codex", { home: HOME, root, baseDir: "任务_视频", user: "丁", tools: ["generate_video"] });
+      try {
+        const want = process.env.BASH_MAX_TIMEOUT_MS ? undefined : "900000";
+        ok(c1.runOpts.env.BASH_MAX_TIMEOUT_MS === want, "★claude 跑 owb 走它的 Bash：上限放到 15 分钟（属主自己设过就不动）★", c1.runOpts.env);
+        ok(!("BASH_MAX_TIMEOUT_MS" in ((c2.runOpts || {}).env || {})), "codex 那边不加（它的时限写在 tool_timeout_sec）", c2.runOpts && c2.runOpts.env);
+        ok(!("OPENWORKBUDDY_BRIDGE_RUN" in serverOf(c1).env), "反向对照：没给编号就不带这一项", serverOf(c1).env);
+      } finally { c1.cleanup(); c2.cleanup(); }
+      const own = process.env.BASH_MAX_TIMEOUT_MS;
+      process.env.BASH_MAX_TIMEOUT_MS = "1234";
+      const c3 = bridge.attach("claude-code", { home: HOME, root, baseDir: "任务_视频", user: "丁", tools: ["generate_video"] });
+      try { ok(!("BASH_MAX_TIMEOUT_MS" in c3.runOpts.env), "反向对照：属主自己设过 Bash 时限，桥不去改它", c3.runOpts.env); }
+      finally { c3.cleanup(); if (own === undefined) delete process.env.BASH_MAX_TIMEOUT_MS; else process.env.BASH_MAX_TIMEOUT_MS = own; }
+    }
+    const ce = buildChildEnv({}, { base: { BASH_MAX_TIMEOUT_MS: "1", BASH_DEFAULT_TIMEOUT_MS: "2", MCP_TOOL_TIMEOUT: "3", CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT: "4", MCP_TIMEOUT: "5", OWB_NOT_LISTED_15: "x" }, allow: [], keys: false });
+    ok(ce.BASH_MAX_TIMEOUT_MS === "1" && ce.BASH_DEFAULT_TIMEOUT_MS === "2" && ce.MCP_TOOL_TIMEOUT === "3" && ce.CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT === "4" && ce.MCP_TIMEOUT === "5" && !("OWB_NOT_LISTED_15" in ce),
+      "属主在 shell 里设的 CLI 时限照传给子进程（反向对照：没列的照拦）", ce);
   }
 
   console.log(`\n${pass} 通过，${fail} 失败`);

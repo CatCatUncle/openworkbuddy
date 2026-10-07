@@ -3343,7 +3343,7 @@ function testMultiRunI18n() {
 }
 
 // ================= 本机引擎那几句的英文 =================
-// 本机 CLI 跑着时服务端推来的事实提示、心跳、交付核对（agent.js / codex.js / security.js），整句写进运行页。
+// 本机 CLI 跑着时服务端推来的事实提示、心跳、交付核对、视频后台收回（agent.js / codex.js / security.js / harvest.js），整句写进运行页。
 // 英文界面靠 i18n.js 的整句正则吃下它们；这里按真源码里的固定部分对一遍，源码改了措辞当场红
 const ENGINE_I18N_CASES = [
   // [运行页上真出现的那句, 源码里必须有的固定部分, 允许留着的中文（回复原话）]。服务端原话、文件名用英文占位
@@ -3366,12 +3366,15 @@ const ENGINE_I18N_CASES = [
   ["回复里提到的文件没找到：a.pdf、b.pdf、c.pdf、d.pdf、e.pdf 等 7 个", " 等 ${xs.length} 个"],
   ["回复里提到的文件是空的（0 字节）：report.pdf", "回复里提到的文件是空的（0 字节）："],
   ["回复里说「如图所示」，这一趟没有产出新图片", "，这一趟没有产出新图片", "如图所示"],
+  ["有 2 条视频上游已经收单还没收回（任务号 vt-1、vt-2），后台接着等，出好了放进对话目录", " 条视频上游已经收单还没收回（任务号 "],
+  ["停下时有 1 条视频上游已经收单（任务号 vt-1）：能撤的已去上游撤单，撤不掉的出好了放进对话目录", "：能撤的已去上游撤单，撤不掉的出好了放进对话目录"],
+  ["停下时有 5 条视频上游已经收单（任务号 a、b、c 等 5 个），这家停不掉、照样扣费；出好了放进对话目录", "），这家停不掉、照样扣费；出好了放进对话目录"],
 ];
 function testEngineI18n() {
   const names = [];
   const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
   const root = path.join(__dirname, "..");
-  const srv = ["src/agent/agent.js", "src/engines/codex.js", "src/core/safety/security.js"].map((f) => fs.readFileSync(path.join(root, f), "utf8")).join("\n");
+  const srv = ["src/agent/agent.js", "src/engines/codex.js", "src/core/safety/security.js", "src/engines/harvest.js"].map((f) => fs.readFileSync(path.join(root, f), "utf8")).join("\n");
   const HAN = /[一-鿿]/;
   const jsDir = path.join(root, "public", "js");
   const I18N_MOD = require(path.join(jsDir, "i18n.js"));
@@ -3387,6 +3390,8 @@ function testEngineI18n() {
     en(ENGINE_I18N_CASES[5][0]));
   ok("  └ 超过五个文件的尾巴「等 7 个」也翻", en("回复里提到的文件没找到：a.pdf、b.pdf、c.pdf、d.pdf、e.pdf 等 7 个") === "Files named in the reply weren't found: a.pdf, b.pdf, c.pdf, d.pdf, e.pdf (7 in all)",
     en("回复里提到的文件没找到：a.pdf、b.pdf、c.pdf、d.pdf、e.pdf 等 7 个"));
+  ok("  └ 视频收单的任务号多于三个：尾巴「等 5 个」也翻", en(ENGINE_I18N_CASES[ENGINE_I18N_CASES.length - 1][0]) === "When stopped, 5 video job(s) had been accepted upstream. Task IDs: a, b, c (5 in all). This provider can't cancel them and still charges; they'll go into this chat's folder when ready",
+    en(ENGINE_I18N_CASES[ENGINE_I18N_CASES.length - 1][0]));
   ok("  └ 安全档位的名字单独也能翻（安全页下拉）", en("只看不动") === "Look only" && en("每步都问") === "Ask every step" && en("全自动") === "Full auto" && en("自动改文件") === "Edit files for me");
   // ★反向对照★ 摘掉 i18n.js 里「本机引擎运行页上的那些话」那一节再加载：这套断言得真红，而且红的就是这一节管的句子
   const src = fs.readFileSync(path.join(jsDir, "i18n.js"), "utf8");
@@ -16077,7 +16082,7 @@ app.whenReady().then(async () => {
     {
       const namesEI = testEngineI18n();
       for (const n of namesEI) console.log("  ✓ " + n);
-      console.log(`✅ 前端：本机引擎那几句的英文（工具没挂上·只读停用·档位收紧·心跳·交付核对·含反向对照）${namesEI.length} 项通过`);
+      console.log(`✅ 前端：本机引擎那几句的英文（工具没挂上·只读停用·档位收紧·心跳·交付核对·视频后台收回·含反向对照）${namesEI.length} 项通过`);
     }
 
     const winESC = mkWin({ show: false, width: 600, height: 400, webPreferences: { offscreen: true } });

@@ -203,6 +203,7 @@ const TABLE = Object.freeze({
   codex: "src/engines/codex.js",
   engines: "src/engines/index.js",
   gate: "src/engines/gate.js",
+  harvest: "src/engines/harvest.js",
   jsonl: "src/engines/jsonl.js",
   lendable: "src/engines/lendable.js",
   "tool-bridge": "src/engines/tool-bridge.js",
