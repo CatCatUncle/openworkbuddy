@@ -1544,8 +1544,8 @@ function modePrompt(mode) {
         // IM/定时任务/评测这类无人值守场景没有回答通道，别傻等
         return { content: "当前是无人值守运行，没人在线回答。按你判断的最合理默认继续做，并在最终汇报里注明你替用户做了什么假设。", isError: false };
       }
-      // 弹出去之前那道闸：这一轮的头一问白放行，往后每一问先判一句「非得用户答不可吗」。
-      // 问过的那几问挂在 stats 上——整棵任务树共享同一份（budgetWarned 已经是这么挂的），
+      // 弹出去之前那道闸：这一轮的头一问白放行，往后每一问先判一句「非得用户答不可吗」；
+      // 一字不差又问一遍的不花钱，开关关着也拦。问过的那几问挂在 stats 上——整棵任务树共享同一份（budgetWarned 已经是这么挂的），
       // 也就是专家子代理问的也算进同一轮。连环追问本来就常常是「主代理问一句、
       // 派出去的专家再问一句」凑出来的，分开记等于白记。
       const asks = (stats.asks = Array.isArray(stats.asks) ? stats.asks : []);
@@ -1600,8 +1600,11 @@ function modePrompt(mode) {
       emit({ type: "ask_answer", ask_id: askId, answer, depth });
       // 选中的那条路把 detail 一并回填：那句话是你自己写的承诺，照着它做，别选完就忘
       const picked = options.find((o) => o.label === answer);
+      // 答过的钉进系统提示词（askGate.pinBlock）：这条工具结果迟早被压缩压掉，
+      // 压掉之后模型照样得看得见用户选了什么，不然就换个说法再问一遍
+      stats.decided = askGate.mergeDecided(stats.decided, [{ q: question, a: String(answer), d: (picked && picked.detail) || "" }]);
       return {
-        content: `用户的回答：${answer}` + (picked && picked.detail ? `（这条路你自己写的是：${picked.detail}——照它做）` : ""),
+        content: askGate.answerNote(answer, picked && picked.detail),
         isError: false,
         extendMs: waited,
       };
@@ -2352,6 +2355,8 @@ function modePrompt(mode) {
     let transcript = lines.join("\n");
     if (transcript.length > 60000) transcript = "…（更早部分略）\n" + transcript.slice(-60000); // 压缩请求本身也别把上下文顶爆
     const fileOps = collectFileOps(old);
+    // 压掉的那截里答过的（含更早摘要里那行）并上这一趟记着的——专家子代理问到的只在 stats 上
+    const decided = askGate.summaryLine(askGate.mergeDecided(askGate.answeredIn(old), stats && stats.decided));
     // 分轮压缩会把本任务的原始指令一起压掉，摘要没写好任务就跑偏——指令原文机械保留，不过模型的手。
     // 留哪一句就是压缩前 currentAsk 认的那句：以前这里拿最后一条非系统 user，压掉的要是「继续」或一条插话，
     // 留下的就是「继续」/插话本身，压缩前后认的不是同一句，续跑闸门和 stats.asked 就对不上了。
@@ -2410,6 +2415,9 @@ function modePrompt(mode) {
         // 机械地记一行已加载的技能名：下一趟开跑时按这行把技能全文重新挂回系统提示词。
         // 不记的话，use_skill 那条工具调用被压掉，技能就悄悄丢了，而摘要多半只写「按公众号规范写」
         (skills.length ? `【已加载技能】${skills.join("、")}\n` : "") +
+        // 用户答过的、中途补充过的也机械地记一行，理由同上：摘要模型常把用户点过的那一项写丢，
+        // 丢了模型就换个说法再问一遍。下一趟开跑由 askGate.answeredIn 照这行捡回来
+        (decided ? decided + "\n" : "") +
         `【读过的文件】${fileOps.read}\n【改过的文件】${fileOps.wrote}\n` +
         `（摘要结束。把以上当作既定事实继续，不必向用户复述；若与用户最新要求冲突，以最新要求为准。）`,
     });
@@ -3096,6 +3104,9 @@ function modePrompt(mode) {
     // 配方表单：消息里预填的（命令行 / IM 流程）或任务目录里上一趟填过的，开跑前就钉住
     // ask：消息里的预填只认这一轮要做的那条；更早那趟流程留下的，技能不挂着就不绑
     if (depth === 0 && !stats.recipe) stats.recipe = recipes.restore({ history, dir: taskDirAbs(baseDir), loaded: [...loadedSkills.keys()], ask: currentAsk(history) });
+    // 这个会话里用户答过的、中途补充过的：从历史和压缩摘要那行【用户定过的】里捡回来，每一步钉在系统提示词里。
+    // 整棵任务树共享这一份：专家子代理问到的答案，主代理也看得见
+    if (depth === 0 && !stats.decided) stats.decided = askGate.answeredIn(history);
     // 同一棵任务树里已经按配方放宽过（上一层或前面的同事填的表）：这一趟的步数、时长也照放。
     // 截止时间不在这儿挪——委派方传进来的那个已经顺延过了
     if (depth > 0 && stats.limitRaise) {
@@ -3251,7 +3262,8 @@ function modePrompt(mode) {
       // 插队消息：在两次模型调用之间的安全间隙注入（工具结果已闭合，不会写坏 tool_calls 序列）
       if (getInterject) {
         for (const m of getInterject()) {
-          history.push({ role: "user", content: `【用户插话（在任务执行中补充）】${m}` });
+          history.push({ role: "user", content: askGate.INTERJECT_HEAD + m });
+          stats.decided = askGate.mergeDecided(stats.decided, [{ said: m }]);
           emit({ type: "interject", text: m, depth });
         }
       }
@@ -3311,8 +3323,8 @@ function modePrompt(mode) {
       // 卡壳 / 总时长到点 / 手动停止，哪个先到都掐。自己管计时器和监听、这一步结束就摘（见 stepSignal）
       const stepSig = stepSignal([stallCtl.signal, stopSignal], Math.max(10000, deadline - Date.now()));
       const signal = stepSig.signal;
-      // 每一步现拼：技能可能在上一步刚 use_skill 进来
-      const sys = system + skillGate.skillBlock(loadedSkills) + recipes.pinBlock(stats.recipe);
+      // 每一步现拼：技能可能在上一步刚 use_skill 进来，用户可能刚答完一问、刚插了一句话
+      const sys = system + skillGate.skillBlock(loadedSkills) + recipes.pinBlock(stats.recipe) + askGate.pinBlock(stats.decided);
       const gen = tr.generation({
         name: `第 ${step + 1} 步`,
         model: L.model,

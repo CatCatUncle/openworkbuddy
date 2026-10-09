@@ -30,7 +30,8 @@
  *   - **只能把「问」变成「不问」**。它拦不住的照样弹，这道闸救不回来，也绝不会凭空多问一句；
  *   - **一轮里的头一问永远放行，一分钱不花**。开工前问一题本来就是对的，
  *     出问题的从来是第二、第三、第四问。正常的一趟任务因此根本不碰这道闸；
- *   - **一字不差地又问一遍，白拦**。这种不必花钱去判，也不该弹第二次；
+ *   - **一字不差地又问一遍，白拦，开关关着也拦**。这种不必花钱去判，也不该弹第二次——
+ *     它一分钱不花，就不该躲在那个管花钱的开关后面；
  *   - **说不准、答不上、问不成，一律照旧弹给用户**。闸坏了要退回老行为，
  *     不能反过来把用户真想答的那个岔路口吞掉——那是这套设计里唯一不可接受的错。
  *
@@ -95,8 +96,8 @@ const flat = (v) =>
 
 /**
  * 这一问走哪条路。三选一，只有 "judge" 那条才花钱。
+ *   dup   —— 跟这一轮里问过的某一问一字不差：不必花钱去判，也不该再弹一次。开关关着也拦
  *   ask   —— 照旧弹（开关没开、没配判断模型、这一轮的头一问，全走这儿）
- *   dup   —— 跟这一轮里问过的某一问一字不差：不必花钱去判，也不该再弹一次
  *   judge —— 这一轮问过别的了，这一问值一道题
  *
  * @param {{on?:boolean, ready?:boolean, question?:string,
@@ -106,12 +107,12 @@ const flat = (v) =>
 function route({ on, ready, question, prior } = {}) {
   const q = cut(question, Q_CHARS);
   if (!q) return { route: "ask" };            // 空问句，上游那条规矩已经挡了
-  if (on !== true) return { route: "ask" };   // 开关默认关；写成别的值（字符串、1）都不算开
-  if (!ready) return { route: "ask" };        // 没配判断模型
   const list = Array.isArray(prior) ? prior : [];
-  if (!list.length) return { route: "ask" };  // 一轮里的头一问，白放行
-  const f = flat(q);
+  // 一字不差又问一遍排在开关前面：这一条不花钱。以前它排在开关后面，
+  // 开关默认关，于是这道最便宜的拦截在绝大多数人那儿从来没生效过——
+  // 用户眼睁睁看着同一个问题弹两次，开关那头却以为「没开就是不管」。
   // 拦下过的也算「问过了」：不然同一句话被拦一次、原样再来一次，第二次又得花钱判一遍
+  const f = flat(q);
   const hit = list.find((p) => p && flat(p.q) === f);
   if (hit) {
     return {
@@ -119,6 +120,9 @@ function route({ on, ready, question, prior } = {}) {
       dup: { q: cut(hit.q, PRIOR_CHARS), a: cut(hit.a, ANSWER_CHARS), skipped: !!hit.skipped },
     };
   }
+  if (on !== true) return { route: "ask" };   // 开关默认关；写成别的值（字符串、1）都不算开
+  if (!ready) return { route: "ask" };        // 没配判断模型
+  if (!list.length) return { route: "ask" };  // 一轮里的头一问，白放行
   return { route: "judge" };
 }
 
@@ -239,8 +243,160 @@ function dupNote(d) {
   );
 }
 
+// ── 用户答过的，钉住 ─────────────────────────────────────────────
+/**
+ * 用户在这个会话里答过什么、中途补充过什么——钉进系统提示词，历史压缩压不到。
+ *
+ * 答案原本只活在 ask_user 那条工具结果里。长任务一压缩，那条结果跟着老轮次一起
+ * 被浓缩成摘要；摘要模型只写它觉得要紧的，用户点过的那一项常常不在里面。
+ * 本机一趟讲课 PPT：读了几份很长的技能说明，一趟任务压缩了十五次。用户先选了风格、
+ * 又选了「AI 生成水墨插图」；压过几轮之后模型换了个说法第三次问风格，
+ * 问句里自己写着「按纯矢量做、不生成 AI 图片」——用户选的路被忘了，它自己的默认又塞了回来。
+ *
+ * 跟技能、配方表单一个办法（见 skill-gate.skillBlock、recipes.pinBlock）：
+ *   - 每一步的系统提示词末尾挂一段「用户已经答过的」，压缩碰不到系统提示词；
+ *   - 压缩摘要里机械地记一行【用户定过的】（JSON），下一趟开跑照它捡回来——
+ *     不经摘要模型转述，它会丢；
+ *   - 只记用户真答过的（超时没答、被拦下没弹、配方表单都不算），外加中途插的话。
+ * 按先后排，同一问答过两次留后一次，最多留最近 DECIDED_MAX 条。
+ */
+const DECIDED_TAG = "【用户定过的】";
+const DECIDED_MAX = 12;
+const DECIDED_Q = 100;
+const DECIDED_A = 120;
+const DECIDED_D = 80;
+const DECIDED_SAID = 160;
+const DECIDED_PIN_MAX = 1600;
+/** 插话进历史时带的头、答案回给模型的那句话：写和读用同一组字，改一边另一边就认不出来了 */
+const INTERJECT_HEAD = "【用户插话（在任务执行中补充）】";
+const ANSWER_HEAD = "用户的回答：";
+const DETAIL_HEAD = "（这条路你自己写的是：";
+const DETAIL_TAIL = "——照它做）";
+
+/** 用户答完回给模型的那句话。选中的那条路把 detail 一并回填：那句话是它自己写的承诺，照着做，别选完就忘 */
+function answerNote(answer, detail) {
+  const d = cut(detail, 400);
+  return ANSWER_HEAD + String(answer == null ? "" : answer) + (d ? DETAIL_HEAD + d + DETAIL_TAIL : "");
+}
+
+/** answerNote 反过来读。不是用户真答的（超时、被拦、参数坏了）一律 null */
+function readAnswer(content) {
+  let s = String(content == null ? "" : content);
+  if (!s.startsWith(ANSWER_HEAD)) return null;
+  s = s.slice(ANSWER_HEAD.length);
+  let d = "";
+  const i = s.indexOf(DETAIL_HEAD);
+  if (i >= 0 && s.endsWith(DETAIL_TAIL)) {
+    d = s.slice(i + DETAIL_HEAD.length, s.length - DETAIL_TAIL.length);
+    s = s.slice(0, i);
+  }
+  const a = s.trim();
+  return a ? { a, d: d.trim() } : null;
+}
+
+/** 一条记录收拾成统一的形，不像样的回 null */
+function cleanDecided(x) {
+  if (!x || typeof x !== "object") return null;
+  if (x.said != null) {
+    const said = cut(x.said, DECIDED_SAID);
+    return said ? { said } : null;
+  }
+  const q = cut(x.q, DECIDED_Q);
+  const a = cut(x.a, DECIDED_A);
+  if (!q || !a) return null;
+  const d = cut(x.d, DECIDED_D);
+  return d ? { q, a, d } : { q, a };
+}
+const decidedKey = (e) => (e.said != null ? "说:" + flat(e.said) : "问:" + flat(e.q));
+
+/**
+ * 几份记录并成一份：按先后排；同一问（折叠后一字不差）只留后答的那次、挪到最后，
+ * 同一句插话也只留一次。最多留最近 DECIDED_MAX 条。
+ */
+function mergeDecided(...lists) {
+  const out = [];
+  for (const list of lists) {
+    for (const x of Array.isArray(list) ? list : []) {
+      const e = cleanDecided(x);
+      if (!e) continue;
+      const k = decidedKey(e);
+      const i = out.findIndex((y) => decidedKey(y) === k);
+      if (i >= 0) out.splice(i, 1);
+      out.push(e);
+    }
+  }
+  return out.slice(-DECIDED_MAX);
+}
+
+/**
+ * 从历史里捡「用户答过什么」：ask_user 的问句配上它那条结果、中途插的话，
+ * 以及压缩摘要里那行【用户定过的】（摘要排在历史最前面，正好是更早的那些）。
+ */
+function answeredIn(history) {
+  const found = [];
+  const asks = new Map(); // 工具调用 id → 问句
+  for (const e of Array.isArray(history) ? history : []) {
+    if (!e || typeof e !== "object") continue;
+    if (e.role === "assistant") {
+      for (const c of Array.isArray(e.toolCalls) ? e.toolCalls : []) {
+        if (!c || c.name !== "ask_user" || c.id == null) continue;
+        const input = c.input || c.args || {};
+        if (input.form) continue; // 配方表单的答案钉在配方那边
+        const q = String(input.question || "").trim();
+        if (q) asks.set(c.id, q);
+      }
+    } else if (e.role === "tool") {
+      for (const r of Array.isArray(e.results) ? e.results : []) {
+        if (!r || !asks.has(r.id)) continue;
+        const got = readAnswer(r.content);
+        if (got) found.push({ q: asks.get(r.id), a: got.a, d: got.d });
+        asks.delete(r.id);
+      }
+    } else if (e.role === "user" && typeof e.content === "string") {
+      const c = e.content;
+      if (c.startsWith(INTERJECT_HEAD)) found.push({ said: c.slice(INTERJECT_HEAD.length) });
+      else if (c.startsWith("【系统")) {
+        const m = /【用户定过的】([^\n]*)/.exec(c);
+        if (m) {
+          try {
+            const list = JSON.parse(m[1]);
+            if (Array.isArray(list)) found.push(...list);
+          } catch {}
+        }
+      }
+    }
+  }
+  return mergeDecided(found);
+}
+
+/** 压缩摘要里的那一行。没有就是空串 */
+function summaryLine(list) {
+  const items = mergeDecided(list);
+  return items.length ? DECIDED_TAG + JSON.stringify(items) : "";
+}
+
+/** 钉进系统提示词的那一段。放不下时从最老的开始丢：最近答的那几条最要紧 */
+function pinBlock(list) {
+  const items = mergeDecided(list);
+  if (!items.length) return "";
+  const one = (s) => String(s).replace(/\s+/g, " ");
+  const lines = items.map((e) =>
+    e.said != null
+      ? `- 用户中途补充：「${one(e.said)}」`
+      : `- 你问「${one(e.q)}」→ 用户选「${one(e.a)}」` + (e.d ? `（这条路你当时写的是：${one(e.d)}）` : "")
+  );
+  const head = "\n\n## 这个会话里用户已经答过的（历史压缩也不会丢）\n";
+  const foot =
+    "\n照这些做，别换个说法再问同一件事；同一件事答过两次，以最后那次为准。你在问句里自己写的前提不算数，用户定的只是选中的那一项。跟眼下这件事无关的不用管。" +
+    "\n真做不成（缺工具、报错、要多花钱），先说清卡在哪，再问；不许悄悄换一条路。";
+  while (lines.length > 1 && head.length + foot.length + lines.join("\n").length > DECIDED_PIN_MAX) lines.shift();
+  return head + lines.join("\n") + foot;
+}
+
 module.exports = {
   route, needQuestions, askState, readNeed, skipNote, dupNote, flat,
+  answerNote, readAnswer, answeredIn, mergeDecided, summaryLine, pinBlock,
   NEED_KEY, KIND_KEY, NEED_MIN, KIND_CHOICES, SKIP_KINDS,
   Q_CHARS, TASK_CHARS, OPT_MAX, PRIOR_MAX,
+  INTERJECT_HEAD, DECIDED_TAG, DECIDED_MAX, DECIDED_PIN_MAX,
 };

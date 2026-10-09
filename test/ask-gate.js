@@ -9,7 +9,8 @@
  * 所以要守的全是边界：
  *
  *   1. 该不该花这道题的钱 —— 开关没开不问、没配判断模型不问、**一轮里的头一问不问**
- *      （开工前问一题本来就是对的），一字不差又问一遍的也不问（那是白拦，不是白花钱）。
+ *      （开工前问一题本来就是对的），一字不差又问一遍的也不问（那是白拦，不是白花钱，
+ *      所以开关关着也拦）。
  *   2. 拦的门槛 —— 两边错得不一样重：放行一句废问，用户白点一下；拦错一个真岔路口，
  *      agent 替他挑了一条，整件事可能白做。所以门槛比通用的 0.7 严，按 0.8 收。
  *   3. 只少问，不多问 —— 它只能把「问」变成「不问」，绝不会凭空多弹一句。
@@ -20,6 +21,8 @@
  *      不能只丢一句「不许问」，那等于把 agent 堵死在这儿。
  *   7. 问过的要记住 —— 真弹出去、用户答过的那几问也得记一笔，
  *      不然这道闸只看得见自己拦过什么，看不见用户已经答过什么。
+ *   8. 答过的压缩也压不掉 —— 用户答过的、中途补充的钉在系统提示词里，压缩摘要里机械地记一行；
+ *      长任务压过几轮之后，模型照样看得见用户选了什么，不会换个说法再问一遍。
  *
  * 跑法：node test/ask-gate.js
  * 不花钱、不出外网：判断模型那一趟在这儿是替换掉的假函数。
@@ -77,6 +80,10 @@ const out = (...answers) => ({ ok: true, answers });
       "★一字不差又问一遍：白拦，不花钱★ 标点和全半角不该成为「换了个问题」");
     eq(route({ on: false, ready: true, question: "还继续吗", prior: prior1 }).route, "ask",
       "★没打开就一分钱不花★ 它花的是后台的钱，没人点确认");
+    eq(route({ on: false, ready: false, question: "还继续吗？", prior: [{ q: "还继续吗?", a: "继续" }] }).route, "dup",
+      "★一字不差又问一遍，开关关着也拦★ 这条不花钱，不该躲在管花钱的开关后面（开关默认关，以前这道拦截从来没生效过）");
+    eq(route({ on: false, ready: false, question: "要继续吗？", prior: [{ q: "还继续吗?", a: "继续" }] }).route, "ask",
+      "  └（对照）开关关着、换了个字：照旧弹，不花钱——关着的时候只拦一字不差的那种");
     eq(route({ on: "true", ready: true, question: "还继续吗", prior: prior1 }).route, "ask",
       "  └ 开关写成字符串 \"true\" 也不算开：只认真正的 true，别让一个手改的配置悄悄把闸打开");
     eq(route({ on: true, ready: false, question: "还继续吗", prior: prior1 }).route, "ask",
@@ -313,7 +320,151 @@ const out = (...answers) => ({ ok: true, answers });
     }
   }
 
-  console.log(`\n${fail === 0 ? "✅" : "❌"} 弹给用户那一问之前那道闸（免费尺子·出题·现场·读答案·回执·真跑一趟）${pass} 项通过${fail ? `，${fail} 项失败` : ""}`);
+  // ─────────────────────────────────────────────────────────────
+  console.log("\n⑦ 用户答过的：记成什么样、读不读得回来");
+  // ─────────────────────────────────────────────────────────────
+  {
+    const { answerNote, readAnswer, answeredIn, mergeDecided, summaryLine, pinBlock, INTERJECT_HEAD, DECIDED_MAX, DECIDED_PIN_MAX } = ag;
+    const n1 = answerNote("AI 生成水墨插图", "每页配一张水墨意境图");
+    eq(n1, "用户的回答：AI 生成水墨插图（这条路你自己写的是：每页配一张水墨意境图——照它做）",
+      "  └ 回给模型的那句话一字没变（老会话里存的、e2e 认的都是这句）");
+    eq(JSON.stringify(readAnswer(n1)), JSON.stringify({ a: "AI 生成水墨插图", d: "每页配一张水墨意境图" }),
+      "★写出去的读得回来★ 用户选的那一项和那条路的承诺分得开");
+    eq(readAnswer(answerNote("水墨国风（推荐）")).a, "水墨国风（推荐）", "  └ 选项名自己带括号也不切错");
+    eq(readAnswer("等了 300 秒，用户没有回应。按你判断的最合理默认继续做，并在最终汇报里注明你替用户做了什么假设，别再重复问。"), null,
+      "★超时没答的不算用户定的★ 那是模型自己挑的默认");
+    eq(readAnswer(dupNote({ q: "走哪条路？", a: "AI 生图" })), null, "  └ 被拦下没弹的回执也不算");
+
+    const ask = (id, question, extra) => ({ role: "assistant", text: "", toolCalls: [{ id, name: "ask_user", input: { question, options: [], ...extra } }] });
+    const res = (id, content) => ({ role: "tool", results: [{ id, name: "ask_user", content }] });
+    const hist = [
+      { role: "user", content: "帮我做一个讲《沁园春·长沙》的 PPT" },
+      ask("a1", "走哪种视觉风格？"), res("a1", answerNote("水墨国风·留白意境")),
+      { role: "user", content: INTERJECT_HEAD + "我的受众是高一的学生。" },
+      ask("a2", "画面走哪条路？"), res("a2", answerNote("AI 生成水墨插图", "每页配一张水墨意境图")),
+      ask("a3", "要不要加一页课堂小练习？"), res("a3", "等了 300 秒，用户没有回应。按你判断的最合理默认继续做"),
+      ask("f1", "开头表单", { form: { recipe: "宣传片" } }), res("f1", answerNote("表单填好了")),
+    ];
+    const got = answeredIn(hist);
+    eq(got.length, 3, "★答过的两问 + 一句插话，一条不多一条不少★ 超时的、配方表单的不算（表单钉在配方那边）", got);
+    eq(got[0].a, "水墨国风·留白意境", "  └ 按先后排");
+    eq(got[1].said, "我的受众是高一的学生。", "  └ 中途插的话也记，去掉了那个头");
+    eq(got[2].d, "每页配一张水墨意境图", "  └ 选中那条路自己写的承诺也带着");
+
+    const sumOf = (line) => ({ role: "user", content: "【系统·上下文压缩】以下是本会话更早内容的自动摘要（原文已归档）：\n## 目标\n做 PPT\n" + line + "\n【读过的文件】无\n【改过的文件】无\n（摘要结束。）" });
+    eq(JSON.stringify(answeredIn([sumOf(summaryLine(got))])), JSON.stringify(got),
+      "★压缩摘要里那一行读得回来★ 下一趟开跑照它捡，不靠摘要模型转述");
+    eq(answeredIn([sumOf(summaryLine(got)), ...hist.slice(4)]).length, 3,
+      "  └ 摘要里一份、还没压掉的原文里又一份：并起来不重复");
+    eq(answeredIn([{ role: "user", content: summaryLine(got) }]).length, 0,
+      "  └ 只认系统写的摘要：用户自己敲一行【用户定过的】不算");
+    eq(answeredIn([sumOf("【用户定过的】[{坏的")]).length, 0, "  └ 那一行坏了也不炸，当没有");
+    eq(summaryLine([]), "", "  └ 什么都没答过，摘要里就不写这一行");
+
+    const m = mergeDecided([{ q: "走哪种风格？", a: "红色经典" }, { said: "用 ppt master" }], [{ q: "走哪种风格?", a: "水墨国风" }, { said: "用ppt master" }]);
+    eq(m.length, 2, "★同一问答过两次只留一条★ 标点、空格不同也算同一问", m);
+    eq(m.find((x) => x.q).a, "水墨国风", "★以最后答的那次为准★");
+    const many = Array.from({ length: DECIDED_MAX + 5 }, (_, i) => ({ q: `第 ${i} 问？`, a: `答 ${i}` }));
+    const capped = mergeDecided(many);
+    eq(capped.length, DECIDED_MAX, `  └ 最多留最近 ${DECIDED_MAX} 条`);
+    eq(capped[capped.length - 1].a, `答 ${DECIDED_MAX + 4}`, "  └ 丢的是最老的，最近答的留着");
+
+    const pin = pinBlock(got);
+    ok(/用户已经答过的/.test(pin) && /历史压缩也不会丢/.test(pin), "★钉进系统提示词的那一段★", pin);
+    ok(pin.includes("你问「画面走哪条路？」→ 用户选「AI 生成水墨插图」"), "★问了什么、用户选了什么，一行说清★");
+    ok(pin.includes("用户中途补充：「我的受众是高一的学生。」"), "  └ 中途插的话也在");
+    ok(/不许悄悄换一条路/.test(pin), "★做不成要先说清再问，不许悄悄换路★ 那趟 PPT 就是换了个说法，把「不生成 AI 图片」塞了回来");
+    ok(/问句里自己写的前提不算数/.test(pin), "  └ 问句里夹带的前提不算用户定的");
+    eq(pinBlock([]), "", "  └ 什么都没答过就一个字不加，不白占提示词");
+    eq(pinBlock(undefined), "", "  └ 没有这份记录也不炸");
+    const fat = Array.from({ length: DECIDED_MAX }, (_, i) => ({ q: `第${i}问` + "问".repeat(90), a: "答".repeat(120), d: "路".repeat(80) }));
+    const big = pinBlock(fat);
+    ok(big.length <= DECIDED_PIN_MAX, `★钉的那段有上限★ ${big.length} ≤ ${DECIDED_PIN_MAX}，再多就是每一步都白付的钱`);
+    ok(big.includes(`第${DECIDED_MAX - 1}问`) && !big.includes("第0问"), "  └ 放不下时丢最老的，最近答的那条一定在");
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  console.log("\n⑧ 真跑一趟 agent：答过的选项，压缩过后还在");
+  // ─────────────────────────────────────────────────────────────
+  {
+    const experts = { list: () => [], get: () => null };
+    const Q = "《沁园春·长沙》讲课 PPT 的画面走哪条路？";
+    const OPTS = [{ label: "纯 SVG 手绘水墨", detail: "矢量画，不花钱" }, { label: "AI 生成水墨插图", detail: "每页配一张水墨意境图" }];
+    const PIN = "你问「《沁园春·长沙》讲课 PPT 的画面走哪条路？」→ 用户选「AI 生成水墨插图」";
+    const usage = { prompt: 10, completion: 5 };
+    /** 照剧本走的假模型：记下每一步的系统提示词；压缩那一下单独认出来，给一份不提选项的摘要 */
+    const scriptLLM = (script) => {
+      const systems = [];
+      let step = 0, compacts = 0;
+      return {
+        systems,
+        compacts: () => compacts,
+        chat: async ({ system }) => {
+          if (/^你是会话压缩器/.test(String(system || ""))) {
+            compacts++;
+            // 摘要模型真会这么写：只记得「定了水墨风」，用户点的那一项一个字没提
+            return { text: "## 目标\n做讲课 PPT\n## 已完成\n定了水墨风\n## 下一步\n出图", toolCalls: [], stopReason: "end", usage };
+          }
+          systems.push(String(system || ""));
+          const s = script[step++];
+          if (!s) return { text: "做完了。", toolCalls: [], stopReason: "end", usage };
+          return { text: s.text || "", toolCalls: s.calls || [], stopReason: "tool_use", usage };
+        },
+      };
+    };
+    const script = [
+      { text: "先问一句。", calls: [{ id: "s1", name: "ask_user", input: { question: Q, options: OPTS } }] },
+      // 撑过压缩那道 8000 字的下限：老轮次够肉才压
+      { text: "读了一份很长的技能说明。".repeat(900), calls: [{ id: "s2", name: "list_files", input: { path: "." } }] },
+      { text: "接着排版。".repeat(80), calls: [{ id: "s3", name: "list_files", input: { path: "." } }] },
+      // 压过之后：一字不差又问一遍（判断开关是默认关的）
+      { text: "", calls: [{ id: "s4", name: "ask_user", input: { question: Q, options: OPTS } }] },
+    ];
+    const cfg = {
+      agent: { max_steps: 8, tool_timeout_ms: 30000, ask_user_timeout_ms: 30000, compact_threshold_chars: 2000, compact_keep_chars: 200 },
+    };
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-apin-"));
+    fs.writeFileSync(path.join(dir, "教案.md"), "# 沁园春·长沙\n");
+    try {
+      const llm = scriptLLM(script);
+      const popped = [];
+      const statuses = [];
+      const history = [{ role: "user", content: "帮我做一个讲《沁园春·长沙》的 PPT" }];
+      const rt = createAgentRuntime({ config: cfg, llm, mcpManager: new McpManager(), experts });
+      await tools.withWorkspace(dir, () => rt.runTask({
+        history,
+        askUser: async ({ question }) => { popped.push(question); return "AI 生成水墨插图"; },
+        emit: (e) => { if (e.type === "status") statuses.push(e.text); },
+      }));
+      const S = llm.systems;
+      ok(S.length >= 4, "  └（前置）剧本四步都走到了", S.length);
+      ok(!S[0].includes(PIN), "  └（对照）答之前，系统提示词里没有这一段");
+      ok(S[1].includes(PIN) && S[2].includes(PIN), "★答完下一步起，系统提示词里就钉着用户选了什么★");
+      eq(llm.compacts(), 1, "  └（前置）中途真压缩了一次，测的不是空气");
+      const head = String(history[0].content || "");
+      ok(head.startsWith("【系统·上下文压缩】") && head.includes("【用户定过的】"), "★压缩摘要里机械地记了一行【用户定过的】★", head.slice(0, 300));
+      const raw = history.some((e) => e.role === "tool" && (e.results || []).some((r) => String(r.content || "").startsWith("用户的回答：")));
+      const sumText = head.replace(/【用户定过的】[^\n]*/, "");
+      ok(!raw && !sumText.includes("AI 生成水墨插图"),
+        "  └（对照）压完之后，原文里那条答案没了，摘要模型写的那段也没提——不钉住，模型就是在这儿忘的");
+      ok(S[3].includes(PIN), "★★压缩过后，系统提示词里照样钉着「AI 生成水墨插图」★★");
+      eq(popped.length, 1, "★一字不差又问一遍：没再弹给用户★ 开关关着也拦（以前这道拦截躲在开关后面）", popped);
+      const dupRes = history.flatMap((e) => (e.role === "tool" ? e.results || [] : [])).find((r) => r.id === "s4");
+      ok(dupRes && /用户当时答的是「AI 生成水墨插图」/.test(dupRes.content), "  └ 回给模型的是用户当时的答案，照着往下做", dupRes && dupRes.content);
+      ok(statuses.some((t) => /问过了/.test(t)), "  └ 界面上留了痕：这一问没再弹，为什么", statuses);
+
+      // 下一句话来了：新的一趟从历史里把答案捡回来（原文早被压掉，只剩摘要里那一行）
+      history.push({ role: "user", content: "第三页字太小了，改大一点" });
+      const llm2 = scriptLLM([]);
+      const rt2 = createAgentRuntime({ config: cfg, llm: llm2, mcpManager: new McpManager(), experts });
+      await tools.withWorkspace(dir, () => rt2.runTask({ history, askUser: async () => "随便", emit: () => {} }));
+      ok(llm2.systems[0] && llm2.systems[0].includes(PIN), "★★下一趟开跑第一步就钉着★★ 不靠摘要模型转述，靠摘要里机械记的那一行");
+    } finally {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+    }
+  }
+
+  console.log(`\n${fail === 0 ? "✅" : "❌"} 弹给用户那一问之前那道闸（免费尺子·出题·现场·读答案·回执·真跑一趟·答过的钉住）${pass} 项通过${fail ? `，${fail} 项失败` : ""}`);
   finished = true;
   process.exit(fail === 0 ? 0 : 1);
 })().catch((e) => {
