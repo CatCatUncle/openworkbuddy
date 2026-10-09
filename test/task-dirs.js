@@ -36,25 +36,33 @@ const has = (p) => fs.existsSync(p);
   const projects = path.join(HOME, "projects");
   const tenants = path.join(HOME, "data", "tenants");
   const mine = path.join(HOME, "我的代码仓库");
-  for (const d of [ws, path.join(projects, "小红书"), path.join(tenants, "org_a"), mine]) fs.mkdirSync(d, { recursive: true });
+  const docs = path.join(HOME, "客户资料");
+  for (const d of [ws, path.join(projects, "小红书"), path.join(tenants, "org_a"), path.join(mine, ".git"), docs]) fs.mkdirSync(d, { recursive: true });
   const anchors = { workspace: ws, projects, tenants };
 
   section("【1】哪些根下按对话分");
   {
-    ok(taskDirs.perChatRoot(ws, anchors), "默认工作空间：分");
-    ok(taskDirs.perChatRoot(path.join(projects, "小红书"), anchors), "没填目录时应用替项目建的 projects/<名>：分");
-    ok(taskDirs.perChatRoot(path.join(tenants, "org_a"), anchors), "没指定目录的租户根 tenants/<id>：分");
-    ok(!taskDirs.perChatRoot(mine, anchors), "★反向对照★ 用户自己挑的文件夹：不分，照旧就地读写");
-    ok(!taskDirs.perChatRoot(projects, anchors), "★反向对照★ projects/ 本身不算（它下一层才是项目）");
-    ok(!taskDirs.perChatRoot(path.join(projects, "小红书", "子目录"), anchors), "★反向对照★ 项目里再往下一层是用户挑的：不分");
-    ok(taskDirs.perChatRoot(path.join(ws, "..", "workspace"), anchors), "路径里带 .. 也认得出是同一个地方");
+    ok(taskDirs.appRoot(ws, anchors), "默认工作空间：应用自己建的根");
+    ok(taskDirs.appRoot(path.join(projects, "小红书"), anchors), "没填目录时应用替项目建的 projects/<名>：应用自己建的根");
+    ok(taskDirs.appRoot(path.join(tenants, "org_a"), anchors), "没指定目录的租户根 tenants/<id>：应用自己建的根");
+    ok(!taskDirs.appRoot(docs, anchors) && !taskDirs.appRoot(mine, anchors), "★反向对照★ 用户自己挑的文件夹：不算");
+    ok(!taskDirs.appRoot(projects, anchors), "★反向对照★ projects/ 本身不算（它下一层才是项目）");
+    ok(!taskDirs.appRoot(path.join(projects, "小红书", "子目录"), anchors), "★反向对照★ 项目里再往下一层是用户挑的：不算");
+    ok(taskDirs.appRoot(path.join(ws, "..", "workspace"), anchors), "路径里带 .. 也认得出是同一个地方");
     const link = path.join(HOME, "ws-link");
     fs.symlinkSync(ws, link);
-    ok(taskDirs.perChatRoot(link, anchors), "软链接指过来的也是同一个地方（/tmp 和 /private/tmp 那种）");
+    ok(taskDirs.appRoot(link, anchors), "软链接指过来的也是同一个地方（/tmp 和 /private/tmp 那种）");
     if (process.platform === "darwin" || process.platform === "win32") {
-      ok(taskDirs.perChatRoot(path.join(HOME, "WORKSPACE"), anchors), "盘不分大小写的系统上，大小写拼错也还是同一个地方");
+      ok(taskDirs.appRoot(path.join(HOME, "WORKSPACE"), anchors), "盘不分大小写的系统上，大小写拼错也还是同一个地方");
     }
-    ok(taskDirs.perChatRoot(path.join(projects, "还没建出来的项目"), anchors), "项目目录还没建出来时也照样判（不存在的尾巴原样接上）");
+    ok(taskDirs.appRoot(path.join(projects, "还没建出来的项目"), anchors), "项目目录还没建出来时也照样判（不存在的尾巴原样接上）");
+    ok(!taskDirs.appRoot("", anchors) && !taskDirs.appRoot(ws, {}), "空参数不炸，一律不算");
+
+    ok(taskDirs.perChatRoot(ws, anchors) && taskDirs.perChatRoot(path.join(projects, "小红书"), anchors) && taskDirs.perChatRoot(path.join(tenants, "org_a"), anchors),
+      "应用自己建的根：分");
+    ok(taskDirs.perChatRoot(docs, anchors),
+      "在设置里换成自己的普通文件夹（文档、素材）：也分——以前不分，各对话的产出摊在同一层、同名互相盖，每条对话都看见别的对话的文件");
+    ok(!taskDirs.perChatRoot(mine, anchors), "★反向对照★ 看着像代码仓库的：不分，照旧就地读写（要改的代码本来就在根上）");
     ok(!taskDirs.perChatRoot("", anchors) && !taskDirs.perChatRoot(ws, {}), "空参数不炸，一律按不分");
   }
 
@@ -184,7 +192,7 @@ const has = (p) => fs.existsSync(p);
 
     perChat = false;
     ok(S.runDirFor("im", { sessionId: "feishu_群C", history: [user("做海报")] }) === null && S.runDirFor("schedule", { history: [user("x")] }) === null,
-      "★反向对照★ 用户自选的文件夹：不分，照旧写在根上");
+      "★反向对照★ 摊在根上的文件夹（代码仓库、选了「直接放进去」的）：不分，照旧写在根上");
     perChat = true;
 
     // 跑空了收
@@ -238,9 +246,9 @@ const has = (p) => fs.existsSync(p);
       "IM / 定时任务的文件夹在 go 里算：报了负责人的定时任务要进了那个租户，根才是对的");
     ok(acc && /finally \{[\s\S]*?settleRunDir\(source, rest, runRoot, runDir\)/.test(acc[0]), "跑完（成败都算）在 finally 里收空文件夹");
     ok(acc && /baseDir: runDir,[\s\S]*?\.\.\.rest,/.test(acc[0]), "调用方在 args 里给了 baseDir 的照旧听调用方的（...rest 在后面）");
-    ok(/send\(\{ type: "dir", dir: taskBaseDir \|\| "", moved \}\)/.test(srv), "网页对话每一轮都报 dir：中途换到自选文件夹时报空串，前端好清掉旧的那格");
-    ok(/if \(!useSessionDirHere\(sess\)\) moved = assignSessionDir\(sess, message\);/.test(srv),
-      "  └ 这一轮才建的格，连带报刚从根上搬进来的附件（前端拿它改气泡的指向，不然一点预览就是「文件不存在」）");
+    ok(/send\(\{ type: "dir", dir: taskBaseDir \|\| "", moved \}\)/.test(srv), "网页对话每一轮都报 dir：中途换到摊在根上的文件夹时报空串，前端好清掉旧的那格");
+    ok(/let moved = \[\];\s*if \(wtInfo\) sess\.pending_uploads = \[\];\s*else moved = settlePendingUploads\(sess, taskBaseDir\);/.test(srv),
+      "  └ 连带报刚搬进这格的附件（前端拿它改气泡的指向，不然一点预览就是「文件不存在」）");
     ok(/const perChat = perChatHere\(\);[\s\S]{0,800}dir: perChat \? sessDirOf\(s\) : null,[^\n]*att_dir: s\.dir \|\| null/.test(srv),
       "/api/session：dir 只给当前根下的那格，附件另给 att_dir（换过根也看得见历史里的图）");
     ok(/root_files: perChat \? rootFilesOf\(s\) : \[\]/.test(srv) && /function rootFilesOf\(sess\)[\s\S]{0,400}statSync\(path\.join\(root, n\)\)\.isFile\(\)/.test(srv),
@@ -287,18 +295,6 @@ const has = (p) => fs.existsSync(p);
     ok(S.sessDirOf(sess) === null, "★反向对照★ 那格已经被删了：不报一个不存在的名字");
     cur = path.join(HOME, "别处");
     ok(S.sessDirOf(sess) === null, "★反向对照★ 没来过的根：没有");
-    // 新对话是先传附件、后发头一条消息：附件先落在根上，这格建出来时才搬进去。
-    // 搬了哪几个得报回去——气泡是按根上那份画的，不报的话一点预览就是「文件不存在」（10-09 实撞：课本 PDF）
-    cur = W;
-    fs.writeFileSync(path.join(W, "课本.pdf"), "PDF");
-    fs.mkdirSync(path.join(W, "是个文件夹.png"), { recursive: true });
-    const s2 = { title: "讲课", pending_uploads: ["课本.pdf", "早没了.png", "是个文件夹.png"] };
-    const moved = S.assignSessionDir(s2, "讲课");
-    ok(Array.isArray(moved) && moved.join() === "课本.pdf", "搬进去的附件名报回来（前端拿它改气泡的指向）", moved);
-    ok(has(path.join(W, s2.dir, "课本.pdf")) && !has(path.join(W, "课本.pdf")), "  └ 文件真在新格里，根上那份没了", s2.dir);
-    ok(!moved.includes("早没了.png") && !moved.includes("是个文件夹.png") && has(path.join(W, "是个文件夹.png")),
-      "★反向对照★ 根上已经没有的、不是文件的：不搬也不报（报了，气泡就指到一个不存在的地方）", moved);
-    ok(Array.isArray(s2.pending_uploads) && !s2.pending_uploads.length, "  └ 待搬清单清空");
   }
 
   section("【8】并排跑的几趟，产出按整条文件夹路径认主");
@@ -391,7 +387,295 @@ const has = (p) => fs.existsSync(p);
     ok(ch.ref === "橘猫，戴圆框眼镜" && ch.url === "https://example.com/a.png" && ch.name === "猫叔", "★反向对照★ 不像文件名的描述、网址、名字：一个字不动", ch);
     ok(ch.image === base + "/素材包/03_关键帧/KF01.png", "角色卡的 image 也换", ch.image);
     r = await add("noBase", "image", { path: "素材包/03_关键帧/KF01.png" }, {});
-    ok(node("noBase").payload.path === "素材包/03_关键帧/KF01.png", "★反向对照★ 没有对话那格（用户自己挑的文件夹，就地读写）：原样写", node("noBase").payload.path);
+    ok(node("noBase").payload.path === "素材包/03_关键帧/KF01.png", "★反向对照★ 没有对话那格（摊在根上的文件夹，就地读写）：原样写", node("noBase").payload.path);
+  }
+
+  section("【11】看着像不像代码仓库（looksLikeRepo）");
+  {
+    const R = path.join(HOME, "repo-probe");
+    // 「名字/」是文件夹，别的是空文件
+    const mk = (name, ...marks) => {
+      const d = path.join(R, name);
+      fs.mkdirSync(d, { recursive: true });
+      for (const m of marks) {
+        if (m.endsWith("/")) fs.mkdirSync(path.join(d, m), { recursive: true });
+        else fs.writeFileSync(path.join(d, m), "");
+      }
+      return d;
+    };
+    const git = mk("有git", ".git/");
+    ok(taskDirs.looksLikeRepo(git), "有 .git：是");
+    ok(["package.json", "go.mod", "pyproject.toml", "Cargo.toml"].every((m) => taskDirs.looksLikeRepo(mk("清单-" + m, m))),
+      "有包清单（package.json / go.mod / pyproject.toml / Cargo.toml）：是");
+    ok(taskDirs.looksLikeRepo(mk("苹果工程", "Demo.xcodeproj/")) && taskDirs.looksLikeRepo(mk("VS工程", "App.sln")), "Xcode / Visual Studio 工程文件：是");
+    const sub = path.join(git, "packages", "web");
+    fs.mkdirSync(sub, { recursive: true });
+    ok(taskDirs.looksLikeRepo(sub), "git 仓库里头的子目录（monorepo 的 packages/web）：是");
+    ok(!taskDirs.looksLikeRepo(mk("合同扫描件", "合同.pdf", "package.json.bak", "README.md")), "★反向对照★ 普通文档文件夹（文件名只是沾边的也不算）：不是");
+    // 有人拿 git 管家目录里的配置文件：家目录本身有 .git，不能让家里每个文件夹都算仓库
+    const fakeHome = mk("家", ".git/"), dl = mk(path.join("家", "下载"));
+    const t = Date.now();
+    ok(!taskDirs.looksLikeRepo(dl, { home: fakeHome, now: t }), "★反向对照★ 家目录拿 git 管配置：家里的「下载」不算仓库");
+    ok(taskDirs.looksLikeRepo(dl, { home: path.join(HOME, "别人家"), now: t + 5000 }), "  └ 对照：同一个文件夹，家不在那儿时往上找到的 .git 照算");
+    const later = mk("后来才建仓库");
+    ok(!taskDirs.looksLikeRepo(later, { now: t }), "还没 git init：不是");
+    fs.mkdirSync(path.join(later, ".git"));
+    ok(!taskDirs.looksLikeRepo(later, { now: t + 2000 }), "记 3 秒：设置页、上传、开对话接连问，不每次都把文件夹整个列一遍");
+    ok(taskDirs.looksLikeRepo(later, { now: t + 3500 }), "  └ 过了 3 秒再问：重新看，git init 过的认出来");
+    ok(!taskDirs.looksLikeRepo(path.join(R, "没有这个文件夹")) && !taskDirs.looksLikeRepo(""), "不存在的、空的：不是，也不炸");
+  }
+
+  section("【12】成果怎么放：应用的根 > 用户明说的 > 命令行点名的 > 像代码仓库的 > 其余按对话分（folderLayout / setLayout）");
+  {
+    const L = (dir, extra) => taskDirs.folderLayout(dir, { ...anchors, ...extra });
+    const sig = (o) => `${o.layout}${o.locked ? "·锁" : ""}${o.chosen ? "·明说" : ""}${o.repo ? "·仓库" : ""}`;
+    const said = (dir, layout) => ({ layouts: taskDirs.setLayout({}, dir, layout) });
+    ok(sig(L(ws)) === "per_chat·锁", "应用自己建的根：按对话分，锁着不给改", L(ws));
+    ok(sig(L(ws, said(ws, "flat"))) === "per_chat·锁", "★反向对照★ 表里给应用的根记了「直接放」也不认", L(ws, said(ws, "flat")));
+    ok(sig(L(docs)) === "per_chat", "用户挑的普通文件夹：默认按对话分，可以改", L(docs));
+    ok(sig(L(mine)) === "flat·仓库", "看着像代码仓库的：默认直接放，并标出是仓库（设置页好说一句为什么）", L(mine));
+    ok(sig(L(mine, said(mine, "per_chat"))) === "per_chat·明说", "仓库上明说了「每个对话一个文件夹」：听用户的", L(mine, said(mine, "per_chat")));
+    ok(sig(L(docs, said(docs, "flat"))) === "flat·明说", "普通文件夹上明说了「直接放进去」：听用户的");
+    ok(sig(L(docs, { inPlace: true })) === "flat", "命令行 -C / /cd 点名进去的：就地读写");
+    ok(sig(L(docs, { inPlace: true, ...said(docs, "per_chat") })) === "per_chat·明说", "  └ 在设置里对这个文件夹明说过的，比 -C 优先");
+    ok(sig(L(docs, { layouts: { [taskDirs.canonDir(docs)]: "乱写的" } })) === "per_chat", "★反向对照★ 表里是认不得的值：当没说过，照常判");
+    ok(sig(taskDirs.folderLayout("", anchors)) === "flat" && sig(taskDirs.folderLayout(docs, {})) === "flat", "空参数不炸：按摊在根上");
+
+    // 按规范形记：软链接、大小写不同的拼法都是同一条
+    const docsLink = path.join(HOME, "资料-link");
+    fs.symlinkSync(docs, docsLink);
+    ok(L(docs, { layouts: taskDirs.setLayout({}, docsLink, "flat") }).layout === "flat", "从软链接那头记的，按真实路径也查得到");
+    if (process.platform === "darwin" || process.platform === "win32") {
+      const asc = path.join(HOME, "ClientDocs");
+      fs.mkdirSync(asc);
+      ok(L(asc, { layouts: taskDirs.setLayout({}, path.join(HOME, "clientdocs"), "flat") }).layout === "flat", "盘不分大小写的系统上，大小写拼法不同也是同一条");
+    }
+    const one = { x: "flat" };
+    const two = taskDirs.setLayout(taskDirs.setLayout(one, docs, "flat"), mine, "flat");
+    ok(Object.keys(one).length === 1, "回新的一份，不改传进来的那份", one);
+    const again = taskDirs.setLayout(two, docs, "per_chat");
+    ok(Object.keys(again).slice(-2).join("|") === [mine, docs].map((d) => taskDirs.canonDir(d)).join("|") && again[taskDirs.canonDir(docs)] === "per_chat",
+      "同一个文件夹再记一次：改成新的、挪到最后（最近用过的不先被挤掉）", again);
+    let big = {};
+    for (let i = 0; i < 205; i++) big = taskDirs.setLayout(big, path.join(HOME, "多", "d" + i), "flat");
+    ok(Object.keys(big).length === 200 && !(taskDirs.canonDir(path.join(HOME, "多", "d0")) in big) && big[taskDirs.canonDir(path.join(HOME, "多", "d204"))] === "flat",
+      "最多记 200 个文件夹，最早的先丢", Object.keys(big).length);
+    ok(taskDirs.setLayout(undefined, docs, "flat")[taskDirs.canonDir(docs)] === "flat", "老配置里还没这张表：照样记");
+  }
+
+  section("【13】选定文件夹那一刻把放法钉住（server.js noteLayout 真源码）");
+  {
+    const srv = src("server");
+    const pick = (re) => { const x = re.exec(srv); if (!x) throw new Error("切不到：" + re); return x[0]; };
+    const code = [pick(/function layoutAnchors\(\) \{[\s\S]*?\n}\n/), pick(/function perChatHere\(\) \{[\s\S]*?\n}\n/), pick(/function noteLayout\([\s\S]*?\n}\n/)].join("\n");
+    const config = {};
+    let cur = docs;
+    const N = new Function("taskDirs", "config", "dataPath", "org", "getWorkspaceDir", code + "; return { noteLayout, perChatHere };")(
+      taskDirs, config, (...p) => (p[0] === "workspace" ? ws : p[0] === "projects" ? projects : path.join(HOME, ...p)), { tenantsDir: () => tenants }, () => cur);
+    const grown = path.join(HOME, "素材");
+    fs.mkdirSync(grown);
+    N.noteLayout(grown);
+    ok(!!config.folder_layouts && config.folder_layouts[taskDirs.canonDir(grown)] === "per_chat", "选了个普通文件夹、没点单选：把此刻判出来的「按对话分」记下", config.folder_layouts);
+    fs.mkdirSync(path.join(grown, ".git"));
+    cur = grown;
+    ok(N.perChatHere(), "  └ 过几天里面 git init 了：照旧按对话分，不悄悄改成摊在根上（不然前后两半成果一半在格里一半在外面）");
+    N.noteLayout(grown);
+    ok(config.folder_layouts[taskDirs.canonDir(grown)] === "per_chat", "  └ 再选一次同一个文件夹：记过的不按新判的改");
+    N.noteLayout(grown, "flat");
+    ok(!N.perChatHere() && config.folder_layouts[taskDirs.canonDir(grown)] === "flat", "用户明说「直接放进去」：改成摊在根上");
+    N.noteLayout(mine);
+    ok(config.folder_layouts[taskDirs.canonDir(mine)] === "flat", "选的是代码仓库、没点单选：记「直接放」");
+    const n0 = Object.keys(config.folder_layouts).length;
+    N.noteLayout(ws, "flat");
+    N.noteLayout(path.join(projects, "小红书"));
+    ok(Object.keys(config.folder_layouts).length === n0, "★反向对照★ 应用自己的目录（默认工作空间、projects/ 下的项目）：永远按对话分，不记", config.folder_layouts);
+    N.noteLayout(docs, "乱写的");
+    ok(config.folder_layouts[taskDirs.canonDir(docs)] === "per_chat", "认不得的值：当没说，按此刻判的记");
+    N.noteLayout("");
+    ok(Object.keys(config.folder_layouts).length === n0 + 1, "空路径：不记");
+  }
+
+  section("【14】先传后发的附件：换了文件夹、换了对话再发，搬的是自己传的那一份（server.js 真源码）");
+  {
+    const srv = src("server");
+    const pick = (re) => { const x = re.exec(srv); if (!x) throw new Error("切不到：" + re); return x[0]; };
+    const code = [pick(/function moveFileAcross\([\s\S]*?\n}\n/), pick(/function settlePendingUploads\([\s\S]*?\n}\n/), pick(/function adoptUploads\([\s\S]*?\n}\n/)].join("\n");
+    const A = path.join(HOME, "up-A"), B = path.join(HOME, "up-B"), W = path.join(HOME, "up-ws");
+    for (const d of [A, B, W]) fs.mkdirSync(d, { recursive: true });
+    let cur = A;
+    // 「这份是用户传的」那本账：按 根 + 相对路径 记传上来那一刻的 mtime（tools.js userInputs 的样子）
+    const ledger = new Map();
+    const key = (root, rel) => taskDirs.canonDir(root) + "|" + String(rel).split(path.sep).join("/");
+    const put = (root, rel, body) => {
+      const f = path.join(root, rel);
+      fs.mkdirSync(path.dirname(f), { recursive: true });
+      fs.writeFileSync(f, body);
+      ledger.set(key(root, rel), fs.statSync(f).mtime.toISOString());
+    };
+    const isUserInput = (file, root) => ledger.get(key(root || cur, file.name)) === file.mtime;
+    const moveUserInput = (from, to, fromRoot) => {
+      const k = key(fromRoot || cur, from);
+      if (!ledger.has(k)) return;
+      ledger.delete(k);
+      ledger.set(key(cur, to), fs.statSync(path.join(cur, to)).mtime.toISOString());
+    };
+    const sessions = new Map();
+    let fromDisk = 0;
+    const S = new Function("fs", "path", "taskDirs", "getWorkspaceDir", "isUserInput", "moveUserInput", "sessions", "sessFile", "getSession", "sessionAllowed", "dataPath",
+      code + "; return { settlePendingUploads, adoptUploads };")(
+      fs, path, taskDirs, () => cur, isUserInput, moveUserInput, sessions,
+      (id) => path.join(HOME, "没有的会话", id + ".json"), () => { fromDisk++; return null; },
+      (u, s) => !s.owner || (!!u && s.owner === u.username), (...p) => (p[0] === "workspace" ? W : path.join(HOME, ...p)));
+    const me = { username: "me" };
+    const read = (...p) => { try { return fs.readFileSync(path.join(...p), "utf8"); } catch { return null; } };
+    const mt = (...p) => fs.statSync(path.join(...p)).mtime.toISOString();
+
+    put(A, "海报.png", "我的海报");
+    const s1 = { pending_uploads: [{ name: "海报.png", root: A, by: "me" }] };
+    S.settlePendingUploads(s1, "任务_做海报");
+    ok(read(A, "任务_做海报", "海报.png") === "我的海报" && !has(path.join(A, "海报.png")) && !s1.pending_uploads.length,
+      "在这个文件夹里传、在这里发：搬进这条对话那一格（格还没建、或空了被收掉的，先建回来），待搬账清空");
+    ok(isUserInput({ name: path.join("任务_做海报", "海报.png"), mtime: mt(A, "任务_做海报", "海报.png") }), "  └ 「这份是用户传的」那笔账跟着改到新位置（不然下一轮对账它就成了产出）");
+
+    put(A, "合同.pdf", "A 里传的合同");
+    const s2 = { pending_uploads: [{ name: "合同.pdf", root: A, by: "me" }] };
+    cur = B;
+    S.settlePendingUploads(s2, "任务_看合同");
+    ok(read(B, "任务_看合同", "合同.pdf") === "A 里传的合同" && !has(path.join(A, "合同.pdf")),
+      "传完在设置里换了文件夹再发：从原来那个文件夹搬到这边这一格（以前拿名字去新文件夹里找，扑空）");
+    ok(isUserInput({ name: path.join("任务_看合同", "合同.pdf"), mtime: mt(B, "任务_看合同", "合同.pdf") }) && !ledger.has(key(A, "合同.pdf")), "  └ 账从 A 下面改记到 B 下面");
+
+    put(A, "报价.xlsx", "我传的报价");
+    fs.writeFileSync(path.join(B, "报价.xlsx"), "B 里本来就有的");
+    const s3 = { pending_uploads: [{ name: "报价.xlsx", root: A, by: "me" }] };
+    S.settlePendingUploads(s3, null);
+    ok(read(B, "报价.xlsx") === "B 里本来就有的" && read(A, "报价.xlsx") === "我传的报价", "★反向对照★ 要去的位置已经有个同名的：宁可不搬也不盖");
+
+    put(A, "草稿.md", "传上来时的样子");
+    fs.utimesSync(path.join(A, "草稿.md"), new Date(), new Date(Date.now() + 60000));
+    const s4 = { pending_uploads: [{ name: "草稿.md", root: A, by: "me" }] };
+    S.settlePendingUploads(s4, "任务_草稿");
+    ok(!has(path.join(B, "任务_草稿", "草稿.md")) && has(path.join(A, "草稿.md")), "★反向对照★ 原处那份传完又被改过（mtime 对不上）：已经不是用户传的那份了，不动");
+
+    put(B, "截图.png", "就在这儿");
+    const s5 = { pending_uploads: [{ name: "截图.png", root: B, by: "me" }] };
+    S.settlePendingUploads(s5, null);
+    ok(read(B, "截图.png") === "就在这儿" && !s5.pending_uploads.length, "摊在根上的文件夹里传、在这儿发：本来就在该在的地方，不动");
+
+    put(B, "老格式.txt", "升级前传的");
+    const s6 = { pending_uploads: ["老格式.txt"] };
+    S.settlePendingUploads(s6, "任务_老会话");
+    ok(read(B, "任务_老会话", "老格式.txt") === "升级前传的", "老会话里只记了名字的：按当前这个文件夹搬（升级前传、升级后发）");
+
+    const s7 = { pending_uploads: [{ name: "已经没了.png", root: A }, null, 42, { root: A }] };
+    S.settlePendingUploads(s7, "任务_空");
+    ok(!s7.pending_uploads.length && !has(path.join(B, "任务_空")), "文件已经不在了、账上是坏条目：跳过，不抛，不白建空格，账照样清");
+
+    // 输入框上的 chip 是草稿：在 s8a 名下传的，点了「新任务」到 s8b 里才发
+    cur = W;
+    put(W, "照片.jpg", "chip 里那张");
+    const s8a = { id: "s8a", pending_uploads: [{ name: "照片.jpg", root: W, by: "me" }] }; // 只传了附件、还没发过：没有主人
+    const s8b = { id: "s8b", owner: "me", pending_uploads: [] };
+    sessions.set("s8a", s8a).set("s8b", s8b);
+    S.adoptUploads(s8b, me, [{ sid: "s8a", path: "照片.jpg" }]);
+    ok(!s8a.pending_uploads.length && s8b.pending_uploads.length === 1 && s8b.pending_uploads[0].root === W, "在别的对话名下传的 chip：待搬账从那条挪到这条", [s8a.pending_uploads, s8b.pending_uploads]);
+    S.settlePendingUploads(s8b, "任务_s8b");
+    ok(read(W, "任务_s8b", "照片.jpg") === "chip 里那张", "  └ 发出去那一刻搬进这条对话那一格：Agent 照着锚点上的名字读得到");
+
+    put(W, path.join("任务_s9a", "表格.csv"), "a,b");
+    const s9a = { id: "s9a", owner: "me", root: W, dir: "任务_s9a", pending_uploads: [] };
+    const s9b = { id: "s9b", owner: "me", pending_uploads: [] };
+    sessions.set("s9a", s9a);
+    S.adoptUploads(s9b, me, [{ sid: "s9a", path: "任务_s9a/表格.csv" }]);
+    S.settlePendingUploads(s9b, "任务_s9b");
+    ok(read(W, "任务_s9b", "表格.csv") === "a,b" && !has(path.join(W, "任务_s9a", "表格.csv")), "那条对话已经有自己那格、文件就在格里：搬到这条的格里，那边的成果区不再平白多一份");
+
+    put(W, "别人的.png", "别人的");
+    const s10 = { id: "s10", owner: "other", pending_uploads: [{ name: "别人的.png", root: W, by: "other" }] };
+    const m10 = { id: "m10", owner: "me", pending_uploads: [] };
+    sessions.set("s10", s10).set("m10", m10);
+    S.adoptUploads(m10, me, [{ sid: "s10", path: "别人的.png" }]);
+    ok(!m10.pending_uploads.length && s10.pending_uploads.length === 1, "★反向对照★ 报上来的是别人的对话：不认");
+    const s11 = { id: "s11", pending_uploads: [{ name: "刚传的.png", root: W, by: "other" }] }; // 还没发过的空会话没主人，sessionAllowed 谁来都放行
+    sessions.set("s11", s11);
+    S.adoptUploads(m10, me, [{ sid: "s11", path: "刚传的.png" }]);
+    ok(!m10.pending_uploads.length && s11.pending_uploads.length === 1, "★反向对照★ 没主人的空会话里、别人刚传还没发的：知道 id 和文件名也搬不走");
+    const n = sessions.size;
+    S.adoptUploads(m10, me, [{ sid: "s8a", path: "../up-A/合同.pdf" }, { sid: "s9a", path: path.join(A, "海报.png") }, { sid: "m10", path: "x.png" },
+      { sid: "没这条", path: "x.png" }, null, { sid: "", path: "" }]);
+    S.adoptUploads(m10, me, "不是数组");
+    ok(!m10.pending_uploads.length && sessions.size === n && fromDisk === 0, "★反向对照★ 带 ../ 的、绝对路径、报自己、没这条对话的、坏条目：一概不认，也不为随手报的 id 去盘上建会话");
+    const many = Array.from({ length: 60 }, (_, i) => ({ sid: "s12", path: `f${i}.txt` }));
+    const s12 = { id: "s12", pending_uploads: many.map((m) => ({ name: m.path, root: W, by: "me" })) };
+    const t12 = { id: "t12", owner: "me", pending_uploads: [] };
+    sessions.set("s12", s12);
+    S.adoptUploads(t12, me, many);
+    ok(t12.pending_uploads.length === 50 && s12.pending_uploads.length === 10, "一次最多认 50 枚", [t12.pending_uploads.length, s12.pending_uploads.length]);
+
+    // 新对话是先传附件、后发头一条消息：附件先落在根上，这格建出来时才搬进去。
+    // 搬了哪几个得报回去——气泡是按上传那一刻的落点画的，不报的话一点预览就是「文件不存在」（10-09 实撞：课本 PDF）
+    cur = W;
+    put(W, "课本.pdf", "PDF");
+    fs.mkdirSync(path.join(W, "是个文件夹.png"), { recursive: true });
+    const s13 = { pending_uploads: ["课本.pdf", { name: "早没了.png", root: W, by: "me" }, { name: "是个文件夹.png", root: W, by: "me" }] };
+    const moved = S.settlePendingUploads(s13, "任务_讲课");
+    ok(Array.isArray(moved) && moved.join() === "课本.pdf", "搬进去的附件名报回来（前端拿它改气泡的指向）", moved);
+    ok(read(W, "任务_讲课", "课本.pdf") === "PDF" && !has(path.join(W, "课本.pdf")), "  └ 文件真在新格里，根上那份没了");
+    ok(!moved.includes("早没了.png") && !moved.includes("是个文件夹.png") && has(path.join(W, "是个文件夹.png")),
+      "★反向对照★ 根上已经没有的、不是文件的：不搬也不报（报了，气泡就指到一个不存在的地方）", moved);
+    ok(!s13.pending_uploads.length, "  └ 待搬清单清空");
+    put(W, "图.png", "这条对话传的");
+    fs.mkdirSync(path.join(W, "任务_讲课2"), { recursive: true });
+    fs.writeFileSync(path.join(W, "任务_讲课2", "图.png"), "格里早有的");
+    put(W, "截屏.png", "摊在根上");
+    const s14 = { pending_uploads: [{ name: "图.png", root: W, by: "me" }] };
+    const s15 = { pending_uploads: [{ name: "截屏.png", root: W, by: "me" }] };
+    const m14 = S.settlePendingUploads(s14, "任务_讲课2"), m15 = S.settlePendingUploads(s15, null);
+    ok(!m14.length && !m15.length && read(W, "图.png") === "这条对话传的" && read(W, "截屏.png") === "摊在根上",
+      "★反向对照★ 格里已有同名的、摊在根上本来就在原处的：没搬，也不报（气泡照旧指着根上那份，那才是这条消息传的）", [m14, m15]);
+  }
+
+  section("【15】接线：换文件夹、选放法、附件跟着走，几处入口都走同一条口径");
+  {
+    const read = (rel) => fs.readFileSync(path.join(ROOT, rel), "utf8");
+    const srv = src("server"), cli = read("cli.js"), agentSrc = fs.readFileSync(mod("agent"), "utf8"), app02 = read("public/js/app-02.js"), app05 = read("public/js/app-05.js");
+    ok(/function layoutAnchors\(\) \{\s*return \{ workspace: dataPath\("workspace"\), projects: dataPath\("projects"\), tenants: org\.tenantsDir\(\), layouts: config\.folder_layouts \|\| \{\} \};/.test(srv)
+      && /function perChatHere\(\) \{\s*return taskDirs\.perChatRoot\(getWorkspaceDir\(\), layoutAnchors\(\)\);/.test(srv),
+      "网页端判分不分：带上用户明说过的放法（config.folder_layouts）");
+    ok(/b\.workspace_layout !== undefined && b\.workspace_layout !== "per_chat" && b\.workspace_layout !== "flat"\) \{\s*throw new Error/.test(srv)
+      && srv.indexOf('b.workspace_layout !== "flat") {') < srv.indexOf("config.workspace_dir = setWorkspaceDir(b.workspace_dir);"),
+      "设置里存放法：认不得的值先报错，在换文件夹之前（不然文件夹换了、放法没记上）");
+    ok(/config\.workspace_dir = setWorkspaceDir\(b\.workspace_dir\);[\s\S]{0,700}noteLayout\(config\.workspace_dir, b\.workspace_layout\);\s*\} else if \(b\.workspace_layout !== undefined\) \{[\s\S]{0,200}noteLayout\(getWorkspaceDir\(\), b\.workspace_layout\);/.test(srv),
+      "  └ 换了文件夹的记新文件夹；没换、只改放法的记眼下这个");
+    ok((srv.match(/ap\.dir = config\.workspace_dir;\n\s*noteLayout\(config\.workspace_dir\);/g) || []).length === 2, "  └ 首次引导里选的文件夹（两处入口）也记");
+    ok(/const real = setWorkspaceDir\(dir\);[^\n]*\n\s*noteLayout\(real\);/.test(srv) && /rememberRoot\(real\);\s*noteLayout\(real\);/.test(srv), "  └ 建项目、改项目目录时填的文件夹也记");
+    ok(/workspace_layout: lay\.layout,\s*workspace_layout_locked: lay\.locked,/.test(srv), "拉设置带回眼下这个文件夹的放法、能不能改（设置页和输入框旁的菜单按它画）");
+    ok(/app\.get\("\/api\/workspace\/layout", \(req, res\) => \{\s*if \(!isPlatformOwner\(req\)\) return res\.status\(403\)/.test(srv), "问「这个文件夹会怎么放」只给平台管理员：不然能拿来探服务器上任意目录");
+    const up = /app\.post\("\/api\/upload"[\s\S]*?\n}\);/.exec(srv);
+    ok(!!up && /if \(sess && !own\) \{[\s\S]{0,300}\.concat\(\{ name: saved, root: getWorkspaceDir\(\), by: \(req\.user && req\.user\.username\) \|\| "" \}\)/.test(up[0]),
+      "上传：还没有自己那格的都记待搬账，连同在哪个根下传的、谁传的（摊在根上的根也记，换了文件夹再发才跟得过去）");
+    ok(/adoptUploads\(sess, user, adopt_uploads\);[\s\S]{0,200}if \(wtInfo\) sess\.pending_uploads = \[\];\s*else moved = settlePendingUploads\(sess, taskBaseDir\);/.test(srv)
+      && /runState\.baseDir = wtInfo \? null : taskBaseDir \|\| "";/.test(srv),
+      "发消息：先认领别的对话名下传的 chip，再把待搬的搬到这一格（分身里跑的不搬）");
+    ok(/withWorkspace\(run\.root, \(\) => \{ adoptUploads\(sess, req\.user, adopt_uploads\); settlePendingUploads\(sess, run\.baseDir\); \}\);/.test(srv),
+      "插话带的附件：按这趟钉住的根搬，不按这条请求此刻的根（人可能已经切到别的项目了）");
+    ok(/let inPlaceRoot = opts\.workspace \? getWorkspaceDir\(\) : "";/.test(cli) && /setWorkspaceDir\(target\); inPlaceRoot = getWorkspaceDir\(\);/.test(cli)
+      && /layouts: config\.folder_layouts \|\| \{\}, inPlace: !!inPlaceRoot && taskDirs\.samePlace\(inPlaceRoot, root\)/.test(cli),
+      "命令行：-C / /cd 点名的目录就地读写，设置里明说过的照样优先（跟网页端同一张表）");
+    ok(/\$\{safeWorkspaceDir\(baseDir\)\}\$\{dirNotes\(baseDir\)\}/.test(agentSrc)
+      && /function dirNotes\(baseDir\) \{ return worktreeLine\(\) \+ userFolderLine\(baseDir\); \}/.test(agentSrc)
+      && /function userFolderLine\(baseDir\) \{\s*if \(!baseDir\) return "";[\s\S]{0,400}appRoot\(root, anchors\)\) return "";/.test(agentSrc),
+      "用户自己的文件夹也分了格：告诉模型现成文件在上一层（应用自己的根不提，上一层只有别的对话的成果）");
+    ok(/const sid = ensureSessionId\(\);\s*try \{/.test(app02) && /item\.sid = sid;/.test(app02), "前端：每枚附件记住是在哪条对话名下传的");
+    ok(/function composeOutgoing\(\) \{\s*outgoingAdopt = \[\];/.test(app02) && /outgoingAdopt = attached\.filter\(x => x\.sid && x\.path\)\.map\(x => \(\{ sid: x\.sid, path: x\.path \}\)\);/.test(app02),
+      "  └ 发出那一刻收走这排 chip 各自的来处");
+    ok(/let text = composeOutgoing\(\);\s*if \(!text\) return;\s*const adopt = outgoingAdopt;/.test(app02), "  └ send 当场取走，不隔 await（下一次 composeOutgoing 会清掉）");
+    ok(/function adoptBody\(sid, list\) \{\s*const a = \(list \|\| \[\]\)\.filter\(x => x\.sid !== sid\);/.test(app02)
+      && (app02.match(/\.\.\.adoptBody\(sid, adopt\)/g) || []).length === 2 && /runTurn\(sid, m\.text, m\.mode, false, undefined, false, m\.adopt\)/.test(app02),
+      "  └ 新一轮、插话、排队几条路都带上；本来就是这条对话传的不报");
+    ok(/<input type="radio" name="ws-layout" value="\$\{k\}"/.test(app05) && /\.\.\.\(picked \? \{ workspace_layout: picked \} : \{\}\)/.test(app05)
+      && /const picked = layTouched && !layBox\.dataset\.locked \?/.test(app05) && app05.includes('fetch("/api/workspace/layout?dir=" + encodeURIComponent(dir))'),
+      "设置页常摆两种放法；人没点过单选就不替他报（由服务端按新文件夹判的记）");
   }
 
   console.log(`\n${pass} 通过，${fail} 失败`);

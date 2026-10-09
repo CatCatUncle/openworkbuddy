@@ -452,9 +452,26 @@ function sweepInterruptedRuns() {
 }
 const assignedDirs = new Set(); // 刚分配、还没写出文件的对话文件夹名：两个新对话同时起步不许撞同名
 
+/** 判「这个根按不按对话分文件夹」要的几个坐标（口径见 src/util/task-dirs.js 开头；命令行 chatDirHere 用同一套） */
+function layoutAnchors() {
+  return { workspace: dataPath("workspace"), projects: dataPath("projects"), tenants: org.tenantsDir(), layouts: config.folder_layouts || {} };
+}
 /** 当前工作目录下要不要按对话分成果文件夹（口径见 src/util/task-dirs.js 开头） */
 function perChatHere() {
-  return taskDirs.perChatRoot(getWorkspaceDir(), { workspace: dataPath("workspace"), projects: dataPath("projects"), tenants: org.tenantsDir() });
+  return taskDirs.perChatRoot(getWorkspaceDir(), layoutAnchors());
+}
+/**
+ * 用户选定一个文件夹的那一刻，把「每个对话一个文件夹 / 直接放进去」记进 config.folder_layouts。
+ * 没明说就把此刻判出来的那种记下：不然今天选进来是普通文件夹（按对话分），哪天里面 git init 了，
+ * 后面的对话就悄悄改成摊在根上，前后两半成果一半在 任务_ 里一半在外面。
+ * 应用自己的目录（默认工作空间、projects/ 下各项目）永远按对话分，不记。只改内存，落盘跟着调用方的 saveConfig。
+ */
+function noteLayout(dir, layout) {
+  if (!dir) return;
+  const now = taskDirs.folderLayout(dir, layoutAnchors());
+  if (now.locked) return;
+  if (layout === "per_chat" || layout === "flat") config.folder_layouts = taskDirs.setLayout(config.folder_layouts, dir, layout);
+  else if (!now.chosen) config.folder_layouts = taskDirs.setLayout(config.folder_layouts, dir, now.layout);
 }
 /** 会话记的成果文件夹还在不在「此刻这个根」下（口径在 src/util/task-dirs.js，命令行那头用同一套） */
 function sessDirHere(sess) {
@@ -510,32 +527,92 @@ function attachSpotsOf(sess) {
   return out;
 }
 
-/** 给对话分配成果文件夹（任务_月日_标题），并把「消息发出前就传上来的」附件一起搬进去。
- *  搬运失败一概不抛：文件夹没建成事小，因为一个附件搬不动就让整条对话起不来事大。
- *  返回真搬进去的那几个名字：页面上那条消息的气泡是按上传那一刻的落点（根上）画的，
- *  不告诉它搬了，一点预览就是「文件不存在」——文件好好的，只是换了地方没人说。*/
+/** 给对话分配成果文件夹（任务_月日_标题）。「消息发出前就传上来的」附件由 settlePendingUploads 搬进去 */
 function assignSessionDir(sess, message) {
   // 存进会话，后续轮次/重启都落同一个文件夹。连**哪个根**下的这个文件夹也一起记住：
   // 只记相对名的后果就是用户换一次工作目录，这条对话的成果全部变成「文件不存在」——
   // 文件没丢，是坐标系换了而没人记得旧的那套。
   const dir = taskDirs.newSessDir(sess, getWorkspaceDir(), dataPath("workspace"), message, assignedDirs);
   rememberRoot(sess.root);
-  const full = path.join(getWorkspaceDir(), dir);
+  return dir;
+}
+/** 改名搬文件；工作目录在外置盘、跨盘 rename 会 EXDEV，就拷过去再删原件（拷不成原件不动） */
+function moveFileAcross(from, to) {
+  try { fs.renameSync(from, to); return; } catch (e) { if (e.code !== "EXDEV") throw e; }
+  fs.copyFileSync(from, to, fs.constants.COPYFILE_EXCL);
+  fs.unlinkSync(from);
+}
+/**
+ * 「先传后发」的附件搬到这条对话此刻干活的地方：按对话分文件夹的根就是它那格（baseDir），摊在根上的就是根。
+ * 每笔都记着是在哪个根下传的（{name, root, rel}；老的只有名字，就是当前这个根）。只记名字的时候，
+ * 传完换了文件夹再发，这里拿名字去新根里找——找不到还好，碰上新根里正好有个同名的，搬进来的就是别人的文件。
+ * 搬运失败一概不抛：一个附件搬不动就让整条对话起不来，代价太大。
+ * 返回真搬了的那几个名字：页面上那条消息的气泡是按上传那一刻的落点画的，
+ * 不告诉它搬了，一点预览就是「文件不存在」——文件好好的，只是换了地方没人说。
+ */
+function settlePendingUploads(sess, baseDir) {
+  const here = getWorkspaceDir();
   const moved = [];
-  for (const n of sess.pending_uploads || []) {
+  for (const p of sess.pending_uploads || []) {
     try {
-      const from = path.join(getWorkspaceDir(), n), to = path.join(full, n);
-      // 根目录同名的可能是别人的旧文件，只搬确实存在、且目标位置还空着的
-      if (fs.existsSync(from) && fs.statSync(from).isFile() && !fs.existsSync(to)) {
-        fs.renameSync(from, to);
-        // 「这份是用户传的」那笔账记的是路径，搬完得跟着改键，否则这张图换个位置就又变成产出了
-        moveUserInput(n, path.join(dir, n));
-        moved.push(n);
-      }
+      const n = typeof p === "string" ? p : p && p.name;
+      if (!n) continue;
+      const fromRoot = (p && p.root) || here, same = taskDirs.samePlace(fromRoot, here);
+      const fromRel = (p && p.rel) || n, destRel = baseDir ? path.join(baseDir, n) : n;
+      if (same && fromRel === destRel) continue; // 摊在根上的目录里传、在这儿发：本来就在该在的地方
+      const from = path.join(fromRoot, fromRel), to = path.join(here, destRel);
+      // 目标位置还空着才搬：同名的已经在了，宁可不动也不盖
+      if (!fs.existsSync(from) || !fs.statSync(from).isFile() || fs.existsSync(to)) continue;
+      // 不在本根根上的那份（别的根、别的对话那格）得核实还是用户传上来的那一份：mtime 对不上就是改写过、换过了，不动
+      if (!(same && fromRel === n) && !isUserInput({ name: fromRel, mtime: fs.statSync(from).mtime.toISOString() }, fromRoot)) continue;
+      // 那格可能空了十分钟被收掉了（listEmptyTaskDirs），会话还记着名字：先建回来，不然搬不进去、附件留在根上
+      fs.mkdirSync(path.dirname(to), { recursive: true });
+      moveFileAcross(from, to);
+      // 「这份是用户传的」那笔账记的是路径，搬完得跟着改键，否则这张图换个位置就又变成产出了
+      moveUserInput(fromRel, destRel, same ? undefined : fromRoot);
+      moved.push(n);
     } catch {}
   }
   sess.pending_uploads = [];
   return moved;
+}
+/**
+ * 输入框上那几枚 chip 是「下一条消息」的草稿，不跟着对话走：传完点了「新任务」、点开别的对话、换了项目，chip 都还在。
+ * 可文件是按传的那一刻是哪条对话落的——记在那条对话的待搬账上，或者已经进了那条对话自己那格。
+ * 这条消息一发，Agent 在这边按名字找就扑空；文件还留在别的对话那格里，那边的成果区平白多一份。
+ * 前端把「不是在这条对话里传的」那几枚报上来（传的时候用的会话 id + 上传回的相对路径），这里核实后记到这条对话的待搬账上。
+ * 核实三件：那条对话归这个人（待搬账上那笔还得是他传的）；文件就在它的待搬账上或它自己那格里；
+ * mtime 跟上传那一刻记的对得上（settlePendingUploads 里查）。
+ */
+function adoptUploads(sess, user, list) {
+  if (!Array.isArray(list)) return;
+  for (const a of list.slice(0, 50)) {
+    try {
+      const sid = String((a && a.sid) || ""), rel = path.normalize(String((a && a.path) || ""));
+      if (!sid || !rel || rel.startsWith("..") || path.isAbsolute(rel)) continue;
+      // 待搬账只在内存里；内存里没有、盘上又没这条的，就是没这回事——别为一个随手报上来的 id 建一条空会话
+      const o = sessions.get(sid) || (fs.existsSync(sessFile(sid)) ? getSession(sid) : null);
+      if (!o || o === sess || !sessionAllowed(user, o)) continue;
+      const name = path.basename(rel), sub = path.dirname(rel);
+      let hit = null;
+      if (sub === ".") {
+        const i = (o.pending_uploads || []).findIndex((p) => (typeof p === "string" ? p : p && p.name) === name);
+        const p = i >= 0 ? o.pending_uploads[i] : null;
+        // 只传了附件、还没发过的空会话没有主人，sessionAllowed 谁来都放行：这里再认一次是谁传的，
+        // 不然知道会话 id 和文件名的人能把别人刚传上来、还没发出去的文件搬进自己那格
+        if (!p || (p.by && user && p.by !== user.username)) continue;
+        o.pending_uploads.splice(i, 1);
+        hit = typeof p === "string" ? { name, root: getWorkspaceDir() } : p;
+      } else {
+        // 那条对话在哪个根下用的是这一格：当前那格，或者以前在别的根下用过的
+        const spots = [[o.root || dataPath("workspace"), o.dir], ...Object.entries(o.dirs || {})];
+        const at = spots.find(([, d]) => d && path.normalize(d) === sub);
+        if (at) hit = { name, root: at[0], rel };
+      }
+      if (!hit) continue;
+      sess.pending_uploads = (sess.pending_uploads || []).filter((p) => (typeof p === "string" ? p : p && p.name) !== name).concat(hit);
+    } catch {}
+  }
 }
 
 function sessFile(id) {
@@ -1860,11 +1937,15 @@ app.get("/api/settings", (req, res) => {
   const myModel = prefs.modelCfg(config);
   // 跟真跑的时候同一个判断：成员没选过、管理员那个本机引擎又没给他打开，这里就报内置
   const myEngine = engines.currentId(config, { user: req.user && req.user.username });
+  const lay = taskDirs.folderLayout(getWorkspaceDir(), layoutAnchors());
   res.json({
     workspace_dir: getWorkspaceDir(),
     // 默认工作空间里每个对话各有一个成果文件夹：成果区据此默认只摆「本对话」那一格
     workspace_is_default: path.resolve(getWorkspaceDir()) === dataPath("workspace"),
     workspace_per_chat: perChatHere(), // 成果面板靠它决定新对话先摆「本对话」那一格，还是整个目录摊开
+    // 设置页那组单选按它画：每个对话一个文件夹 / 直接放进去；locked = 应用自己的目录，只能按对话分
+    workspace_layout: lay.layout,
+    workspace_layout_locked: lay.locked,
     // Key 从不发原文，谁来问都一样：回一串八颗星（= 「没改」的暗号）+ has_key（配没配）。
     // 平台管理员多拿一个 key_hint（sk-…4f2a）用来认「我装的是哪一把」；普通成员连这截也没有——
     // 那是整台服务器的账单凭证，他既改不了也不该拿到手。
@@ -2337,6 +2418,9 @@ app.post("/api/settings", (req, res) => {
       // 地图设置存过（多半是换了 Key）：今天因为 Key 用不了停掉的高德，按新设置再试
       geoPlaces.resetStop();
     }
+    if (b.workspace_layout !== undefined && b.workspace_layout !== "per_chat" && b.workspace_layout !== "flat") {
+      throw new Error("文件夹用法只有两种：per_chat（每个对话一个文件夹）、flat（直接放进去）");
+    }
     if (b.workspace_dir !== undefined && b.workspace_dir !== getDefaultWorkspaceDir()) {
       config.workspace_dir = setWorkspaceDir(b.workspace_dir);
       // 输入框旁的快速切换是临时的（新任务会切回项目目录）；设置中心改路径才算改默认，同步进当前项目
@@ -2345,6 +2429,11 @@ app.post("/api/settings", (req, res) => {
         const ap = config.projects.find((p) => p.name === config.active_project);
         if (ap) ap.dir = config.workspace_dir;
       }
+      // 选了文件夹就把它怎么放成果记下来：没明说按此刻判的记，见 noteLayout
+      noteLayout(config.workspace_dir, b.workspace_layout);
+    } else if (b.workspace_layout !== undefined) {
+      // 文件夹没换、只改了用法（设置页同一个文件夹换了单选，或输入框旁那个菜单里切的）：改的是眼下这个文件夹
+      noteLayout(getWorkspaceDir(), b.workspace_layout);
     }
     config.im = config.im || {};
     if (b.im) {
@@ -2899,6 +2988,7 @@ app.post("/api/onboarding", async (req, res) => {
       ensureProjects();
       const ap = config.projects.find((p) => p.name === config.active_project);
       if (ap) ap.dir = config.workspace_dir;
+      noteLayout(config.workspace_dir);
     }
     llmInner = createLLM(config);
     memory.setEmbedder(createEmbedder(config));
@@ -2922,6 +3012,7 @@ app.post("/api/onboarding/done", (req, res) => {
       ensureProjects();
       const ap = config.projects.find((p) => p.name === config.active_project);
       if (ap) ap.dir = config.workspace_dir;
+      noteLayout(config.workspace_dir);
     }
     const skipped = Array.isArray(b.skipped) ? b.skipped.map((x) => String(x).slice(0, 20)).slice(0, 10) : [];
     config.onboarding = { done_at: Date.now(), skipped };
@@ -3961,6 +4052,7 @@ app.post("/api/projects", (req, res) => {
     let dir = String((req.body || {}).dir || "").trim();
     if (!dir) dir = dataPath("projects", name.replace(/[/\\:*?"<>|]/g, "_"));
     const real = setWorkspaceDir(dir); // 建目录并切换过去
+    noteLayout(real); // 填的是用户自己的文件夹：按此刻判的记下（应用替项目建的 projects/<名> 不记，永远按对话分）
     config.projects.push({ name, dir: real, ...projectMeta(req.body || {}), created_at: new Date().toISOString() });
     rememberRoot(real); // 以后在别的项目里回看这条项目下的老对话，靠的就是这份名单
     config.active_project = name;
@@ -4007,6 +4099,16 @@ app.post("/api/workspace/reset", (_req, res) => {
   }
 });
 
+// 设置页刚选了个文件夹、还没保存：问一声它会按哪种用法放成果（每个对话一个文件夹 / 直接放进去），单选框先摆对。
+// 只给能改工作目录的人：它会回「这个路径看着像不像代码仓库」，等于能拿来探服务器上任意目录
+app.get("/api/workspace/layout", (req, res) => {
+  if (!isPlatformOwner(req)) return res.status(403).json({ error: "这块是服务器级设置，归平台管理员管", platform_only: true });
+  const dir = String(req.query.dir || "").trim();
+  if (!dir || !path.isAbsolute(dir)) return res.status(400).json({ error: "要一个绝对路径" });
+  const { layout, locked, chosen, repo } = taskDirs.folderLayout(dir, layoutAnchors());
+  res.json({ layout, locked, chosen, repo });
+});
+
 // 改项目：名字之外的东西（指令、挂载的专家/技能/连接器）都能改，改完立即对新任务生效
 app.patch("/api/projects/:name", (req, res) => {
   ensureProjects();
@@ -4023,6 +4125,7 @@ app.patch("/api/projects/:name", (req, res) => {
       fs.mkdirSync(real, { recursive: true }); // 没权限/盘不在，在这儿就炸，别等任务跑到一半
       p.dir = real;
       rememberRoot(real);
+      noteLayout(real);
       // 改的是当前项目就得同步切根，否则界面显示新目录、任务还往老目录写，
       // 下一次回看就是满屏「文件不存在」
       if (config.active_project === p.name) config.workspace_dir = setWorkspaceDir(real);
@@ -5766,7 +5869,7 @@ async function startPluginMcp(pluginName) {
 // 用户传进来的文件要和这轮的产出待在一起。以前一律落工作空间根目录，于是
 // 「我传的素材」和「它做出来的成果」分了家，根目录越堆越乱（真实数据里躺了 22 个）。
 // 时序坑：用户是**先传文件再发消息**，而成果文件夹要等第一条消息才建得出名字。
-// 所以没文件夹时先落根目录并记账，等文件夹一建好，assignSessionDir 再把它们搬进去。
+// 所以没文件夹时先落根目录并记账，等文件夹一建好，settlePendingUploads 再把它们搬进去。
 //
 // 两种请求体：
 // - 原始字节（Content-Type: application/octet-stream）：输入框、画布现在都走这条。边收边写盘，多大的视频都不过内存；
@@ -5812,8 +5915,11 @@ app.post("/api/upload", async (req, res) => {
     // 记一笔「这份是用户传的」。不记的话，正在跑的那趟任务下一次对账就会把它当成自己的产出
     // 摆进「本回合产出」——用户粘张图想追问，图当场出现在上一轮的成果里（见 tools.js userInputs）
     noteUserInput(rel);
-    if (perChat && !own) {
-      sess.pending_uploads = (sess.pending_uploads || []).filter((n) => n !== saved).concat(saved);
+    // 还没有自己那格（或者这个根摊在根上）：先落根上，记一笔「在哪个根下传的」，发消息时由 settlePendingUploads 搬到位。
+    // 摊在根上的根也记：传完换到别的文件夹再发，这一份得跟过去，不然 Agent 在那边按名字找就扑空
+    if (sess && !own) {
+      sess.pending_uploads = (sess.pending_uploads || []).filter((p) => (typeof p === "string" ? p : p && p.name) !== saved)
+        .concat({ name: saved, root: getWorkspaceDir(), by: (req.user && req.user.username) || "" });
     }
     // 连相对路径一起回：前端那枚 chip 要按这个路径把文件打开给用户看。
     // 只回 name 的话，落进会话成果文件夹的文件在工作目录根上根本找不到。
@@ -6147,7 +6253,7 @@ global.__openworkbuddyPetTool = {
 // 这时候把它搬走就等于把这一轮的产出打断。10 分钟的静默期换掉这个风险，很值。
 function listEmptyTaskDirs({ quietMs = 600000, now = Date.now() } = {}) {
   const ws = getWorkspaceDir();
-  if (!perChatHere()) return []; // 用户自选目录不分配成果文件夹，也就没这回事
+  if (!perChatHere()) return []; // 摊在根上的文件夹（代码仓库、选了「直接放进去」的）不分配成果文件夹，也就没这回事
   let names = [];
   try { names = fs.readdirSync(ws); } catch { return []; }
   return names.filter((n) => {
@@ -7015,7 +7121,7 @@ app.post("/api/tool/run", async (req, res) => {
   const expiredTool = user ? org.expiredProblem(org.orgIdOf(user)) : "";
   if (expiredTool) return res.status(402).json({ error: expiredTool });
   // 产物落在这条对话自己的成果目录里：跟对话里生成的那一批待在一起，交付时才是完整一包。
-  // 自选工作目录 / 项目目录下没有这个概念，照旧就地读写（跟 /api/chat 同一条口径）。
+  // 摊在根上的文件夹（代码仓库、选了「直接放进去」的）没有这个概念，照旧就地读写（跟 /api/chat 同一条口径）。
   let baseDir = null;
   let label = "直调工具";
   if (sessionId) {
@@ -7158,7 +7264,7 @@ app.post("/api/tool/estimate", (req, res) => {
 });
 
 app.post("/api/chat", async (req, res) => {
-  const { sessionId, message, mode, regen, lang, lane, shown } = req.body || {};
+  const { sessionId, message, mode, regen, lang, lane, shown, adopt_uploads } = req.body || {};
   if (!sessionId || !message) return res.status(400).json({ error: "缺少 sessionId 或 message" });
   // shown：用户自己打的那句话。画布这类入口会在 message 前面拼一大段给模型看的操作说明，
   // 历史里、标题里、搜索里都该是人说的话，不是那段说明——模型那边照旧拿完整的 message
@@ -7344,20 +7450,29 @@ app.post("/api/chat", async (req, res) => {
       })
       .catch(() => null);
   }
-  // 应用自己建的根（默认工作空间、没填目录的项目、租户根）：每个对话固定一个成果子文件夹（任务_月日_标题），
-  // 根目录不再越堆越乱；用户自选的现成文件夹保持原地读写（素材要在原文件夹里就地处理）。
-  // 聊到一半换了根：旧文件夹留在旧根下，这边另起一个。拿旧名字在新根下接着写，落点就成了一个没人认的同名新文件夹
-  let taskBaseDir = null, moved = [];
+  // 每个对话固定一个成果子文件夹（任务_月日_标题），根目录不再越堆越乱、各对话的成果互不串门。
+  // 应用自己建的根一律这样；用户自选的文件夹默认也这样，看着像代码仓库的、或者用户说了「直接放进去」的才摊在根上原地读写
+  // （口径见 src/util/task-dirs.js 开头）。聊到一半换了根：旧文件夹留在旧根下，这边另起一个——
+  // 拿旧名字在新根下接着写，落点就成了一个没人认的同名新文件夹
+  let taskBaseDir = null;
   if (perChatHere()) {
-    if (!useSessionDirHere(sess)) moved = assignSessionDir(sess, message);
+    if (!useSessionDirHere(sess)) assignSessionDir(sess, message);
     taskBaseDir = sess.dir;
   }
+  // 先传后发的附件搬到位：包括在别的对话 id 名下传、chip 跟着草稿过来的那几枚（adoptUploads 上面写了为什么）
+  adoptUploads(sess, user, adopt_uploads);
+  // 开了分身的不搬：分身打开时已经把用户手上没提交的新文件（刚传的附件也在里面）拷过去了，原件留在原处
+  let moved = [];
+  if (wtInfo) sess.pending_uploads = [];
+  else moved = settlePendingUploads(sess, taskBaseDir);
   // 分文件夹以前摊在根上的老产出：整篇重写时写回那份，不在新格里另起第二份（见 src/util/task-dirs.js flatOutputs）
   try { require("./src/agent/tools").ownRootFiles(sessionId, taskBaseDir ? rootFilesOf(sess).map((n) => path.join(getWorkspaceDir(), n)) : []); } catch {}
-  // 成果面板标「本对话」用；不进回放记录。换到自选文件夹时发空串：面板手里还是上一个根里的文件夹名，
+  // 成果面板标「本对话」用；不进回放记录。换到摊在根上的文件夹时发空串：面板手里还是上一个根里的文件夹名，
   // 拿它去筛这边摊在根上的文件，永远是「本对话 0」。
-  // moved：刚从根上搬进这格的附件名。气泡是按上传那一刻的落点画的，前端拿它改指向（app-01.js repointAttach）
+  // moved：刚搬进这格的附件名。气泡是按上传那一刻的落点画的，前端拿它改指向（app-01.js repointAttach）
   send({ type: "dir", dir: taskBaseDir || "", moved });
+  // 插话里带来的附件往哪儿搬（/api/chat/interject）：这一格，摊在根上的就是根（""）；分身里跑的不搬，null
+  runState.baseDir = wtInfo ? null : taskBaseDir || "";
   // Goal 模式：第一次用目标消息建目标（拆成验收标准）；已有进行中的目标就直接接着冲
   const goalMode = modes.isGoalMode(mode);
   if (goalMode && (!sess.goal || sess.goal.status !== "active")) {
@@ -7606,12 +7721,18 @@ app.post("/api/chat", async (req, res) => {
 
 // 插队：往正在运行的任务里注入一条补充消息（agent 在下一个安全间隙读到并继续）
 app.post("/api/chat/interject", (req, res) => {
-  const { sessionId, message } = req.body || {};
+  const { sessionId, message, adopt_uploads } = req.body || {};
   const text = String(message || "").trim();
   const run = activeRuns.get(sessionId);
   if (!run) return res.status(409).json({ ok: false, error: "该会话没有正在运行的任务" });
   if (!guardRun(req, res, sessionId)) return;
   if (!text) return res.status(400).json({ ok: false, error: "消息为空" });
+  // 插的这句带着在别的对话名下传的附件：赶在模型读到这句之前搬进这趟正在用的那一格，跟 /api/chat 开头那一步同一件事。
+  // 按这趟钉住的根搬，不按这条请求的根——人可能已经切到别的项目了
+  const sess = sessions.get(sessionId);
+  if (sess && run.baseDir != null && Array.isArray(adopt_uploads) && adopt_uploads.length) {
+    withWorkspace(run.root, () => { adoptUploads(sess, req.user, adopt_uploads); settlePendingUploads(sess, run.baseDir); });
+  }
   run.interject.push(text);
   res.json({ ok: true, queued: run.interject.length });
 });

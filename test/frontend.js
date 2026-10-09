@@ -8466,8 +8466,9 @@ const WSMENU_STUBS = `
   const OPENWS_SITES = ${JSON.stringify(OPENWS_SITES)};
   function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
   const TOASTS = [], CALLS = [];
-  let PROMPTED = 0, PROMPT_RET = null, ASKED = null;
-  function toast(m) { TOASTS.push(String(m)); }
+  let PROMPTED = 0, PROMPT_RET = null, ASKED = null, TOAST_ACT = null;
+  function toast(m, kind, onAct) { TOASTS.push(String(m)); TOAST_ACT = onAct || null; }
+  function openModal(id, tab) { CALLS.push("modal:" + id + "/" + tab); }
   function renderFiles() { CALLS.push("renderFiles"); }
   function refreshSettingsCache() { CALLS.push("refresh"); }
   function downloadFile(n) { CALLS.push("download:" + n); }
@@ -8490,7 +8491,7 @@ const WSMENU_STUBS = `
     CALLS.push(method + " " + url);
     const mk = (r) => ({ ok: r.status >= 200 && r.status < 300, status: r.status, json: async () => r.body });
     if (url === "/api/pick-folder") return mk(PICK);
-    if (url === "/api/settings" && method === "POST") { CALLS.push("ws:" + JSON.parse(opt.body).workspace_dir); return mk(SET); }
+    if (url === "/api/settings" && method === "POST") { const b = JSON.parse(opt.body); CALLS.push(b.workspace_layout ? "lay:" + b.workspace_layout : "ws:" + b.workspace_dir); return mk(SET); }
     if (url === "/api/files") return mk({ status: 200, body: [] });
     if (url === "/api/open-workspace") return mk(OPENWS);
     throw new Error("没替身的请求：" + method + " " + url);
@@ -8503,12 +8504,38 @@ const WSMENU_CHECKS = `
   const tick = () => new Promise((r) => setTimeout(r, 8));
   const menu = document.getElementById("ws-menu");
   const items = () => [...menu.querySelectorAll(".mi")];
-  const acts = () => items().map((m) => m.dataset.act || (m.dataset.cur ? "cur" : "ro")).join(",");
+  const acts = () => items().map((m) => m.dataset.act || (m.dataset.cur ? "cur" : m.dataset.lay ? "lay:" + m.dataset.lay : "ro")).join(",");
+  const lay = (k) => menu.querySelector('[data-lay="' + k + '"]');
 
-  // ---- 平台管理员：三条都该在 ----
+  // ---- 平台管理员：当前目录、两种放法、选新文件夹、打开，都该在 ----
   settingsCache = { workspace_dir: "/srv/ws", platform_owner: true };
   renderWsMenu();
-  ok("平台管理员：当前目录 + 选择新文件夹 + 打开当前文件夹，三条都画", acts() === "cur,pick,open" && menu.textContent.includes("/srv/ws"), acts());
+  ok("平台管理员：当前目录 + 两种放法 + 选择新文件夹 + 打开当前文件夹，都画", acts() === "cur,lay:per_chat,lay:flat,pick,open" && menu.textContent.includes("/srv/ws"), acts());
+  ok("没设过放法：勾在「每个对话单独一个文件夹」上", lay("per_chat").classList.contains("on") && !lay("flat").classList.contains("on"));
+
+  // ---- 放法：点了只管之后的对话，已有的文件不动 ----
+  CALLS.length = 0; TOASTS.length = 0;
+  lay("flat").click(); await tick(); await tick(); await tick();
+  ok("点「直接放在这个文件夹里」：发 workspace_layout=flat、刷新缓存、重列文件", CALLS.includes("lay:flat") && CALLS.includes("refresh") && CALLS.includes("renderFiles"), JSON.stringify(CALLS));
+  ok("并且说清已有的文件不动", TOASTS.some((t) => t.includes("直接在这个文件夹里") && t.includes("已有的文件不动")), JSON.stringify(TOASTS));
+  CALLS.length = 0;
+  renderWsMenu();
+  lay("per_chat").click(); await tick(); await tick();
+  ok("点已经勾着的那种：一个请求都不发", CALLS.length === 0, JSON.stringify(CALLS));
+  CALLS.length = 0; TOASTS.length = 0;
+  SET = { status: 403, body: { error: "这块是服务器级设置，归平台管理员管" } };
+  renderWsMenu();
+  lay("flat").click(); await tick(); await tick();
+  ok("改放法被拒：原话说出来，不刷新也不重列文件", TOASTS.some((t) => t.includes("平台管理员")) && !CALLS.includes("refresh") && !CALLS.includes("renderFiles"), JSON.stringify([TOASTS, CALLS]));
+  SET = { status: 200, body: { ok: true } };
+  settingsCache = { workspace_dir: "/srv/ws", platform_owner: true, workspace_layout: "flat" };
+  renderWsMenu();
+  ok("设过 flat：勾跟着挪到「直接放在这个文件夹里」", lay("flat").classList.contains("on") && !lay("per_chat").classList.contains("on"));
+
+  // ---- 应用自带的文件夹固定按对话分：没得选就不画那两行 ----
+  settingsCache = { workspace_dir: "/srv/ws", platform_owner: true, workspace_layout_locked: true };
+  renderWsMenu();
+  ok("应用自带的文件夹：两种放法不画，只剩当前目录、选新文件夹、打开", acts() === "cur,pick,open", acts());
 
   // ---- 成员：会 403 的那两条不画，只留一条只读的「现在在哪」 ----
   settingsCache = { workspace_dir: "/srv/ws", platform_owner: false };
@@ -8529,6 +8556,16 @@ const WSMENU_CHECKS = `
   PICK = { status: 200, body: { path: "/srv/ws2" } };
   menu.querySelector('[data-act="pick"]').click(); await tick(); await tick(); await tick();
   ok("选到了目录：POST /api/settings 带新路径、刷新缓存、重列文件", CALLS.includes("ws:/srv/ws2") && CALLS.includes("refresh") && CALLS.includes("renderFiles") && PROMPTED === 0, JSON.stringify(CALLS));
+  ok("换完说一声按哪种放，而且这条能点", TOASTS.some((t) => t.startsWith("已换到「") && t.includes("每个对话各开一个文件夹") && t.includes("点这里改")) && typeof TOAST_ACT === "function", JSON.stringify(TOASTS));
+  CALLS.length = 0; TOAST_ACT();
+  ok("点那条提示：打开设置页的数据那一栏", CALLS.includes("modal:settings/data"), JSON.stringify(CALLS));
+  settingsCache = { workspace_dir: "/srv/ws", platform_owner: true, workspace_layout_locked: true };
+  renderWsMenu();
+  CALLS.length = 0; TOASTS.length = 0; TOAST_ACT = null;
+  menu.querySelector('[data-act="pick"]').click(); await tick(); await tick(); await tick();
+  ok("应用自带的文件夹没得选：只说按对话分，不给一个点了也改不了的去处", TOASTS.some((t) => t.includes("每个对话各开一个文件夹") && !t.includes("点这里")) && TOAST_ACT === null, JSON.stringify(TOASTS));
+  settingsCache = { workspace_dir: "/srv/ws", platform_owner: true };
+  renderWsMenu();
 
   // ---- 501 = 这台机器弹不出系统选择框：才退回手填 ----
   CALLS.length = 0; PROMPTED = 0; PROMPT_RET = "/srv/ws3";

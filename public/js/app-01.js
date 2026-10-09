@@ -980,7 +980,7 @@ function attachThumb(rel, root) {
   return withRoot("/api/files/view/" + fpath(rel) + (q ? "?" + q : ""), root || "");
 }
 /**
- * 新对话的头一条消息发出去，服务端才建得出成果文件夹，先落在根上的附件这时被搬了进去（server.js assignSessionDir）。
+ * 新对话的头一条消息发出去，服务端才建得出成果文件夹，先落在根上的附件这时被搬了进去（server.js settlePendingUploads）。
  * 可这条消息的气泡早按上传那一刻的落点画好了：不改，一点预览就是「文件不存在」；
  * 缩略图赶上搬家那一下去取，还会退成名字条。dir 事件带回搬了哪几个，记的路径和画好的那几个一起改过去。
  * 只改还指着根上那份的：服务端没搬的（文件夹里已有同名的）留在根上，那份才是这条消息传的。

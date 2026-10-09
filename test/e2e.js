@@ -4442,11 +4442,12 @@ function testTaskDirLifecycle() {
 
     // 「这个根分不分文件夹」也用 server.js 里那份真源码判，不在测试里另抄一份
     const pm = /function perChatHere\(\) \{[\s\S]*?\n}/.exec(srv);
-    assert.ok(pm, "server.js 里找不到 perChatHere（被改名了？）");
+    const am = /function layoutAnchors\(\) \{[\s\S]*?\n}/.exec(srv);
+    assert.ok(pm && am, "server.js 里找不到 perChatHere / layoutAnchors（被改名了？）");
     const org = { tenantsDir: () => path.join(dir, "tenants") };
     // dataPath("workspace") = ws、dataPath("projects") = dir/projects：跟真实数据根一样的摆法
-    const build = (wsNow) => new Function("fs", "path", "getWorkspaceDir", "dataPath", "taskDirs", "org",
-      pm[0] + "\n" + em[0] + "; return listEmptyTaskDirs;")(fs, path, () => wsNow, (...p) => path.join(dir, ...p), taskDirs, org);
+    const build = (wsNow, config = {}) => new Function("fs", "path", "getWorkspaceDir", "dataPath", "taskDirs", "org", "config",
+      am[0] + "\n" + pm[0] + "\n" + em[0] + "; return listEmptyTaskDirs;")(fs, path, () => wsNow, (...p) => path.join(dir, ...p), taskDirs, org, config);
     const list = build(ws);
     const got = list().sort();
 
@@ -4461,11 +4462,19 @@ function testTaskDirLifecycle() {
     // 刚 mkdir 出来的目录可能"比现在还新"，静默期设 0 时会亚毫秒级地翻车
     assert.strictEqual(list({ quietMs: 0, now: Date.now() + 1000 }).length, 3, "把静默期设成 0 之后刚建的那个也该进来（证明上一条不是靠别的原因绿的）");
 
-    // 用户自选工作目录：压根不分配成果文件夹，一个都不许碰
-    fs.mkdirSync(path.join(dir, "别处"));
-    fs.mkdirSync(path.join(dir, "别处", "任务_0826_用户自己起的名"));
-    fs.utimesSync(path.join(dir, "别处", "任务_0826_用户自己起的名"), new Date(0), new Date(Date.now() - 3600e3));
-    assert.deepStrictEqual(build(path.join(dir, "别处"))(), [], "用户自选工作目录下还去扫成果文件夹");
+    // 用户自选的普通文件夹：现在也按对话分（不然各对话的产出摊在一层、同名互相盖），空的成果文件夹一样收
+    const mine = path.join(dir, "别处");
+    fs.mkdirSync(path.join(mine, "任务_0826_空的"), { recursive: true });
+    fs.utimesSync(path.join(mine, "任务_0826_空的"), new Date(0), new Date(Date.now() - 3600e3));
+    assert.deepStrictEqual(build(mine)(), ["任务_0826_空的"], "用户自选的普通文件夹里，空成果文件夹没认出来");
+    // 选了「直接放进去」的：不分配成果文件夹，一个都不许碰
+    assert.deepStrictEqual(build(mine, { folder_layouts: taskDirs.setLayout({}, mine, "flat") })(), [], "选了「直接放进去」还去扫成果文件夹");
+    // 看着像代码仓库的：照旧就地读写，同样不碰
+    const repo = path.join(dir, "仓库");
+    fs.mkdirSync(path.join(repo, "任务_0828_用户自己起的名"), { recursive: true });
+    fs.writeFileSync(path.join(repo, "package.json"), "{}");
+    fs.utimesSync(path.join(repo, "任务_0828_用户自己起的名"), new Date(0), new Date(Date.now() - 3600e3));
+    assert.deepStrictEqual(build(repo)(), [], "代码仓库里还去扫成果文件夹");
     // 没填目录时应用替项目建的 projects/<名>：那也是按对话分文件夹的根，空的一样要收
     const proj = path.join(dir, "projects", "小红书");
     fs.mkdirSync(path.join(proj, "任务_0827_空的"), { recursive: true });
@@ -14520,7 +14529,7 @@ function testI18n() {
   assert(html.indexOf('src="js/i18n.js"') > 0 && html.indexOf('src="js/i18n.js"') < html.indexOf('src="js/app-00-ui.js"'), "i18n.js 必须在 app-00-ui.js 之前加载");
   assert(/class="bubble" translate="no"/.test(a01) && /currentText\.setAttribute\("translate", "no"\)/.test(a01), "用户气泡 / AI 正文没标 translate=no（内容区会被当界面翻掉）");
   assert(/lang: typeof I18N !== "undefined" \? I18N\.getLang\(\) : "zh"/.test(a02), "聊天请求体没带 lang");
-  assert(/const \{ sessionId, message, mode, regen, lang, lane(, shown)? \} = req\.body/.test(srv) && /lang: lang === "en" \? "en" : "zh",/.test(srv), "服务端 /api/chat 没把 lang 传给 runTask");
+  assert(/const \{ sessionId, message, mode, regen, lang, lane(, shown)?(, adopt_uploads)? \} = req\.body/.test(srv) && /lang: lang === "en" \? "en" : "zh",/.test(srv), "服务端 /api/chat 没把 lang 传给 runTask");
   // 3.3 起 system 拆成稳定段 + 易变段：langBlock 跟着模式留在稳定段末尾，projBlock 挪进易变段。
   // 钉代码行（const stableSystem = …），不钉 agent.js 里那句讲历史的注释
   assert(/function langBlock\(lang\)/.test(ag) && /\n\s*const stableSystem = [^\n]*\+ langBlock\(lang\) \+ modePrompt\(mode\);/.test(ag)

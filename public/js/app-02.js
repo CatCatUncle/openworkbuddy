@@ -103,27 +103,53 @@ async function setWorkspaceDir(p) {
   const r = await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ workspace_dir: p }) });
   const j = await r.json().catch(() => ({}));
   if (!r.ok || j.error) { toast((j.error || "切换工作空间失败"), "circle-x"); return false; }
-  refreshSettingsCache();
+  await refreshSettingsCache();
   return true;
+}
+/**
+ * 这个文件夹里每个对话分不分文件夹。只管之后的对话：已经写下的文件一个不挪，
+ * 挪了的话用户在 Finder 里找上周那份，会发现它换了地方。
+ */
+async function setWorkspaceLayout(layout) {
+  const r = await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ workspace_layout: layout }) }).catch(() => null);
+  const j = r ? await r.json().catch(() => ({})) : {};
+  if (!r || !r.ok || j.error) { toast(j.error || "没改成，服务端没响应", "circle-x"); return; }
+  await refreshSettingsCache();
+  toast(layout === "flat" ? "之后的对话直接在这个文件夹里读写，已有的文件不动" : "之后每个新对话各开一个文件夹，已有的文件不动");
+  fetch("/api/files").then(x => x.json()).then(renderFiles);
+}
+/** 换完文件夹说一声它按哪种放：人在 Finder 里看见一排「任务_」或者一个没有，都不该是意外。点一下去设置页改 */
+function toastWsLayout() {
+  if (!settingsCache) return;
+  const name = String(settingsCache.workspace_dir || "").split(/[\\/]/).pop() || "工作空间";
+  const flat = settingsCache.workspace_layout === "flat";
+  if (settingsCache.workspace_layout_locked) return toast(`已换到「${name}」，每个对话各开一个文件夹`);
+  toast(`已换到「${name}」，${flat ? "对话直接在里面读写" : "每个对话各开一个文件夹"}，点这里改`, "folder", () => openModal("settings", "data"));
 }
 function renderWsMenu() {
   const owner = amPlatformOwner();
   const workspacePath = String(settingsCache.workspace_dir || "");
+  // 应用自带的文件夹固定按对话分，没得选，不画这两行
+  const lay = owner && !settingsCache.workspace_layout_locked ? (settingsCache.workspace_layout === "flat" ? "flat" : "per_chat") : "";
+  const layRow = (k, icon, label) => `<div class="mi ${lay === k ? "on" : ""}" data-lay="${k}" style="justify-content:space-between"><span>${ic(icon)}${label}</span>${lay === k ? `<span style="color:var(--owb-ok-text)">${ic("check")}</span>` : ""}</div>`;
   wsMenu.innerHTML =
     // 长路径不该把弹层撑出屏幕：视觉上省略，title 仍保留完整路径给核对/复制。
     `<div class="mi ro ws-current" data-cur="1" title="${esc(workspacePath)}">${ic("folder")}<span class="mi-truncate">${esc(workspacePath)}</span></div>` +
-    (owner ? `<div class="mi" data-act="pick">${ic("folder-open")}选择新文件夹…</div>` : "") +
+    (lay ? layRow("per_chat", "layout-grid", "每个对话单独一个文件夹") + layRow("flat", "folder", "直接放在这个文件夹里") : "") +
+    (owner ? `<div class="mi" data-act="pick"${lay ? ' style="border-top:1px solid var(--owb-border);margin-top:4px"' : ""}>${ic("folder-open")}选择新文件夹…</div>` : "") +
     (canOpenOnHost() ? `<div class="mi" data-act="open">${ic("folder-tree")}打开当前文件夹</div>` : "") +
     (owner ? "" : `<div class="mi ro sub-only">这台服务器上大家共用一个工作目录，归平台管理员设</div>`);
   wsMenu.querySelectorAll(".mi").forEach(mi => mi.onclick = async () => {
     wsMenu.classList.remove("show");
-    if (mi.dataset.act === "pick") {
+    if (mi.dataset.lay) {
+      if (mi.dataset.lay !== lay) await setWorkspaceLayout(mi.dataset.lay);
+    } else if (mi.dataset.act === "pick") {
       // 501 才是「这台机器弹不出系统选择框」，该退回手填；别的非 2xx 是真出事了，说出来
       const resp = await fetch("/api/pick-folder", { method: "POST" }).catch(() => null);
       const r = resp ? await resp.json().catch(() => ({})) : {};
       if (!resp) return toast("选择文件夹失败", "circle-x");
       if (r.path) {
-        if (await setWorkspaceDir(r.path)) fetch("/api/files").then(x => x.json()).then(renderFiles);
+        if (await setWorkspaceDir(r.path)) { fetch("/api/files").then(x => x.json()).then(renderFiles); toastWsLayout(); }
       } else if (resp.status === 501) {
         // 同样不能用 window.prompt（桌面版里一调用就抛，见 app-01.js 的 askText）。
         // 这条路本来就是「系统选择框弹不出来」的退路，退路自己再哑一次就没得退了
@@ -134,7 +160,7 @@ function renderWsMenu() {
           value: settingsCache.workspace_dir,
           ok: "就用这个",
         });
-        if (p) await setWorkspaceDir(p);
+        if (p && await setWorkspaceDir(p)) toastWsLayout();
       } else if (!resp.ok || r.error) {
         toast((r.error || "选择文件夹失败"), "circle-x");
       }
@@ -477,6 +503,9 @@ async function sendAttach(item) {
     // 不改的话模型照着原名去读，读到的是盘上原来那份
     if (data.name && data.name !== item.name) renameAttach(item, String(data.name));
     item.path = data.path || item.name; // 预览要按工作目录下的相对路径找它
+    // 记住落在哪条对话名下：chip 是草稿，传完点「新任务」、点开别的对话都还跟着；
+    // 真发到别的对话时把这一枚报给服务端搬过去（见 composeOutgoing 的 outgoingAdopt）
+    item.sid = sid;
     // 顺手记进 attachPaths：一会儿这条消息发出去，气泡上面那排缩略图要按这个路径去取图。
     // 服务端刚亲口说了它放哪儿，比事后拿 sessionDirs 去拼准得多
     memoAttach(sid, item.name, item.path);
@@ -588,10 +617,23 @@ async function uploadText(text, { name } = {}) {
   return item;
 }
 /**
+ * composeOutgoing 刚收走的那排 chip 各是在哪条对话名下传上去的：[{ sid, path }]。
+ * 真正发请求的那一处（runTurn / 插话）按要发去的那条对话筛掉它自己的，剩下的报给服务端搬过来（server.js adoptUploads）——
+ * 不报的话文件还躺在别的对话那格里，这边 Agent 照着锚点上的名字去读就扑空。
+ * 调用方拿到 composeOutgoing 的返回值就得当场取走它，下一次 composeOutgoing 会清掉
+ */
+let outgoingAdopt = [];
+/** 请求体里那一段：只留不是在 sid 这条对话里传的 */
+function adoptBody(sid, list) {
+  const a = (list || []).filter(x => x.sid !== sid);
+  return a.length ? { adopt_uploads: a } : {};
+}
+/**
  * 输入里的素材锚点是人和模型共同看到的顺序协议；末尾附件清单只是兼容旧会话/CLI 的兜底。
  * 即便用户手动删掉一个锚点，仍有 chip 的文件也不会对模型“凭空消失”。
  */
 function composeOutgoing() {
+  outgoingAdopt = [];
   // 还在传的时候不许发：锚点已经在输入里了，文件却还没落盘，模型照着去读就是一个 404。
   // 宁可让他等两秒，也不要发出去一条自带死链的消息。
   const flying = pendingAttach.filter(x => x.state === "uploading");
@@ -610,6 +652,7 @@ function composeOutgoing() {
   const anchors = attached.filter(x => !typed.includes(x.marker)).map(x => x.marker).join("\n");
   if (!typed && !note && !quoted) return "";
   if (lost.length) toast(`${lost.map(x => x.name).join("、")} 没传上去，没跟着这条消息发出去`, "circle-alert");
+  outgoingAdopt = attached.filter(x => x.sid && x.path).map(x => ({ sid: x.sid, path: x.path }));
   inputEl.value = "";
   syncInputHl();
   attachChips.innerHTML = "";
@@ -1645,8 +1688,8 @@ function bindComposer() {
  * 排队：这条不进当前这趟，挂在队尾。跑完那一刻 runTurn 收尾处的 drainQueue 会把它取出来当新一轮跑。
  * 排着的每条在队列栏上是一枚可撤销的 chip——排错了能拿下来，不用等它跑起来再按停止。
  */
-function queueText(text) {
-  qOf(sessionId).push({ text, mode: currentMode });
+function queueText(text, adopt) {
+  qOf(sessionId).push({ text, mode: currentMode, adopt });
   renderQueueBar();
   syncSendBtn();
 }
@@ -1655,21 +1698,21 @@ function drainQueue(sid) {
   if (!q || !q.length || runningSessions.has(sid)) return;
   const m = q.shift();
   if (sid === sessionId) renderQueueBar();
-  runTurn(sid, m.text, m.mode);
+  runTurn(sid, m.text, m.mode, false, undefined, false, m.adopt);
 }
 /** 把一条消息立即注入正在执行的任务；任务恰好刚结束就直接当新一轮跑，两头都不丢消息 */
-async function interjectText(text, sid = sessionId) {
+async function interjectText(text, sid = sessionId, adopt) {
   const resp = await fetch("/api/chat/interject", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sessionId: sid, message: text }),
+    body: JSON.stringify({ sessionId: sid, message: text, ...adoptBody(sid, adopt) }),
   }).catch(() => null);
   if (resp && resp.ok) {
     const live = runningSessions.get(sid);
     if (live && live.ui.markPendingInterject) live.ui.markPendingInterject(text);
     else toast("收到，做完这一步就看你这句");
   } else {
-    qOf(sid).push({ text, mode: currentMode });
+    qOf(sid).push({ text, mode: currentMode, adopt });
     if (sid === sessionId) renderQueueBar();
     drainQueue(sid);
   }
@@ -1678,7 +1721,7 @@ async function interject() {
   if (!sessionId) return;
   const text = composeOutgoing();
   if (!text) return;
-  await interjectText(text);
+  await interjectText(text, sessionId, outgoingAdopt);
 }
 document.getElementById("interject-btn").onclick = interject;
 /**
@@ -1718,6 +1761,7 @@ async function stopTask() {
 async function send() {
   let text = composeOutgoing();
   if (!text) return;
+  const adopt = outgoingAdopt;
   // 委派标签在这一刻才变成一句话。标签本身只是界面上的一枚 chip，正文里一个字都没留过
   if (useTag) { text = useDirective(useTag) + text; setUseTag(null); }
   if (sceneTag) {
@@ -1731,18 +1775,18 @@ async function send() {
     // 本对话的任务在跑 → 按用户选的来（插队栏上那个开关，默认插队）：
     // 插队 = 立即注入当前任务一起处理；排队 = 等这趟跑完再按顺序开始。
     // 要另起一趟并行的，还是走左上「新建任务」。
-    if (busySendMode === "queue") { queueText(text); return; }
-    await interjectText(text);
+    if (busySendMode === "queue") { queueText(text, adopt); return; }
+    await interjectText(text, sessionId, adopt);
     return;
   }
-  await doSend(text, currentMode);
+  await doSend(text, currentMode, false, undefined, adopt);
 }
 
 /** 左边历史列表里有没有这条对话那一行。取过 id 不等于列过——先传附件时 id 就已经有了，但人还没发出去 */
 const sessionListed = () => !!sessionId && sessions.some((s) => s.id === sessionId);
 
 // regen=true 表示「重新生成」：服务端回滚最后一轮再重跑同一条消息
-async function doSend(text, mode, regen, shown) {
+async function doSend(text, mode, regen, shown, adopt) {
   if (curBusy()) return;
   planPlaceholder = ""; // 「哪一步要改？」问的就是这一句，发出去了就收回
   closeAssistView();
@@ -1754,7 +1798,7 @@ async function doSend(text, mode, regen, shown) {
     document.getElementById("session-title").textContent = shortTitle;
     if (pendingModel) { const pm = pendingModel; pendingModel = undefined; await setSessionModel(pm); }
   }
-  await runTurn(sessionId, text, mode, regen, shown);
+  await runTurn(sessionId, text, mode, regen, shown, false, adopt);
 }
 
 // 真正执行一轮任务：绑定 sid 而不是全局 sessionId——用户切走后它继续在后台跑
@@ -2125,7 +2169,7 @@ async function reattachOne(sid) {
  * 接不上（那趟恰好刚跑完）就当新一轮再发一次，只重发这一次，不打转。
  * 返回 true = 已经接手，调用方别再报错。
  */
-async function adoptBusyRun(sid, text, mode, shown, ui) {
+async function adoptBusyRun(sid, text, mode, shown, ui, adopt) {
   ui.finish();
   ui.turn.remove();
   runningSessions.delete(sid);
@@ -2135,21 +2179,21 @@ async function adoptBusyRun(sid, text, mode, shown, ui) {
   // 按服务端记录整页重画：openSession 看到它在跑，只回放到这一轮之前，再把活的那轮挂到最后
   if (sid === sessionId && runningSessions.has(sid)) await openSession(sid);
   if (!runningSessions.has(sid)) {
-    await runTurn(sid, text, mode, false, shown, true);
+    await runTurn(sid, text, mode, false, shown, true, adopt);
     return true;
   }
   if (busySendMode === "queue") {
-    qOf(sid).push({ text, mode });
+    qOf(sid).push({ text, mode, adopt });
     if (sid === sessionId) renderQueueBar();
     toast("这条对话上一趟还在跑，这句排在它后面");
   } else {
-    await interjectText(text, sid);
+    await interjectText(text, sid, adopt);
   }
   return true;
 }
 
-async function runTurn(sid, text, mode, regen, shown, retried) {
-  if (runningSessions.has(sid)) { qOf(sid).push({ text, mode }); if (sid === sessionId) renderQueueBar(); return; }
+async function runTurn(sid, text, mode, regen, shown, retried, adopt) {
+  if (runningSessions.has(sid)) { qOf(sid).push({ text, mode, adopt }); if (sid === sessionId) renderQueueBar(); return; }
   const ui = createTurnUI(text, mode, sid, shown);
   runningSessions.set(sid, { ui });
   updateSendUI();
@@ -2162,11 +2206,11 @@ async function runTurn(sid, text, mode, regen, shown, retried) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       // detach：服务端收下就回话，过程走整页那一条直播（liveCh），这条请求不再攥着一个连接跑完全程
-      body: JSON.stringify({ sessionId: sid, message: text, ...(shown ? { shown } : {}), mode, regen: !!regen, lane: laneOfSession(sessions.find(x => x.id === sid)), lang: typeof I18N !== "undefined" ? I18N.getLang() : "zh", ...(liveCh.off ? {} : { detach: true }) }),
+      body: JSON.stringify({ sessionId: sid, message: text, ...(shown ? { shown } : {}), mode, regen: !!regen, lane: laneOfSession(sessions.find(x => x.id === sid)), lang: typeof I18N !== "undefined" ? I18N.getLang() : "zh", ...(liveCh.off ? {} : { detach: true }), ...adoptBody(sid, adopt) }),
     });
     if (!resp.ok) {
       const d = await resp.json().catch(() => ({}));
-      if (resp.status === 409 && d.busy && !regen && !retried) { await adoptBusyRun(sid, text, mode, shown, ui); return; }
+      if (resp.status === 409 && d.busy && !regen && !retried) { await adoptBusyRun(sid, text, mode, shown, ui, adopt); return; }
       ui.handleEvent({ type: "error", message: d.error || `请求失败（HTTP ${resp.status}）` });
       if (resp.status === 401) showAuth(!!d.setup);
       sawDone = true; // 请求根本没被受理，没有可续的流

@@ -653,6 +653,8 @@ if (wantWorkspace) {
     if (opts.workspace) { process.stderr.write(red(`工作目录用不了：${e.message}\n`)); process.exit(1); }
   }
 }
+// -C / /cd 点名进去的那个目录：就地读写，不另套「任务_」那一层（除非在设置里对这个文件夹明说过放法，见 chatDirHere）
+let inPlaceRoot = opts.workspace ? getWorkspaceDir() : "";
 
 // 运行时三件套：模型、专家、MCP。与 server.js 读同一批文件，CLI 不另立一套配置
 // 活的壳子，不是一次性造好的客户端：/model 换模型时整棵任务树（含委派出去的专家）都得跟着
@@ -1587,17 +1589,20 @@ async function runOnce(runtime, text, mode, interactive, shown) {
 }
 
 // ---------- 成果按对话分文件夹（口径跟网页端是同一份，见 src/util/task-dirs.js） ----------
-// 应用自己建的根（默认工作空间、没填目录的项目、租户根）下，一条会话一格「任务_月日_标题」。
+// 一条会话一格「任务_月日_标题」：应用自己建的根一律这样，设置里挑的普通文件夹默认也这样。
 // 以前命令行一律摊在根上：终端里跑十趟，十份「报告.html」后写的把先写的盖了，网页上「本对话」也一份都认不出来。
-// -C 进代码仓库、设置里挑的现成文件夹、分身目录照旧就地读写——那里要改的东西本来就在根上
+// -C / /cd 点名进去的、看着像代码仓库的、分身目录照旧就地读写——那里要改的东西本来就在根上
 const taskDirs = require("./src/util/task-dirs");
 // 刚往根上放、还没发出去的东西：拷进来的附件、粘贴图、存成文件的长文本。
 // 跟网页端先传上来的附件一样，发出去那一刻搬进这条会话的那格
 const strayUploads = new Set();
-/** 这一趟的成果文件夹（相对工作目录）；用户自选的根返回 null，就地读写 */
+/** 这一趟的成果文件夹（相对工作目录）；摊在根上的那种根返回 null，就地读写 */
 function chatDirHere(asked) {
   const root = getWorkspaceDir();
-  const anchors = { workspace: dataPath("workspace"), projects: dataPath("projects"), tenants: require("./src/domains/account/org").tenantsDir() };
+  const anchors = {
+    workspace: dataPath("workspace"), projects: dataPath("projects"), tenants: require("./src/domains/account/org").tenantsDir(),
+    layouts: config.folder_layouts || {}, inPlace: !!inPlaceRoot && taskDirs.samePlace(inPlaceRoot, root),
+  };
   if (!taskDirs.perChatRoot(root, anchors)) return null;
   if (!taskDirs.useSessDirAt(sess, root, dataPath("workspace"))) taskDirs.newSessDir(sess, root, dataPath("workspace"), asked);
   else try { fs.mkdirSync(path.join(root, sess.dir), { recursive: true }); } catch {}
@@ -3183,7 +3188,7 @@ function splitFiles(text) {
       // 改写前 /cd .. 和 /cd ~/项目 一律报「工作空间必须是绝对路径」
       const target = repl.resolveCd(v.arg, getWorkspaceDir(), os.homedir());
       if (!target) { prog(dim(`当前工作目录 ${getWorkspaceDir()}\n`)); return; }
-      try { setWorkspaceDir(target); prog(dim(`工作目录换到 ${getWorkspaceDir()}\n`)); }
+      try { setWorkspaceDir(target); inPlaceRoot = getWorkspaceDir(); prog(dim(`工作目录换到 ${getWorkspaceDir()}\n`)); }
       catch (e) { prog(red(`换不过去：${e.message}\n`)); }
       return;
     }

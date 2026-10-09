@@ -11,13 +11,18 @@
  * 所有定时任务挤一个 定时任务/，同样不分对话。
  *
  * 现在的口径：**应用自己建的根**一律按对话分——默认工作空间、没填目录时替项目建的 projects/<名>、
- * 没指定目录的租户根 tenants/<id>。用户自己挑的现成文件夹（代码仓库、素材目录）照旧就地读写：
- * 那里的文件本来就在根上，在里面再套一层「任务_xxx」反倒把人要改的东西和产出拆散了。
+ * 没指定目录的租户根 tenants/<id>，界面上也不给改。
+ * 用户自己挑的文件夹默认也分：在设置里把工作目录换成「我的文档/客户资料」之后，以前是所有对话的产出
+ * 摊在同一层、同名互相盖，成果面板「本对话」也认不出谁是谁的，每条对话都看见别的对话的文件。
+ * 例外是看着像代码仓库的（有 .git、package.json 这类）、命令行 -C / /cd 进去的：那里要改的东西本来就在根上，
+ * 再套一层「任务_xxx」反倒把人要改的代码和产出拆散了，照旧就地读写。
+ * 用户在设置或输入框的文件夹菜单里明说过的放法（folder_layouts）比上面这些判断都优先。
  *
  * 路径比较先认真实路径、再看大小写：macOS / Windows 的盘默认不分大小写，
  * 选文件夹时拼成 ~/openworkbuddy/workspace 也还是同一个地方，不能因此判成「用户自选」。
  */
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 
 const CASE_FOLD = process.platform === "darwin" || process.platform === "win32";
@@ -43,17 +48,95 @@ function samePlace(a, b) {
 }
 
 /**
- * 这个根下要不要按对话分成果文件夹。
- * @param {string} dir 当前工作目录
+ * 是不是应用自己建的根：默认工作空间、projects/ 下一层、tenants/ 下一层。这几个固定按对话分，不给改。
+ * @param {string} dir
  * @param {{ workspace: string, projects?: string, tenants?: string }} anchors
  *   workspace = 默认工作空间；projects / tenants = 应用替人建目录的那两个父目录（其下一层才算）
  */
-function perChatRoot(dir, anchors) {
+function appRoot(dir, anchors) {
   if (!dir || !anchors || !anchors.workspace) return false;
   const d = canonDir(dir);
   if (d === canonDir(anchors.workspace)) return true;
   const parent = path.dirname(d);
   return [anchors.projects, anchors.tenants].some((p) => !!p && parent === canonDir(p));
+}
+
+// 有这些的就是在里面写代码、跑工程的文件夹
+const REPO_MARKS = new Set([
+  ".git", ".hg", ".svn", "package.json", "deno.json", "pnpm-workspace.yaml", "pyproject.toml", "requirements.txt", "setup.py",
+  "go.mod", "Cargo.toml", "pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts",
+  "Package.swift", "composer.json", "Gemfile", "CMakeLists.txt", "Makefile",
+]);
+const REPO_EXT = /\.(?:xcodeproj|xcworkspace|sln|csproj|fsproj|vcxproj)$/i;
+const repoSeen = new Map(); // 规范形 → { at, v }
+/**
+ * 这个文件夹看着像不像代码仓库 / 工程目录：本层有版本库、包清单、工程文件，或者它在一个 git 仓库里头（monorepo 的 packages/web）。
+ * 往上找 .git 找到家目录为止、不算家目录本身：有人拿 git 管 ~ 下的配置文件，算上它就处处都是仓库了。
+ * 记 3 秒：设置页、上传、打开对话都要问一句，几千个文件的下载目录别每次都整个列一遍。
+ * @param {string} dir
+ * @param {{ home?: string, now?: number }} [o]
+ */
+function looksLikeRepo(dir, { home = os.homedir(), now = Date.now() } = {}) {
+  if (!dir) return false;
+  const k = canonDir(dir);
+  const hit = repoSeen.get(k);
+  if (hit && now - hit.at < 3000) return hit.v;
+  let cur = path.resolve(String(dir));
+  try { cur = fs.realpathSync.native(cur); } catch {}
+  let v = false;
+  try { v = fs.readdirSync(cur).some((n) => REPO_MARKS.has(n) || REPO_EXT.test(n)); } catch {}
+  const h = home ? canonDir(home) : "";
+  for (let up = path.dirname(cur); !v && up !== path.dirname(up); up = path.dirname(up)) {
+    if (h && canonDir(up) === h) break;
+    try { v = fs.existsSync(path.join(up, ".git")); } catch {}
+  }
+  repoSeen.delete(k);
+  repoSeen.set(k, { at: now, v });
+  if (repoSeen.size > 64) repoSeen.delete(repoSeen.keys().next().value);
+  return v;
+}
+
+/**
+ * 这个根下的成果怎么放：per_chat = 每个对话一格（任务_月日_标题）；flat = 直接放在根上、就地读写。
+ * 先后：应用自己建的根一律分（locked）→ 用户明说过的（layouts，按规范形记）→ 命令行 -C / /cd 进来的（inPlace）就地 →
+ * 看着像代码仓库的就地 → 其余（用户挑的文档、素材文件夹）分。
+ * @param {string} dir
+ * @param {{ workspace: string, projects?: string, tenants?: string, layouts?: Record<string, string>, inPlace?: boolean }} anchors
+ * @returns {{ layout: "per_chat" | "flat", locked: boolean, chosen: boolean, repo: boolean }}
+ */
+function folderLayout(dir, anchors) {
+  if (!dir || !anchors || !anchors.workspace) return { layout: "flat", locked: false, chosen: false, repo: false };
+  if (appRoot(dir, anchors)) return { layout: "per_chat", locked: true, chosen: false, repo: false };
+  const picked = anchors.layouts && anchors.layouts[canonDir(dir)];
+  if (picked === "per_chat" || picked === "flat") return { layout: picked, locked: false, chosen: true, repo: false };
+  if (anchors.inPlace) return { layout: "flat", locked: false, chosen: false, repo: false };
+  const repo = looksLikeRepo(dir);
+  return { layout: repo ? "flat" : "per_chat", locked: false, chosen: false, repo };
+}
+
+/**
+ * 这个根下要不要按对话分成果文件夹（口径见 folderLayout）
+ * @param {string} dir 当前工作目录
+ * @param {{ workspace: string, projects?: string, tenants?: string, layouts?: Record<string, string>, inPlace?: boolean }} anchors
+ */
+function perChatRoot(dir, anchors) {
+  return folderLayout(dir, anchors).layout === "per_chat";
+}
+
+/**
+ * 记一笔「这个文件夹的成果这么放」，回新的那份表。按规范形记（大小写、软链接拼法不同也是同一条），
+ * 最多记 200 个文件夹，先进先出。
+ * @param {Record<string, string>} layouts
+ * @param {string} dir
+ * @param {"per_chat" | "flat"} layout
+ */
+function setLayout(layouts, dir, layout) {
+  const out = { ...(layouts || {}) };
+  const k = canonDir(dir);
+  delete out[k];
+  out[k] = layout;
+  for (const old of Object.keys(out).slice(0, -200)) delete out[old];
+  return out;
 }
 
 // 素材锚点（【图片 1：IMG_8037.JPG】）是发送时自动补进正文的，不是用户写的字
@@ -198,6 +281,6 @@ function flatOutputs(sess, root, defaultRoot, key, limit = 200) {
 }
 
 module.exports = {
-  canonDir, samePlace, perChatRoot, taskSlug, dayStamp, freeDir, dropIfEmpty,
+  canonDir, samePlace, appRoot, looksLikeRepo, folderLayout, perChatRoot, setLayout, taskSlug, dayStamp, freeDir, dropIfEmpty,
   sessDirIn, sessDirAt, stashSessDir, useSessDirAt, newSessDir, flatOutputs,
 };

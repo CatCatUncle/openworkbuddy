@@ -902,6 +902,21 @@ function safeWorkspaceDir(baseDir) {
 }
 
 /**
+ * 用户自己挑的文件夹也按对话分了格：工作目录是里面那个「任务_…」，用户要处理的现成文件却在上一层。
+ * 不说这句，模型在自己那格里列不出用户点名的文件，只好满盘 find，或者干脆回一句「没找到」。
+ * 应用自己建的根（默认工作空间、projects/ 下那些）上一层只有别的对话的成果，不提。
+ */
+function userFolderLine(baseDir) {
+  if (!baseDir) return "";
+  try {
+    const root = getWorkspaceDir();
+    const anchors = { workspace: dataPath("workspace"), projects: dataPath("projects"), tenants: require("../domains/account/org").tenantsDir() };
+    if (require("../util/task-dirs").appRoot(root, anchors)) return "";
+    return `\n- 上面这一格是在用户自己的文件夹 ${root} 里给这次对话单开的。用户说的现成文件在那一层：read_file、read_document 直接写文件名就能读到；run_shell / run_node 的当前目录是这一格，要用那一层的文件写 \`../文件名\`；想看那一层有什么，list_files 传 \`..\`。新产出照旧写进这一格；别的「任务_」文件夹是其他对话的成果，别去动。`;
+  } catch { return ""; }
+}
+
+/**
  * 这次是不是在 git 分身里干活。是的话必须告诉模型，两件事它自己猜不出来：
  * 一是改动进的是另一根分支，二是**不许自己 merge 回去**——合不合、什么时候合是用户的决定，
  * 冲突怎么取舍更是它最没资格拍板的事。不说这句，它会很热心地帮你合掉。
@@ -913,6 +928,9 @@ function worktreeLine() {
     return `\n- 这次是在一个**独立的 git 分身（worktree）**里干活：另有任务正在改同一个仓库，所以给你单开了一份。改动只进分支 \`${m.branch}\`，用户自己的工作区不受影响，你不用担心跟别人打架。收工时改动会自动提交到这根分支上——**不要自己 merge/rebase 回主分支，也不要 push**，合不合由用户决定。`;
   } catch { return ""; }
 }
+
+/** 工作目录那行后面按情况挂的说明（git 分身、用户自选的文件夹）：用不上时一个字都不多 */
+function dirNotes(baseDir) { return worktreeLine() + userFolderLine(baseDir); }
 
 /** 不填地址时对话那边默认打的根（llm.js 的 anthropicBase / geminiRoot / ollamaRoot），看图跟着用同一个 */
 const IMPLIED_BASE = {
@@ -1153,7 +1171,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
 
 ## 当前环境
 - 今天几号、现在几点，看下面「当前时间」那一节。凡是涉及"最新/今年/近期/本周"的判断一律以那个日期为准，不要用你训练数据里的时间。用户说"现在/马上/今晚"这类词时，按那里的钟点安排，别默认从早上开始。需要最新事实（价格、政策、版本号、人事、榜单）必须 web_search 现查，不许凭记忆答。
-- 工作目录（成果文件都放这里）：${safeWorkspaceDir(baseDir)}${worktreeLine()}
+- 工作目录（成果文件都放这里）：${safeWorkspaceDir(baseDir)}${dirNotes(baseDir)}
 - 写文件一律用**相对文件名**（\`报告.html\`、\`demo/index.js\`），相对路径就是从上面这个目录起算的。别再在前面拼一遍目录名——那会在它下面又建一层同名目录。
 - 运行环境：${{ darwin: "macOS", win32: "Windows", linux: "Linux" }[process.platform] || process.platform}，本机执行，run_shell 拿到的是用户的真实电脑。
 

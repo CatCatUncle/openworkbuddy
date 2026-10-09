@@ -5126,7 +5126,7 @@ const USER_INPUT_CAP = 500;   // 只为了不让它无限长；超了从最老�
 // 分隔符写成转义 \u0000，不要直接敲一个真 NUL 字节进源码。
 // 两者运行时一模一样，但文件里一旦有真 NUL，grep 就把整个 tools.js 当二进制文件：
 // `grep -n look_at_image tools.js` 什么都不返回，也不报错。全项目最大的工具文件搜不到东西，谁都会以为是自己搜错了。
-const userInputKey = (rel) => workspaceKey() + "\u0000" + String(rel || "").split(path.sep).join("/");
+const userInputKey = (rel, root) => (root ? workspaceKeyOf(root) : workspaceKey()) + "\u0000" + String(rel || "").split(path.sep).join("/");
 /** 落盘之后马上调：把「这份是用户传的」钉在那一刻的 mtime 上 */
 function noteUserInput(rel) {
   try {
@@ -5135,9 +5135,12 @@ function noteUserInput(rel) {
     userInputs.set(userInputKey(rel), st.mtime.toISOString());
   } catch {} // 记不上只是少一道闸，不该让上传本身失败
 }
-/** 上传先落根目录、成果文件夹建好后再搬进去（见 server.js 的 assignSessionDir），搬完得改键 */
-function moveUserInput(from, to) {
-  const k = userInputKey(from);
+/**
+ * 上传先落根目录、成果文件夹建好后再搬进去（见 server.js 的 assignSessionDir），搬完得改键。
+ * fromRoot：传上来以后、发出去之前换过文件夹的，那份是在另一个根下记的账
+ */
+function moveUserInput(from, to, fromRoot) {
+  const k = userInputKey(from, fromRoot);
   if (!userInputs.has(k)) return;
   const at = userInputs.get(k);
   userInputs.delete(k);
@@ -5145,10 +5148,13 @@ function moveUserInput(from, to) {
   try { now = fs.statSync(safePath(to)).mtime.toISOString(); } catch {} // rename 不改 mtime，但不赌它
   userInputs.set(userInputKey(to), now);
 }
-/** @param {{name:string,mtime:string}} file outputFiles() 里的一项 */
-function isUserInput(file) {
+/**
+ * @param {{name:string,mtime:string}} file outputFiles() 里的一项
+ * @param {string} [root] 按哪个根的账查；不给就是当前这个
+ */
+function isUserInput(file, root) {
   if (!file || !file.name) return false;
-  return userInputs.get(userInputKey(file.name)) === file.mtime;
+  return userInputs.get(userInputKey(file.name, root)) === file.mtime;
 }
 
 function outputFiles() {

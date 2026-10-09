@@ -3729,6 +3729,11 @@ async function renderMemoryPane(pane) {
     renderMemoryPane(pane);
   });
 }
+/** 工作空间文件夹的两种用法（server.js noteLayout / src/util/task-dirs.js folderLayout） */
+const WS_LAYOUTS = [
+  ["per_chat", "每个对话单独一个文件夹", "推荐，各对话的成果分开放、互不混"],
+  ["flat", "直接放在这个文件夹里", "代码仓库、要就地改的文件用这个"],
+];
 function renderDataPane(pane, s) {
   pane.innerHTML = `
     <div class="card-item">
@@ -3737,6 +3742,13 @@ function renderDataPane(pane, s) {
       <div class="form-row">
         <input id="ws-dir" value="${esc(s.workspace_dir)}" placeholder="D:\\我的工作区">
         <button class="btn-plain" id="ws-pick" style="flex:0 0 auto">${ic("folder-open")} 选择文件夹</button>
+      </div>
+      <div id="ws-layout" style="display:flex;flex-direction:column;gap:6px;margin:8px 0">
+        ${WS_LAYOUTS.map(([k, label, desc]) => `<label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size: 14px">
+          <input type="radio" name="ws-layout" value="${k}" style="margin:3px 0 0">
+          <span><b>${label}</b><span style="color:var(--owb-text-3)"> — ${desc}</span></span>
+        </label>`).join("")}
+        <div class="d" id="ws-layout-hint"></div>
       </div>
       <div style="margin-top:4px">
         <button class="btn-brand" id="ws-save">保存</button>
@@ -3770,13 +3782,41 @@ function renderDataPane(pane, s) {
       <div class="d">会话 data/sessions/ · 定时任务 schedules.json · 配置 config.json（含 API Key）· 记忆 data/memory.md、memories.json · 技能 skills/ · 成果 workspace/ · 备份 backups/</div>
       <div class="d" style="margin-top:6px">手机、网页、终端连的是同一台，数据无需同步；主题、字号只存在各自浏览器。</div>
     </div>`;
+  // 这个文件夹里每个对话分不分文件夹。换了路径就问服务端它会怎么判（像代码仓库的默认直接放进去），
+  // 人没动过单选就不替他报：保存时由服务端按此刻判的记下，免得旧文件夹那一档被原样套到新文件夹头上
+  const layBox = pane.querySelector("#ws-layout");
+  let layTouched = false;
+  const showLayout = (layout, locked, repo) => {
+    layBox.querySelectorAll("input[name=ws-layout]").forEach(r => { r.checked = r.value === layout; r.disabled = !!locked; });
+    layBox.dataset.locked = locked ? "1" : "";
+    pane.querySelector("#ws-layout-hint").textContent = locked ? "这是应用自带的文件夹，固定每个对话一个"
+      : repo ? "看着像代码仓库，默认直接放进去" : "";
+  };
+  showLayout(s.workspace_layout || "per_chat", s.workspace_layout_locked, false);
+  layBox.querySelectorAll("input[name=ws-layout]").forEach(r => r.onchange = () => { layTouched = true; });
+  const probeLayout = async (dir) => {
+    layTouched = false;
+    if (!dir) return;
+    const r = await fetch("/api/workspace/layout?dir=" + encodeURIComponent(dir)).then(x => (x.ok ? x.json() : null)).catch(() => null);
+    if (r && r.layout && !layTouched) showLayout(r.layout, r.locked, r.repo && !r.chosen);
+  };
+  pane.querySelector("#ws-dir").onchange = (e) => probeLayout(e.target.value.trim());
   pane.querySelector("#ws-pick").onclick = async () => {
     const r = await fetch("/api/pick-folder", { method: "POST" }).then(r => r.json()).catch(() => ({}));
-    if (r.path) pane.querySelector("#ws-dir").value = r.path;
+    if (r.path) { pane.querySelector("#ws-dir").value = r.path; probeLayout(r.path); }
     else if (r.error) toast(r.error, "circle-x");
   };
-  pane.querySelector("#ws-save").onclick = () => saveSettings({ workspace_dir: pane.querySelector("#ws-dir").value.trim(), workspace_permanent: true }, pane.querySelector("#ws-msg"))
-    .then(ok => { if (ok) fetch("/api/files").then(r => r.json()).then(renderFiles); });
+  pane.querySelector("#ws-save").onclick = () => {
+    const picked = layTouched && !layBox.dataset.locked ? (layBox.querySelector("input[name=ws-layout]:checked") || {}).value : "";
+    saveSettings({ workspace_dir: pane.querySelector("#ws-dir").value.trim(), workspace_permanent: true, ...(picked ? { workspace_layout: picked } : {}) }, pane.querySelector("#ws-msg"))
+      .then(ok => {
+        if (!ok) return;
+        // 存完按服务端最终记下的那一档重画：新文件夹没点过单选的，这里才看得到它被判成了哪种
+        layTouched = false;
+        if (settingsCache) showLayout(settingsCache.workspace_layout, settingsCache.workspace_layout_locked, false);
+        fetch("/api/files").then(r => r.json()).then(renderFiles);
+      });
+  };
   pane.querySelector("#ws-open").onclick = () => openWorkspaceOnHost();
   const cacheDesc = pane.querySelector("#cache-desc");
   const loadCache = () => fetch("/api/cache").then(r => r.json()).then(c => {
