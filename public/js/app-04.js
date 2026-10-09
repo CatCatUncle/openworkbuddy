@@ -428,9 +428,11 @@ function libKindOf(name) {
  * 拿原图当缩略图是让浏览器解码好几个 GB 的位图。服务端缩不动会自己发原图（细账在
  * thumb.js），所以这儿不用判断跑在哪儿。svg 不缩：矢量本来就小，栅格化反而更大更糊。
  */
-function libUrl(src, name, w) {
-  const url = "/api/" + (src === "lib" ? "library/file/" : "files/view/") + fpath(name);
-  return w && !/\.svg$/i.test(name) ? url + "?thumb=" + w : url;
+function libUrl(src, name, w, sid) {
+  const base = "/api/" + (src === "lib" ? "library/file/" : "files/view/") + fpath(name);
+  const url = w && !/\.svg$/i.test(name) ? base + "?thumb=" + w : base;
+  // sid：按任务那一栏的文件带上是哪条任务的。分到个人目录之前写在老地方的，凭它才打得开（见 app-01.js withRoot）
+  return src === "ws" && sid ? url + (url.includes("?") ? "&" : "?") + "sid=" + encodeURIComponent(sid) : url;
 }
 const LIB_IMG = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i;
 /**
@@ -515,18 +517,22 @@ function libRowHtml(src, f, o) {
   const gone = !!(opt.gone || f.gone);
   // 图片就直接拿真图当缩略图——图标视图里一排「图片」图标等于没有视图。
   // 文件没了就别发这个请求：拿一串 404 换一排碎图标没有意义。
-  const thumb = !gone && LIB_IMG.test(label) ? `<img loading="lazy" src="${libUrl(src, full, 160)}" alt="">` : libIcon(label);
+  const thumb = !gone && LIB_IMG.test(label) ? `<img loading="lazy" src="${libUrl(src, full, 160, opt.task)}" alt="">` : libIcon(label);
   // 「这东西是怎么来的」：一步跳回写出它的那段对话，而不是把对话从头摆出来让人自己翻。
   // 没有回合号就不画这个按钮——画一个按下去只会滚到顶的按钮，比没有还让人恼火
   const jp = opt.jump && Number.isInteger(opt.jump.turn) && opt.jump.turn >= 0 ? opt.jump : null;
   const jump = jp
     ? `<a href="#" class="lib-jump" data-open="${esc(jp.id)}" data-turn="${jp.turn}" title="跳到写出它的那一段对话（第 ${jp.turn + 1} 轮）">${ic("message-square")}</a>`
     : "";
-  // 删：只有资料库里的东西给这颗钮，本地产物不给——那是任务写出来的，删了下一趟还会有，
-  // 而且它躺在工作目录里，从这一页删等于伸手去改任务的现场
+  // 删：资料库里的走 data-del-file，删的是资料库那份；「本地产物」「工作区」两栏走 data-del-out，
+  // 删的是这个账号自己工作目录里的文件——任务写出来的东西堆久了，用户要能在这儿清掉。
+  // 服务端只认请求人自己那份根，有任务正在跑就不给删（server.js 的 /api/files/delete）。
+  // 按任务、搜索两栏不给：那几行可能指着老对话留在别的根里的文件，不归这一份根管
   const del = opt.del
     ? `<a href="#" class="lib-del" data-del-file="${esc(opt.del)}" title="从资料库里删掉">${ic("trash-2")}</a>`
-    : "";
+    : opt.delOut
+      ? `<a href="#" class="lib-del" data-del-out="${esc(opt.delOut)}" title="删掉">${ic("trash-2")}</a>`
+      : "";
   return `
   <div class="lib-it ${opt.cls || ""} ${gone ? "gone" : ""} ${on ? "active" : ""}" data-src="${src}" data-name="${esc(full)}"${opt.task ? ` data-task="${esc(opt.task)}"` : ""} title="${esc(full)}">
     <span class="th">${thumb}</span>
@@ -680,7 +686,7 @@ async function renderLibPage() {
       <span class="lib-sec-l">本地产物<span class="n">${wsFiles.length}</span><em>${!wsPartial ? "当前项目的工作目录 · 任务自己写出来的" : `最近动过的 ${wsFiles.length} 个 · 任务自己写出来的`}</em></span>
       ${wsTotal ? `<span class="lib-sec-acts"><a href="#" class="link" data-goto-ws title="在「工作区」里一层层点进去看">全部 ${wsTotal}${out.ws_capped ? "+" : ""} 个${ic("arrow-right")}</a></span>` : ""}
     </div>
-    ${wsFiles.length ? groupedRows(wsFiles, "ws") : '<div class="lib-none">工作目录还没有成果文件</div>'}`;
+    ${wsFiles.length ? groupedRows(wsFiles, "ws", (f) => ({ delOut: f.name })) : '<div class="lib-none">工作目录还没有成果文件</div>'}`;
 
   // 预览栏什么时候占位置：选了东西才占（列表/图标），画廊里永远占——它就是主角。
   // 画廊里还没选东西也照占：底下几行会替用户挑第一个，位置得先留出来。
@@ -904,6 +910,33 @@ async function renderLibPage() {
     toast("已删掉", "circle-check");
     renderLibPage();
   });
+  // 删本地产物 / 工作区里的文件和文件夹。先让服务端验一遍（dry）：删不了的当场说，不弹确认框；
+  // 文件夹还要拿回里面有几个文件写进确认框——只写「删掉文件夹？」，人点得太轻松
+  page.querySelectorAll("[data-del-out]").forEach(a => a.onclick = async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const rel = a.dataset.delOut;
+    const post = (dry) => fetch("/api/files/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: rel, dry }) })
+      .then(x => x.json()).catch(() => ({ error: "网络异常" }));
+    // 东西已经不在、或者删到一半卡住：列表跟盘上对不上了，重画一遍
+    const fail = (r) => { toast((r && r.error) || "删不掉", "circle-x"); if (r && r.stale) renderLibPage(); };
+    const chk = await post(true);
+    if (!chk || !chk.ok) return fail(chk);
+    const yes = await askConfirm({
+      title: `删掉「${rel.split("/").pop()}」？`,
+      hint: !chk.dir ? "删了找不回来" : chk.files ? `里面有 ${chk.files}${chk.more ? "+" : ""} 个文件，删了找不回来` : "里面是空的",
+      ok: "删掉", danger: true,
+    });
+    if (!yes) return;
+    const r = await post(false);
+    if (!r || !r.ok) return fail(r);
+    const under = (p) => p === rel || String(p || "").startsWith(rel + "/");
+    if (libState.pick && libState.pick.src === "ws" && under(libState.pick.name)) libState.pick = null;
+    // 删的是脚下这一层（或者它的上层）：退到被删的那一格外面，不然下一趟拿着没了的路径去问
+    if (libState.wsDir && under(libState.wsDir)) { libState.wsDir = rel.split("/").slice(0, -1).join("/"); libState.wsOff = 0; }
+    toast("已删掉", "circle-check");
+    renderLibPage();
+  });
   // 任务分组：标题那一行点开/收起，右边「打开对话」直接跳回产生它的那次对话。
   // 这是这一页跟「一张文件表格」最不一样的地方——产出和它的来历始终连着
   page.querySelectorAll(".lib-task-h").forEach(h => h.onclick = (e) => {
@@ -1080,10 +1113,11 @@ function libWsHtml(tree) {
   const folderRow = (d) => `
     <div class="lib-it lib-dir lib-wsdir" data-wsdir="${esc(d.path)}" title="${esc(d.path)}">
       <span class="th">${ic("folder")}</span><span class="nm">${esc(d.name)}</span><span class="sz">${d.count || 0} 项</span><span class="tm">${esc(libWhen(d.mtime))}</span>
+      <a href="#" class="lib-del" data-del-out="${esc(d.path)}" title="删掉这个文件夹">${ic("trash-2")}</a>
     </div>`;
   const groups = libGroupFiles(fShow).map((g) =>
     (g.label ? `<div class="sec lib-grp">${esc(g.label)} <span class="n">${g.items.length}</span></div>` : "")
-    + g.items.map((f) => libRowHtml("ws", f, { label: f.base || String(f.name).split("/").pop(), dir: "" })).join("")).join("");
+    + g.items.map((f) => libRowHtml("ws", f, { label: f.base || String(f.name).split("/").pop(), dir: "", delOut: f.name })).join("")).join("");
   const here = tree.dir ? String(tree.dir).split("/").pop() : "工作区";
   const empty = !dirs.length && !files.length
     ? `<div class="lib-none">${(tree.files || []).length ? "这一层没有这类文件，换个类型或者进子文件夹看看" : tree.dir ? "这个文件夹还是空的" : "工作目录还没有文件。任务写出来的东西会落在这儿"}</div>`
@@ -1151,8 +1185,9 @@ function libSearchHtml(data, q, recents) {
 }
 
 async function renderLibPreview(prev, lib) {
-  const { src, name } = libState.pick || {};
+  const { src, name, task } = libState.pick || {};
   if (!src) return;
+  const sid = src === "ws" ? String(task || "") : ""; // 按任务那一栏点进来的：带上是哪条任务的（见 libUrl）
   // 上一份网页预览留下的 blob 和尺寸监听：下面马上要把那个 iframe 换掉，换掉之后当场还回去。
   // 以前从不 revoke，资料库里每点开一个网页，那一整页文本就在渲染进程里多留一份，直到窗口关掉。
   // 记在函数自己身上而不是 prev 上：renderLibPage 每次整页重画都换一块新的 #lb-prev，挂在旧节点上的就没人收了
@@ -1195,7 +1230,7 @@ async function renderLibPreview(prev, lib) {
   }
   // 两边都用 fpath：资料库现在也有子目录了，整条路径 encodeURIComponent 一下斜杠会变 %2F，
   // 服务端的通配路由只认得真斜杠（这跟成果预览里图片全裂是同一个坑）
-  const url = "/api/" + (src === "lib" ? "library/file/" : "files/view/") + fpath(name);
+  const url = libUrl(src, name, 0, sid);
   // 「这份东西是哪次任务做出来的」。反查用的是同一份 files 事件记录，所以从文件夹视图里
   // 随手点开一个文件，也能顺着它走回那次对话——不只是「按任务」那一栏里点进来的才有。
   // 这一条是这一页跟一张普通文件表格最要紧的区别：产出和它的来历始终连着。
@@ -1269,7 +1304,7 @@ async function renderLibPreview(prev, lib) {
       const api = src === "lib" ? "/api/library/preview/" : "/api/files/preview/";
       // 不再带 ?t=当前时间：每点一次一个新地址，浏览器每次都往磁盘缓存里多存一份存了就再也用不上的副本。
       // 这个接口不给强缓存（没有 max-age），固定地址每次照样回服务端核对，内容变了当场拿新的
-      const r = await fetch(api + fpath(name));
+      const r = await fetch(api + fpath(name) + (sid ? "?sid=" + encodeURIComponent(sid) : ""));
       if (r.status === 404) body.outerHTML = gonePh;
       else {
         const d = await r.json().catch(() => null);
@@ -1335,9 +1370,9 @@ async function renderLibPreview(prev, lib) {
   }
   wireDel();
   const rev = prev.querySelector("#lb-reveal");
-  if (rev) rev.onclick = (e) => revealFile(name, e, "", src === "lib" ? "lib" : "");
+  if (rev) rev.onclick = (e) => revealFile(name, e, "", src === "lib" ? "lib" : "", sid);
   const cp = prev.querySelector("#lb-copy");
-  if (cp) cp.onclick = (e) => copyHostFile(name, e, { src: src === "lib" ? "lib" : "" });
+  if (cp) cp.onclick = (e) => copyHostFile(name, e, { src: src === "lib" ? "lib" : "", sid });
   const ct = prev.querySelector("#lb-copytext");
   if (ct) ct.onclick = (e) => { e.preventDefault(); return copyFileText(url, name); };
   // 「出自任务」那条链接得在 innerHTML 重排之后再接一次事件（上面几条 outerHTML 会换掉节点）

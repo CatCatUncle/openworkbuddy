@@ -1178,10 +1178,13 @@ function sandboxStatus() {
 let ownerDirsFn = () => /** @type {string[]} */ ([]);
 function setOwnerDirs(fn) { ownerDirsFn = typeof fn === "function" ? fn : () => []; }
 
-/** 各组织的工作根：没指定目录的都在 tenants/ 底下，指定了的各在各处 */
+/**
+ * 各组织的工作根：没指定目录的都在 tenants/ 底下，指定了的各在各处。
+ * 再加默认组织各账号自己的工作目录那一层（accounts/，见 spaces.js）：租户里各人的那份都在组织根下面，已经算在里头
+ */
 function tenantRoots() {
   const org = require("../domains/account/org");
-  const out = [org.tenantsDir()];
+  const out = [org.tenantsDir(), require("../domains/account/spaces").accountsDir()];
   try {
     for (const o of org._internals.load().orgs) if (o && o.id !== org.DEFAULT_ORG && o.root_dir) out.push(org.rootDirOf(o, workspaceDir));
   } catch {}
@@ -1195,7 +1198,8 @@ function sandboxOpts(sec) {
   // Windows 那层是完整性级别，没有「藏哪几个目录」这一说：多人用时各组织的工作区不互相藏（设置页和 docs/安全.md 写明了）
   if (security.isMultiUser() && process.platform !== "win32") {
     const roots = tenantRoots().map((r) => sandbox.real(r));
-    // 成员的任务：别家组织、属主的工作区和项目都藏；属主的任务：只藏各组织的
+    // 成员的任务（用自己那份工作目录的：租户里的、默认组织除老主人以外的）：别人的、属主的工作区和项目都藏，
+    // hideAround 只留通往自己那份的一支；属主的任务：只藏各组织的和各账号的
     const member = roots.some((r) => sandbox.isUnder(root, r));
     hide = member ? [...roots, dataPath("workspace"), dataPath("projects"), workspaceDir, ...ownerDirsFn()] : roots;
     hide = sandbox.hideAround(hide, root);

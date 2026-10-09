@@ -33,6 +33,7 @@ const usageStore = require("../../core/billing/usage-store");
 // 必须带 .js：macOS / Windows 的文件系统不分大小写，"./license" 先撞上仓库根的 LICENSE（许可证全文），
 // 当 JS 一跑就是语法错，整个服务起不来。Linux 上分大小写，CI 那条腿看不出来
 const license = require("./license.js");
+const spaces = require("./spaces"); // 不止一个账号时，各账号自己的工作目录
 
 function platformAdmin(user) {
   return account.isAdmin(user) && org.orgIdOf(user) === org.DEFAULT_ORG;
@@ -216,6 +217,35 @@ function multiUser() {
 function ownsGlobalWorkspace(user) {
   return !!user && org.orgIdOf(user) === org.DEFAULT_ORG && account.isAdmin(user);
 }
+
+/**
+ * 谁还留在原来那份共享空间上：工作目录（config.workspace_dir）、项目、资料库 data/library。
+ *
+ * 只有一个账号时（含个人桌面版）谁都留，一字不改。不止一个账号时只留「老主人」——
+ * account.defaultUser()，跟 server.js 的 legacySessionOwner 同一个口径：老会话没写 user 就算他的，
+ * 他的文件本来就在共享根里。其余所有账号（默认组织别的管理员、成员、审计员，租户里的每一个）
+ * 各用各的工作目录和资料库（spaces.js / server.js libraryRootOf）。
+ * 以前是「默认组织的管理员都共用」：几个管理员互相看得见对方的成果，成员之间也是同组织一个根。
+ * 没登录的入口（命令行、IM 进来的）照旧在共享根上。
+ */
+let keeper = { at: 0, name: "" };
+function sharedOwnerName() {
+  const now = Date.now();
+  if (now - keeper.at < 2000) return keeper.name;
+  let name = "";
+  try {
+    const u = account.defaultUser();
+    if (u && org.orgIdOf(u) === org.DEFAULT_ORG) name = u.username;
+  } catch {}
+  keeper = { at: now, name };
+  return name;
+}
+function forgetKeeper() { keeper = { at: 0, name: "" }; }
+function keepsSharedSpace(user) {
+  if (!user || !multiUser()) return true;
+  if (org.orgIdOf(user) !== org.DEFAULT_ORG) return false;
+  return !!user.username && user.username === sharedOwnerName();
+}
 function platformGuard(req, res, next) {
   if (isSoloDesktop()) return next(); // 个人桌面版：没有「平台」这回事，别拿服务器的规矩管一个人的机器
   if (ownsGlobalWorkspace(req.user)) return next();
@@ -237,6 +267,20 @@ function platformGuard(req, res, next) {
   }
   // 剩下的照常放行，只把这一个字段摘掉：别让它捎带着把全局工作目录改了
   if (req.body && typeof req.body === "object" && req.body.workspace_dir !== undefined) delete req.body.workspace_dir;
+  next();
+}
+/**
+ * 共享工作目录只归老主人（keepsSharedSpace）。默认组织别的管理员过得了上面那道闸，
+ * 设置里那两项照样摘掉：他自己的工作目录是 accounts/ 下那份，改全局那个等于去挪老主人的根。
+ */
+function sharedWorkspaceGuard(req, res, next) {
+  if (keepsSharedSpace(req.user)) return next();
+  // 项目切的也是共享根：别人建、切、改、删项目，动的都是老主人那份目录
+  const p = req.path.toLowerCase();
+  if (req.method !== "GET" && (p === "/api/projects" || p.startsWith("/api/projects/")))
+    return res.status(403).json({ error: "项目归这台服务器的主人管，你的文件在自己的工作目录里", personal_space: true });
+  const b = req.body;
+  if (b && typeof b === "object") { delete b.workspace_dir; delete b.workspace_permanent; }
   next();
 }
 
@@ -326,15 +370,16 @@ function ownerActor({ source = "cli", readConfig } = {}) {
  * 每处各自去翻当前是谁，漏一处就是「设置页显示 Codex、实际还在烧 API」。
  * 没登录 / 没偏好文件 → 传 null → 不设 store → 全部回落到 config.json，老行为一字不差。
  */
-function tenantScope({ withWorkspace, withPolicy, getWorkspaceDir, readConfig, withLibraryBase, libraryRootOf }) {
+function tenantScope({ withWorkspace, withPolicy, getWorkspaceDir, readConfig, withLibraryBase, withLibraryDir, libraryRootOf }) {
   return (req, res, next) => {
     let root = "";
     let policy = null;
     let actor = null;
+    let o = null;
     try {
       // 登录闸刚刚解析过同一个组织，挂在请求上了；没有的话（比如单机桌面版
       // 这条路上没人登录）才自己去读
-      const o = req.org || org.getOrg(org.orgIdOf(req.user));
+      o = req.org || org.getOrg(org.orgIdOf(req.user));
       root = o.id === org.DEFAULT_ORG ? "" : org.rootDirOf(o, getWorkspaceDir());
       const s = req.orgSettings || org.settingsOf(o);
       // 只在真配了限制时才进 ALS：默认组织默认值 = 不限 = 不设 store = 老行为一字不差
@@ -360,7 +405,21 @@ function tenantScope({ withWorkspace, withPolicy, getWorkspaceDir, readConfig, w
     // 资料库根算不出来（没传依赖 / 算错了）就传空串 → withLibraryBase 自己退回 data/library，老行为
     let libBase = "";
     try { if (libraryRootOf) libBase = libraryRootOf(req.user) || ""; } catch (e) { console.warn("[租户] 取资料库根失败：" + e.message); }
-    const inner = () => withWorkspace(root, () => withPolicy(policy, () => quota.withActor(actor, () => prefs.withPrefs(mine, next))));
+    // 不留在共享空间的账号绑自己的工作目录。算不出来就拦下这条请求：退回组织根、退回 data/library，
+    // 就是把同组织别人的文件和资料摆到他眼前
+    // （定时任务走 inTenantOf，没有 res：抛出去，那一趟就不跑）
+    let then = next;
+    if (!keepsSharedSpace(req.user)) {
+      const stop = (msg) => { if (res) return res.status(503).json({ error: msg }); throw new Error(msg); };
+      try { root = spaces.rootOf(req.user, o); } catch (e) {
+        console.warn("[个人目录] 分配失败：" + e.message);
+        return stop("你的工作目录建不出来，稍后再试或找管理员");
+      }
+      if (libraryRootOf && !libBase) return stop("你的资料库找不到，稍后再试或找管理员");
+      // 项目只挂资料库某一块，是老主人那个项目的设置：别人的资料库里碰巧有同名文件夹，也别把他收窄到那一块
+      if (withLibraryDir) then = () => withLibraryDir("", next);
+    }
+    const inner = () => withWorkspace(root, () => withPolicy(policy, () => quota.withActor(actor, () => prefs.withPrefs(mine, then))));
     if (withLibraryBase) withLibraryBase(libBase, inner);
     else inner();
   };
@@ -430,11 +489,21 @@ function createAdminRouter(deps = {}) {
     // 筛和翻页都在服务端做。以前是整份回去、前端自己筛：3000 人的组织一次 1041 KB、
     // 浏览器里 78098 个 DOM 节点、点进来到表格出来 878ms，而一屏看得见十几行。
     // fields=lite 只回名字那几格，给下拉框用（交接给谁、归到谁名下……）
+    const page = account.queryMembers(orgId, {
+      q: q.q, role: q.role, status: q.status, offset: q.offset, limit: q.limit,
+      lite: q.fields === "lite",
+    });
+    // 平台管理员看得到每个人自己的工作目录在盘上哪儿（找文件、搬家用）。只报已经分出去的，不替人新建；
+    // 留在共享那份上的老主人没有这一格
+    if (platformAdmin(req.user) && q.fields !== "lite" && multiUser() && Array.isArray(page.members)) {
+      page.members = page.members.map((m) => {
+        const u = { username: m.username, org: orgId };
+        const space = keepsSharedSpace(u) ? "" : spaces.knownRootOf(m.username);
+        return space ? { ...m, space } : m;
+      });
+    }
     return {
-      ...account.queryMembers(orgId, {
-        q: q.q, role: q.role, status: q.status, offset: q.offset, limit: q.limit,
-        lite: q.fields === "lite",
-      }),
+      ...page,
       depts: org.listDepts(orgId),
       templates: lifecycle.listDeptTemplates(orgId),
       // 建号和部门模板的角色下拉得照着**这个人**能发的角色画。少了这行，管理员那边
@@ -1057,4 +1126,4 @@ function safeCall(fn, arg) {
   try { return fn(arg); } catch { return null; }
 }
 
-module.exports = { createAdminRouter, platformAdmin, ownsGlobalWorkspace, platformGuard, redactGuard, tenantScope, ownerActor, redactSecrets, setDeployment, isSoloDesktop, multiUser, PLATFORM_WRITE, PLATFORM_READ, PERSONAL_WRITE, PERSONAL_WRITE_PREFIX, PERSONAL_READ };
+module.exports = { createAdminRouter, platformAdmin, ownsGlobalWorkspace, keepsSharedSpace, forgetKeeper, sharedWorkspaceGuard, platformGuard, redactGuard, tenantScope, ownerActor, redactSecrets, setDeployment, isSoloDesktop, multiUser, PLATFORM_WRITE, PLATFORM_READ, PERSONAL_WRITE, PERSONAL_WRITE_PREFIX, PERSONAL_READ };

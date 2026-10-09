@@ -1601,6 +1601,7 @@ function chatDirHere(asked) {
   const root = getWorkspaceDir();
   const anchors = {
     workspace: dataPath("workspace"), projects: dataPath("projects"), tenants: require("./src/domains/account/org").tenantsDir(),
+    homes: require("./src/domains/account/spaces").homes(),
     layouts: config.folder_layouts || {}, inPlace: !!inPlaceRoot && taskDirs.samePlace(inPlaceRoot, root),
   };
   if (!taskDirs.perChatRoot(root, anchors)) return null;

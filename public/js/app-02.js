@@ -127,7 +127,10 @@ function toastWsLayout() {
   toast(`已换到「${name}」，${flat ? "对话直接在里面读写" : "每个对话各开一个文件夹"}，点这里改`, "folder", () => openModal("settings", "data"));
 }
 function renderWsMenu() {
-  const owner = amPlatformOwner();
+  // 用的是自己那份工作目录（不止一个账号、又不是老主人）：服务端不认换文件夹（admin.js sharedWorkspaceGuard），
+  // 选文件夹、改放法这几行就不摆——摆着就是按了没用的钮
+  const personal = !!settingsCache.workspace_personal;
+  const owner = amPlatformOwner() && !personal;
   const workspacePath = String(settingsCache.workspace_dir || "");
   // 应用自带的文件夹固定按对话分，没得选，不画这两行
   const lay = owner && !settingsCache.workspace_layout_locked ? (settingsCache.workspace_layout === "flat" ? "flat" : "per_chat") : "";
@@ -138,7 +141,8 @@ function renderWsMenu() {
     (lay ? layRow("per_chat", "layout-grid", "每个对话单独一个文件夹") + layRow("flat", "folder", "直接放在这个文件夹里") : "") +
     (owner ? `<div class="mi" data-act="pick"${lay ? ' style="border-top:1px solid var(--owb-border);margin-top:4px"' : ""}>${ic("folder-open")}选择新文件夹…</div>` : "") +
     (canOpenOnHost() ? `<div class="mi" data-act="open">${ic("folder-tree")}打开当前文件夹</div>` : "") +
-    (owner ? "" : `<div class="mi ro sub-only">这台服务器上大家共用一个工作目录，归平台管理员设</div>`);
+    (owner ? "" : personal ? `<div class="mi ro sub-only">这是你自己的工作目录，别的账号看不到</div>`
+      : `<div class="mi ro sub-only">这台服务器上大家共用一个工作目录，归平台管理员设</div>`);
   wsMenu.querySelectorAll(".mi").forEach(mi => mi.onclick = async () => {
     wsMenu.classList.remove("show");
     if (mi.dataset.lay) {

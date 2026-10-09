@@ -911,7 +911,7 @@ function userFolderLine(baseDir) {
   if (!baseDir) return "";
   try {
     const root = getWorkspaceDir();
-    const anchors = { workspace: dataPath("workspace"), projects: dataPath("projects"), tenants: require("../domains/account/org").tenantsDir() };
+    const anchors = { workspace: dataPath("workspace"), projects: dataPath("projects"), tenants: require("../domains/account/org").tenantsDir(), homes: require("../domains/account/spaces").homes() };
     if (require("../util/task-dirs").appRoot(root, anchors)) return "";
     return `\n- 上面这一格是在用户自己的文件夹 ${root} 里给这次对话单开的。用户说的现成文件在那一层：read_file、read_document 直接写文件名就能读到；run_shell / run_node 的当前目录是这一格，要用那一层的文件写 \`../文件名\`；想看那一层有什么，list_files 传 \`..\`。新产出照旧写进这一格；别的「任务_」文件夹是其他对话的成果，别去动。`;
   } catch { return ""; }

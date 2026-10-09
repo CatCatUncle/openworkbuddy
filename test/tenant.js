@@ -35,6 +35,7 @@ const ROOT = path.join(__dirname, "..");
 const srcLib = require("./lib/src"); // server / tools / canvas 三组源码的唯一读法，见 test/lib/src.js
 const account = require(mod("account"));
 const org = require(mod("org"));
+const spaces = require(mod("spaces"));
 const admin = require(mod("admin"));
 const tools = require(mod("tools"));
 const security = require(mod("security"));
@@ -67,8 +68,8 @@ const libraryRootOf = (() => {
   const i1 = SERVER_SRC.indexOf("\n}\n", i0);
   if (i0 < 0 || i1 < 0) throw new Error("server.js 里找不到 libraryRootOf（改名了就该在这儿挂）");
   const src = SERVER_SRC.slice(i0, i1 + 2);
-  return new Function("LIB_DIR", "ownsGlobalWorkspace", "dataPath", "prefs",
-    src + "\nreturn libraryRootOf;")(dataPath("data", "library"), admin.ownsGlobalWorkspace, dataPath, prefs);
+  return new Function("LIB_DIR", "admin", "dataPath", "prefs",
+    src + "\nreturn libraryRootOf;")(dataPath("data", "library"), admin, dataPath, prefs);
 })();
 
 // ---------- 一个跟 server.js 中间件顺序一模一样的最小应用 ----------
@@ -292,6 +293,11 @@ async function login(username, password) {
   eq(r.json.user.role, "member", "这张码指定的是普通成员");
 
   console.log("\n【5】红线一：跨租户看不到对方的成果文件");
+  // 不止一个账号以后，分公司里的人也各用组织根下一层自己的文件夹（spaces.js），组织根本身不再是谁的工作目录。
+  // 【3】放在分公司根上的那份，他自己那份里放一份同名的
+  const fenRoot = spaces.rootOf({ username: "fenboss", org: org2 });
+  eq(path.dirname(fenRoot), path.resolve(root2), "分公司的人分到的文件夹就在分公司的根下一层");
+  fs.writeFileSync(path.join(fenRoot, "分公司的活.md"), "branch");
   r = await call("GET", "/api/files", { cookie: boss });
   const bossFiles = (r.json || []).map((f) => f.name);
   ok(bossFiles.includes("总部机密.md"), "总部能看到自己的文件", bossFiles);
@@ -308,61 +314,72 @@ async function login(username, password) {
   // 跟「谁在请求」没有半点关系。于是分公司的人只要知道总部那份文件叫什么（文件名会出现在
   // 转发的截图、聊天记录、日报标题里），照着请求一次，兜底扫描就替他把文件翻出来了：
   // 列表里一个字都看不见，下载却是 200。
-  // 这一节把 server.js 里的 tenantRootOf + rootedPath 原样切出来跑。外部依赖里
-  // safePath / safePathIn / withWorkspace 用 tools.js 的真货（跟线上同一套越界判定），
-  // 只有 knownRoots 这张「整台机器的根」和两条线索（?root= 指纹、?sid= 会话）摆成最坏情况。
   const SRC5 = srcLib.src("server");
-  const cutA = SRC5.indexOf("/**\n * 租户的成果根");
+  // 这一节把 server.js 里「跨工作目录解析」那一整段（rootFence / knownRoots / rootFromKey / sessionGrant / rootedPath）
+  // 原样切出来跑。safePath / safePathIn / withWorkspace 用 tools.js 的真货（跟线上同一套越界判定），
+  // 只有「整台机器见过的根」和两条线索（?root= 指纹、?sid= 会话）摆成最坏情况
+  const cutA = SRC5.indexOf("/**\n * 成果文件的跨工作目录解析");
   const cutB = SRC5.indexOf('\napp.get("/api/files/download/*"');
-  ok(cutA > 0 && cutB > cutA, "从 server.js 里切得出这两个函数（切不出来 = 改名了 = 这一节在空转，别让它悄悄变绿）", { cutA, cutB });
+  ok(cutA > 0 && cutB > cutA, "从 server.js 里切得出这一段（切不出来 = 改名了 = 这一节在空转，别让它悄悄变绿）", { cutA, cutB });
   const slice5 = SRC5.slice(cutA, cutB);
-  eq((slice5.match(/safePathIn\(/g) || []).length, 1,
-     "整段里只有一处 safePathIn：候选根全从 tryRoot 这一个口子过（多出一处就是一条绕开租户过滤的新路）");
-  // 最坏情况的 knownRoots：总部的根、分公司的根、分公司自己的一个子项目根、外加一个换过的目录
+  const rpBody = slice5.slice(slice5.indexOf("function rootedPath("));
+  eq((rpBody.match(/safePathIn\(/g) || []).length, 1,
+     "rootedPath 里只有一处 safePathIn：候选根全从 tryRoot 这一个口子过（多出一处就是一条绕开围栏的新路）");
+  // 最坏情况的「见过的根」：总部的根、分公司的根、分公司根下一个老的子项目、他自己那份里的子项目、外加一个换过的目录
   const SUB2 = path.join(root2, "子项目");
   fs.mkdirSync(SUB2, { recursive: true });
   fs.writeFileSync(path.join(SUB2, "上个月的稿子.md"), "old");
+  const FEN_SUB = path.join(fenRoot, "子项目");
+  fs.mkdirSync(FEN_SUB, { recursive: true });
+  fs.writeFileSync(path.join(FEN_SUB, "我的稿子.md"), "mine");
   const OTHER = path.join(TMP, "换过的目录");
   fs.mkdirSync(OTHER, { recursive: true });
-  const allRoots = [BASE_WS, root2, SUB2, OTHER];
   const hqKey = tools.workspaceKeyOf(BASE_WS);
+  const fakeConfig = { workspace_dir: BASE_WS, projects: [], workspace_roots: [BASE_WS, root2, SUB2, FEN_SUB, OTHER] };
   const RP = new Function(
-    "org", "path", "fs", "getDefaultWorkspaceDir", "safePath", "safePathIn",
-    "rootFromKey", "getSession", "sessionAllowed", "knownRoots",
-    slice5 + "\nreturn { tenantRootOf, rootedPath };")(
-    org, path, fs, tools.getDefaultWorkspaceDir, tools.safePath, tools.safePathIn,
-    // ?root= 指纹：照 server.js 的真算法反查，不是瞎给一个根
-    (k) => allRoots.find((d) => tools.workspaceKeyOf(d) === String(k || "")) || "",
+    "org", "path", "fs", "config", "saveConfig", "sessions", "getSession", "sessFile", "sessionAllowed",
+    "spaces", "taskDirs", "admin", "dataPath", "getWorkspaceDir", "getDefaultWorkspaceDir", "safePath", "safePathIn", "workspaceKeyOf",
+    slice5 + "\nreturn { rootFence, rootedPath };")(
+    org, path, fs, fakeConfig, () => {}, new Map(),
     // ?sid= 会话：归属检查故意放到最松（永远 allowed）。这是在验第二道闸——
-    // 就算哪天 sessionAllowed 判漏了，租户过滤也得把这条线索挡在外面
+    // 就算哪天 sessionAllowed 判漏了，凭 sid 也只放那条对话自己的格子和它自己列过的文件，这条会话一样都没有
     (sid) => (sid ? { id: sid, root: BASE_WS } : null),
+    (id) => path.join(TMP, "没有这个目录", id + ".json"),
     () => true,
-    () => allRoots.slice(),
+    spaces, require(mod("task-dirs")), admin, dataPath, tools.getWorkspaceDir, tools.getDefaultWorkspaceDir,
+    tools.safePath, tools.safePathIn, tools.workspaceKeyOf,
   );
   const uFen = { username: "fenboss", org: org2 };
   const uBoss = { username: "laoban", org: "default" };
-  // 先看「租户根」本身算得对不对：只有真分了租户的才有值
-  eq(RP.tenantRootOf({ user: uFen }), path.resolve(root2), "分公司的人算出来的租户根 = 分公司的根");
-  eq(RP.tenantRootOf({ user: uBoss }), "", "默认组织没有租户根（个人版就是这一档，一字不差地走老路）");
-  eq(RP.tenantRootOf({}), "", "没有登录态（飞书回调、定时任务）也没有租户根，不至于把自动任务全锁死");
-  // 正戏。ask() 这一层照抄 admin.tenantScope 干的事：按请求人的组织把工作目录换过去
-  const ask = (user, rel, q) =>
-    tools.withWorkspace(org.rootDirOf(org.getOrg(org.orgIdOf(user)), BASE_WS), () =>
-      RP.rootedPath({ user, query: q || {}, body: {} }, rel));
+  const uHq = { username: "hqguy", org: "default" };
+  // ask() 这一层照抄 admin.tenantScope 干的事：老主人绑共享根，其余每人绑自己那份
+  const rootFor = (user) => (admin.keepsSharedSpace(user) ? org.rootDirOf(org.getOrg(org.orgIdOf(user)), BASE_WS) : spaces.rootOf(user));
+  const ask = (user, rel, q) => tools.withWorkspace(rootFor(user), () => RP.rootedPath({ user, query: q || {}, body: {} }, rel));
+  const fenceOf = (user) => tools.withWorkspace(rootFor(user), () => RP.rootFence({ user }));
+  // 先看围栏本身：分公司的人只认自己那份，连分公司的根都不算他的
+  ok(fenceOf(uFen)(fenRoot) && fenceOf(uFen)(FEN_SUB), "分公司的人：自己那份和它下面的子目录都在围栏里");
+  ok(!fenceOf(uFen)(root2) && !fenceOf(uFen)(SUB2) && !fenceOf(uFen)(BASE_WS), "分公司的根、根上的老子项目、总部的根，都不在他的围栏里");
+  ok(!fenceOf(uBoss)(root2) && !fenceOf(uBoss)(fenRoot) && fenceOf(uBoss)(BASE_WS), "老主人：共享根是他的，分公司的根和别人的那份不是");
   const outside = (p) => !path.resolve(p).startsWith(path.resolve(BASE_WS) + path.sep);
   let got = ask(uFen, "总部机密.md");
-  ok(outside(got) && !fs.existsSync(got), "光凭文件名要不到总部的文件（兜底扫描不认租户外的根）", got);
+  ok(outside(got) && !fs.existsSync(got), "光凭文件名要不到总部的文件（兜底扫描只在自己那份里找）", got);
   got = ask(uFen, "总部机密.md", { root: hqKey });
   ok(outside(got) && !fs.existsSync(got), "把总部那个根的指纹抄进 ?root= 也要不到（线索是用户给的，根得服务端认）", got);
   got = ask(uFen, "总部机密.md", { sid: "s-hq-1" });
   ok(outside(got) && !fs.existsSync(got), "?sid= 也要不到（会话归属是第一道闸，这里故意只留第二道，它得自己扛得住）", got);
-  // 反向对照一：租户**内部**的跨根反查一点没坏——这才是 rootedPath 活着的全部理由
+  got = ask(uHq, "总部机密.md");
+  ok(outside(got) && !fs.existsSync(got), "总部的普通成员也要不到老主人共享根里的（同组织不再共用一个根）", got);
   got = ask(uFen, "上个月的稿子.md");
-  eq(got, path.join(SUB2, "上个月的稿子.md"), "反向对照：分公司自己子项目里的旧文件，照样按相对路径找得回来");
+  ok(!fs.existsSync(got), "分公司根上的老子项目也不归他：同组织别人的东西可能就在那儿", got);
+  got = ask(uBoss, "我的稿子.md");
+  ok(!fs.existsSync(got), "老主人照名字也翻不进分公司那人自己的子项目", got);
+  // 反向对照一：自己那份里的跨根反查一点没坏——这才是 rootedPath 活着的全部理由
+  got = ask(uFen, "我的稿子.md");
+  eq(got, path.join(FEN_SUB, "我的稿子.md"), "反向对照：自己那份里子项目的旧文件，照样按相对路径找得回来");
   ok(fs.existsSync(got), "而且是真找着了文件，不是拼了条路径就返回", got);
-  // 反向对照二：个人版换过工作目录，旧对话里的相对路径还得指得回老根
+  // 反向对照二：没有登录态（命令行、IM）留在共享根上，换过工作目录，旧对话里的相对路径还得指得回老根
   got = tools.withWorkspace(OTHER, () => RP.rootedPath({ user: null, query: {}, body: {} }, "总部机密.md"));
-  eq(got, path.join(BASE_WS, "总部机密.md"), "反向对照：个人版（无登录态）切了工作目录，旧路径照样反查得到");
+  eq(got, path.join(BASE_WS, "总部机密.md"), "反向对照：没登录的入口切了工作目录，旧路径照样反查得到");
 
   console.log("\n【6】红线二：分公司管理员碰不到服务器级设置");
   r = await call("POST", "/api/settings", { cookie: fen, body: { workspace_dir: "/tmp/hijack" } });
@@ -1551,7 +1568,8 @@ async function login(username, password) {
     const uYuan20 = account._internals.loadUsers().users.find((u) => u.username === "xiaoyuan");
     await new Promise((done) => {
       mw20({ user: uYuan20, headers: {}, path: "/x" }, {}, () => {
-        eq(tools.getWorkspaceDir(), root2, "★请求上没挂组织时，tenantScope 自己去读，照样落在分公司的目录★");
+        // 不止一个账号时分公司的人各有一份，就在分公司的目录下一层
+        eq(path.dirname(tools.getWorkspaceDir()), path.resolve(root2), "★请求上没挂组织时，tenantScope 自己去读，照样落在分公司的目录★");
         ok((tools.orgPolicy() || {}).allow_shell === false,
            "这时候那份组织设置也照样生效（不是只把目录找对了）", tools.orgPolicy());
         done();

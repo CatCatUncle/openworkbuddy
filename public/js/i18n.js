@@ -2823,6 +2823,19 @@
       [/^上一页$/, "Previous page"],
       [/^下一页$/, "Next page"],
       [/^工作区文件太多，只搜了一部分。没找到的去「工作区」里翻$/, "Too many workspace files; only some were searched. Browse Workspace for the rest"],
+      // 「本地产物」「工作区」两栏的删除钮：确认框，连同 /api/files/delete 回的几句报错
+      [/^里面有 (\d+)(\+?) 个文件，删了找不回来$/, "It has $1$2 files inside. This can't be undone"],
+      [/^里面是空的$/, "It's empty"],
+      [/^只能删自己工作目录里的东西$/, "You can only delete things in your own working folder"],
+      [/^没说删哪个$/, "Nothing was picked to delete"],
+      [/^这个不在列表里，删不了$/, "This isn't in the list, so it can't be deleted"],
+      [/^已经不在了$/, "It's already gone"],
+      [/^这是个链接，删不了$/, "This is a link, so it can't be deleted"],
+      [/^这个删不了$/, "This can't be deleted"],
+      [/^有任务正在跑，等它跑完再删$/, "A task is running here. Delete it once it's done"],
+      [/^没删干净，有的文件删不动$/, "Some files couldn't be deleted"],
+      // 不止一个账号时，各用各的工作目录（app-02.js renderWsMenu、app-05.js 设置页「工作空间」）
+      [/^这是你自己的工作目录，别的账号看不到$/, "This is your own working folder. Other accounts can't see it"],
     ],
   };
 

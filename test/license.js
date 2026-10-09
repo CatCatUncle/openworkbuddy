@@ -731,7 +731,7 @@ async function login(username, password) {
   // admin.js 顶上那一行让整个服务起不来，account.js 那一处被 try 吞掉、登录页永远显示「未授权」。
   // Linux 分大小写，CI 的 ubuntu 那条腿永远看不出来——所以这里按「大小写不同的同名文件」现查，不靠跑一遍撞运气
   console.log("\n【12】require 不带扩展名时，不许在不分大小写的系统上撞到别的文件");
-  const SKIP = new Set(["node_modules", ".git", "skills", "data", "workspace", "dist", "out", "logs", "coverage"]);
+  const SKIP = new Set(["node_modules", ".git", "skills", "data", "workspace", "accounts", "dist", "out", "logs", "coverage"]);
   const jsFiles = [];
   (function walk(dir, depth) {
     let ents = [];

@@ -4446,8 +4446,9 @@ function testTaskDirLifecycle() {
     assert.ok(pm && am, "server.js 里找不到 perChatHere / layoutAnchors（被改名了？）");
     const org = { tenantsDir: () => path.join(dir, "tenants") };
     // dataPath("workspace") = ws、dataPath("projects") = dir/projects：跟真实数据根一样的摆法
-    const build = (wsNow, config = {}) => new Function("fs", "path", "getWorkspaceDir", "dataPath", "taskDirs", "org", "config",
-      am[0] + "\n" + pm[0] + "\n" + em[0] + "; return listEmptyTaskDirs;")(fs, path, () => wsNow, (...p) => path.join(dir, ...p), taskDirs, org, config);
+    // homes = 不止一个账号时各人自己的工作目录（spaces.homes()），默认一个都没有
+    const build = (wsNow, config = {}, homes = []) => new Function("fs", "path", "getWorkspaceDir", "dataPath", "taskDirs", "org", "spaces", "config",
+      am[0] + "\n" + pm[0] + "\n" + em[0] + "; return listEmptyTaskDirs;")(fs, path, () => wsNow, (...p) => path.join(dir, ...p), taskDirs, org, { homes: () => homes }, config);
     const list = build(ws);
     const got = list().sort();
 
@@ -4480,6 +4481,14 @@ function testTaskDirLifecycle() {
     fs.mkdirSync(path.join(proj, "任务_0827_空的"), { recursive: true });
     fs.utimesSync(path.join(proj, "任务_0827_空的"), new Date(0), new Date(Date.now() - 3600e3));
     assert.deepStrictEqual(build(proj)(), ["任务_0827_空的"], "应用替项目建的目录里，空成果文件夹没认出来");
+    // 各账号自己的工作目录也是应用建的：给它记过「直接放进去」也不算数，空成果文件夹照收
+    const home = path.join(dir, "accounts", "amy");
+    fs.mkdirSync(path.join(home, "任务_0829_空的"), { recursive: true });
+    fs.utimesSync(path.join(home, "任务_0829_空的"), new Date(0), new Date(Date.now() - 3600e3));
+    const flatHome = { folder_layouts: taskDirs.setLayout({}, home, "flat") };
+    assert.deepStrictEqual(build(home, flatHome, [home])(), ["任务_0829_空的"], "账号自己的工作目录里，空成果文件夹没认出来");
+    // 阴性对照：不在 homes 名单里，同一个文件夹记了「直接放进去」就不碰——上面那条是名单起的作用
+    assert.deepStrictEqual(build(home, flatHome)(), [], "不在 homes 名单里的文件夹也被当成账号工作目录了");
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -6909,9 +6918,10 @@ async function testScheduleRunsAsOwner() {
     const run = st.runs.find((r) => r.task_id === "sch_acme");
     assert(run.ok === true, "负责人好好的那条没跑成：" + JSON.stringify(run).slice(0, 300));
     const hits = findAll(home, "定时产物.md");
-    // 租户根是应用替人建的，按任务名分一格（任务名 sch_acme 洗成 schacme）；要紧的是在 o_acme 底下，不在总部
-    assert.deepStrictEqual(hits, [path.join("data", "tenants", "o_acme", "定时任务", "schacme", "定时产物.md")],
-      "★别家组织成员的定时任务没在他自己组织的目录里跑★ 产物落在：" + JSON.stringify(hits) +
+    // 不止一个账号时各人用自己那份工作目录：o_acme 底下 xiaoli 那一格，再按任务名分一格（sch_acme 洗成 schacme）。
+    // 要紧的是在负责人自己那份里，不在总部、也不在 o_acme 大家共用的根上
+    assert.deepStrictEqual(hits, [path.join("data", "tenants", "o_acme", "xiaoli", "定时任务", "schacme", "定时产物.md")],
+      "★别家组织成员的定时任务没在负责人自己的工作目录里跑★ 产物落在：" + JSON.stringify(hits) +
       "。落在总部工作目录里 = 他的任务拿着总部的文件、总部的命令行开关在跑");
 
     const rows = [];

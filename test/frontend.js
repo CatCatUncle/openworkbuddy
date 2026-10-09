@@ -5717,9 +5717,13 @@ const LIBWS_CHECKS = `
   ok("点「工作区」回最外层", await until(() => crumbs().length === 1 && dirRows().length === 4), crumbs().join("/"));
 
   // ---- 3b. 纯键盘也下得去：文件夹行是 div，Tab 得停得住、Enter 等于点一下 ----
+  // 行里带着「删掉」这个真链接，外层就不套 role=button——按钮套按钮，读屏会把里面那个吞掉（跟成果卡一个规矩）
   const kd = dirRows().find((d) => d.querySelector(".nm").textContent === "L1");
-  ok("键盘：文件夹行 Tab 停得住、读屏念得出是个按钮",
-     kd.tabIndex === 0 && kd.getAttribute("role") === "button" && kd.dataset.activate === "1", kd.outerHTML.slice(0, 200));
+  const kdDel = kd.querySelector(".lib-del[data-del-out]");
+  ok("键盘：文件夹行 Tab 停得住、Enter 当点一下",
+     kd.tabIndex === 0 && kd.dataset.activate === "1", kd.outerHTML.slice(0, 200));
+  ok("  ← 行里的删除是个能 Tab 到、念得出名字的链接，外层不套 role=button",
+     !!kdDel && kdDel.matches("a[href]") && !!kdDel.title && kd.getAttribute("role") === null, kd.outerHTML.slice(0, 300));
   kd.focus();
   kd.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
   ok("  ← 按 Enter 就进去了，跟点一下一样", await until(() => window.libState.wsDir === "L1" && crumbs().length === 2), crumbs().join("/"));

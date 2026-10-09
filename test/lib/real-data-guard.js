@@ -53,7 +53,7 @@ function realHome() {
  * prefs.js / scheduler.js / eval / trace.js 各自的落点）。dir 连同底下全算；file 按「名字开头」算，
  * 把 writeJsonAtomic 的 .<pid>.tmp、.bak、.corrupt-* 一并带上。
  */
-const DEV_DIRS = ["data", "workspace", "skills", "plugins", "projects", "prefs", "backups", "logs",
+const DEV_DIRS = ["data", "workspace", "accounts", "skills", "plugins", "projects", "prefs", "backups", "logs",
   path.join("eval", "runs"), ".openworkbuddy", "openworkbuddy-data", ".builtin-skills"];
 const DEV_FILES = ["config.json", "schedules.json", "experts.json", path.join("eval", "baseline.json"), path.join("eval", "judge-prompt.json")];
 

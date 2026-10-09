@@ -998,7 +998,9 @@ PAGES.members = {
     const shown = m.members;                    // 筛完切完的这一页，服务端给的
     const filtered = m.matched !== m.total;
     const rows = shown.map((u) => [
-      `<div style="font-weight:500">${esc(u.nickname || u.username)}${u.owner ? " " + badge("所有者", "outline") : ""}</div><div class="fd ad-mono">${esc(u.username)}</div>`,
+      `<div style="font-weight:500">${esc(u.nickname || u.username)}${u.owner ? " " + badge("所有者", "outline") : ""}</div><div class="fd ad-mono">${esc(u.username)}</div>`
+        // 这个人自己的工作目录（只有平台管理员拿得到）：显示最后两段，整条路径放在悬停里
+        + (u.space ? `<div class="fd ad-mono" title="${esc(u.space)}">${esc(String(u.space).split(/[\\/]/).slice(-2).join("/"))}</div>` : ""),
       badge(ROLE_LABEL[u.role] || u.role, u.role === "member" ? "outline" : "secondary"),
       esc(u.dept || "—"),
       u.status === "active" ? badge("正常", "success") : u.status === "pending" ? badge("待审核") : badge("已停用", "destructive"),

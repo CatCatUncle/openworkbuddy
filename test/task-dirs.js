@@ -470,8 +470,9 @@ const has = (p) => fs.existsSync(p);
     const code = [pick(/function layoutAnchors\(\) \{[\s\S]*?\n}\n/), pick(/function perChatHere\(\) \{[\s\S]*?\n}\n/), pick(/function noteLayout\([\s\S]*?\n}\n/)].join("\n");
     const config = {};
     let cur = docs;
-    const N = new Function("taskDirs", "config", "dataPath", "org", "getWorkspaceDir", code + "; return { noteLayout, perChatHere };")(
-      taskDirs, config, (...p) => (p[0] === "workspace" ? ws : p[0] === "projects" ? projects : path.join(HOME, ...p)), { tenantsDir: () => tenants }, () => cur);
+    // spaces.homes() 空 = 这台机器还没分过个人目录（个人目录那几条在 taskDirs.perChatRoot 的单测里）
+    const N = new Function("taskDirs", "config", "dataPath", "org", "getWorkspaceDir", "spaces", code + "; return { noteLayout, perChatHere };")(
+      taskDirs, config, (...p) => (p[0] === "workspace" ? ws : p[0] === "projects" ? projects : path.join(HOME, ...p)), { tenantsDir: () => tenants }, () => cur, { homes: () => [] });
     const grown = path.join(HOME, "素材");
     fs.mkdirSync(grown);
     N.noteLayout(grown);
@@ -521,11 +522,12 @@ const has = (p) => fs.existsSync(p);
     };
     const sessions = new Map();
     let fromDisk = 0;
-    const S = new Function("fs", "path", "taskDirs", "getWorkspaceDir", "isUserInput", "moveUserInput", "sessions", "sessFile", "getSession", "sessionAllowed", "dataPath",
+    // rootFence 返回 null = 只有一个账号、不设限（按账号分开时的围栏在 account-spaces.js 里真起服务验）
+    const S = new Function("fs", "path", "taskDirs", "getWorkspaceDir", "isUserInput", "moveUserInput", "sessions", "sessFile", "getSession", "sessionAllowed", "dataPath", "rootFence",
       code + "; return { settlePendingUploads, adoptUploads };")(
       fs, path, taskDirs, () => cur, isUserInput, moveUserInput, sessions,
       (id) => path.join(HOME, "没有的会话", id + ".json"), () => { fromDisk++; return null; },
-      (u, s) => !s.owner || (!!u && s.owner === u.username), (...p) => (p[0] === "workspace" ? W : path.join(HOME, ...p)));
+      (u, s) => !s.owner || (!!u && s.owner === u.username), (...p) => (p[0] === "workspace" ? W : path.join(HOME, ...p)), () => null);
     const me = { username: "me" };
     const read = (...p) => { try { return fs.readFileSync(path.join(...p), "utf8"); } catch { return null; } };
     const mt = (...p) => fs.statSync(path.join(...p)).mtime.toISOString();
@@ -639,7 +641,7 @@ const has = (p) => fs.existsSync(p);
   {
     const read = (rel) => fs.readFileSync(path.join(ROOT, rel), "utf8");
     const srv = src("server"), cli = read("cli.js"), agentSrc = fs.readFileSync(mod("agent"), "utf8"), app02 = read("public/js/app-02.js"), app05 = read("public/js/app-05.js");
-    ok(/function layoutAnchors\(\) \{\s*return \{ workspace: dataPath\("workspace"\), projects: dataPath\("projects"\), tenants: org\.tenantsDir\(\), layouts: config\.folder_layouts \|\| \{\} \};/.test(srv)
+    ok(/function layoutAnchors\(\) \{\s*return \{ workspace: dataPath\("workspace"\), projects: dataPath\("projects"\), tenants: org\.tenantsDir\(\), homes: spaces\.homes\(\), layouts: config\.folder_layouts \|\| \{\} \};/.test(srv)
       && /function perChatHere\(\) \{\s*return taskDirs\.perChatRoot\(getWorkspaceDir\(\), layoutAnchors\(\)\);/.test(srv),
       "网页端判分不分：带上用户明说过的放法（config.folder_layouts）");
     ok(/b\.workspace_layout !== undefined && b\.workspace_layout !== "per_chat" && b\.workspace_layout !== "flat"\) \{\s*throw new Error/.test(srv)
@@ -650,7 +652,7 @@ const has = (p) => fs.existsSync(p);
     ok((srv.match(/ap\.dir = config\.workspace_dir;\n\s*noteLayout\(config\.workspace_dir\);/g) || []).length === 2, "  └ 首次引导里选的文件夹（两处入口）也记");
     ok(/const real = setWorkspaceDir\(dir\);[^\n]*\n\s*noteLayout\(real\);/.test(srv) && /rememberRoot\(real\);\s*noteLayout\(real\);/.test(srv), "  └ 建项目、改项目目录时填的文件夹也记");
     ok(/workspace_layout: lay\.layout,\s*workspace_layout_locked: lay\.locked,/.test(srv), "拉设置带回眼下这个文件夹的放法、能不能改（设置页和输入框旁的菜单按它画）");
-    ok(/app\.get\("\/api\/workspace\/layout", \(req, res\) => \{\s*if \(!isPlatformOwner\(req\)\) return res\.status\(403\)/.test(srv), "问「这个文件夹会怎么放」只给平台管理员：不然能拿来探服务器上任意目录");
+    ok(/app\.get\("\/api\/workspace\/layout", \(req, res\) => \{\s*if \(!isPlatformOwner\(req\) \|\| !admin\.keepsSharedSpace\(req\.user\)\) return res\.status\(403\)/.test(srv), "问「这个文件夹会怎么放」只给平台管理员（还得是留在共享工作目录上的那位）：不然能拿来探服务器上任意目录");
     const up = /app\.post\("\/api\/upload"[\s\S]*?\n}\);/.exec(srv);
     ok(!!up && /if \(sess && !own\) \{[\s\S]{0,300}\.concat\(\{ name: saved, root: getWorkspaceDir\(\), by: \(req\.user && req\.user\.username\) \|\| "" \}\)/.test(up[0]),
       "上传：还没有自己那格的都记待搬账，连同在哪个根下传的、谁传的（摊在根上的根也记，换了文件夹再发才跟得过去）");

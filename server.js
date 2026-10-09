@@ -25,7 +25,7 @@ const { mergeBuiltinExperts } = require("./src/agent/experts-lib");
 const mcpCatalog = require("./src/core/ext/mcp-catalog");
 const { createLLM, createEmbedder, pingRequest, probeEmbedding, embedCandidates, embedChannels, embedHostable } = require("./src/core/model/llm");
 const sessSearch = require("./src/core/memory/session-search");
-const { outputFiles, noteUserInput, moveUserInput, isUserInput, filesScope, safePath, safePathIn, workspaceKeyOf, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, setLibraryDir, withLibraryBase, libBase, notesFileOf, withWorkspace, enterWorkspace, withPolicy, orgPolicy, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSafeName, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath } = require("./src/agent/tools");
+const { outputFiles, noteUserInput, moveUserInput, isUserInput, filesScope, safePath, safePathIn, workspaceKeyOf, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, setLibraryDir, withLibraryBase, withLibraryDir, libBase, notesFileOf, withWorkspace, enterWorkspace, withPolicy, orgPolicy, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSafeName, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath } = require("./src/agent/tools");
 const checkpoints = require("./src/agent/checkpoints"); // 这条对话改过的文件：列出来、整步退回去
 const worktree = require("./src/agent/worktree"); // 两条任务同时改一个仓库时，后来的那条进自己的 git worktree
 const canvasRoutes = require("./src/server/routes/canvas"); // 画布读写 + 短剧素材台账 + 制片进度
@@ -51,6 +51,7 @@ const { thumbFileAsync } = require("./src/platform/render/thumb");
 const org = require("./src/domains/account/org"); // 组织（租户）层：席位、部门、邀请码、审计
 const budget = require("./src/core/billing/budget"); // 钱闸：中转站发出去的 Key 和公司内部自己用，花的是同一笔预算
 const admin = require("./src/domains/account/admin"); // 企业管理后台的接口层 /api/admin/*
+const spaces = require("./src/domains/account/spaces"); // 不止一个账号时，各账号自己的工作目录
 const engines = require("./src/engines"); // 底层引擎：内置循环 / 本机 Claude Code / 本机 Codex
 const engineGate = require("./src/engines/gate"); // 外部引擎开跑前那道闸（型号、附加参数、命令行开关）
 const lanes = require("./src/core/config/lanes"); // 两条工作线：办公（桌面办公 agent）/ 工程（本机 openworkbuddy 命令行）
@@ -454,7 +455,7 @@ const assignedDirs = new Set(); // 刚分配、还没写出文件的对话文件
 
 /** 判「这个根按不按对话分文件夹」要的几个坐标（口径见 src/util/task-dirs.js 开头；命令行 chatDirHere 用同一套） */
 function layoutAnchors() {
-  return { workspace: dataPath("workspace"), projects: dataPath("projects"), tenants: org.tenantsDir(), layouts: config.folder_layouts || {} };
+  return { workspace: dataPath("workspace"), projects: dataPath("projects"), tenants: org.tenantsDir(), homes: spaces.homes(), layouts: config.folder_layouts || {} };
 }
 /** 当前工作目录下要不要按对话分成果文件夹（口径见 src/util/task-dirs.js 开头） */
 function perChatHere() {
@@ -499,7 +500,7 @@ function rootFilesOf(sess) {
 /**
  * 换过根的对话：历史里的附件留在别的根下那格里，那边的格名跟这边的还不一样（任务_1001_周报 / 任务_1001_周报_2），
  * 前端按「当前那格/名字」去取就是一排灰方块。这里报「当前格里没有、别的根那格里有」的那些：名字 → {root 指纹, dir}。
- * 只看每格第一层（附件就落在第一层），最多 300 个；指纹按 knownRoots 里那份原样算，rootFromKey 才认得回来。
+ * 只看每格第一层（附件就落在第一层），最多 300 个；指纹按 allRoots 里那份原样算，rootFromKey 才认得回来。
  */
 function attachSpotsOf(sess) {
   const here = getWorkspaceDir(), def = dataPath("workspace");
@@ -510,7 +511,7 @@ function attachSpotsOf(sess) {
   const out = {};
   let n = 0;
   if (!pairs.length) return out;
-  const known = knownRoots();
+  const known = allRoots(); // 这些格子都是这条会话自己的，不用再按人收窄
   for (const [r, d] of pairs) {
     const root = known.find((k) => taskDirs.samePlace(k, r));
     if (!root) continue;
@@ -586,6 +587,7 @@ function settlePendingUploads(sess, baseDir) {
  */
 function adoptUploads(sess, user, list) {
   if (!Array.isArray(list)) return;
+  const fence = rootFence({ user }); // 不止一个账号时只搬自己根里的：管理员能看成员的对话，不等于能把成员传的文件搬走
   for (const a of list.slice(0, 50)) {
     try {
       const sid = String((a && a.sid) || ""), rel = path.normalize(String((a && a.path) || ""));
@@ -609,7 +611,7 @@ function adoptUploads(sess, user, list) {
         const at = spots.find(([, d]) => d && path.normalize(d) === sub);
         if (at) hit = { name, root: at[0], rel };
       }
-      if (!hit) continue;
+      if (!hit || (fence && !fence(hit.root || getWorkspaceDir()))) continue;
       sess.pending_uploads = (sess.pending_uploads || []).filter((p) => (typeof p === "string" ? p : p && p.name) !== name).concat(hit);
     } catch {}
   }
@@ -1287,6 +1289,13 @@ app.use(
         }
       }
       const mems = memory.renameScope(from, to); // 记忆也认登录名，不搬就成了孤儿
+      // 个人工作目录：文件夹名不动，表里换个键。个人资料库的目录名是按登录名算的，得跟着挪，不然改完名打开是空的
+      try { spaces.rename(from, to); } catch (e) { console.warn("[账号] 个人工作目录没跟上改名：" + e.message); }
+      try {
+        const was = dataPath("data", "library-users", prefs.keyOf(from)), now = dataPath("data", "library-users", prefs.keyOf(to));
+        if (fs.existsSync(was) && !fs.existsSync(now)) fs.renameSync(was, now);
+      } catch (e) { console.warn("[账号] 个人资料库没跟上改名：" + e.message); }
+      admin.forgetKeeper(); // 老主人改了名，别让两秒的缓存把他当成别人
       console.log(`[账号] 登录名 ${from} → ${to}，${files} 条会话、${mems} 条记忆的归属已迁移`);
     },
   })
@@ -1371,7 +1380,7 @@ app.use(relay.createRouter({
 app.use(account.authGuard); // 其余 /api/* 与 /im/*（除外部回调）需要登录
 
 // 租户工作目录 → 服务器级接口的闸 → 凭证脱敏。三段的说明都在 admin.js 里
-const tenantScopeMw = admin.tenantScope({ withWorkspace, withPolicy, getWorkspaceDir, readConfig: () => config, withLibraryBase, libraryRootOf: (u) => libraryRootOf(u) });
+const tenantScopeMw = admin.tenantScope({ withWorkspace, withPolicy, getWorkspaceDir, readConfig: () => config, withLibraryBase, withLibraryDir, libraryRootOf: (u) => libraryRootOf(u) });
 app.use(tenantScopeMw);
 /**
  * 没有 HTTP 请求的那几条路（定时任务）也要落进某个人的租户范围：
@@ -1386,6 +1395,7 @@ function inTenantOf(user, source, fn) {
   });
 }
 app.use(admin.platformGuard);
+app.use(admin.sharedWorkspaceGuard);
 app.use(admin.redactGuard);
 const ownsGlobalWorkspace = admin.ownsGlobalWorkspace;
 /**
@@ -1940,6 +1950,8 @@ app.get("/api/settings", (req, res) => {
   const lay = taskDirs.folderLayout(getWorkspaceDir(), layoutAnchors());
   res.json({
     workspace_dir: getWorkspaceDir(),
+    // 用的是自己那份工作目录（不止一个账号、又不是老主人）：界面上不给换文件夹、不给项目
+    workspace_personal: !admin.keepsSharedSpace(req.user),
     // 默认工作空间里每个对话各有一个成果文件夹：成果区据此默认只摆「本对话」那一格
     workspace_is_default: path.resolve(getWorkspaceDir()) === dataPath("workspace"),
     workspace_per_chat: perChatHere(), // 成果面板靠它决定新对话先摆「本对话」那一格，还是整个目录摊开
@@ -3833,6 +3845,7 @@ function activeProject() {
  */
 function projectContextOf(p) {
   if (!p) return "";
+  if (!sharedRootHere()) return ""; // 项目只有老主人有：别人那一趟跑在自己的根里，不带他项目的说明和规范
   const parts = [];
   if (p.instructions) parts.push(p.instructions);
   // 挂载了资料库的某一块就说出来。不说的话模型只会看见一个小得可疑的文件清单，
@@ -4037,7 +4050,8 @@ app.get("/api/projects", (req, res) => {
   // 以前这里编了个叫「本组织工作目录」的假项目顶上，两头都出事：侧栏多一个点不动的 tab，
   // 而且这个名字跟老会话记的项目名对不上，前端按项目过滤后整排任务历史都没了。
   // 现在如实说「你这儿没有项目这回事」，前端见到 locked 就整块不画、也不按项目过滤。
-  if (!ownsGlobalWorkspace(req.user)) return res.json({ projects: [], active: "", locked: true });
+  // 不止一个账号时只有老主人有项目：项目切的是共享根，别人切会把老主人的目录挪走（admin.keepsSharedSpace）
+  if (!ownsGlobalWorkspace(req.user) || !admin.keepsSharedSpace(req.user)) return res.json({ projects: [], active: "", locked: true });
   ensureProjects();
   res.json({ projects: config.projects, active: config.active_project, locked: false });
 });
@@ -4082,7 +4096,9 @@ app.post("/api/projects/switch", (req, res) => {
 });
 
 // 新任务回到当前项目自己的目录：输入框里临时切过的文件夹不带进下一个任务
-app.post("/api/workspace/reset", (_req, res) => {
+app.post("/api/workspace/reset", (req, res) => {
+  // 用自己工作目录的人没有项目可回，回一句现状就行；往下走会把老主人的根切回他的项目
+  if (!admin.keepsSharedSpace(req.user)) return res.json({ ok: true, workspace_dir: getWorkspaceDir() });
   try {
     // 跑着的任务不怕：每趟在开头就把自己的根钉住了（/api/chat 的 enterWorkspace、accountedRuntime 的 withWorkspace），
     // 这里改的只是下一条新任务从哪开始。以前在这儿遇忙就跳过，结果忙的时候点「新任务」，新任务落在上一条临时切过的文件夹里
@@ -4102,7 +4118,7 @@ app.post("/api/workspace/reset", (_req, res) => {
 // 设置页刚选了个文件夹、还没保存：问一声它会按哪种用法放成果（每个对话一个文件夹 / 直接放进去），单选框先摆对。
 // 只给能改工作目录的人：它会回「这个路径看着像不像代码仓库」，等于能拿来探服务器上任意目录
 app.get("/api/workspace/layout", (req, res) => {
-  if (!isPlatformOwner(req)) return res.status(403).json({ error: "这块是服务器级设置，归平台管理员管", platform_only: true });
+  if (!isPlatformOwner(req) || !admin.keepsSharedSpace(req.user)) return res.status(403).json({ error: "这块是服务器级设置，归平台管理员管", platform_only: true });
   const dir = String(req.query.dir || "").trim();
   if (!dir || !path.isAbsolute(dir)) return res.status(400).json({ error: "要一个绝对路径" });
   const { layout, locked, chosen, repo } = taskDirs.folderLayout(dir, layoutAnchors());
@@ -4167,8 +4183,9 @@ const LIB_DIR = dataPath("data", "library");
 /**
  * 资料库的根：一人一个。
  *
- * 老库 data/library 原地不动，仍旧是「这台机器的主人」那一份——平台管理员、以及压根没开
- * 账号体系的单机版。别人一人一个 data/library-users/<账号>/，头一次用的时候才建。
+ * 老库 data/library 原地不动，仍旧是「这台机器的主人」那一份：只有一个账号时就是他，不止一个时只认
+ * 老主人（admin.keepsSharedSpace，跟工作目录、项目同一个判据）。别人一人一个 data/library-users/<账号>/，
+ * 头一次用的时候才建。以前默认组织的管理员全算主人，几个管理员共用一份，互相看得见对方传的东西。
  *
  * 为什么非改不可：资料库以前是整台机器**共用的一份**，而且 admin.js 那张读表还特地把
  * /api/library 放行了（理由是拦了也白拦，agent 的 library_list 照样念得出来）。两件事叠在一起，
@@ -4178,7 +4195,7 @@ const LIB_DIR = dataPath("data", "library");
  * 不搬文件：管理员那一份还躺在原地，路径一个字符没变；新号拿到的是一个空目录。
  */
 function libraryRootOf(user) {
-  if (!user || ownsGlobalWorkspace(user)) return LIB_DIR;
+  if (!user || admin.keepsSharedSpace(user)) return LIB_DIR;
   return dataPath("data", "library-users", prefs.keyOf(user));
 }
 function readNotes() {
@@ -4407,11 +4424,13 @@ function sessionOutputRow(id, s) {
   // 同一个文件被改过好几轮就只认头一轮——用户点它是想看「这东西怎么来的」，
   // 那句话在第一次写出它的那一段里，后面几轮是修修补补。
   let ti = -1;
+  const fev = []; // 只留 files 事件：不在自己根里的那几个，sessionGrant 照这条会话自己的格子去找
   for (const turn of s.transcript) {
     if (turn.type === "user") { ti++; continue; }
     if (turn.type !== "assistant" || !Array.isArray(turn.events)) continue;
     for (const ev of turn.events) {
       if (ev.type !== "files") continue;
+      fev.push({ type: "files", root: ev.root, changed: ev.changed });
       for (const n of ev.changed || []) {
         if (typeof n !== "string" || seen.has(n)) continue;
         seen.add(n);
@@ -4432,7 +4451,18 @@ function sessionOutputRow(id, s) {
     at: Date.parse(s.updated_at || "") || firstAt,
     names,
     turns,
+    spot: { root: s.root || "", dir: s.dir || "", dirs: s.dirs || {}, transcript: [{ events: fev }] },
   };
+}
+/**
+ * 任务清单里这条任务的一个文件，在请求人自己的根里找不到：不止一个账号时，可能是分到个人目录之前
+ * 在原来那份共享根里写的。按这条任务自己的格子找回来（sessionGrant 同一套），前端打开时带上 sid。
+ */
+function taskSpotStat(req, row, n) {
+  if (!rootFence(req)) return null;
+  const g = sessionGrant(row.spot, n);
+  if (!g) return null;
+  try { const st = fs.statSync(g.path); return st.isFile() ? { size: st.size, mtime: st.mtime.toISOString() } : null; } catch { return null; }
 }
 function listTaskOutputs() {
   let files = [];
@@ -4549,7 +4579,7 @@ app.get("/api/library/outputs", (req, res) => {
   // 只看这次遍历已经拿到的文件名，不读 html 正文、不多一次 stat——285 个 html 的工作区读一遍正文就是几十 MB
   const deckDirs = new Set(walk.files.filter((f) => /(^|\/)deck\.json$/.test(f.name)).map((f) => path.posix.dirname(f.name)));
   const deckOf = (n) => (deckDirs.size && /\.html?$/i.test(n) && deckDirs.has(path.posix.dirname(n)) ? { deck: true } : {});
-  const statOf = statLookup(knownRoots().slice(0, 12)); // 根的条数不设限的话，一次请求能把 stat 乘成几万次
+  const statOf = statLookup(knownRoots(req).slice(0, 12)); // 根的条数不设限的话，一次请求能把 stat 乘成几万次
   const claimed = new Set();
   const tasks = [];
   for (const row of listTaskOutputs()) {
@@ -4566,10 +4596,12 @@ app.get("/api/library/outputs", (req, res) => {
       // 搬过家的按新地址报出去：名字给人看的那一截没变（前端只取最后一段），
       // 但地址是能打开的那个。顺带认领一下，免得同一个文件在「未归属」里再出现一遍
       if (st) { const at = st.at || n; claimed.add(at); files.push({ name: at, size: st.size, mtime: st.mtime, gone: false, turn: tn, fav: isFav(at), ...deckOf(at) }); continue; }
+      const old = st === false ? taskSpotStat(req, row, n) : null;
+      if (old) { files.push({ name: n, size: old.size, mtime: old.mtime, gone: false, turn: tn, fav: isFav(n) }); continue; }
       files.push({ name: n, size: 0, mtime: "", gone: st === false, turn: tn, fav: isFav(n) });
     }
     files.sort((a, b) => String(b.mtime).localeCompare(String(a.mtime)));
-    const { names, turns, user, ...rest } = row;
+    const { names, turns, user, spot, ...rest } = row;
     tasks.push({ ...rest, files, live: files.filter((f) => !f.gone).length });
     if (tasks.length >= 200) break;
   }
@@ -4718,12 +4750,14 @@ app.get("/api/library/search", (req, res) => {
 
   const wsMeta = new Map(wsAll.map((f) => [f.name, f])); // 上面已经遍历过一次，别再走一趟全树
   // 全量那趟撞了线（两万个、十二层）或者文件被收进了「以前的文件_」，不在 wsMeta 里≠没了：跟 outputs 一样再 stat 一眼
-  const statOf = statLookup(knownRoots().slice(0, 12));
-  const taskFile = (n) => {
+  const statOf = statLookup(knownRoots(req).slice(0, 12));
+  const taskFile = (row, n) => {
     const f = wsMeta.get(n);
     if (f) return { name: n, size: f.size, mtime: f.mtime, gone: false };
     const st = statOf(n);
-    return st ? { name: st.at || n, size: st.size, mtime: st.mtime, gone: false } : { name: n, size: 0, mtime: "", gone: st === false };
+    if (st) return { name: st.at || n, size: st.size, mtime: st.mtime, gone: false };
+    const old = st === false ? taskSpotStat(req, row, n) : null;
+    return old ? { name: n, size: old.size, mtime: old.mtime, gone: false } : { name: n, size: 0, mtime: "", gone: st === false };
   };
   const tasks = [];
   for (const row of listTaskOutputs()) {
@@ -4734,7 +4768,7 @@ app.get("/api/library/search", (req, res) => {
     tasks.push({
       id: row.id, title: row.title, at: row.at, project: row.project, lane: row.lane,
       by: titleHit ? "title" : "file",
-      files: files.slice(0, 20).map(taskFile),
+      files: files.slice(0, 20).map((n) => taskFile(row, n)),
     });
     if (tasks.length >= 50) break;
   }
@@ -6343,6 +6377,92 @@ app.post("/api/files/sweep", (req, res) => {
 });
 
 /**
+ * 资料库「本地产物」「工作区」两栏上那颗删除钮。
+ *
+ * 只删请求人自己那份工作目录里的（getWorkspaceDir 已经被 tenantScope 按账号绑好），
+ * 跟看文件同一套解析和越界检查（safePath），再多几道：
+ *   - 不走 rootedPath：凭 sid 翻到的那一格（管理员看成员的对话、成员分到个人目录之前的老对话）只给看，不给删；
+ *   - 只删列表上摆得出来的：路上有点开头的、应用数据目录、链接，一律不删；
+ *   - 资料库、应用数据、别人的工作目录，落在这个根里也不碰（老主人的根可能把它们包在里面）；
+ *   - 这个根里有任务正在跑就先不删：它手上可能正开着这个文件，删完它接着写，又冒出来半截。
+ * body.dry 只验不删，回文件夹里有几个文件——确认框里要说。审计记删了什么，事后有人问「我那个文件呢」查得出来。
+ */
+const DEL_COUNT_CAP = 20000;
+function deletableOf(req) {
+  const no = (msg, status) => Object.assign(new Error(msg), { status });
+  let segs;
+  try { segs = wsBrowse.relSegments((req.body || {}).path); } catch { throw no("只能删自己工作目录里的东西", 400); }
+  if (!segs.length) throw no("没说删哪个", 400);
+  const root = path.resolve(getWorkspaceDir());
+  let p;
+  try { p = safePath(segs.join("/")); } catch { throw no("只能删自己工作目录里的东西", 400); }
+  const appData = dataPath("data");
+  let cur = root, st = null;
+  for (const seg of segs) {
+    cur = path.join(cur, seg);
+    if (wsBrowse.skipEntry(seg, cur, appData)) throw no("这个不在列表里，删不了", 400);
+    try { st = fs.lstatSync(cur); } catch { throw no("已经不在了", 404); }
+    if (st.isSymbolicLink()) throw no("这是个链接，删不了", 400);
+    if (cur !== p && !st.isDirectory()) throw no("已经不在了", 404);
+  }
+  if (!st || !(st.isFile() || st.isDirectory())) throw no("这个删不了", 400);
+  const own = taskDirs.canonDir(root), t = taskDirs.canonDir(p);
+  if (t === own || !insideDir(t, own)) throw no("只能删自己工作目录里的东西", 400);
+  // 动不得的地方：t 把它包在里面不行；t 在它里面也不行——除非请求人自己的根本来就在它里面（默认工作区在数据根下）
+  const keep = [DATA_DIR, APP_DIR, appData, dataPath("workspace"), LIB_DIR, libBase(), libraryRootOf(req.user), ...othersRoots()];
+  for (const d of keep) {
+    const o = taskDirs.canonDir(d);
+    if (insideDir(o, t) || (insideDir(t, o) && !insideDir(own, o))) throw no("这个删不了", 400);
+  }
+  const runs = [...activeRuns.values()].map((r) => r && r.root).filter(Boolean);
+  try { for (const r of cliLive.list({ prune: false })) if (r.live && r.cwd) runs.push(r.cwd); } catch {}
+  for (const d of runs) {
+    const o = taskDirs.canonDir(d);
+    if (insideDir(t, o) || insideDir(o, t)) throw no("有任务正在跑，等它跑完再删", 409);
+  }
+  return { p, rel: segs.join("/"), dir: st.isDirectory() };
+}
+/** 文件夹里一共几个文件（不跟链接，.DS_Store 不算）。数过 cap 就停 */
+function countFiles(dir, cap) {
+  let n = 0;
+  const stack = [dir];
+  while (stack.length && n <= cap) {
+    const d = /** @type {string} */ (stack.pop());
+    let ents = [];
+    try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { continue; }
+    for (const e of ents) {
+      if (e.isDirectory()) stack.push(path.join(d, e.name));
+      else if (e.name !== ".DS_Store") n++;
+    }
+  }
+  return n;
+}
+app.post("/api/files/delete", async (req, res) => {
+  try {
+    const { p, rel, dir } = deletableOf(req);
+    const n = dir ? countFiles(p, DEL_COUNT_CAP) : 1;
+    const more = n > DEL_COUNT_CAP;
+    if ((req.body || {}).dry) return res.json({ ok: true, dry: true, dir, files: Math.min(n, DEL_COUNT_CAP), more });
+    const who = admin.multiUser() && req.user && req.user.username ? `${req.user.username}：` : "";
+    try {
+      if (dir) await fs.promises.rm(p, { recursive: true });
+      else await fs.promises.unlink(p);
+    } catch (e) {
+      // 删到一半卡住（权限、被占用）：删掉的那部分照样记下来，报错别把绝对路径甩给界面
+      wsBrowse.walkMemo.clear();
+      security.audit("删除本地产物", `${who}${rel}（没删完：${(e && e.code) || "出错"}）`, "放行");
+      return res.status(500).json({ error: "没删干净，有的文件删不动", stale: true });
+    }
+    wsBrowse.walkMemo.clear(); // 按任务、搜索那几条有几秒记忆，不清的话刷新回来它还在
+    security.audit("删除本地产物", `${who}${rel}${dir ? `（文件夹，${more ? DEL_COUNT_CAP + "+" : n} 个文件）` : ""}`, "放行");
+    res.json({ ok: true, removed: rel, dir, files: Math.min(n, DEL_COUNT_CAP), more });
+  } catch (e) {
+    // stale：东西已经不在了，界面那一行是旧的，前端据此重画
+    res.status((e && e.status) || 400).json({ error: (e && e.message) || "删不掉", stale: !!(e && e.status === 404) });
+  }
+});
+
+/**
  * 「在访达里显示」和「复制这个文件」两条路共用的定位：文件可能在工作区，也可能在资料库。
  * 资料库那一份走 libPath（它自己那三道校验 + safePathIn 复核），工作区走 rootedPath，
  * 两边都是越界就抛——别为了少写一行把资料库的路径塞进工作区的根里算。
@@ -6437,6 +6557,7 @@ function mediaMime(p) {
  *   ③ 兜底扫一遍已知的根：老会话盘上什么线索都没有，只能按「哪个根下真有这个文件」认，
  *      多个根都有就取改动时间最新的那个。这条是专门救用户手上那些已经存在的旧对话的。
  * 找不到就退回当前根的路径，让调用方照常报 404。
+ * 不止一个账号时三条都先过 rootFence：只在请求人自己的根里找（见下）。
  */
 // 用过的工作目录根。反查只在这份名单里找，不会因为链接上带了 root 参数就能读到名单外的任何地方。
 // 开机先把上次记下的读回来：这个 Set 是进程内的，空着启动再写回去，等于每次重启都把历史抹一遍
@@ -6448,12 +6569,16 @@ function rememberRoot(dir) {
   let abs;
   try { abs = path.resolve(dir); } catch { return; }
   if (seenRoots.has(abs)) return;
+  // 各账号自己的工作目录 spaces.homes() 里都有，不往这张表里记：人一多，老主人用过的根就被挤出去了
+  const c = taskDirs.canonDir(abs);
+  if (insideDir(c, taskDirs.canonDir(spaces.accountsDir())) || spaces.homes().some((h) => taskDirs.samePlace(h, abs))) return;
   seenRoots.add(abs);
   while (seenRoots.size > SEEN_ROOTS_MAX) seenRoots.delete(seenRoots.values().next().value); // Set 按插入序，先进先出
   config.workspace_roots = [...seenRoots];
   saveConfig();
 }
-function knownRoots() {
+/** 整台机器上见过的根，不管是谁在问（把会话里记的根认回原样、给附件找旧格子用） */
+function allRoots() {
   const set = new Set();
   const add = (d) => { if (d && typeof d === "string") { set.add(d); try { set.add(path.resolve(d)); } catch {} } };
   add(getWorkspaceDir());
@@ -6463,59 +6588,134 @@ function knownRoots() {
   for (const d of config.workspace_roots || []) add(d);
   for (const d of seenRoots) add(d);
   for (const s of sessions.values()) add(s && s.root);
+  for (const d of spaces.homes()) add(d);
   return [...set];
 }
-function rootFromKey(key) {
-  const k = String(key || "");
-  if (!/^[0-9a-f]{6,40}$/.test(k)) return "";
-  for (const d of knownRoots()) if (workspaceKeyOf(d) === k) return d;
-  return "";
+/** 不归老主人的根：各账号自己的工作目录、租户的根 */
+function othersRoots() {
+  const out = [spaces.accountsDir(), org.tenantsDir(), ...spaces.homes()];
+  try { for (const o of org.listOrgs()) if (o && o.id !== org.DEFAULT_ORG) out.push(org.rootDirOf(o, getDefaultWorkspaceDir())); } catch {}
+  return out.filter(Boolean).map((d) => taskDirs.canonDir(d));
+}
+/** c 是不是 dir 本身或在它下面（两边都已经 canonDir 过） */
+function insideDir(c, dir) {
+  return c === dir || c.startsWith(dir.endsWith(path.sep) ? dir : dir + path.sep);
+}
+/** 这条异步链绑的是不是老主人那份根（只有一个账号时永远是）。定时任务、IM 没有 req，看绑的根 */
+function sharedRootHere() {
+  if (!admin.multiUser()) return true;
+  const here = taskDirs.canonDir(getWorkspaceDir());
+  return !othersRoots().some((o) => insideDir(here, o));
 }
 /**
- * 租户的成果根。**只有多租户服务器上才有值**，个人版和默认组织一律空串。
+ * 不止一个账号时，这条请求能在哪些地方找文件。null = 不设限（只有一个账号，个人桌面版一字不改）。
  *
- * 干什么用：下面 rootedPath 找不到文件时会去 knownRoots() 里挨个试，而那张表是**整台机器**的
- * （config.projects、所有还开着的会话的 root、历史上见过的根）。多租户服务器上这就是一条缝——
- * B 公司的报告叫「季度报告.html」，A 公司的人照着这个相对路径请求一次，兜底扫描就把它翻出来了。
- * 有租户根的时候，候选根一律只认这个根底下的。
- *
- * 为什么不拿「当前工作目录 ≠ 默认工作目录」当判据：个人版把工作目录换到别处是常事，
- * 那样会把 rootedPath 存在的全部意义（旧会话里的相对路径还指得回老根）一并掐掉。
- * 按 req.user 的组织算，只有真的分了租户才收紧，个人版一字不差。
+ * 用自己工作目录的账号（admin.keepsSharedSpace 为假）：只认自己那份。以前租户只收紧到组织根，
+ * 同组织的人照着相对路径请求一次，兜底扫描就从同事的目录里把同名文件翻出来了。
+ * 留在共享根上的老主人：别人的工作目录、租户的根不算他的，兜底扫描不进去；他的根要是把别人的包在里面
+ * （工作目录设成了整个用户目录），照路径走进去也不行。
+ * 按 canonDir 比：软链接指进别人那份的，按指到的地方算。
+ * 管理员凭 sid 看成员那条对话，走 rootedPath 里 sessionGrant 那条，只放那条对话自己的格子。
  */
-function tenantRootOf(req) {
-  try {
-    const o = org.getOrg(org.orgIdOf(req && req.user));
-    if (!o || o.id === org.DEFAULT_ORG) return "";
-    return path.resolve(org.rootDirOf(o, getDefaultWorkspaceDir()));
-  } catch { return ""; }
+const fenceOfReq = new WeakMap();
+function rootFence(req) {
+  if (!admin.multiUser()) return null;
+  if (req && fenceOfReq.has(req)) return fenceOfReq.get(req);
+  let fence;
+  if (!admin.keepsSharedSpace(req && req.user)) {
+    const own = taskDirs.canonDir(getWorkspaceDir());
+    fence = (d) => !!d && insideDir(taskDirs.canonDir(d), own);
+  } else {
+    const off = othersRoots();
+    fence = (d) => !!d && !off.some((o) => insideDir(taskDirs.canonDir(d), o));
+  }
+  if (req) fenceOfReq.set(req, fence);
+  return fence;
 }
+/** 这条请求能找的根：allRoots 过一遍 rootFence */
+function knownRoots(req) {
+  const all = allRoots();
+  const fence = rootFence(req);
+  return fence ? all.filter(fence) : all;
+}
+function rootFromKey(key, req) {
+  const k = String(key || "");
+  if (!/^[0-9a-f]{6,40}$/.test(k)) return "";
+  for (const d of knownRoots(req)) if (workspaceKeyOf(d) === k) return d;
+  return "";
+}
+
+/**
+ * 凭 sid 开一条对话的文件，而这条对话的根不在请求人自己的地盘里——管理员看成员的对话、
+ * 成员翻自己分到个人目录之前的老对话：只放这条对话自己的格子（s.root + s.dir，换过根的还有 s.dirs 各格），
+ * 没分格子的老对话只放它自己 files 事件里列过的名字。整个根不放：同一个根里还有别人的东西。
+ * 返回 { path, dir }：dir 是那一格（预览令牌只签到这一格）；按名字放行的 dir 为空，不签令牌。
+ * @param {any} s 会话（或资料库那张表里同样形状的一行）
+ */
+function sessionGrant(s, rel) {
+  const norm = String(rel || "").replace(/\\/g, "/").split("/").filter((x) => x && x !== ".").join("/");
+  if (!s || !norm || norm.split("/").includes("..") || path.isAbsolute(String(rel || ""))) return null;
+  const def = dataPath("workspace");
+  const all = allRoots();
+  const realOf = (r) => all.find((k) => taskDirs.samePlace(k, r)) || r;
+  const within = (p, dir) => {
+    try { const rd = fs.realpathSync(dir); return fs.realpathSync(p).startsWith(rd + path.sep); } catch { return false; }
+  };
+  const cells = [];
+  if (s.dir) cells.push([s.root || def, s.dir]);
+  for (const [r, d] of Object.entries(s.dirs || {})) if (d) cells.push([r, d]);
+  for (const [r, d] of cells) {
+    const R = realOf(r), cell = path.resolve(R, String(d));
+    let p;
+    try { p = safePathIn(R, norm); } catch { continue; }
+    if (p.startsWith(cell + path.sep) && fs.existsSync(p) && within(p, cell)) return { path: p, dir: cell };
+  }
+  // 摊在根上的：这条对话在哪几个根下写过东西，files 事件上都带着那个根的指纹
+  const keys = new Set();
+  for (const t of s.transcript || []) for (const ev of (t && t.events) || []) if (ev && ev.type === "files" && ev.root) keys.add(ev.root);
+  const roots = [s.root || def, ...all.filter((d) => keys.has(workspaceKeyOf(d)))];
+  const tried = new Set();
+  for (const R of roots) {
+    const c = taskDirs.canonDir(R);
+    if (tried.has(c)) continue;
+    tried.add(c);
+    if (!taskDirs.flatOutputs(s, R, def, workspaceKeyOf(R), 500).includes(norm)) continue;
+    let p;
+    try { p = safePathIn(R, norm); } catch { continue; }
+    if (fs.existsSync(p) && within(p, R)) return { path: p, dir: "" };
+  }
+  return null;
+}
+const grantOf = new WeakMap(); // req -> sessionGrant 的结果：预览令牌、封面截图的范围按它来，不按整个根
 
 /** 只读接口用：把请求里的相对路径解析成真实绝对路径，必要时换到它原本所属的根 */
 function rootedPath(req, rel) {
+  grantOf.delete(req);
   const here = safePath(rel); // 先按当前根算，顺带做越界检查（越界直接抛，下面一律不碰）
+  const fence = rootFence(req);
+  if (fence && !fence(here)) throw new Error(`路径越界，只允许访问 workspace 内: ${rel}`);
   if (fs.existsSync(here)) return here;
-  const tenant = tenantRootOf(req);
-  const inTenant = (d) => {
-    if (!tenant) return true;
-    const p = path.resolve(String(d || ""));
-    return p === tenant || p.startsWith(tenant + path.sep);
-  };
   const tryRoot = (d) => {
-    if (!d || !inTenant(d)) return "";
-    try { const p = safePathIn(d, rel); return fs.existsSync(p) ? p : ""; } catch { return ""; }
+    if (!d || (fence && !fence(d))) return "";
+    try { const p = safePathIn(d, rel); return fs.existsSync(p) && (!fence || fence(p)) ? p : ""; } catch { return ""; }
   };
   const hint = (k) => String((req.query || {})[k] || (req.body || {})[k] || ""); // GET 走 query，reveal/open 那两个 POST 走 body
-  const hinted = tryRoot(rootFromKey(hint("root")));
+  const hinted = tryRoot(rootFromKey(hint("root"), req));
   if (hinted) return hinted;
   const sid = hint("sid");
   if (sid) {
-    const s = getSession(sid);
+    // 盘上没有的 id 不建空会话：getSession 会凭空塞一条进缓存
+    const s = sessions.get(sid) || (fs.existsSync(sessFile(sid)) ? getSession(sid) : null);
     // 归属照查：会话 id 出现在链接和截图里，不是秘密
-    if (s && sessionAllowed(req.user, s)) { const p = tryRoot(s.root); if (p) return p; }
+    if (s && sessionAllowed(req.user, s)) {
+      const p = tryRoot(s.root);
+      if (p) return p;
+      const g = fence ? sessionGrant(s, rel) : null;
+      if (g) { grantOf.set(req, g); return g.path; }
+    }
   }
   const hits = [];
-  for (const d of knownRoots()) { const p = tryRoot(d); if (p) hits.push(p); }
+  for (const d of knownRoots(req)) { const p = tryRoot(d); if (p) hits.push(p); }
   if (!hits.length) return here;
   if (hits.length === 1) return hits[0];
   return hits.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0];
@@ -6690,6 +6890,12 @@ function pvTokenFor(req, dir) {
   while (PV_TOKENS.size > PV_TOKEN_MAX) PV_TOKENS.delete(PV_TOKENS.keys().next().value);
   return tok;
 }
+/** 令牌签在 dir 上，p 却落进了 dir 里套着的别人的根（老主人把工作目录设成了整个用户目录） */
+function pvNestedBlocked(dir, p) {
+  if (!admin.multiUser()) return false;
+  const d = taskDirs.canonDir(dir), c = taskDirs.canonDir(p);
+  return othersRoots().some((o) => o !== d && insideDir(o, d) && insideDir(c, o));
+}
 function pvTokenCheck(req, tok) {
   const r = PV_TOKENS.get(tok);
   if (!r) return null;
@@ -6713,8 +6919,13 @@ function isDocNavigation(req) {
   // 局域网 http 上浏览器不发 Sec-Fetch-*：认预览框明着带的 fit=1，再认导航才会带的 Accept: text/html
   return String((req.query && req.query.fit) || "") === "1" || /\btext\/html\b/i.test(String(req.get("accept") || ""));
 }
-/** 文件 p 是按相对路径 rel 在哪个根下找到的。对不上（rel 里绕了 ..）就给空，调用方照原样发 */
-function rootOfResolved(p, rel) {
+/**
+ * 文件 p 是按相对路径 rel 在哪个根下找到的。对不上（rel 里绕了 ..）就给空，调用方照原样发。
+ * 带上 req：这条是凭 sid 放行的别人那格（grantOf），只给那一格；按名字放行的给空，不签整个根
+ */
+function rootOfResolved(p, rel, req) {
+  const g = req ? grantOf.get(req) : null;
+  if (g && g.path === p) return g.dir;
   const segs = String(rel || "").replace(/\\/g, "/").split("/").filter((s) => s && s !== ".");
   if (!segs.length || segs.includes("..")) return "";
   let d = p;
@@ -6762,7 +6973,7 @@ app.get("/api/files/view/*", async (req, res) => {
     if (sandboxPreviewDoc(res, type)) {
       // 浏览器来打开它：转到带令牌的地址，页面里的相对资源才取得到（理由见 PV_TOKENS）
       if (isDocNavigation(req)) {
-        const dir = rootOfResolved(p, relOf(req));
+        const dir = rootOfResolved(p, relOf(req), req);
         const tok = pvTokenFor(req, dir);
         if (tok) {
           const rel = path.relative(dir, p).split(path.sep).map(encodeURIComponent).join("/");
@@ -6800,6 +7011,7 @@ app.get("/pv/:tok/*", async (req, res) => {
     const r = pvTokenCheck(req, String(req.params.tok || ""));
     if (!r) return res.status(404).type("text/plain; charset=utf-8").send("预览链接已失效，回应用里重新打开这个文件");
     const p = safePathIn(r.dir, relOf(req));
+    if (pvNestedBlocked(r.dir, p)) return res.status(404).type("text/plain; charset=utf-8").send("文件不存在");
     const st = fs.existsSync(p) ? fs.statSync(p) : null;
     if (!st || !st.isFile()) return res.status(404).type("text/plain; charset=utf-8").send("文件不存在");
     res.set("Cache-Control", "private, no-cache");
@@ -7331,7 +7543,7 @@ app.post("/api/chat", async (req, res) => {
   if (user && !sess.user) sess.user = user.username;
   // 任务属于哪个项目，以前只记在浏览器里。第一轮就在服务端定死，缓存清了也还分得清组。
   // 只有拥有全局工作目录的人才有「项目」这个概念，租户端记了反而是假信息。
-  if (!sess.project && ownsGlobalWorkspace(user)) sess.project = config.active_project || "";
+  if (!sess.project && ownsGlobalWorkspace(user) && admin.keepsSharedSpace(user)) sess.project = config.active_project || "";
   // 这一轮走哪条工作线。前端每次都把当前标签带上来，所以用户把一条对话从一个标签拖到另一个
   // 标签底下是允许的（共用同一份文件和历史，本来就是一回事）；没带就按会话上记过的、再按配置回落。
   sess.lane = lanes.normalize(lane) || lanes.laneOf(sess);

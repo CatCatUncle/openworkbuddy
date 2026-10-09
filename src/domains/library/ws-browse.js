@@ -52,6 +52,8 @@ const STAT_CAP = 20000;
  * 这一项要不要藏起来。点开头的、SKIP_NAMES 里的、以及应用自己的运行数据目录——
  * 桌面版的数据目录默认就落在工作区里，那里面有 im-log、会话记录，
  * 当成「成果」列出来等于把别人发来的消息原文摆上资料库。
+ * 跟它并排的 accounts/ 是各账号自己的工作目录（spaces.js）：老主人的工作目录把数据根包在里面时，
+ * 一列文件就是别人的全部成果，一样藏。
  * @param {string} name 这一项自己的名字
  * @param {string} fullPath 这一项的绝对路径（path.join 拼出来的，已规整）
  * @param {string} [appDataDir] 应用数据目录（dataPath("data")），带不带结尾斜杠都行
@@ -63,7 +65,8 @@ function skipEntry(name, fullPath, appDataDir) {
   if ((name === "package.json" || depsGuard.LOCKS.has(name)) && depsGuard.hiddenByFence(name, fullPath)) return true;
   if (!appDataDir) return false;
   const a = appDataDir.endsWith(path.sep) ? appDataDir : appDataDir + path.sep;
-  return fullPath + path.sep === a;
+  if (fullPath + path.sep === a) return true;
+  return name === "accounts" && fullPath === path.join(path.dirname(a.slice(0, -1)), "accounts");
 }
 
 /**

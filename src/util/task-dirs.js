@@ -48,15 +48,18 @@ function samePlace(a, b) {
 }
 
 /**
- * 是不是应用自己建的根：默认工作空间、projects/ 下一层、tenants/ 下一层。这几个固定按对话分，不给改。
+ * 是不是应用自己建的根：默认工作空间、projects/ 下一层、tenants/ 下一层、分给各账号的工作目录。这几个固定按对话分，不给改。
  * @param {string} dir
- * @param {{ workspace: string, projects?: string, tenants?: string }} anchors
- *   workspace = 默认工作空间；projects / tenants = 应用替人建目录的那两个父目录（其下一层才算）
+ * @param {{ workspace: string, projects?: string, tenants?: string, homes?: string[] }} anchors
+ *   workspace = 默认工作空间；projects / tenants = 应用替人建目录的那两个父目录（其下一层才算）；
+ *   homes = 不止一个账号时各账号自己的工作目录（spaces.homes()，就是它们本身）。开发时数据根在仓库里，
+ *   不认这一条的话个人目录会被往上找到的 .git 当成代码仓库，成果全摊在根上
  */
 function appRoot(dir, anchors) {
   if (!dir || !anchors || !anchors.workspace) return false;
   const d = canonDir(dir);
   if (d === canonDir(anchors.workspace)) return true;
+  if ((anchors.homes || []).some((h) => !!h && d === canonDir(h))) return true;
   const parent = path.dirname(d);
   return [anchors.projects, anchors.tenants].some((p) => !!p && parent === canonDir(p));
 }
@@ -101,7 +104,7 @@ function looksLikeRepo(dir, { home = os.homedir(), now = Date.now() } = {}) {
  * 先后：应用自己建的根一律分（locked）→ 用户明说过的（layouts，按规范形记）→ 命令行 -C / /cd 进来的（inPlace）就地 →
  * 看着像代码仓库的就地 → 其余（用户挑的文档、素材文件夹）分。
  * @param {string} dir
- * @param {{ workspace: string, projects?: string, tenants?: string, layouts?: Record<string, string>, inPlace?: boolean }} anchors
+ * @param {{ workspace: string, projects?: string, tenants?: string, homes?: string[], layouts?: Record<string, string>, inPlace?: boolean }} anchors
  * @returns {{ layout: "per_chat" | "flat", locked: boolean, chosen: boolean, repo: boolean }}
  */
 function folderLayout(dir, anchors) {
@@ -117,7 +120,7 @@ function folderLayout(dir, anchors) {
 /**
  * 这个根下要不要按对话分成果文件夹（口径见 folderLayout）
  * @param {string} dir 当前工作目录
- * @param {{ workspace: string, projects?: string, tenants?: string, layouts?: Record<string, string>, inPlace?: boolean }} anchors
+ * @param {{ workspace: string, projects?: string, tenants?: string, homes?: string[], layouts?: Record<string, string>, inPlace?: boolean }} anchors
  */
 function perChatRoot(dir, anchors) {
   return folderLayout(dir, anchors).layout === "per_chat";

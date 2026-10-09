@@ -771,7 +771,7 @@ function parentMain() {
     const out = [];
     const walk = (d) => {
       for (const ent of fs.readdirSync(d, { withFileTypes: true })) {
-        if (ent.name.startsWith(".") || ["node_modules", "test", "public", "data", "workspace", "dist", "build", "skills"].includes(ent.name)) continue;
+        if (ent.name.startsWith(".") || ["node_modules", "test", "public", "data", "workspace", "accounts", "dist", "build", "skills"].includes(ent.name)) continue;
         const p = path.join(d, ent.name);
         if (ent.isDirectory()) { if (ent.name === "src" || d !== ROOT) walk(p); continue; }
         if (!/\.js$/.test(ent.name)) continue;

@@ -3848,6 +3848,12 @@ function renderDataPane(pane, s) {
       });
   };
   pane.querySelector("#ws-open").onclick = () => openWorkspaceOnHost();
+  // 用的是自己那份工作目录：服务端不认换文件夹（admin.js sharedWorkspaceGuard），选择、放法、保存都收起来，只留路径和「打开」
+  if (s.workspace_personal) {
+    pane.querySelector("#ws-dir").readOnly = true;
+    ["#ws-pick", "#ws-layout", "#ws-save"].forEach((k) => { const el = pane.querySelector(k); if (el) el.style.display = "none"; });
+    pane.querySelector(".card-item .d").textContent = "这是你自己的工作目录，别的账号看不到";
+  }
   const cacheDesc = pane.querySelector("#cache-desc");
   const loadCache = () => fetch("/api/cache").then(r => r.json()).then(c => {
     const g = c.gen || {};

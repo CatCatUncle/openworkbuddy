@@ -95,6 +95,7 @@ const STUB = `
 (() => {
   window.__posts = [];
   window.__dels = [];
+  window.__outDels = [];
   settingsCache = { platform_owner: true, workspace_dir: "/tmp/ws" };
   const J = (d, okk) => Promise.resolve({ ok: okk !== false, status: okk === false ? 400 : 200, json: async () => d });
   const real = window.fetch;
@@ -134,7 +135,13 @@ const STUB = `
       folders: [], notes: [],
     });
     if (s.includes("/api/settings")) return J(settingsCache);
-    // 本地产物那一段的料。它是反向对照：这几行上面**不许**有垃圾桶
+    // 删本地产物：先 dry 验一遍再真删，两趟都记下来。排在 /api/files 前面，不然被下面那条吞掉
+    if (s.includes("/api/files/delete") && m === "POST") {
+      const b = JSON.parse(o.body);
+      window.__outDels.push(b);
+      return J({ ok: true, dir: false, files: 1, more: false });
+    }
+    // 本地产物那一段的料
     if (s.includes("/api/files")) return J(window.__bare ? [] : [{ name: "周报.md", size: 900, mtime: Date.now() }]);
     return real.apply(this, arguments);
   };
@@ -148,6 +155,7 @@ const OPENPAGE = (dir, bare) => `
   window.__bare = ${bare === false ? "false" : "true"};
   window.__posts = [];
   window.__dels = [];
+  window.__outDels = [];
   chatCol.innerHTML = '<div class="assist-page" id="assist-page"></div>';
   libState.view = "dir"; libState.q = ""; libState.dir = ${JSON.stringify(dir || "")}; libState.pick = null;
   await renderLibPage();
@@ -496,13 +504,14 @@ app.whenReady().then(async () => {
     const p = await run(OPENPAGE("", false) + `.then(() => ({
       文件夹上的垃圾桶: document.querySelectorAll(".lib-dir [data-del-dir]").length,
       资料上的垃圾桶: document.querySelectorAll('.lib-it[data-src="lib"] [data-del-file]').length,
-      本地产物上的垃圾桶: document.querySelectorAll('.lib-it[data-src="ws"] [data-del-file]').length,
+      本地产物上的垃圾桶: document.querySelectorAll('.lib-it[data-src="ws"] [data-del-out]').length,
+      本地产物走资料库那条: document.querySelectorAll('.lib-it[data-src="ws"] [data-del-file]').length,
       产物行数: document.querySelectorAll('.lib-it[data-src="ws"]').length,
     }))`);
     ok(p.文件夹上的垃圾桶 === 2, "★两个文件夹，两颗垃圾桶——「开关存在但找不到＝没有」，所以它长在行上★", p);
     ok(p.资料上的垃圾桶 === 1, "★资料那一行也删得掉，不用先点开右边的预览栏才找得到「删除」★", p);
-    ok(p.产物行数 > 0 && p.本地产物上的垃圾桶 === 0,
-       "★反向对照：本地产物不给垃圾桶★ 那是任务在工作目录里写出来的，从这一页删等于伸手改任务的现场", p);
+    ok(p.产物行数 > 0 && p.本地产物上的垃圾桶 === p.产物行数 && p.本地产物走资料库那条 === 0,
+       "★本地产物每行也有垃圾桶★ 用户原话「本地产物下可以进行移除」；走的是删工作目录那条，不是删资料库那条", p);
 
     // 点「删」不能变成「进这个文件夹」：垃圾桶就长在 .lib-dir 里面，
     // 不 stopPropagation 的话这一下会先被外层那个「进去」的处理函数接走
@@ -598,6 +607,31 @@ app.whenReady().then(async () => {
     ok(r5.发了.length === 1 && /\/api\/library\/file\//.test(r5.发了[0]) && /报价单/.test(decodeURIComponent(r5.发了[0])),
        "★按「删掉」→ 真发了 DELETE /api/library/file/…★", r5.发了);
     ok(/删/.test(r5.toast), "删完有回话，不是静悄悄地少了一行", r5.toast);
+
+    // 本地产物那一行的垃圾桶：先让服务端验一遍（dry），再弹框；按「算了」不真删，按「删掉」才真删
+    const r6 = await run(OPENPAGE("", false) + `.then(async () => {
+      const b6 = document.querySelector('.lib-it[data-src="ws"] [data-del-out]');
+      if (!b6) return { 标题: "(没找到垃圾桶)", 说明: "", 取消后: window.__outDels.slice(), 确认后: [] };
+      b6.click();
+      await new Promise((r) => setTimeout(r, 150));
+      const m = document.querySelector(".ask-mask");
+      if (!m) return { 标题: "(框根本没开)", 说明: "", 取消后: window.__outDels.slice(), 确认后: [] };
+      const 标题 = m.querySelector(".ask-t").textContent;
+      const 说明 = (m.querySelector(".ask-h") || {}).textContent || "";
+      m.querySelector(".ask-no").click();
+      await new Promise((r) => setTimeout(r, 150));
+      const 取消后 = window.__outDels.slice();
+      b6.click();
+      await new Promise((r) => setTimeout(r, 150));
+      const ok6 = document.querySelector(".ask-mask .ask-ok");
+      if (ok6) ok6.click();
+      await new Promise((r) => setTimeout(r, 200));
+      return { 标题, 说明, 取消后, 确认后: window.__outDels.slice() };
+    })`);
+    ok(/周报\.md/.test(r6.标题) && /找不回/.test(r6.说明), "★删本地产物也先问一句★ 标题带文件名，说明写明删了找不回来", r6);
+    ok(r6.取消后.length === 1 && r6.取消后[0].dry === true, "★按「算了」→ 只验过一遍，没真删★", r6.取消后);
+    ok(r6.确认后.length === 3 && r6.确认后[2].path === "周报.md" && !r6.确认后[2].dry,
+       "★按「删掉」→ 真发了删除，删的就是那一行★", r6.确认后);
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -662,13 +696,13 @@ app.whenReady().then(async () => {
         搜到几行: document.querySelectorAll(".lib-it").length,
         资料上: see(document.querySelector('.lib-it[data-src="lib"] [data-del-file]')),
         产物行数: document.querySelectorAll('.lib-it[data-src="ws"]').length,
-        产物上的垃圾桶: document.querySelectorAll('.lib-it[data-src="ws"] [data-del-file]').length,
+        产物上的垃圾桶: document.querySelectorAll('.lib-it[data-src="ws"] [data-del-file], .lib-it[data-src="ws"] [data-del-out]').length,
       };
     })`);
     ok(q.搜到几行 >= 2, "搜索这一路确实画出东西来了（不然下面两条都是空转的假绿）", q);
     ok(q.资料上 && q.资料上.看得见, "★搜出来的那份资料也删得掉★ 搜索一接管列表，人就回不到文件夹那一路了", q);
     ok(q.产物行数 > 0 && q.产物上的垃圾桶 === 0,
-       "★反向对照：搜索结果里的本地产物照样不给垃圾桶★ 补这颗钮不是见行就加", q);
+       "★反向对照：搜索结果里的本地产物不给垃圾桶★ 那几行可能指着老对话留在别处的文件，补这颗钮不是见行就加", q);
 
     // 站在一个文件夹**里面**：这是用户原话里的那一步——「新建完没有删除的地方」。
     // 建它的那颗钮在这条操作条上，删它的那颗也该在，而且要带字，不是一个要猜的图标

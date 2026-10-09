@@ -67,7 +67,7 @@ section("1 护住的就是 paths.js 算出来的那一处");
   ok(got && got.packaged === T.roots.installed, "装机态那份 ~/OpenWorkBuddy 也在里面", { paths: got && got.packaged, guard: T.roots.installed });
 
   // 生产代码里每一处 dataPath("a", "b", …) 的字面前缀都得落在护栏里（新落点忘了登记会在这里红）
-  const SKIP = new Set(["node_modules", "test", "public", "skills", "plugins", "data", "workspace", "dist", "docs", "projects", "logs", "backups", "build", "types"]);
+  const SKIP = new Set(["node_modules", "test", "public", "skills", "plugins", "data", "workspace", "accounts", "dist", "docs", "projects", "logs", "backups", "build", "types"]);
   const files = [];
   (function walk(dir, depth) {
     let ents = [];

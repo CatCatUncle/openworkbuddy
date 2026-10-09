@@ -17,6 +17,7 @@ config.json.bak
 config.json.corrupt*
 data/
 workspace/
+accounts/
 backups/
 plugins/
 schedules.json

@@ -69,7 +69,7 @@ function libItemResolve(req, src, raw) {
   let root, abs;
   try {
     if (s === "lib") { root = libraryRootOf(req.user); abs = safePathIn(root, rel); }
-    else { abs = rootedPath(req, rel); root = rootOfResolved(abs, rel) || getWorkspaceDir(); }
+    else { abs = rootedPath(req, rel); root = rootOfResolved(abs, rel, req) || getWorkspaceDir(); } // 凭 sid 放行的别人那格：root 只到那一格
   } catch { throw libItemSkip("denied", "路径越界"); }
   let realRoot, real;
   try { realRoot = fs.realpathSync(root); } catch { throw libItemSkip("missing", "文件不存在"); }

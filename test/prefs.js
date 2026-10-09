@@ -2025,10 +2025,11 @@ function runConfigGates() {
   // projectContextOf：空的 AGENTS.md 不许把旁边的 CLAUDE.md 挡在门外
   const PDIR = path.join(TMP, "memo-proj");
   fs.mkdirSync(PDIR, { recursive: true });
+  // sharedRootHere 恒真 = 只有一个账号（项目只有老主人有，这一节量的是规范文件怎么带）
   const mkCtx = (warnOnce) => new Function(
-    "experts", "skillsMgr", "config", "projectMemo",
+    "experts", "skillsMgr", "config", "projectMemo", "sharedRootHere",
     slice("server.js", "projectContextOf") + "\nreturn projectContextOf;"
-  )([], { loadSkills: () => [] }, {}, { memoContext: (dir) => memoMod.memoContext(dir, { warn: warnOnce }) });
+  )([], { loadSkills: () => [] }, {}, { memoContext: (dir) => memoMod.memoContext(dir, { warn: warnOnce }) }, () => true);
 
   fs.writeFileSync(path.join(PDIR, "AGENTS.md"), "   \n\n  ");
   fs.writeFileSync(path.join(PDIR, "CLAUDE.md"), "这里写满了项目规矩：提交前先跑测试。");

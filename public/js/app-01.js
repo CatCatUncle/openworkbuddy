@@ -457,7 +457,12 @@ function fpath(name) { return String(name == null ? "" : name).split("/").map(en
  */
 function withRoot(url, root) {
   const r = String(root || "");
-  return r ? url + (url.includes("?") ? "&" : "?") + "root=" + encodeURIComponent(r) : url;
+  const u = r ? url + (url.includes("?") ? "&" : "?") + "root=" + encodeURIComponent(r) : url;
+  // 再带上眼前这条对话的 id。不止一个账号时服务端只在请求人自己那份工作目录里找，
+  // 别处的（管理员看成员的对话、分到个人目录之前的老对话）凭对话 id 才放行，而且只放这条对话写出来的。
+  // typeof 别省：测试只把这一段切出去跑，那边没有 sessionId 这个全局
+  const sid = typeof sessionId === "string" ? sessionId : "";
+  return sid && !/[?&]sid=/.test(u) ? u + (u.includes("?") ? "&" : "?") + "sid=" + encodeURIComponent(sid) : u;
 }
 /** 顺着 DOM 往上问「这块是哪个根下的」。产出卡和清单行都挂在 .out-block 里，根记在它的 data-root 上 */
 function rootOf(el) {
@@ -3126,10 +3131,12 @@ function isResultFile(name) {
 // 时间段记的是**收起过的**那些，不是展开的：默认全展开，所以空集合就是正确的初始状态
 const closedBuckets = new Set();
 /** 在访达/资源管理器里打开文件所在的文件夹并选中它。按钮挂在文件行/卡片上，别冒泡触发预览。
- *  src 传 "lib" 时找的是资料库那一份（它不在工作区根底下，按工作区算会直接 404） */
-function revealFile(name, e, root, src) {
+ *  src 传 "lib" 时找的是资料库那一份（它不在工作区根底下，按工作区算会直接 404）。
+ *  sid 不传就用眼前这条对话的（理由见 withRoot）；资料库页按任务那一栏传那条任务的 */
+function revealFile(name, e, root, src, sid) {
   if (e) { e.stopPropagation(); e.preventDefault(); }
-  fetch("/api/files/reveal", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, root: root || "", src: src || "" }) })
+  const s = sid !== undefined ? String(sid || "") : (typeof sessionId === "string" ? sessionId : "");
+  fetch("/api/files/reveal", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, root: root || "", src: src || "", sid: s }) })
     .then(r => r.json().catch(() => ({})).then(j => { if (!r.ok || (j && j.error)) toast((j.error || "打不开所在位置"), "circle-x"); }))
     .catch(() => toast("打不开所在位置", "circle-x"));
 }
@@ -3238,7 +3245,8 @@ async function copyFileText(url, name, root) {
 function copyHostFile(name, e, o) {
   if (e) { e.stopPropagation(); e.preventDefault(); }
   const opt = o || {};
-  return fetch("/api/files/copy", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, root: opt.root || "", src: opt.src || "" }) })
+  const sid = opt.sid !== undefined ? String(opt.sid || "") : (typeof sessionId === "string" ? sessionId : ""); // 同 revealFile
+  return fetch("/api/files/copy", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, root: opt.root || "", src: opt.src || "", sid }) })
     .then(r => r.json().catch(() => ({})).then(j => {
       if (!r.ok || !j || j.error) return toast(((j && j.error) || "复制不了这个文件"), "circle-x");
       if (j.kind === "path") return toast("这台机器放不下文件本身，已复制它的完整路径", "circle-check");
