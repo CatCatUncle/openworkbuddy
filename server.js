@@ -3119,7 +3119,8 @@ app.get("/api/engines", async (req, res) => {
     // Windows：进程里的 PATH 定格在启动那一刻，刚 winget 装的东西不在里面。点「重新检测」时现读一次注册表，
     // 跟启动时那份合并（体检、run_shell 都用这一份）。读不成它自己会留日志，照旧按手里那份 PATH 检测；别的系统直接返回
     if (req.query.force === "1") await require("./src/platform/which").refreshWinPath();
-    const found = await engines.detectAll(myAgent.engine_options || {}, { force: req.query.force === "1" });
+    // 点这一下顺带联网问一下本机 CLI 有没有新版（平时开设置页只看缓存，不联网）
+    const found = await engines.detectAll(myAgent.engine_options || {}, { force: req.query.force === "1", latest: req.query.force === "1" });
     // 闸的状态一并给前端：多人共用时开没开、放行哪些型号、命令能不能联网。只读属主那份，成员改不了
     const withGate = found.map((e) => ({ ...e, gate: engines.gateView(e.id, config) }));
     res.json({ current: engines.currentId(config, { user: req.user && req.user.username }), builtin: engines.BUILTIN, engines: withGate, multiUser: security.isMultiUser(), shellOff: orgShellOff() });

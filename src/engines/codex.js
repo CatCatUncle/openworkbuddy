@@ -29,7 +29,7 @@
 
 const { runJsonl, probeVersion, enginePath } = require("./jsonl");
 const thinking = require("../core/model/thinking");
-const { resolveNewest } = require("../platform/which");
+const { resolveNewest, cliVersion, cmpCliVersion } = require("../platform/which");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -114,11 +114,16 @@ function configuredModels(env = process.env) {
  * 写的可能是 API 账号才有、订阅账号没有的名字。原样 -m 传过去，每个任务都 400，
  * 而且错在用户的全局配置里，本项目的界面上根本看不出来。
  * 拿不到目录（旧版 CLI 没这个子命令、没登录）就返回 null——此时不做任何判断，照旧行事。
+ * 目录按 codex 的版本下发（新型号只给新版），所以缓存认的是「哪一个可执行文件」：
+ * 原地升级完路径没变、文件换了，就得重新问，不能拿旧版那份目录再顶十分钟
  */
 const ACCOUNT_MODELS_TTL = 10 * 60 * 1000;
 const accountModelsCache = new Map();
+function binIdentity(bin) {
+  try { const s = fs.statSync(bin); return `${s.ino}:${s.size}:${s.mtimeMs}`; } catch { return ""; }
+}
 function accountModels(bin, env) {
-  const key = bin + "\0" + (env.CODEX_HOME || "");
+  const key = [bin, binIdentity(bin), env.CODEX_HOME || ""].join("\0");
   const hit = accountModelsCache.get(key);
   if (hit && Date.now() - hit.at < ACCOUNT_MODELS_TTL) return Promise.resolve(hit.list);
   return new Promise((resolve) => {
@@ -140,14 +145,115 @@ function accountModels(bin, env) {
   });
 }
 
+/**
+ * 这份 codex 是怎么装的、怎么升级。认得出的只有 npm / bun / Homebrew cask 这几种：
+ * Codex 应用里带的那份跟着应用升级，自己编译的、别的源装的不知道去哪查新版——这些不提示，也不去查
+ */
+function installOf(bin) {
+  const b = String(bin || "codex");
+  let real = b;
+  try { real = fs.realpathSync(b); } catch {}
+  // Windows 的 npm 垫片是 codex.cmd，包装在同目录的 node_modules 里，realpath 落不到包里去
+  let npmShim = false;
+  try { npmShim = fs.statSync(path.join(path.dirname(b), "node_modules", "@openai", "codex")).isDirectory(); } catch {}
+  const inPkg = /[\\/]node_modules[\\/]@openai[\\/]codex[\\/]/.test(real);
+  if (inPkg && /[\\/]\.bun[\\/]/.test(real)) return { how: "bun", cmd: "bun install -g @openai/codex@latest" };
+  if (inPkg || npmShim) return { how: "npm", cmd: "npm i -g @openai/codex@latest" };
+  if (/[\\/]Caskroom[\\/]codex[\\/]/.test(real)) return { how: "cask", cmd: "brew upgrade --cask codex" };
+  return null;
+}
+
+// 各装法去哪问最新版。bun 装的也是 npm 上那个包
+const NPM_LATEST = { url: "https://registry.npmjs.org/@openai/codex/latest", pick: (d) => d.version };
+const LATEST_FROM = {
+  npm: NPM_LATEST, bun: NPM_LATEST,
+  cask: { url: "https://formulae.brew.sh/api/cask/codex.json", pick: (d) => d.version },
+};
+const LATEST_OK_TTL = 6 * 3600 * 1000;  // 发版没那么勤，六小时问一次够了
+const LATEST_FAIL_TTL = 10 * 60 * 1000; // 网不通也别每次报错都白等一遍超时
+const latestCache = new Map();          // how → { at, ttl, version }
+// 测试换成假的（_internals.setFetchLatest），测试一律不联网
+let fetchLatest = (url) => fetch(url, { headers: { Accept: "application/json", "User-Agent": "OpenWorkBuddy" }, signal: AbortSignal.timeout(4000) });
+
+/**
+ * 这种装法眼下最新的版本号；查不到给 ""——不当成「已是最新」，也就不提示。
+ * network=false 只看缓存：平时开设置页不联网，点「重新检测本机」和型号报错时才去问
+ */
+async function latestVersion(how, { network = true } = {}) {
+  const from = LATEST_FROM[how];
+  if (!from) return "";
+  const hit = latestCache.get(how);
+  if (hit && Date.now() - hit.at < hit.ttl) return hit.version;
+  if (!network) return "";
+  let version = "";
+  try {
+    const r = await fetchLatest(from.url);
+    if (r && r.ok) version = String(from.pick(await r.json()) || "").trim();
+  } catch {}
+  if (!cliVersion(version)) version = "";
+  latestCache.set(how, { at: Date.now(), ttl: version ? LATEST_OK_TTL : LATEST_FAIL_TTL, version });
+  return version;
+}
+
+/** 有比这份新的版本、而且知道怎么升时给 { latest, cmd }；没有、查不到、不知道怎么升都给 null */
+async function newerRelease(bin, version, { network = true } = {}) {
+  const inst = installOf(bin);
+  if (!inst || !cliVersion(version)) return null;
+  const latest = await latestVersion(inst.how, { network });
+  return latest && cmpCliVersion(latest, version) > 0 ? { latest, cmd: inst.cmd } : null;
+}
+
+/** 「重新检测本机」：刚登录、刚换账号的，型号目录得重新问；上回没查到最新版的那条也别再等十分钟 */
+function forget() {
+  accountModelsCache.clear();
+  for (const [how, v] of latestCache) if (!v.version) latestCache.delete(how);
+}
+
 const MODEL_UNSUPPORTED = /model is not supported|model_not_found|does not exist or you do not have access|unsupported model/i;
 
-/** 模型名不被账号认可时的那句人话：点名是哪个、账号能用哪些、去哪改 */
-function explainModel(model, available) {
-  const which = model ? `「${model}」` : "当前设置的模型";
-  const can = available && available.length ? `这个账号能用的是：${available.join(" / ")}。` : "";
-  return `本机 Codex 不认${which}这个模型（ChatGPT 订阅账号只能用订阅里有的型号）。${can}` +
-    `去 ${gate.WHERE} 的「模型」栏改成其中一个。`;
+/** 「codex-cli 0.162.0」→「0.162.0」，读不出给 "" */
+function versionText(v) {
+  const m = String(v || "").match(/\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/);
+  return m ? m[0] : "";
+}
+
+/**
+ * 名字只差写法的那个：大小写、空格下划线当连字符、版本号里多写的「.0」（gpt-6.0-luna 就是 gpt-6-luna）。
+ * 只在恰好对上一个时给，对上几个就不猜
+ */
+function closeName(model, list) {
+  const norm = (s) => String(s).trim().toLowerCase().replace(/[\s_]+/g, "-").replace(/\.0(?=-|$)/g, "").replace(/-/g, "");
+  const want = norm(model);
+  const hits = list.filter((m) => m !== model && norm(m) === want);
+  return hits.length === 1 ? hits[0] : "";
+}
+
+/** codex 报「不认」的那一行原话，太长截掉 */
+function saidLine(s) {
+  const line = (String(s || "").split(/\r?\n/).find((l) => MODEL_UNSUPPORTED.test(l)) || "").trim();
+  return line.length > 200 ? line.slice(0, 200) + "…" : line;
+}
+
+/**
+ * 型号不被认时的那句话：点名是哪个、这份 codex 几版、现在能用哪些、去哪改；有新版就把升级命令给出来。
+ * 只说查得到的事实。为什么不认（版本旧、账号没这个型号都可能）由 codex 的原话说，不替它下结论
+ * @param {{version?: string, latest?: string, cmd?: string}} [facts] 这份 codex 的版本、更新的版本和升级命令
+ * @param {string} [said] codex 报错的那行原话
+ */
+function explainModel(model, available, facts, said) {
+  const f = facts || {};
+  const which = model ? `「${model}」` : "当前设置的型号";
+  const list = available && available.length ? available : null;
+  const near = model && list ? closeName(model, list) : "";
+  let out = `本机 Codex${f.version ? " " + f.version : ""} 不认${which}${near ? `，是不是「${near}」？` : "。"}`;
+  if (list) out += `现在能用的是：${list.join(" / ")}。`;
+  if (f.latest && f.cmd) {
+    out += `最新版是 ${f.latest}，升级（${f.cmd}）后在 ${gate.WHERE} 点「重新检测本机」再挑；` +
+      `或者直接在那儿${list ? "改成上面其中一个" : "换一个型号"}。`;
+  } else {
+    out += `去 ${gate.WHERE} 的「模型」栏${list ? "改成其中一个" : "换一个"}。`;
+  }
+  return said ? `${out}\n它的原话：${said}` : out;
 }
 
 function openWorkBuddyCodexHome(env = process.env) {
@@ -412,8 +518,8 @@ function noLongerSupported(s) {
  * 只有 codex 明说没登录（或让人重跑 codex login）才说「没登录」：光一个 401，
  * 也可能是自配的网关 Key 不对、账号被停——原话带上，不替人下结论
  */
-function explainKnown(s, model, available) {
-  if (MODEL_UNSUPPORTED.test(s)) return explainModel(model, available);
+function explainKnown(s, model, available, facts) {
+  if (MODEL_UNSUPPORTED.test(s)) return explainModel(model, available, facts, saidLine(s));
   const gone = noLongerSupported(s);
   if (gone) return `本机 Codex 不再支持当前的一项设置，它的原话：\n${gone}`;
   if (/not logged in|not signed in|codex login/i.test(s))
@@ -423,9 +529,9 @@ function explainKnown(s, model, available) {
   return "";
 }
 
-function explain(stderr, code, model, available) {
+function explain(stderr, code, model, available, facts) {
   const s = String(stderr || "");
-  const known = explainKnown(s, model, available);
+  const known = explainKnown(s, model, available, facts);
   if (known) return known;
   if (/rate.?limit|429|quota/i.test(s))
     return "本机 Codex 撞到限流或额度上限了，等窗口重置后再跑。";
@@ -443,7 +549,13 @@ async function detect(opts) {
   const found = await resolveNewest("codex", explicit, versionOf, { fresh: true });
   if (!found.bin) return { id: ID, installed: false, path: explicit || "codex", version: "", how: "", error: found.why };
   const r = found.probe || (await versionOf(found.bin));
-  const fromAccount = r.installed ? await accountModels(found.bin, openWorkBuddyCodexHome(process.env).env) : null;
+  // 型号目录和有没有新版一起问。新版只在点「重新检测本机」那一下联网去问（opts.latest），平时只看缓存
+  const [fromAccount, newer] = r.installed
+    ? await Promise.all([
+      accountModels(found.bin, openWorkBuddyCodexHome(process.env).env),
+      newerRelease(found.bin, r.version, { network: !!(opts && opts.latest) }),
+    ])
+    : [null, null];
   const models = fromAccount || configuredModels(process.env);
   return {
     id: ID, installed: r.installed, path: found.bin, version: r.version, how: found.how,
@@ -453,6 +565,9 @@ async function detect(opts) {
     // 拿不到（旧版 CLI / 没登录）才退回用户 Codex 配置里出现过的 model 字段。
     models,
     modelSource: fromAccount ? "codex_account" : models.length ? "codex_config" : "manual",
+    // 有新版、而且知道怎么升（npm / bun / Homebrew 装的）才给：设置页对属主单列一行，附升级命令
+    latest: newer ? newer.latest : "",
+    upgrade: newer ? newer.cmd : "",
   };
 }
 
@@ -506,6 +621,12 @@ async function run({
   const found = await resolveNewest("codex", bin, versionOf);
   if (!found.bin) throw new Error(found.why + "。装一个（npm i -g @openai/codex），或在设置里填 codex 的绝对路径。");
   const exe = found.bin;
+  // 只有「型号不认」才去查这份是几版、有没有新版（要起一次 --version，还可能联网问一下），别的报错用不上
+  const modelFacts = async (s) => {
+    if (!MODEL_UNSUPPORTED.test(String(s || ""))) return null;
+    const v = (found.probe && found.probe.version) || (await versionOf(exe)).version || "";
+    return { version: versionText(v), ...(await newerRelease(exe, v)) };
+  };
   const isolated = openWorkBuddyCodexHome({ ...process.env, ...(env || {}) });
   let effectiveModel = pinned;
   const available = await accountModels(exe, isolated.env);
@@ -683,10 +804,10 @@ async function run({
 
   if (r.killed === "stopped") return { finalText, usage, stopped: "已手动停止", sessionId };
   if (r.killed === "deadline") return { finalText, usage, stopped: "已达最大运行时间", sessionId };
-  if (failure) throw new Error(explainKnown(failure, effectiveModel, available) || failure);
+  if (failure) throw new Error(explainKnown(failure, effectiveModel, available, await modelFacts(failure)) || failure);
   if (!turnDone || r.code !== 0) {
     if (finalText && r.code === 0) return { finalText, usage, stopped: null, sessionId };
-    throw new Error(explain(r.stderr, r.code, effectiveModel, available));
+    throw new Error(explain(r.stderr, r.code, effectiveModel, available, await modelFacts(r.stderr)));
   }
   return { finalText, usage, stopped: null, sessionId };
 }
@@ -703,5 +824,11 @@ module.exports = {
   supportsResume: true,
   models: [], // 真正的候选由 detect() 从当前 Codex 配置读取，不能拿过期硬编码冒充真实数据
   thinkingLabel: "推理强度 effort（关闭=none，低/中/高=low/medium/high）",
-  detect, run, explain,
+  detect, run, explain, forget,
+  // 只给测试：换掉问最新版的那一下（测试一律不联网）、清缓存、直接测几个纯函数
+  _internals: {
+    installOf, latestVersion, closeName, explainModel,
+    setFetchLatest(fn) { const old = fetchLatest; fetchLatest = fn; return old; },
+    clearLatest() { latestCache.clear(); },
+  },
 };

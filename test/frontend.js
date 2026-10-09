@@ -1599,6 +1599,33 @@ const ENG_CHECKS = `
   await renderCC("builtin", { needsUpgrade: [], upgrade: "" });
   ok("  ← 没有跑不了的型号：不画这一行", !up());
 
+  // Codex 说不出哪几个型号要新版（它的型号表按版本下发，旧版压根看不到新型号）：
+  // 点「重新检测本机」问到了有新版，就提一句、给升级命令
+  const CXU = "npm i -g @openai/codex@latest";
+  const cxUp = () => card("codex").querySelector(".eng-up");
+  const renderCX = async (patch) => {
+    window.__P = PAY("builtin");
+    Object.assign(window.__P.engines[1], patch || {});
+    window.SAVES = []; window.COPIES = []; window.TOASTS = [];
+    await renderEngineCard(box);
+  };
+  await renderCX({ latest: "0.162.0", upgrade: CXU, needsUpgrade: [] });
+  ok("★Codex 有新版：属主看到「有新版 0.162.0，新型号要升级后才看得到」，下面是能一键复制的命令★",
+    !!cxUp() && cxUp().textContent.includes("有新版 0.162.0，新型号要升级后才看得到：") && cxUp().querySelector("code").textContent === CXU,
+    cxUp() && cxUp().textContent);
+  cxUp().querySelector('[data-act="copy-up"]').click();
+  await wait(60);
+  ok("  ← 点「复制」：命令原样进剪贴板；不切引擎、不存盘",
+    JSON.stringify(window.COPIES) === JSON.stringify([CXU]) && window.SAVES.length === 0, [window.COPIES, window.SAVES]);
+  await renderCX({ latest: "", upgrade: "" });
+  ok("  ← 没新版（或还没点过「重新检测本机」）：不画这一行", !cxUp());
+  await renderCX({ latest: "0.162.0", upgrade: "" });
+  ok("  ← 给不出升级命令（认不出是怎么装的）：也不画", !cxUp());
+  settingsCache.platform_owner = false;
+  await renderCX({ latest: "0.162.0", upgrade: CXU });
+  ok("  ← 成员看不到", !cxUp());
+  settingsCache.platform_owner = true;
+
   // 试连结论写真跑的型号：填的是别名时两个都写，用户看得到 opus 落到了哪个具体型号
   const BODIES = [];
   const fetchB = window.fetch;
@@ -1650,6 +1677,13 @@ const ENG_CHECKS = `
     const one = ["先选一个（必填）", "实际跑的模型是", "命令已复制，粘到「终端」里回车就行", "（补全的 PATH里找到的：", "（登录 shell里找到的：", "（用的是设置里填的路径：", "）", "升级后就能用 claude-x-1："]
       .filter((t) => ZH.test(I18.tr(t, "en")));
     ok("  ← 这一屏别的状态才出现的那几句也翻得动", one.length === 0, one.map((t) => [t, I18.tr(t, "en")]));
+    await renderCX({ latest: "0.162.0", upgrade: CXU });
+    const cen = card("codex").cloneNode(true);
+    I18.apply(cen, "en");
+    const cu = cen.querySelector(".eng-up");
+    ok("  ← Codex 有新版那行：一个中文字都不剩，译出来是人话",
+      !!cu && leftZh(cu).length === 0 && cu.textContent.includes("Version 0.162.0 is out. New models show up only after you update:"),
+      cu && [cu.textContent, leftZh(cu)]);
   }
   window.fetch = fetch0;
 

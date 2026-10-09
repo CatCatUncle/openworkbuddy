@@ -1835,6 +1835,241 @@ out({ type: "result", subtype: "success", is_error: false, result: "ok", session
   }
 }
 
+/**
+ * ⑰ codex 的版本：它的型号表按版本下发，旧版压根看不到新型号（10-09 0.154.0 认不得 gpt-6-luna）。
+ *   有新版就对属主说、给得出升级命令；型号不认时报这份几版、名字是不是写岔了、现在能用哪些、怎么升。
+ *   为什么不认由 codex 的原话说，不替人猜（以前写死「订阅账号只能用订阅里有的型号」）。
+ *   最新版问的是 npm / Homebrew：这里一律换成假的，测试不联网
+ */
+async function partCodexVersion() {
+  console.log("\n— ⑰ codex：有新版就说、型号不认时报几版和能用哪些，不替人猜原因（问最新版换成假的，不联网）—");
+  const codex = require(mod("codex"));
+  const engines = require(mod("engines"));
+  const X = codex._internals;
+  const posix = process.platform !== "win32";
+  const W = "设置 → 智能体 → 底层引擎";
+  const NPM = "https://registry.npmjs.org/@openai/codex/latest";
+
+  // 问最新版那一下：记下问了谁；答什么由 LATEST 定，"throw" = 网不通
+  const asked = [];
+  let LATEST = { npm: "0.162.0", cask: "0.161.0" };
+  const realFetch = X.setFetchLatest(async (url) => {
+    asked.push(url);
+    if (LATEST === "throw") throw new Error("网不通");
+    if (url === NPM) return { ok: true, json: async () => ({ name: "@openai/codex", version: LATEST.npm }) };
+    if (/\/api\/cask\/codex\.json$/.test(url)) return { ok: true, json: async () => ({ token: "codex", version: LATEST.cask }) };
+    return { ok: false, json: async () => ({}) };
+  });
+  const savedCH = process.env.CODEX_HOME;
+  const srcHome = path.join(home, "codex-src-ver");
+  fs.mkdirSync(srcHome, { recursive: true });
+  process.env.CODEX_HOME = srcHome; // detect 读配置、链登录只碰这个临时目录，不碰本机真的 ~/.codex
+  try {
+    // 怎么装的 → 怎么升。只看路径，不起进程
+    const L = (rel) => { const f = path.join(home, "inst", rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, "x"); return f; };
+    const shimDir = path.join(home, "inst", "winnpm");
+    fs.mkdirSync(path.join(shimDir, "node_modules", "@openai", "codex"), { recursive: true });
+    fs.writeFileSync(path.join(shimDir, "codex.cmd"), "@echo off");
+    const cases = [
+      [L("npm/lib/node_modules/@openai/codex/bin/codex.js"), "npm i -g @openai/codex@latest"],
+      [path.join(shimDir, "codex.cmd"), "npm i -g @openai/codex@latest"], // Windows 的 npm 垫片：包在同目录的 node_modules 里
+      [L(".bun/install/global/node_modules/@openai/codex/bin/codex.js"), "bun install -g @openai/codex@latest"],
+      [L("brew/Caskroom/codex/0.160.0/codex-aarch64-apple-darwin"), "brew upgrade --cask codex"],
+      [L("brew/Cellar/codex/0.160.0/bin/codex"), null], // Homebrew 官方源里没有叫 codex 的 formula，查不到最新版就不提
+      [L("Codex.app/Contents/Resources/codex"), null], // 应用里带的那份跟着应用升
+      [L("npm/lib/node_modules/@openai/codex-sdk/bin/codex"), null], // ★反向对照★ 名字像，不是同一个包
+    ];
+    const badInst = cases.filter(([b, want]) => (X.installOf(b) || { cmd: null }).cmd !== want).map(([b, want]) => [b, want, X.installOf(b)]);
+    ok(badInst.length === 0, "按装在哪认怎么升：npm（含 Windows 垫片）/ bun / Homebrew cask 各给各的命令；应用里带的、别的源装的、名字像的别的包不给", badInst);
+    if (posix) {
+      const link = path.join(home, "inst", "npm", "bin", "codex");
+      fs.mkdirSync(path.dirname(link), { recursive: true });
+      fs.symlinkSync("../lib/node_modules/@openai/codex/bin/codex.js", link);
+      ok((X.installOf(link) || {}).how === "npm", "PATH 里那个是软链：顺着链认到 npm 的包里", X.installOf(link));
+    }
+
+    // 最新版：问谁、记多久、问不到怎么办
+    X.clearLatest();
+    ok(await X.latestVersion("npm", { network: false }) === "" && asked.length === 0, "★只看缓存时一下都不问★ 平时开设置页不联网", asked);
+    ok(await X.latestVersion("npm") === "0.162.0" && same(asked, [NPM]), "npm 装的问 npm 仓库", asked);
+    ok(await X.latestVersion("npm", { network: false }) === "0.162.0" && await X.latestVersion("npm") === "0.162.0" && asked.length === 1, "问到了就记着：再问不再联网", asked);
+    ok(await X.latestVersion("bun") === "0.162.0" && asked[1] === NPM, "bun 装的也是 npm 上那个包", asked);
+    ok(await X.latestVersion("cask") === "0.161.0" && /formulae\.brew\.sh\/api\/cask\/codex\.json$/.test(asked[2]), "Homebrew cask 问 cask 接口", asked);
+    ok(await X.latestVersion("formula") === "" && await X.latestVersion("别的") === "" && asked.length === 3, "认不出的装法不问", asked);
+    codex.forget();
+    ok(await X.latestVersion("npm") === "0.162.0" && asked.length === 3, "问到了的那条，点「重新检测本机」（forget）也不清：发版不会因为点了检测就变", asked);
+    X.clearLatest(); asked.length = 0; LATEST = "throw";
+    ok(await X.latestVersion("npm") === "" && await X.latestVersion("npm") === "" && asked.length === 1, "★网不通：给空，不当成「已是最新」；一阵子内不再白等第二遍超时★", asked);
+    codex.forget();
+    LATEST = { npm: "latest", cask: "0.161.0" };
+    ok(await X.latestVersion("npm") === "" && asked.length === 2, "没问到的那条 forget 清掉，再问一次；答的不是版本号也给空", asked);
+
+    // 名字是不是写岔了
+    const near = [
+      ["gpt-6.0-luna", ["gpt-5.5", "gpt-6-luna"], "gpt-6-luna"],
+      ["GPT 6 Luna", ["gpt-5.5", "gpt-6-luna"], "gpt-6-luna"],
+      ["gpt_6_luna", ["gpt-6-luna"], "gpt-6-luna"],
+      ["gpt-5.0", ["gpt-5", "gpt-50"], "gpt-5"],
+      ["gpt-6-luna", ["gpt-6-luna"], ""], // 一模一样的不算写岔
+      ["gpt-6.05-luna", ["gpt-6-luna"], ""], // 小数不是多写的 .0
+      ["gpt-6-luna", ["gpt-6.0-luna", "gpt6-luna"], ""], // 对上两个：不猜
+      ["gpt-7", ["gpt-6-luna"], ""],
+    ];
+    const badNear = near.filter(([m, l, want]) => X.closeName(m, l) !== want).map(([m, l, want]) => [m, want, X.closeName(m, l)]);
+    ok(badNear.length === 0, "只差写法（大小写、空格下划线、多写的 .0）才问「是不是 X」；一样的、对上几个的不猜", badNear);
+
+    // 那句话本身
+    const SAID = "The 'gpt-6.0-luna' model is not supported when using Codex with a ChatGPT account.";
+    const UP = { version: "0.154.0", latest: "0.162.0", cmd: "npm i -g @openai/codex@latest" };
+    ok(X.explainModel("gpt-6.0-luna", ["gpt-6-luna", "gpt-5.5"], UP, SAID) ===
+      "本机 Codex 0.154.0 不认「gpt-6.0-luna」，是不是「gpt-6-luna」？现在能用的是：gpt-6-luna / gpt-5.5。" +
+      `最新版是 0.162.0，升级（npm i -g @openai/codex@latest）后在 ${W} 点「重新检测本机」再挑；或者直接在那儿改成上面其中一个。` +
+      "\n它的原话：" + SAID, "★型号不认：几版、是不是写岔了、现在能用哪些、有新版就给升级命令，原话附在最后★", X.explainModel("gpt-6.0-luna", ["gpt-6-luna", "gpt-5.5"], UP, SAID));
+    ok(X.explainModel("gpt-x", null, UP, "") === `本机 Codex 0.154.0 不认「gpt-x」。最新版是 0.162.0，升级（npm i -g @openai/codex@latest）后在 ${W} 点「重新检测本机」再挑；或者直接在那儿换一个型号。`,
+      "问不出能用哪些：不提「上面其中一个」", X.explainModel("gpt-x", null, UP, ""));
+    ok(X.explainModel("", ["gpt-5.5"], {}, "") === `本机 Codex 不认当前设置的型号。现在能用的是：gpt-5.5。去 ${W} 的「模型」栏改成其中一个。`,
+      "版本、新版、原话都没有：只说查得到的", X.explainModel("", ["gpt-5.5"], {}, ""));
+
+    // detectAll 怎么把「顺带问新版」交下去：桩替掉真引擎，不碰本机装的 claude / codex
+    {
+      const saved = engines.BACKENDS.splice(0);
+      const seen = [];
+      let forgot = 0;
+      const base = { label: "桩", bin: "x", note: "", install: "", launchHeader: "", supportsResume: false, models: [], run: async () => ({ finalText: "" }) };
+      engines.BACKENDS.push(
+        { ...base, id: "t-ver", forget: () => { forgot++; },
+          detect: async (o) => { seen.push(o); return { installed: true, path: "/x", version: "1.0.0", latest: o && o.latest ? "1.1.0" : "", upgrade: o && o.latest ? "x up" : "" }; } },
+        { ...base, id: "t-plain", detect: async () => ({ installed: true, path: "/y", version: "1" }) },
+      );
+      try {
+        // 每次的缓存键都跟别人的不一样，留在缓存里也碰不到谁
+        const l1 = await engines.detectAll({ "t-ver": { bin: "/装在别处/甲" } }, { force: true, latest: true });
+        ok(same(seen[0], { bin: "/装在别处/甲", latest: true }) && forgot === 1, "「重新检测本机」：带上 latest、填的路径不丢；引擎自己的缓存也清（forget）", { seen, forgot });
+        ok(l1.find((e) => e.id === "t-ver").latest === "1.1.0" && l1.find((e) => e.id === "t-plain").latest === "", "detectAll 把 latest 交给设置页；没给的给空", l1);
+        await engines.detectAll({ "t-ver": { bin: "/装在别处/乙" } });
+        ok(same(seen[1], { bin: "/装在别处/乙" }) && forgot === 1, "★反向对照★ 平时检测：不带 latest、不清缓存", { seen, forgot });
+        await engines.detectAll({ "t-ver": { bin: "/装在别处/丙" } }, { force: true });
+        ok(same(seen[2], { bin: "/装在别处/丙" }) && forgot === 2, "只 force 不带 latest（命令行、测试那样调）：清缓存，不联网问新版", { seen, forgot });
+        await engines.detectAll({ "t-plain": {} }, { force: true, latest: true });
+        ok(same(seen[3], { latest: true }), "没填过东西的引擎也收得到 latest", seen[3]);
+      } finally {
+        engines.BACKENDS.splice(0);
+        engines.BACKENDS.push(...saved);
+      }
+    }
+
+    if (!posix) return;
+    // 假 codex 装成 npm 全局包的样子：--version 报写死的版本，debug models 报 models 文件里那几个，
+    // exec 照 FAKE_FAIL（turn.failed）/ FAKE_STDERR（退出码 1）报错。debug models 那一下环境里只带 CODEX_HOME，文件路径只能写死
+    const modelsFile = path.join(home, "codex-ver-models.json");
+    const pkgBin = path.join(home, "npmg", "lib", "node_modules", "@openai", "codex", "bin", "codex.js");
+    const writeFake = (ver, pad) => {
+      fs.mkdirSync(path.dirname(pkgBin), { recursive: true });
+      fs.writeFileSync(pkgBin, `#!/usr/bin/env node
+// ${pad}
+const fs = require("fs");
+const a = process.argv.slice(2);
+if (a[0] === "--version") { console.log("codex-cli ${ver}"); process.exit(0); }
+if (a[0] === "debug") {
+  let ms;
+  try { ms = JSON.parse(fs.readFileSync(${JSON.stringify(modelsFile)}, "utf8")); } catch { process.exit(1); }
+  console.log(JSON.stringify({ models: ms.map((slug) => ({ slug, visibility: "list" })).concat([{ slug: "hidden-slot", visibility: "hide" }]) }));
+  process.exit(0);
+}
+process.stdin.on("data", () => {}).on("end", () => {
+  if (process.env.FAKE_STDERR) { process.stderr.write(process.env.FAKE_STDERR); process.exit(1); }
+  const out = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
+  out({ type: "thread.started", thread_id: "th-ver" });
+  out({ type: "turn.started" });
+  if (process.env.FAKE_FAIL) { out({ type: "turn.failed", error: { message: process.env.FAKE_FAIL } }); return; }
+  out({ type: "item.completed", item: { id: "m1", type: "agent_message", text: "好" } });
+  out({ type: "turn.completed", usage: {} });
+});
+`);
+      fs.chmodSync(pkgBin, 0o755);
+    };
+    writeFake("0.154.0", "第一版");
+    const cx = path.join(home, "npmg", "bin", "codex");
+    fs.mkdirSync(path.dirname(cx), { recursive: true });
+    fs.symlinkSync("../lib/node_modules/@openai/codex/bin/codex.js", cx);
+    fs.writeFileSync(modelsFile, JSON.stringify(["gpt-5.5"]));
+
+    // 检测：平时不联网，「重新检测本机」才问
+    X.clearLatest(); codex.forget(); asked.length = 0; LATEST = { npm: "0.162.0", cask: "0.161.0" };
+    {
+      const d = await codex.detect({ bin: cx });
+      ok(d.installed && same(d.models, ["gpt-5.5"]) && d.latest === "" && d.upgrade === "" && asked.length === 0, "★平时检测不联网★ 没问过最新版就不提", { d, asked });
+      const f = await codex.detect({ bin: cx, latest: true });
+      ok(f.latest === "0.162.0" && f.upgrade === "npm i -g @openai/codex@latest" && same(asked, [NPM]), "★点「重新检测本机」（latest）问一次 npm：有新版，交出版本号和升级命令★", { f, asked });
+      const g = await codex.detect({ bin: cx });
+      ok(g.latest === "0.162.0" && g.upgrade === "npm i -g @openai/codex@latest" && asked.length === 1, "问过的记着：之后平时检测也照样提，不再联网", { g, asked });
+      X.clearLatest(); LATEST = { ...LATEST, npm: "0.154.0" };
+      const h = await codex.detect({ bin: cx, latest: true });
+      ok(h.latest === "" && h.upgrade === "", "★反向对照★ 最新的就是这版：不提", h);
+      X.clearLatest(); LATEST = { ...LATEST, npm: "0.150.0" };
+      const i = await codex.detect({ bin: cx, latest: true });
+      ok(i.latest === "" && i.upgrade === "", "npm 上的反倒比本机旧（本机装的是预览版之类）：也不提", i);
+      const plain = fakeBin("codex-ver-plain", "if (process.argv[2] === \"--version\") { console.log(\"codex-cli 0.100.0\"); process.exit(0); } process.exit(1);");
+      X.clearLatest(); asked.length = 0; LATEST = { ...LATEST, npm: "0.162.0" };
+      const j = await codex.detect({ bin: plain, latest: true });
+      ok(j.installed && j.latest === "" && j.upgrade === "" && asked.length === 0, "★认不出怎么装的（不知道怎么升）：不问也不提★", { j, asked });
+    }
+
+    // 型号目录按「哪一个可执行文件」缓存：原地升级完（路径没变、文件换了）就重新问
+    {
+      codex.forget();
+      const a1 = await codex.detect({ bin: cx });
+      fs.writeFileSync(modelsFile, JSON.stringify(["gpt-5.5", "gpt-6-luna"]));
+      const a2 = await codex.detect({ bin: cx });
+      ok(same(a1.models, ["gpt-5.5"]) && same(a2.models, ["gpt-5.5"]), "同一个文件一阵子内不重问（问一次要起个进程、走一趟网）", [a1.models, a2.models]);
+      writeFake("0.162.0", "升级之后，文件不一样了");
+      const a3 = await codex.detect({ bin: cx });
+      ok(same(a3.models, ["gpt-5.5", "gpt-6-luna"]) && /0\.162\.0/.test(a3.version), "★原地升级完：路径没变，型号目录照样重新问★ 新版才有的型号当场出现", a3);
+      fs.writeFileSync(modelsFile, JSON.stringify(["gpt-5.5", "gpt-6-luna", "gpt-6-sol"]));
+      codex.forget();
+      const a4 = await codex.detect({ bin: cx });
+      ok(same(a4.models, ["gpt-5.5", "gpt-6-luna", "gpt-6-sol"]), "点「重新检测本机」（forget）：文件没换也重新问（刚登录、刚换账号）", a4.models);
+    }
+
+    // 真跑一趟撞上「不认」
+    writeFake("0.154.0", "跑错的那版");
+    fs.writeFileSync(modelsFile, JSON.stringify(["gpt-6-luna", "gpt-5.5"]));
+    codex.forget(); X.clearLatest(); asked.length = 0; LATEST = { npm: "0.162.0", cask: "0.161.0" };
+    const cwd = path.join(home, "版本");
+    fs.mkdirSync(cwd, { recursive: true });
+    const go = async (extra, model = "gpt-6.0-luna") => {
+      try {
+        await codex.run({ prompt: "hi", cwd, bin: cx, model, env: { CODEX_HOME: srcHome, HOME: path.join(home, "skills-userhome"), ...extra } });
+        return "";
+      } catch (e) { return e.message; }
+    };
+    {
+      const m = await go({ FAKE_FAIL: SAID });
+      ok(m === X.explainModel("gpt-6.0-luna", ["gpt-6-luna", "gpt-5.5"], UP, SAID) && !/订阅/.test(m) && same(asked, [NPM]),
+        "★真跑撞上 turn.failed「不认」：报这份几版、是不是写岔了、现在能用哪些、有新版就给升级命令、原话附后★ 不再替人说「订阅账号只能用订阅里有的」", { m, asked });
+      const m2 = await go({ FAKE_STDERR: "ERROR: unexpected status 400 Bad Request: {\"detail\":\"model_not_found\"}\n后面别的日志\n" });
+      ok(m2.startsWith("本机 Codex 0.154.0 不认「gpt-6.0-luna」，是不是「gpt-6-luna」？") && m2.includes("最新版是 0.162.0") &&
+        m2.endsWith("它的原话：ERROR: unexpected status 400 Bad Request: {\"detail\":\"model_not_found\"}") && asked.length === 1,
+        "退出时 stderr 里报的一样；原话只带那一行；最新版用缓存，不再联网", { m2, asked });
+      asked.length = 0;
+      const m3 = await go({ FAKE_FAIL: "stream disconnected before completion" });
+      ok(m3 === "stream disconnected before completion" && asked.length === 0, "★反向对照★ 别的错：不查版本、不联网，照原话报", { m3, asked });
+      X.clearLatest(); LATEST = { ...LATEST, npm: "0.154.0" };
+      const m4 = await go({ FAKE_FAIL: SAID });
+      ok(m4.includes(`现在能用的是：gpt-6-luna / gpt-5.5。去 ${W} 的「模型」栏改成其中一个。`) && !/最新版是/.test(m4), "已是最新：不提升级，叫人改成能用的其中一个", m4);
+      fs.writeFileSync(modelsFile, "坏的"); // debug models 问不出来
+      codex.forget(); X.clearLatest(); LATEST = "throw";
+      const m5 = await go({ FAKE_FAIL: SAID }, "gpt-x");
+      ok(m5.startsWith(`本机 Codex 0.154.0 不认「gpt-x」。去 ${W} 的「模型」栏换一个。`) && !/现在能用的是|最新版是/.test(m5),
+        "能用哪些问不出、最新版也查不到：只说不认和去哪换，不编", m5);
+    }
+  } finally {
+    X.setFetchLatest(realFetch);
+    X.clearLatest();
+    if (savedCH === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = savedCH;
+  }
+}
+
 (async () => {
   try {
     await partResultErrors();
@@ -1853,6 +2088,7 @@ out({ type: "result", subtype: "success", is_error: false, result: "ok", session
     await partLive();
     await partDeliveryNotes();
     await partModels();
+    await partCodexVersion();
     console.log(`\n引擎韧性：${pass} 项全过`);
   } finally {
     fs.rmSync(home, { recursive: true, force: true });

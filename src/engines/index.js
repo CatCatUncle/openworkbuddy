@@ -52,18 +52,22 @@ function get(id) {
  * （本机实测冷启 322ms、热的 ~120ms），而 /api/engines、/api/thinking、设置页、
  * 引导页、命令行每次都在调它——「装没装 claude」这种事没必要每次都现问一遍。
  * 用户点「重新检测本机」走 force：刚装完的人必须当场看见，那条路才清 which 的缓存。
+ * latest：顺带联网问一下有没有新版（目前只有 codex 问）。只有设置页那颗按钮带它，平时开设置页不联网。
  * 缓存的是 Promise，所以同时来的几个请求只会真探一次。
  */
 const DETECT_TTL = 60000;
 let detectCache = null; // { key, at, promise }
 
-async function detectAll(overrides = {}, { force = false } = {}) {
+async function detectAll(overrides = {}, { force = false, latest = false } = {}) {
   const key = JSON.stringify(overrides || {});
   if (!force && detectCache && detectCache.key === key && Date.now() - detectCache.at < DETECT_TTL) {
     return detectCache.promise;
   }
-  if (force) which.forget(); // 刚装完就点检测的人，得当场看见结果
-  const promise = detectAllUncached(overrides).catch((e) => {
+  if (force) { // 刚装完、刚登录就点检测的人，得当场看见结果
+    which.forget();
+    for (const b of BACKENDS) if (typeof b.forget === "function") b.forget();
+  }
+  const promise = detectAllUncached(overrides, { latest }).catch((e) => {
     if (detectCache && detectCache.promise === promise) detectCache = null; // 失败不许被缓存住一分钟
     throw e;
   });
@@ -72,11 +76,12 @@ async function detectAll(overrides = {}, { force = false } = {}) {
 }
 
 /** 缓存失效时真正去探。改这里记得想一下 detectAll 的缓存键够不够用 */
-async function detectAllUncached(overrides = {}) {
+async function detectAllUncached(overrides = {}, { latest = false } = {}) {
   const out = [];
   for (const b of BACKENDS) {
     let r;
-    try { r = await b.detect(overrides[b.id] || undefined); }
+    const opts = latest ? { ...(overrides[b.id] || {}), latest: true } : overrides[b.id] || undefined;
+    try { r = await b.detect(opts); }
     catch (e) { r = { id: b.id, installed: false, path: overrides[b.id] || b.bin, version: "", error: e.message }; }
     out.push({
       id: b.id, label: b.label, note: b.note, install: b.install,
@@ -91,6 +96,7 @@ async function detectAllUncached(overrides = {}) {
       modelInfo: Array.isArray(r.modelInfo) ? r.modelInfo : [],
       needsUpgrade: Array.isArray(r.needsUpgrade) ? r.needsUpgrade : [],
       upgrade: r.upgrade || "",
+      latest: r.latest || "", // 有比这份新的版本（codex 问 npm / Homebrew 得来的），没有就空
       // 本机还装着、但没被选上的那几份（[{bin, installed, version}]）：设置页照实列出来，不然用户不知道用的是哪份
       others: Array.isArray(r.others) ? r.others : [],
       thinkingLabel: b.thinkingLabel || "",

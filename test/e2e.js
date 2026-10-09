@@ -10720,6 +10720,9 @@ async function testDetectCache() {
   }
   const srv = srcLib.src("server");
   assert(/force: req\.query\.force === "1"/.test(srv), "/api/engines 没把「重新检测」透传成 force，用户点了也只会拿到缓存");
+  // 点「重新检测本机」那一下顺带问 CLI 有没有新版；平时开设置页、真跑任务那几处不联网
+  assert(/latest: req\.query\.force === "1"/.test(srv), "/api/engines 点「重新检测」没顺带问新版，Codex 旧了用户也不知道");
+  assert.strictEqual((srv.match(/detectAll\([^\n]*latest/g) || []).length, 1, "除了「重新检测」那一处，别处的 detectAll 也在联网问新版");
   const ui = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-05.js"), "utf8");
   assert(/renderEngineCard\(box, true\)/.test(ui), "设置页「重新检测本机」按钮没要求强制重探");
   console.log("  ✓ 本机 CLI 探测有缓存（5 次并发只探 1 遍）、「重新检测」仍真去重探、改了路径不吃旧缓存");

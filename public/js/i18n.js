@@ -3302,6 +3302,7 @@
     [/^（(补全的 PATH|登录 shell)里找到的：$/, (m) => `(Found via ${m[1] === "登录 shell" ? "your login shell" : "the extended PATH"}: `],
     [/^升到 (\S+) 起就能用 (.+?)(?: 等 (\d+) 个型号)?：$/, (m) => `Update to ${m[1]} or later to use ${upNames(m[2], m[3])}:`],
     [/^升级后就能用 (.+?)(?: 等 (\d+) 个型号)?：$/, (m) => `Update to use ${upNames(m[1], m[2])}:`],
+    [/^有新版 (\S+)，新型号要升级后才看得到：$/, "Version $1 is out. New models show up only after you update:"],
     [/^跟属主钉的那个（(.+)）$/, "Follow the owner's pin ($1)"],
     [/^(.+)（属主没放行）$/, "$1 (not allowed by the owner)"],
   );

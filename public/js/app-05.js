@@ -3170,15 +3170,17 @@ function engOthersHtml(e, others) {
 
 /**
  * 型号表里有、这份 CLI 太旧跑不了的那几个（detect 给的 needsUpgrade）：说升到几起就能用，命令能一键复制。
- * 几个型号要的版本不一样时报最高那个——升到它，这几个就都能用了。名字只点前两个，多了报个数，一行放得下
+ * 几个型号要的版本不一样时报最高那个——升到它，这几个就都能用了。名字只点前两个，多了报个数，一行放得下。
+ * Codex 说不出具体哪几个（它的型号表按版本下发，旧版压根看不到新型号），只给得出最新版本号（detect 的 latest）
  */
 function engUpgradeHtml(e) {
+  if (!e.upgrade) return "";
   const need = Array.isArray(e.needsUpgrade) ? e.needsUpgrade : [];
-  if (!need.length || !e.upgrade) return "";
+  const cmd = `<br><code>${esc(e.upgrade)}</code> <a href="#" class="link" data-act="copy-up" data-cmd="${esc(e.upgrade)}">${ic("copy")} 复制</a></div>`;
+  if (!need.length) return e.latest ? `<div class="eng-i eng-up">有新版 ${esc(engVer(e.latest))}，新型号要升级后才看得到：${cmd}` : "";
   const top = need.map((m) => String(m.min || "")).reduce((a, b) => (!a || engVerCmp(b, a) > 0 ? b : a), "");
   const names = need.slice(0, 2).map((m) => m.name || m.id).join("、") + (need.length > 2 ? ` 等 ${need.length} 个型号` : "");
-  return `<div class="eng-i eng-up">${top ? `升到 ${esc(top)} 起就能用 ${esc(names)}：` : `升级后就能用 ${esc(names)}：`}<br>`
-    + `<code>${esc(e.upgrade)}</code> <a href="#" class="link" data-act="copy-up" data-cmd="${esc(e.upgrade)}">${ic("copy")} 复制</a></div>`;
+  return `<div class="eng-i eng-up">${top ? `升到 ${esc(top)} 起就能用 ${esc(names)}：` : `升级后就能用 ${esc(names)}：`}${cmd}`;
 }
 
 /**
