@@ -8,7 +8,8 @@
  * 换供应商的参数，内置引擎那套模型白名单管不到它里面。所以在拉起它之前，按属主的设置把口子堵上：
  *   · 组织关了命令行：外部引擎本身就是一条命令行，放它跑等于绕开组织的决定 → 拒绝，
  *     也不悄悄退回内置引擎（用户会以为自己在用选的那个）
- *   · 多人共用：默认关，平台属主在设置页逐个打开；单机桌面不受这条影响
+ *   · 多人共用：默认只有平台管理员自己能用（他的机器、他的订阅），给其他账号用要他在设置页逐个打开；
+ *     单机桌面不受这条影响
  *   · 型号：必须是属主钉死的那个，或在属主给的候选列表里，成员自己挑的也一样；
  *     没钉就报错，不拿 CLI 自己配置里的默认型号顶上
  *   · 附加参数：能换型号、换供应商、换配置档的一律拒绝——型号只认设置页
@@ -173,14 +174,15 @@ function refuse(code, message) {
  * @param {object} [o.mine]             叠过个人设置之后的那份（成员自己挑的 model 在这）
  * @param {boolean} [o.shellOff]        组织关了命令行
  * @param {boolean} [o.multi]           多人共用
+ * @param {boolean} [o.self]            发起的人就是平台管理员：多人共用那条闸不拦他
  * @returns {{model: string, allowed: string[]}}
  */
-function admit({ id, label, owner, mine, shellOff = false, multi = false }) {
+function admit({ id, label, owner, mine, shellOff = false, multi = false, self = false }) {
   const name = label || id;
   const own = owner || {};
   if (shellOff) throw refuse("shell_off", "本组织关了命令行，外部引擎自带命令行，所以也不能用。");
-  // 成员自己选过外部引擎的，告诉他能自己切回内置，不用干等属主
-  if (multi && own.enabled !== true) throw refuse("engine_off", `多人共用时${name}默认关着，等平台属主打开，或在 ${WHERE} 切回内置引擎。`);
+  // 成员自己选过外部引擎的，告诉他能自己切回内置，不用干等管理员
+  if (multi && !self && own.enabled !== true) throw refuse("engine_off", `${name}要平台管理员打开才能用，也可以在 ${WHERE} 切回内置引擎。`);
   const bad = modelArg(own.extraArgs, id);
   if (bad) throw refuse("extra_model", `${name}的附加参数里有换型号的「${bad}」，到 ${argsWhere(id)} 里删掉它。`);
   const allowed = allowedModels(own);

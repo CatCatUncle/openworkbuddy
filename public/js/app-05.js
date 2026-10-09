@@ -3038,14 +3038,16 @@ async function renderEngineCard(box, force) {
   box.innerHTML = all.map((e) => {
     const on = cur === e.id, builtin = e.id === "builtin", ready = builtin || e.installed;
     const g = e.gate || {};
-    // 开跑前那道闸的状态直接写在卡上：组织关了命令行 / 多人共用属主还没打开。别等用户切过去、跑一个任务才撞上报错
+    // 开跑前那道闸的状态直接写在卡上：组织关了命令行 / 成员要等管理员打开。别等用户切过去、跑一个任务才撞上报错。
+    // 管理员自己不受多人共用那道闸管（他的机器、他的订阅），所以他那边不写「关着」
     const gateNote = builtin ? ""
       : ctx.shellOff ? '<div class="eng-i">本组织关了命令行，外部引擎自带命令行，所以也不能用。</div>'
-      : ctx.multi && !g.enabled ? `<div class="eng-i">${amPlatformOwner() ? "多人共用时默认关着，勾上下面这项才能用。" : "多人共用时默认关着，平台属主打开后才能用。"}</div>`
+      : ctx.multi && !g.enabled && !amPlatformOwner() ? '<div class="eng-i">要平台管理员打开才能用。</div>'
       : "";
-    // 开关只画给平台属主，而且画在每张装了的卡上——画在「选中后的展开区」里的话，得先切过去才看得见它
+    // 开关只画给平台管理员，而且画在每张装了的卡上——画在「选中后的展开区」里的话，得先切过去才看得见它。
+    // 勾的是「别的账号能不能用」，后果写在旁边：用的是他的订阅、命令跑在这台机器上
     const gateRow = !builtin && e.installed && ctx.multi && amPlatformOwner()
-      ? `<label class="eng-gate eng-row"><input type="checkbox" data-act="enable"${g.enabled ? " checked" : ""}> <span>在这台服务器上打开它（多人共用时默认关）</span></label>` : "";
+      ? `<label class="eng-gate eng-row"><input type="checkbox" data-act="enable"${g.enabled ? " checked" : ""}> <span>也给其他账号用</span><span class="eng-msg">（走你的订阅，命令在这台机器上跑）</span></label>` : "";
     const v = engTested.get(e.id);
     // 从补全的 PATH / 登录 shell 里找到的，说一声——用户要是纳闷"我明明装了它怎么现在才看见"，这就是答案
     const howNote = !builtin && e.installed && e.how && e.how !== "PATH"

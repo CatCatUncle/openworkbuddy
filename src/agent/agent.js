@@ -2956,13 +2956,14 @@ function modePrompt(mode) {
       // 注意这里不看「这一轮在哪条工作线上」：工作线分的是干哪种活儿（办公 / 工程），
       // 引擎是用户在设置里挑一次、两条线都照着跑的另一件事。绑在一起的话，切个标签能把别人配的模型换掉。
       let picked;
-      try { picked = engines.resolve(prefs.agentView(config)); } // 引擎名写错会在这里抛错，不会静默退回内置
+      // 带上发起的账号：成员没选过、跟着管理员那份默认走，而那个本机引擎没给他打开时按内置算（engines.resolve）
+      try { picked = engines.resolve(prefs.agentView(config), { user }); } // 引擎名写错会在这里抛错，不会静默退回内置
       catch (e) { throw engineError(e, String((prefs.agentCfg(config) || {}).engine || "").trim()); }
       if (picked.backend) {
         // 开跑前过闸（engines/gate.js）：组织关了命令行、多人共用属主没打开、型号没钉或不在放行列表、
         // 附加参数能换型号——当场报错，不退回内置引擎。收原始 config：属主那份不能被个人设置盖掉
         const shellOff = !!(orgPolicy() && orgPolicy().allow_shell === false);
-        try { picked.opts = engines.admit(picked.backend.id, config, { shellOff }).opts; }
+        try { picked.opts = engines.admit(picked.backend.id, config, { shellOff, user }).opts; }
         catch (e) { if (ownsTrace) tr.end({ error: (e && e.message) || String(e) }); throw engineError(e, picked.backend.id); }
         const sp = tr.span({
           name: `外部引擎 ${picked.backend.label || picked.backend.id}`,

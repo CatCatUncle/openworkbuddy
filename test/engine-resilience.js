@@ -530,7 +530,30 @@ async function partGate() {
       ok(ea.includes("config.json 的 agent.engine_options.codex.extraArgs"), "  └ 附加参数没有界面：报错点名在 config.json 哪一项", ea);
       const off = msgOf(() => engines.admit("codex", cfg({ model: "gpt-5" }), { multi: true }));
       ok(/切回内置引擎/.test(off) && off.includes(gate.WHERE), "  └ 多人共用没打开：告诉成员自己能切回内置引擎，不用干等", off);
+      ok(/要平台管理员打开才能用/.test(off) && !/属主|多人共用/.test(off), "  └ 说人话：谁能打开写成「平台管理员」，不说属主、多人共用", off);
     }
+    // 多人共用那道闸拦的是别人：平台管理员用的是自己的机器、自己的订阅，不用先给自己打开
+    security.setPlatformAdmin((n) => n === "boss");
+    try {
+      const own = cfg({ model: "gpt-5" }); // 管理员给自己选了 Codex，没给别的账号打开
+      ok(codeOf(() => engines.admit("codex", own, { multi: true, user: "boss" })) === "", "★平台管理员自己用★ 没打开也放行，不用先勾选");
+      ok(codeOf(() => engines.admit("codex", own, { multi: true, user: "amy" })) === "engine_off", "  └ 反向对照：同一份配置，成员照样要等管理员打开");
+      ok(codeOf(() => engines.admit("codex", own, { multi: true })) === "engine_off", "  └ 不知道是谁发起的（没带账号）：照旧拦");
+      ok(codeOf(() => engines.admit("codex", own, { shellOff: true, multi: true, user: "boss" })) === "shell_off", "  └ 组织关了命令行：管理员也一样不能用");
+      ok(codeOf(() => engines.admit("codex", cfg({}), { multi: true, user: "boss" })) === "no_model", "  └ 型号照样得钉：免的只有「要不要打开」这一条");
+      security.setMultiUser(() => true);
+      ok(engines.currentId(own, { user: "boss" }) === "codex", "当前引擎：管理员自己选的 Codex 就是 Codex");
+      ok(engines.currentId(own, { user: "amy" }) === "builtin", "★成员没选过★ 跟着管理员的默认走、那个又没给他打开 → 按内置算，不让他一跑就报错");
+      ok(engines.currentId(cfg({ model: "gpt-5", enabled: true }), { user: "amy" }) === "codex", "  └ 管理员给别的账号打开以后，成员跟着走 Codex");
+      prefs.withPrefs({ agent: { engine: "codex" } }, () => {
+        ok(engines.currentId(own, { user: "amy" }) === "codex", "  └ 成员自己选过 Codex 的不替他改，开跑时由闸说清楚");
+      });
+      ok(engines.currentId(own) === "codex", "  └ 没带账号：照旧按配置报");
+      ok(engines.resolve(own, { user: "amy" }).backend === null && engines.resolve(own, { user: "boss" }).backend.id === "codex",
+        "真跑时也是同一个判断：成员解析成内置，管理员解析成 Codex");
+      security.setMultiUser(null);
+      ok(engines.currentId(own, { user: "amy" }) === "codex", "反向对照：单机桌面没有这回事，选什么就是什么");
+    } finally { security.setPlatformAdmin(null); security.setMultiUser(null); }
     ok(codeOf(() => engines.admit("claude-code", { agent: { engine_options: { "claude-code": { model: "sonnet" } } } }, { shellOff: true, multi: false })) === "shell_off",
       "Claude Code 也一样受命令行开关管");
   }
@@ -678,11 +701,11 @@ process.stdout.write(JSON.stringify({ type: "result", subtype: "success", is_err
   const fakeLLM = { provider: "mock", model: "scripted", async chat() { llmCalls++; return { text: "内置答的", toolCalls: [], stopReason: "end" }; } };
   engines.BACKENDS.push(stub);
   const rtOf = (o) => createAgentRuntime({ config: { agent: { engine: "t-gate", max_steps: 3, engine_options: { "t-gate": o } } }, llm: fakeLLM, mcpManager: new McpManager(), experts: [] });
-  const go = async (rt) => {
+  const go = async (rt, o = {}) => {
     calls.length = 0;
     llmCalls = 0;
     let r = null, err = null;
-    try { r = await rt.runTask({ history: [{ role: "user", content: "干活" }], emit: () => {} }); } catch (e) { err = e; }
+    try { r = await rt.runTask({ history: [{ role: "user", content: "干活" }], emit: () => {}, ...o }); } catch (e) { err = e; }
     return { r, err };
   };
   try {
@@ -709,6 +732,18 @@ process.stdout.write(JSON.stringify({ type: "result", subtype: "success", is_err
       const D = await prefs.withPrefs({ agent: { engine_options: { "t-gate": { model: "m2" } } } }, () => go(rtOf({ model: "m1", models: ["m2"], enabled: true })));
       ok(!D.err && calls.length === 1 && calls[0].model === "m2", "反向对照：在列表里的型号放行，引擎拿到的就是它", D.err ? D.err.message : calls.map((c) => c.model));
     }
+    // —— 平台管理员自己用：没打开也照跑；成员没选过的跟着走内置，自己选了的照样报 ——
+    security.setPlatformAdmin((n) => n === "boss");
+    try {
+      const A = await go(rtOf({ model: "m1" }), { user: "boss" });
+      ok(!A.err && calls.length === 1 && llmCalls === 0, "★平台管理员发起★ 引擎没打开也照常跑，不用先勾选", A.err && A.err.message);
+      const B = await go(rtOf({ model: "m1" }), { user: "amy" });
+      ok(!B.err && calls.length === 0 && llmCalls === 1, "★成员没选过★ 跟着管理员默认的那个没给他开 → 走内置，不报错", B.err ? B.err.message : { engine: calls.length, builtin: llmCalls });
+      const C = await prefs.withPrefs({ agent: { engine: "t-gate" } }, () => go(rtOf({ model: "m1" }), { user: "amy" }));
+      ok(C.err && C.err.code === "engine_off" && calls.length === 0 && llmCalls === 0, "★成员自己选了没打开的★ 报错说清，不悄悄换成内置", C.err ? C.err.message : C.r);
+      const D = await go(rtOf({ model: "m1", enabled: true }), { user: "amy" });
+      ok(!D.err && calls.length === 1 && llmCalls === 0, "反向对照：管理员给别的账号打开以后，成员也走引擎", D.err && D.err.message);
+    } finally { security.setPlatformAdmin(null); }
     // —— 环境变量：多人共用时像 Key 的一个都不往引擎里传 ——
     {
       const env = { OPENAI_API_KEY: "sk-test-xxxx", ANTHROPIC_AUTH_TOKEN: "sk-test-yyyy", CODEX_HOME: "/x", FAKE_LOG: "/y" };

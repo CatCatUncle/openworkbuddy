@@ -1146,16 +1146,28 @@ console.log("\n【6】离职：停用账号关的是他本人的路，中转站�
       { name: "机房", model: NEWM, base_url: "http://10.0.0.8:8000/v1" },
     ],
   };
-  const upRun = (orgYuan, runLLM, cfg) => new Function("config", "prefs", "org", "budget", upSrc + "\nreturn unpricedChat;")(
+  // engines 用真的：「这一趟到底走不走内置」跟开跑时同一个判断（engines.currentId），不在测试里另抄一份
+  const upRun = (orgYuan, runLLM, cfg, who = "xiaoyuan") => new Function("config", "prefs", "org", "budget", "engines", upSrc + "\nreturn unpricedChat;")(
     cfg || upCfg, { agentCfg: (c) => c.agent || {} },
-    { ...orgStub, settingsOf: () => ({ budget: { org_yuan: orgYuan } }) }, budget,
-  )({ username: "xiaoyuan" }, runLLM);
+    { ...orgStub, settingsOf: () => ({ budget: { org_yuan: orgYuan } }) }, budget, require(mod("engines")),
+  )({ username: who }, runLLM);
   ok(/价目/.test(upRun(50, { provider: "新上的", model: NEWM })), "有组织预算、对话模型挂在云端且没价目：开跑前就拦，说清去哪补");
   eq(upRun(0, { provider: "新上的", model: NEWM }), "", "反向对照：没设预算，同一个型号照常跑（记「算不出钱」）");
   eq(upRun(50, { provider: "机房", model: NEWM }), "", "反向对照：同一个型号挂在内网渠道上，0 元、不拦");
   eq(upRun(50, { provider: "已经删掉的", model: NEWM }), "", "会话点名的模型已不在列表里：让开跑时那句「已不在模型列表里」去说，这儿不抢着报");
   eq(upRun(50, { provider: "新上的", model: NEWM }, { ...upCfg, agent: { engine: "claude-code" } }), "",
      "外部 CLI 引擎走它自己的订阅，不经这本价目");
+  {
+    // 多人共用：管理员给自己选了本机引擎、没给别的账号打开。成员没选过，真跑的是内置，价目闸就得照管
+    const security = require(mod("security"));
+    const inh = { ...upCfg, agent: { engine: "claude-code", engine_options: { "claude-code": { model: "sonnet" } } } };
+    security.setMultiUser(() => true);
+    security.setPlatformAdmin((n) => n === "boss");
+    try {
+      ok(/价目/.test(upRun(50, { provider: "新上的", model: NEWM }, inh)), "★成员跟着管理员的本机引擎、那个又没给他开★ 真跑的是内置，价目闸照拦");
+      eq(upRun(50, { provider: "新上的", model: NEWM }, inh, "boss"), "", "  └ 反向对照：管理员自己真走本机引擎，不经这本价目");
+    } finally { security.setPlatformAdmin(null); security.setMultiUser(null); }
+  }
   ok(SRC9.includes("unpricedChat(user, llmForSession(getSession(sessionId)))"), "/api/chat 开流之前问过这一句");
   ok(/const why = unpricedChat\(owner, runLLM\);\s*if \(why\) throw/.test(SRC9), "定时任务 / IM 那条路上也问过，拦下是抛出来，不是静悄悄跑完");
   const dramaSrc = fs.readFileSync(path.join(ROOT, "src/server/routes/drama.js"), "utf8");

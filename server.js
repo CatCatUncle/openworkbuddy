@@ -138,6 +138,11 @@ const config = fillDefaults(rawConfig, CONFIG_DEFAULTS);
 childEnv.setPolicy(() => ({ allow: security.getSecurity(config).env_passthrough, keys: !admin.multiUser() }));
 // 多人共用时命令、代码碰了文件黑名单直接拦、不出审批卡：卡是发起任务的人自己批的
 security.setMultiUser(() => admin.multiUser());
+// 本机引擎那道「多人共用时要管理员打开」的闸只拦别人，管理员自己用不用先打开（engines/gate.js）
+security.setPlatformAdmin((name) => {
+  const u = account._internals.loadUsers().users.find((x) => x.username === name);
+  return !!u && admin.ownsGlobalWorkspace(u);
+});
 // 系统沙箱：成员的任务要把属主的项目目录藏起来；启动时先预检一遍，设置页一打开就有现状
 require("./src/agent/tools").setOwnerDirs(() => (config.projects || []).map((p) => p && p.dir).filter(Boolean));
 require("./src/agent/tools").warmSandbox(security.getSecurity(config));
@@ -325,7 +330,7 @@ function llmForSession(sess) {
  */
 function unpricedChat(user, runLLM) {
   if (!user || !runLLM || !runLLM.model) return "";
-  if ((prefs.agentCfg(config).engine || "builtin") !== "builtin") return "";
+  if (engines.currentId(config, { user: user.username }) !== "builtin") return "";
   if (!(Array.isArray(config.models) && config.models.some((m) => m && m.name === runLLM.provider))) return "";
   try {
     const o = org.getOrg(org.orgIdOf(user));
@@ -986,12 +991,11 @@ function orgShellOff() {
   return !!p && p.allow_shell === false;
 }
 
-async function goalThink(sessLLM, { system, prompt, timeoutMs, total }) {
-  const my = prefs.agentCfg(config); // 引擎是按账号存的，得看这一趟任务是谁发起的
-  const id = my.engine || "builtin";
+async function goalThink(sessLLM, { system, prompt, timeoutMs, total, user }) {
+  const id = engines.currentId(config, { user }); // 引擎是按账号存的，得看这一趟任务是谁发起的
   if (id !== "builtin" && engines.get(id)) {
     // 跟开跑那条过同一道闸：组织关了命令行、属主没打开、型号没钉都直接报错，不悄悄改问 API 模型
-    const pass = engines.admit(id, config, { shellOff: orgShellOff() });
+    const pass = engines.admit(id, config, { shellOff: orgShellOff(), user });
     return await engines.ask({ id, opts: pass.opts, system, prompt, timeoutMs });
   }
   const r = await sessLLM.chat({
@@ -1008,7 +1012,7 @@ async function goalThink(sessLLM, { system, prompt, timeoutMs, total }) {
  * 把 goalThink 包成 goal.js 要的那个 think(\{system,prompt,timeoutMs\}) —— 用量记在这一趟任务的总账上。
  * 拆出去之后这一层就是全部的粘合剂：goal.js 不认识 sessLLM、不认识引擎、也不记账。
  */
-const goalThinkFor = (sessLLM, total) => (a) => goalThink(sessLLM, { ...a, total });
+const goalThinkFor = (sessLLM, total, user) => (a) => goalThink(sessLLM, { ...a, total, user });
 
 /**
  * 把任务事件翻译成桌面宠物的表情。只认深度 0 的事件——专家子代理的动静太密，
@@ -1850,6 +1854,8 @@ app.get("/api/settings", (req, res) => {
   const myAgent = prefs.agentCfg(config);
   const myPet = prefs.petCfg(config);
   const myModel = prefs.modelCfg(config);
+  // 跟真跑的时候同一个判断：成员没选过、管理员那个本机引擎又没给他打开，这里就报内置
+  const myEngine = engines.currentId(config, { user: req.user && req.user.username });
   res.json({
     workspace_dir: getWorkspaceDir(),
     // 默认工作空间里每个对话各有一个成果文件夹：成果区据此默认只摆「本对话」那一格
@@ -1892,9 +1898,9 @@ app.get("/api/settings", (req, res) => {
       judge_ready: jev.status(config).ready,
       failover_model: config.agent.failover_model || "",
       thinking: thinking.norm(myAgent.thinking), // 思考模式档位，默认 auto=跟随模型自己的默认
-      engine: myAgent.engine || "builtin",
+      engine: myEngine,
       // 前端那个模型选择器要靠它说实话：走本机 CLI 的时候，API 模型列表整个不生效
-      engine_label: (engines.list().find((e) => e.id === (myAgent.engine || "builtin")) || {}).label || "",
+      engine_label: (engines.list().find((e) => e.id === myEngine) || {}).label || "",
       engine_options: myAgent.engine_options || {},
     },
     pet: {
@@ -2036,9 +2042,9 @@ function savePersonalPrefs(user, personal) {
     if (personal.agent.engine !== undefined) {
       const id = String(personal.agent.engine || "builtin").trim() || "builtin";
       if (engines.get(id) === undefined) throw new Error("没有这个底层引擎：" + id);
-      // 多人共用时外部引擎要属主逐个打开；没打开的现在就说，别等开跑才报
+      // 多人共用时外部引擎要管理员逐个给别的账号打开；没打开的现在就说，别等开跑才报（这一段只有成员走得到）
       if (id !== "builtin" && security.isMultiUser() && !engines.gateView(id, config).enabled) {
-        throw new Error(`多人共用时${engines.get(id).label || id}默认关着，等平台属主打开，或在 ${engineGate.WHERE} 切回内置引擎。`);
+        throw new Error(`${engines.get(id).label || id}要平台管理员打开才能用，也可以在 ${engineGate.WHERE} 切回内置引擎。`);
       }
       a.engine = id;
     }
@@ -2746,7 +2752,7 @@ app.get("/api/onboarding", async (req, res) => {
   }));
   const active = (config.models || []).find((m) => m.name === config.active_model) || (config.models || [])[0];
   const myAgent = prefs.agentCfg(config);
-  const engineId = myAgent.engine || "builtin";
+  const engineId = engines.currentId(config, { user: req.user && req.user.username });
   const brainViaEngine = engineId !== "builtin" && engines.get(engineId) !== undefined;
   const brainOk = brainViaEngine || !!(active && hasKey(active));
   const seen = !!((config.onboarding || {}).done_at);
@@ -2904,7 +2910,7 @@ app.post("/api/onboarding/done", (req, res) => {
   try {
     const b = req.body || {};
     const active = (config.models || []).find((m) => m.name === config.active_model) || (config.models || [])[0];
-    const engineId = prefs.agentCfg(config).engine || "builtin";
+    const engineId = engines.currentId(config, { user: req.user && req.user.username });
     const brainOk = (engineId !== "builtin" && engines.get(engineId) !== undefined) || !!(active && hasKey(active));
     if (!brainOk) return res.status(400).json({ ok: false, error: "还没接上任何大模型，先把第一步走完" });
     if (b.workspace_dir) {
@@ -3116,7 +3122,7 @@ app.get("/api/engines", async (req, res) => {
     const found = await engines.detectAll(myAgent.engine_options || {}, { force: req.query.force === "1" });
     // 闸的状态一并给前端：多人共用时开没开、放行哪些型号、命令能不能联网。只读属主那份，成员改不了
     const withGate = found.map((e) => ({ ...e, gate: engines.gateView(e.id, config) }));
-    res.json({ current: myAgent.engine || "builtin", builtin: engines.BUILTIN, engines: withGate, multiUser: security.isMultiUser(), shellOff: orgShellOff() });
+    res.json({ current: engines.currentId(config, { user: req.user && req.user.username }), builtin: engines.BUILTIN, engines: withGate, multiUser: security.isMultiUser(), shellOff: orgShellOff() });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -3286,7 +3292,7 @@ app.post("/api/cli/answer", (req, res) => {
 app.get("/api/thinking", async (req, res) => {
   try {
     const myAgent = prefs.agentCfg(config);
-    const engineId = myAgent.engine || "builtin";
+    const engineId = engines.currentId(config, { user: req.user && req.user.username });
     const entry = (config.models || []).find((m) => m.name === config.active_model) || (config.models || [])[0] || {};
     // 本机 CLI 的能力探测（claude 对不认识的选项是静默忽略的，非探不可），探不动就当没有
     let caps = {};
@@ -7221,7 +7227,7 @@ app.post("/api/chat", async (req, res) => {
   const laneId = sess.lane;
   // 续跑 id 按引擎分开记（claude 的 id 喂给 codex 只会当场炸）。跟工作线无关——
   // 引擎是用户在设置里挑一次、两条线共用的那个。
-  const laneEngine = prefs.agentCfg(config).engine || "builtin";
+  const laneEngine = engines.currentId(config, { user: user && user.username });
   const sessLLM = llmForSession(sess); // 本对话生效的模型（含专家子代理、标题、记账）
   if (regen) {
     // 重新生成：回滚掉最后一轮（用户消息及其后的所有内容），下面会把同一条消息重新入队
@@ -7349,7 +7355,7 @@ app.post("/api/chat", async (req, res) => {
   // Goal 模式：第一次用目标消息建目标（拆成验收标准）；已有进行中的目标就直接接着冲
   const goalMode = modes.isGoalMode(mode);
   if (goalMode && (!sess.goal || sess.goal.status !== "active")) {
-    sess.goal = await goalKit.start(goalThinkFor(sessLLM, total), message);
+    sess.goal = await goalKit.start(goalThinkFor(sessLLM, total, user && user.username), message);
     autosaveSession(sessionId, 0);
   }
   if (sess.goal && sess.goal.status === "active") sess.goal.paused = ""; // 又开跑了，把「已暂停」摘掉
@@ -7434,7 +7440,7 @@ app.post("/api/chat", async (req, res) => {
       if (!sess.goal || sess.goal.status !== "active" || runState.ctrl.signal.aborted) break;
       sess.goal.note = "";
       sess.goal.paused = "";
-      await goalKit.verify(goalThinkFor(sessLLM, total), sess, lastFinal, (w) => { sess.goal.note = w; });
+      await goalKit.verify(goalThinkFor(sessLLM, total, user && user.username), sess, lastFinal, (w) => { sess.goal.note = w; });
       sess.goal.round = (sess.goal.round || 0) + 1;
       send({ type: "goal", goal: sess.goal });
       autosaveSession(sessionId, 0);

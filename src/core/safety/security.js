@@ -247,6 +247,20 @@ function isMultiUser() {
   if (!multiUserFn) return false;
   try { return !!multiUserFn(); } catch { return true; } // 读坏按多人：判错了就是让成员自己批黑名单
 }
+/**
+ * 这个账号是不是平台管理员（默认组织的管理员）。同样由 server.js 注册进来，没注册 = 谁都不是。
+ * 本机引擎那道「多人共用时要管理员打开」的闸拦的是别人：管理员用的是自己的机器、自己的订阅，用不着先给自己开权限
+ */
+let platformAdminFn = null;
+/** @param {((username: string) => boolean) | null} fn */
+function setPlatformAdmin(fn) {
+  platformAdminFn = typeof fn === "function" ? fn : null;
+}
+/** @param {string} [username] */
+function isPlatformAdmin(username) {
+  if (!platformAdminFn || !username) return false;
+  try { return !!platformAdminFn(String(username)); } catch { return false; } // 读坏按成员：判错了只是照旧要管理员打开
+}
 /** 碰了文件黑名单：一个人时弹卡（不给「同类不再问」），多人时直接拦、不出卡 */
 function blacklistVerdict(rule, seg) {
   if (isMultiUser()) return { action: "deny", rule: `${rule}，多人共用时这类一律拦下`, seg, blacklist: true };
@@ -1710,6 +1724,8 @@ module.exports = {
   checkCode,
   setMultiUser,
   isMultiUser,
+  setPlatformAdmin,
+  isPlatformAdmin,
   ruleFor,
   parseAllowRule, // 命令行 --allow：开跑前点名放行的那几类
   allowFlagFor,

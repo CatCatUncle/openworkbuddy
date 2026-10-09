@@ -2446,9 +2446,9 @@
       "（默认关；开了审批、记账、组织规矩跟内置引擎一样）": "(off by default; when on, approvals, billing and org rules work as with the built-in engine)",
       "（默认关；开了审批、记账跟内置引擎一样，它命令行里的 owb 除外）": "(off by default; when on, approvals and billing work as with the built-in engine, except owb run from its shell)",
       "本组织关了命令行，外部引擎自带命令行，所以也不能用。": "Your organization turned off the command line. External engines come with one, so they're off too.",
-      "多人共用时默认关着，勾上下面这项才能用。": "Off by default on shared servers. Tick the box below to turn it on.",
-      "多人共用时默认关着，平台属主打开后才能用。": "Off by default on shared servers. Usable once the platform owner turns it on.",
-      "在这台服务器上打开它（多人共用时默认关）": "Turn it on for this server (off by default when shared)",
+      "要平台管理员打开才能用。": "Needs the platform admin to turn it on.",
+      "也给其他账号用": "Let other accounts use it",
+      "（走你的订阅，命令在这台机器上跑）": "(uses your subscription; commands run on this machine)",
       "保存模型 / 思考档": "Save model / thinking level",
       "必填，选一个或手填": "Required. Pick one or type it",
       "先填用哪个模型，本机 CLI 也要钉死型号": "Pick a model first. The local CLI needs a pinned model too",
@@ -2872,7 +2872,7 @@
   const engName = (s) => { const k = String(s).trim(); return Object.prototype.hasOwnProperty.call(DICT.en, k) ? DICT.en[k] : k; };
   PATTERNS.en.push(
     [/^放行的型号：(.+)$/, "Allowed models: $1"],
-    [/^多人共用时(.+?)默认关着，等平台属主打开，或在 设置 → 智能体 → 底层引擎 切回内置引擎。$/, (m) => `${engName(m[1])} is off by default on shared servers. Ask the platform owner to turn it on, or switch back to the built-in engine in Settings → Agent → Engine.`],
+    [/^(.+?) ?要平台管理员打开才能用，也可以在 设置 → 智能体 → 底层引擎 切回内置引擎。$/, (m) => `${engName(m[1].trim())} needs the platform admin to turn it on. Or switch back to the built-in engine in Settings → Agent → Engine.`],
     [/^(.+?) ?的附加参数里有换型号的「(.+)」，到 config\.json 的 (\S+) 里删掉它。$/, (m) => `${engName(m[1])}'s extra arguments switch the model (“${m[2]}”). Remove it from ${m[3]} in config.json.`],
     [/^先在 设置 → 智能体 → 底层引擎 里给(.+?)指定型号，再开跑。$/, (m) => `Pin a model for ${engName(m[1].trim())} in Settings → Agent → Engine first.`],
     [/^型号「(.+?)」不在属主给(.+?)放行的列表里，去 设置 → 智能体 → 底层引擎 换一个。$/, (m) => `Model “${m[1]}” isn't on the owner's list for ${engName(m[2])}. Pick another in Settings → Agent → Engine.`],

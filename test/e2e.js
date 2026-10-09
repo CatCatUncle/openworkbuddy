@@ -11201,6 +11201,11 @@ async function testOnboardingWizardApi() {
     const a3 = await req("GET", "/api/onboarding");
     assert(a3.json.needs_setup === false && a3.json.brain.ok === true && a3.json.brain.via === "engine" && a3.json.engine === "claude-code", "本机引擎应当算作大脑已接上：" + JSON.stringify({ n: a3.json.needs_setup, b: a3.json.brain, e: a3.json.engine }));
     assert(a3.json.seen === false, "只是切了引擎、还没走完向导，seen 不该变 true");
+    // 同一时刻换成员来看：他自己没选过引擎，管理员挑的本机引擎又没给别人打开，他那边按内置算。
+    // 跟上面那条（管理员不用先给自己打开）一起才说明闸是「拦别人、不拦自己」——任何一头判反都红
+    const m3 = await reqAs(memberToken, "GET", "/api/settings");
+    assert(m3.code === 200 && m3.json && m3.json.agent && m3.json.agent.engine === "builtin",
+      "成员没选过引擎、管理员的本机引擎也没给别人打开，他那边该显示内置：HTTP " + m3.code + " " + JSON.stringify(m3.json && m3.json.agent && m3.json.agent.engine));
 
     // 4. done 落盘 + 清洗
     const ws = path.join(home, "我的工作区");

@@ -100,17 +100,50 @@ async function detectAllUncached(overrides = {}) {
 }
 
 /**
+ * 多人共用时，成员自己没选过引擎、跟着平台默认走，而平台默认是管理员给自己挑的本机引擎、
+ * 又没给其他账号打开 → true，这种按内置引擎算。
+ *
+ * 管理员的选择存在 config.json 里，同时也是成员的默认值。管理员自己用本机引擎不用先打开（见 gate.js），
+ * 要是成员也跟着继承过去，他们一开口就撞「要平台管理员打开」——可他们压根没选过它。
+ * 成员自己选过的不算：那就照常过闸报错，让他知道自己选的那个现在用不了。
+ * 设置页、输入框角上显示的「当前引擎」和开跑用的是同一个判断（currentId），不会显示一个、跑另一个。
+ * @param {string} id
+ * @param {object} config
+ * @param {string} [user]  发起的账号；没有（命令行、没对上账号的 IM）就不改，照旧过闸
+ */
+function inheritedOff(id, config, user) {
+  if (!id || id === "builtin" || !user || !security.isMultiUser() || security.isPlatformAdmin(user)) return false;
+  const mine = prefs.current();
+  if (mine && mine.agent && mine.agent.engine !== undefined) return false;
+  const owner = (((config && config.agent) || {}).engine_options || {})[id] || {};
+  return owner.enabled !== true;
+}
+
+/**
+ * 这个账号现在用的是哪个引擎（id）。界面上显示的「当前引擎」用它，跟开跑那条 resolve 同一个判断。
+ * @param {object} config  原始 config
+ * @param {{user?: string}} [o]
+ */
+function currentId(config, { user } = {}) {
+  const id = String(prefs.agentCfg(config).engine || "builtin").trim() || "builtin";
+  return inheritedOff(id, config, user) ? "builtin" : id;
+}
+
+/**
  * 按配置解析出这次该用哪个引擎。
+ * @param {object} config  叠过个人设置的那份（prefs.agentView）
+ * @param {{user?: string}} [o]  发起的账号：成员跟着平台默认走、而那个引擎没给他打开时按内置算（见 inheritedOff）
  * @returns {{backend:object|null, opts:object}} backend 为 null 表示内置引擎
  * @throws  配置了一个不存在的引擎 id 时抛错（写错名字就该当场知道）
  */
-function resolve(config) {
+function resolve(config, { user } = {}) {
   const a = (config && config.agent) || {};
   const id = String(a.engine || "builtin").trim() || "builtin";
   const backend = get(id);
   if (backend === undefined) {
     throw new Error(`设置里的底层引擎「${id}」不存在。可选：${list().map((b) => b.id).join(" / ")}`);
   }
+  if (backend && inheritedOff(id, config, user)) return { backend: null, opts: {} };
   const per = (a.engine_options && a.engine_options[id]) || {};
   return { backend, opts: per };
 }
@@ -122,10 +155,11 @@ function resolve(config) {
  * 所以这里必须收**原始** config，不能收 prefs.agentView 叠过的那份。
  * @param {string} id
  * @param {object} config        原始 config（config.json）
- * @param {{shellOff?: boolean, multi?: boolean, model?: string, trial?: boolean}} [o]  multi 不传就问 security.isMultiUser()
+ * @param {{shellOff?: boolean, multi?: boolean, model?: string, trial?: boolean, user?: string}} [o]  multi 不传就问 security.isMultiUser()；
+ *   user 是发起的账号，平台管理员自己用不用先打开
  * @returns {{backend: object, opts: object, model: string, allowed: string[]}}
  */
-function admit(id, config, { shellOff = false, multi, model, trial = false } = {}) {
+function admit(id, config, { shellOff = false, multi, model, trial = false, user } = {}) {
   const backend = get(id);
   if (!backend) throw new Error(`「${id}」不是一个本机引擎`);
   let owner = (((config && config.agent) || {}).engine_options || {})[id] || {};
@@ -135,7 +169,7 @@ function admit(id, config, { shellOff = false, multi, model, trial = false } = {
   // trial：属主在设置页试连——还没打开、型号还没存也能试，别的条件（命令行、附加参数、要有型号）照查
   if (trial) owner = { ...owner, enabled: true, ...(model !== undefined ? { model } : {}) };
   const isMulti = multi === undefined ? security.isMultiUser() : !!multi;
-  const ok = gate.admit({ id, label: backend.label, owner, mine, shellOff, multi: isMulti });
+  const ok = gate.admit({ id, label: backend.label, owner, mine, shellOff, multi: isMulti, self: isMulti && security.isPlatformAdmin(user) });
   return { backend, opts: { ...mine, model: ok.model, allowedModels: ok.allowed }, model: ok.model, allowed: ok.allowed };
 }
 
@@ -239,4 +273,4 @@ async function ask({ id, opts = {}, system, prompt, timeoutMs = 60000, signal })
   }
 }
 
-module.exports = { list, get, detectAll, resolve, admit, gateView, testConnect, ask, which, BUILTIN, BACKENDS };
+module.exports = { list, get, detectAll, resolve, currentId, admit, gateView, testConnect, ask, which, BUILTIN, BACKENDS };

@@ -1351,7 +1351,7 @@ const ENG_CHECKS = `
   const optsA = ((JSON.parse(window.SAVES[0] || "{}").agent || {}).engine_options || {})["claude-code"] || {};
   ok("★反向对照★ 管理员存同一处：bin 跟着发（空串也发）", "bin" in optsA, window.SAVES);
 
-  // 外部引擎的闸（engines/gate.js）摆在卡上：多人共用默认关、只有属主看得到开关；组织关了命令行直接写明
+  // 外部引擎的闸（engines/gate.js）摆在卡上：成员要等管理员打开、只有管理员看得到开关（他自己用不受这道闸管）；组织关了命令行直接写明
   const G0 = { enabled: false, pinned: "", allowed: [], network: false };
   const renderGate = async (cur, extra, gates) => {
     window.__P = Object.assign(PAY(cur), extra);
@@ -1359,13 +1359,17 @@ const ENG_CHECKS = `
     window.SAVES = []; await renderEngineCard(box);
   };
   const CX = { enabled: true, pinned: "gpt-5.4", allowed: ["gpt-5.4", "gpt-5.4-mini"], network: false };
-  const offNote = (id) => [...card(id).querySelectorAll(".eng-i")].some((n) => /默认关着/.test(n.textContent));
+  const offNote = (id) => [...card(id).querySelectorAll(".eng-i")].some((n) => /要平台管理员打开才能用/.test(n.textContent));
   settingsCache.platform_owner = true;
   await renderGate("codex", { multiUser: true }, { codex: CX });
   ok("多人共用：属主在每张装了的卡上都看得到开关，没装的那张没有",
     !!card("claude-code").querySelector('.eng-gate [data-act="enable"]') && !!card("codex").querySelector('.eng-gate [data-act="enable"]') && !card("gemini").querySelector(".eng-gate"));
-  ok("开着的勾上、没开的不勾并写明默认关着", card("codex").querySelector('[data-act="enable"]').checked
-    && !card("claude-code").querySelector('[data-act="enable"]').checked && offNote("claude-code") && !offNote("codex"));
+  ok("开着的勾上、没开的不勾；管理员自己用不受这道闸管，卡上不写「要管理员打开」", card("codex").querySelector('[data-act="enable"]').checked
+    && !card("claude-code").querySelector('[data-act="enable"]').checked && !offNote("claude-code") && !offNote("codex"));
+  {
+    const gt = card("claude-code").querySelector(".eng-gate").textContent;
+    ok("★勾的是「也给其他账号用」★ 旁边写后果：走你的订阅、命令在这台机器上跑", gt.includes("也给其他账号用") && gt.includes("走你的订阅") && !/默认关|属主/.test(gt), gt);
+  }
   card("claude-code").querySelector('[data-act="enable"]').click();
   await wait(60);
   ok("★勾上只存 enabled 这一格，不顺手切引擎★", window.SAVES[0] === JSON.stringify({ agent: { engine_options: { "claude-code": { enabled: true } } } })
@@ -1401,6 +1405,10 @@ const ENG_CHECKS = `
   // 模板里的短文案闸门只要九成，漏一句照样过：新加的勾和后面那句说明逐句过真词典。
   // 真 i18n.js 关在一个假 window 里：不碰这一页的 DOM
   const I18 = new Function("window", ${JSON.stringify(I18N_SRC)} + "\\n;return window.I18N;")({});
+  {
+    const zh = ["也给其他账号用", "（走你的订阅，命令在这台机器上跑）", "要平台管理员打开才能用。"].filter((t) => { const o = I18.tr(t, "en"); return o === t || /[一-鿿]/.test(o); });
+    ok("英文界面：「也给其他账号用」、后果那句、成员那句都翻得动", zh.length === 0, zh);
+  }
   const untranslated = (root, re) => {
     const said = [...root.querySelectorAll('label.eng-chk span')].map((n) => n.textContent).filter((t) => re.test(t));
     return { said, zh: said.filter((t) => { const o = I18.tr(t, "en"); return o === t || /[一-鿿]/.test(o); }) };
@@ -1432,13 +1440,13 @@ const ENG_CHECKS = `
   const ag = ((JSON.parse(window.SAVES[0] || "{}").agent || {}).engine_options || {})["claude-code"] || {};
   ok("★属主存：勾存布尔★ 去掉勾存的是 false（不是不发），勾着的存 true", ag.approval === false && ag.relay === true && ag.model === "sonnet", window.SAVES);
   await renderGate("codex", { multiUser: false }, { codex: CX });
-  ok("单机桌面：没有开关、不写默认关着；成员列表也不出（没有成员）",
+  ok("单机桌面：没有开关、不写要管理员打开；成员列表也不出（没有成员）",
     box.querySelectorAll(".eng-gate").length === 0 && !offNote("claude-code") && !card("codex").querySelector('input[data-k="models"]'));
   settingsCache.platform_owner = false;
   await renderGate("codex", { multiUser: true }, { codex: CX });
   const xs = card("codex").querySelector(".eng-x");
   ok("★成员：看不到开关、成员列表、联网勾、在这边执行那一勾★", box.querySelectorAll('.eng-gate, [data-k="models"], [data-k="network"], [data-k="relay"]').length === 0);
-  ok("成员：没开的那张说要等属主打开", [...card("claude-code").querySelectorAll(".eng-i")].some((n) => /平台属主打开后才能用/.test(n.textContent)));
+  ok("成员：没开的那张说要平台管理员打开", offNote("claude-code") && !offNote("codex"));
   ok("成员：型号下拉只列属主放行的，占位写属主钉的那个",
     [...xs.querySelectorAll("datalist option")].map((o) => o.value).join() === "gpt-5.4,gpt-5.4-mini" && xs.querySelector('input[data-k="model"]').placeholder === "gpt-5.4");
   await renderGate("claude-code", { multiUser: true }, { "claude-code": { ...G0, enabled: true, approval: true, relay: true } });
