@@ -395,12 +395,14 @@ const SEC = { ...security.DEFAULTS, gateway: true, cmd_risk_gate: true, permissi
     const at = ui.indexOf('"sec-crisk"'), near = ui.indexOf('"sec-cak"');
     ok(at > near && at - near < 1200, "★就近★ 摆在命令名单那张卡里：它管的就是那两张名单管不到的部分");
     const seg = ui.slice(at, at + 1600);
-    ok(/美金|花钱/.test(seg), "  └ 说清楚它花钱");
-    ok(/发给判断模型|发到外面|原文会发/.test(seg), "★说清命令原文会发出去★ 这事得用户知情才叫自己点头");
-    ok(/判断模型/.test(seg) && /没配/.test(seg), "  └ 没配判断模型时当面说清勾了也不生效");
+    ok(/美元|美金|花钱/.test(seg), "  └ 说清楚它花钱");
+    ok(/发给判断模型|发给小模型|发到外面|原文会发/.test(seg), "★说清命令原文会发出去★ 这事得用户知情才叫自己点头");
+    ok(/小模型|判断模型/.test(seg) && /没配/.test(seg), "  └ 没配判断模型时当面说清勾了也不生效");
 
     const i18n = fs.readFileSync(path.join(ROOT, "public", "js", "i18n.js"), "utf8");
-    ok(i18n.includes('"名单外先判一句"'), "  └ 标题有英文（这个产品是双语的，漏一条就半中半英）");
+    const label = (ui.slice(at).match(/^"sec-crisk", [^,]+, "([^"]+)"/) || [])[1];
+    ok(label === "名单外的命令先问小模型", "  └ 找得到那一项的名字", label);
+    ok(label && i18n.includes(`"${label}"`), "  └ 名字有英文（这个产品是双语的，漏一条就半中半英）", label);
 
     const srv = src("server");
     ok(/"gateway", "delete_protect", "cmd_risk_gate"/.test(srv), "  └ 后端收这个开关（前端存了后端不收＝存不下去）");

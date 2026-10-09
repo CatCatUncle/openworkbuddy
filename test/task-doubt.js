@@ -182,7 +182,7 @@ const padTo = (base, n) => base + "。".repeat(Math.max(0, n - base.length));
     ok(row.length > 0, "  └ 找得到那一行开关", at);
     const ghost = quoted.filter((w) => !row.includes(w));
     eq(ghost.length, 0, "★让人去关的那个开关，界面上那一行真叫这个名字★", ghost.join(" ") || "对得上");
-    ok(/设置\s*→\s*智能体设置/.test(msg), "  └ 路径也写了（「在设置里」等于没说）");
+    ok(/设置\s*→\s*智能体(?!设置)/.test(msg), "  └ 路径也写了，而且是左栏真有的那一页（「在设置里」等于没说）");
     ok(doubtMessage().length > 0 && doubtMessage(null).length > 0, "没给参数也不炸");
   }
 
@@ -314,12 +314,12 @@ const padTo = (base, n) => base + "。".repeat(Math.max(0, n - base.length));
     ok(/id="ag-second"/.test(ui), "★设置里摆得出来★ 开关存在但找不到＝没有");
     ok(/second_opinion: pane\.querySelector\("#ag-second"\)\.checked/.test(ui), "  └ 勾了真存得下去");
     ok(/judge_ready/.test(ui), "  └ 没配判断模型时界面明说，别让它假装能开");
-    ok(/两万分之一美金|美金|花钱|费/.test(ui), "  └ 说清楚它花钱（后台自己花的钱，必须先讲明白）");
+    ok(/美元|美金|花钱|费/.test(ui), "  └ 说清楚它花钱（后台自己花的钱，必须先讲明白）");
 
     const i18n = fs.readFileSync(path.join(ROOT, "public", "js", "i18n.js"), "utf8");
-    const label = (ui.match(/<div class="f">(定时任务[^<]*)<\/div>/) || [])[1];
-    ok(!!label, "  └ 找得到那一行的标题", label);
-    ok(label && i18n.includes(`"${label}"`), "  └ 标题有英文（这个产品是双语的，漏一条就半中半英）", label);
+    const label = (ui.match(/id="ag-second"[^>]*>\s*<span>([^<]+)/) || [])[1];
+    ok(!!label, "  └ 找得到勾选框上那句话", label);
+    ok(label && i18n.includes(`"${label}"`), "  └ 那句话有英文（这个产品是双语的，漏一条就半中半英）", label);
   }
 
   finished = true;

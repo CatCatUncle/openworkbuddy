@@ -1422,17 +1422,17 @@ const ENG_CHECKS = `
   const rlx = xo.querySelector('input[data-k="relay"]');
   ok("属主：codex 卡上有「借给它的工具在这边执行」，默认不勾、存布尔，英文界面连说明都翻得动",
     !!rlx && rlx.checked === false && og.relay === false && rl.said.length === 2 && rl.zh.length === 0, JSON.stringify({ relay: og.relay, rl }));
-  // claude 那张卡：要审批的动作交给安全中心判（engines/approve.js）。codex 没有这个口子
-  ok("codex 卡上没有「交给安全中心判」那一勾", !xo.querySelector('[data-k="approval"]'));
+  // claude 那张卡：「删文件等操作先问我」（engines/approve.js）。codex 没有这个口子
+  ok("codex 卡上没有「删文件等操作先问我」那一勾", !xo.querySelector('[data-k="approval"]'));
   await renderGate("claude-code", { multiUser: false }, { "claude-code": { ...G0, approval: true, relay: true } });
   const ccx = card("claude-code").querySelector(".eng-x");
   const apv = ccx && ccx.querySelector('input[data-k="approval"]');
-  ok("属主：claude 卡上有「交给安全中心判」，照存的勾上", !!apv && apv.checked === true);
+  ok("属主：claude 卡上有「删文件等操作先问我」，照存的勾上", !!apv && apv.checked === true);
   const rlv = ccx && ccx.querySelector('input[data-k="relay"]');
   ok("属主：claude 卡上也有「借给它的工具在这边执行」，照存的勾上", !!rlv && rlv.checked === true);
   {
-    const { said, zh } = untranslated(ccx, /安全中心判|没公开的参数|在这边执行|跟内置引擎一样/);
-    ok("英文界面：「交给安全中心判」「在这边执行」两勾连说明都翻得动", said.length === 4 && zh.length === 0, JSON.stringify({ said, zh }));
+    const { said, zh } = untranslated(ccx, /先问我|直接不做|在这边执行|跟内置引擎一样/);
+    ok("英文界面：「删文件等操作先问我」「在这边执行」两勾连说明都翻得动", said.length === 4 && zh.length === 0, JSON.stringify({ said, zh }));
   }
   if (apv) {
     apv.checked = false;
@@ -1454,7 +1454,7 @@ const ENG_CHECKS = `
   ok("成员：型号下拉只列属主放行的，占位写属主钉的那个",
     [...xs.querySelectorAll("datalist option")].map((o) => o.value).join() === "gpt-5.4,gpt-5.4-mini" && xs.querySelector('input[data-k="model"]').placeholder === "gpt-5.4");
   await renderGate("claude-code", { multiUser: true }, { "claude-code": { ...G0, enabled: true, approval: true, relay: true } });
-  ok("★成员：claude 卡上也没有「交给安全中心判」「在这边执行」★", !!card("claude-code").querySelector(".eng-x") && !box.querySelector('[data-k="approval"], [data-k="relay"]'));
+  ok("★成员：claude 卡上也没有「删文件等操作先问我」「在这边执行」★", !!card("claude-code").querySelector(".eng-x") && !box.querySelector('[data-k="approval"], [data-k="relay"]'));
   settingsCache.platform_owner = true;
   await renderGate("builtin", { multiUser: false, shellOff: true }, { codex: CX });
   ok("组织关了命令行：两张外部引擎卡都写明不能用，内置那张不写",
@@ -3589,7 +3589,7 @@ function testCompactWiring() {
   const fin = /ev\.type === "compact"\)\s*\{([\s\S]{0,900}?)\}\s*else if/.exec(src);
   ok("压完/压崩换掉同一行（compactNote 复用，不新建）", !!fin && /compactNote\(/.test(fin[1]), fin && fin[1]);
   ok("★压崩了也得如实说，不许假装压成了★", !!fin && /ev\.failed/.test(fin[1]), fin && fin[1]);
-  ok("压崩的话得给条出路（去哪调预算）", !!fin && /智能体设置/.test(fin[1]), fin && fin[1]);
+  ok("压崩的话得给条出路（去哪调、调哪一项）", !!fin && /设置\s*→\s*智能体/.test(fin[1]) && /每次最多给模型看多少字/.test(fin[1]), fin && fin[1]);
   ok("★这一轮收尾时扫一遍：还挂着「正在压」的行一律收掉★ 后端漏了收尾也不会转到天荒地老",
     /querySelectorAll\("\.compact-note\.running"\)\.forEach/.test(src)
     && /压缩没跑完这一轮就断了/.test(src), "app-01.js 的回合收尾里没有扫尾那一段");
@@ -3605,7 +3605,7 @@ function testCompactWiring() {
     "正在把早前 20 条消息压成摘要…已等 8 秒（压完再跑，原文不删）",
     "已把早前 20 条消息压成摘要（原文存 data/compact-archive）",
     "会话太长，早前 20 条压成了摘要（要点保留）",
-    "压缩失败：HTTP 429 太快了。原内容未动（可在 设置→智能体设置 调大预算）",
+    "压缩失败：HTTP 429 太快了。原内容未动（可在 设置 → 智能体 调大「每次最多给模型看多少字」）",
     "这一轮没压成：HTTP 429 太快了（早前的内容一条没动）",
     "压缩没跑完这一轮就断了（早前的内容一条没动，原文也没删）",
   ];
@@ -7825,7 +7825,7 @@ const IMPANE_CHECKS = `
   ok("第二下真清", POSTS.includes("/im/sessions/clear") && pane.querySelector("#im-sess-r").textContent.includes("3 段"), pane.querySelector("#im-sess-r").textContent);
   ok("清完计数归零且按钮禁用", pane.querySelector("#im-sess-n").textContent.includes("没有") && cb.disabled);
   pane.querySelector("#im-goto-agent").click();
-  ok("上下文预算跳去智能体设置", NAV[NAV.length - 1] === "agent");
+  ok("「每次给模型看多少字」那句的链接跳去智能体页", NAV[NAV.length - 1] === "agent");
 
   // ---- 10. 云文档卡状态取自输入框 / 全局保存 ----
   ok("云文档没填 = 沿用机器人凭证（灰）", card("feishu_doc").querySelector(".im-st").classList.contains("off"));

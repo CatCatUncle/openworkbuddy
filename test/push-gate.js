@@ -365,9 +365,11 @@ const out = (...answers) => ({ ok: true, answers });
     const iSecond = ui.indexOf('id="ag-second"');
     const iPush = ui.indexOf('id="ag-pgate"');
     ok(iSecond > 0 && iPush > iSecond && iPush - iSecond < 2000, "★就近★ 跟另外那道定时任务的闸摆在一块儿", { iSecond, iPush });
-    ok(/两万分之一美金/.test(ui.slice(iSecond, iPush + 400)), "  └ 说清楚它花钱");
-    ok(/定时任务没变化就不推/.test(ui), "  └ 找得到那一行的标题");
-    ok(/"定时任务没变化就不推":/.test(read("public/js/i18n.js")), "  └ 标题有英文（这个产品是双语的，漏一条就半中半英）");
+    // 这一组几个开关花的是同一笔钱，组头说一次，不在每一项后面各说一遍
+    ok(/美元|美金|花钱/.test(ui.slice(ui.lastIndexOf('class="card-item"', iPush), iPush)), "  └ 说清楚它花钱（写在这一组的组头）");
+    const label = (ui.match(/id="ag-pgate"[^>]*>\s*<span>([^<]+)/) || [])[1];
+    ok(label === "定时任务没新内容就不通知", "  └ 找得到勾选框上那句话", label);
+    ok(label && read("public/js/i18n.js").includes(`"${label}":`), "  └ 那句话有英文（这个产品是双语的，漏一条就半中半英）", label);
 
     // 这儿刻意不 grep。源码里出现过 `r.push_skipped` 这几个字，证明不了它被印了出来；
     // 把运行记录那一格的渲染函数从真源码里抠出来跑一遍，看它到底吐不吐得出那句话。

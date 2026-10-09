@@ -87,7 +87,7 @@ const UPSTREAM_FAILURES = [
   {
     test: /余额不足|欠费|credit balance is too low|insufficient (credit|balance|quota)|billing|payment required|402/i,
     label: "渠道余额 / 额度不足",
-    hint: "去 设置 → 模型 给这条渠道充值，或换一条有余额的；不换的话每天到点都会白跑一轮。想让它自己接上，在 设置 → 智能体设置 里指定「备用渠道」。",
+    hint: "去 设置 → 模型 给这条渠道充值，或换一条有余额的；不换的话每天到点都会白跑一轮。想让它自己接上，在 设置 → 模型 → 对话 里选好「主模型出故障时换哪个」。",
     retryable: false,
   },
   {
@@ -99,7 +99,7 @@ const UPSTREAM_FAILURES = [
   {
     test: /rate[_ ]?limit|usage limit reached|\b429\b|too many requests|overloaded|请求过于频繁/i,
     label: "被限流 / 额度打满",
-    hint: "等窗口重置就好。如果固定在这个点撞限流，把任务时间挪开高峰，或在 设置 → 智能体设置 配一条「备用渠道」分流。",
+    hint: "等窗口重置就好。如果固定在这个点撞限流，把任务时间挪开高峰，或在 设置 → 模型 → 对话 里选好「主模型出故障时换哪个」。",
     retryable: true,
   },
   {
@@ -179,7 +179,7 @@ function judgeRun({ result, error, stopped } = {}) {
     return {
       ok: false, reason: "budget_exhausted", retryable: false,
       label: "跑满预算被强制收尾（" + stop + "）",
-      hint: "任务没做完就被上限掐了。三条路：把任务拆小；在 设置 → 智能体设置 调大步数/时长上限；或者打开「长任务自动续跑」——它靠工作目录的 PROGRESS.md 从断点接着做，不会重头再来。直接重跑是从零开始重做，最贵。",
+      hint: "任务没做完就到了上限。三条路：把任务拆小；在 设置 → 智能体 → 执行上限 调大步数/时长；或者把「没做完时自动接着做几轮」设成 1 以上——它靠工作目录的 PROGRESS.md 从断点接着做，不会重头再来。直接重跑是从零开始重做，最贵。",
     };
   }
 
@@ -347,7 +347,7 @@ function doubtMessage(d) {
   const { pct } = require("../judge/systemone");
   return "判断模型看过这一轮的汇报，觉得任务多半没真办完（确定度 " + pct(d && d.sure) + "）。"
     + "运行记录仍然记绿——这是第二意见，不是裁定。打开这一条的执行过程看它停在哪；"
-    + "要是它判错了，在 设置 → 智能体设置 里关掉「跑绿之后再看一眼」。";
+    + "要是它判错了，在 设置 → 智能体 里关掉「定时任务办完后再核实一遍」。";
 }
 
 module.exports = {

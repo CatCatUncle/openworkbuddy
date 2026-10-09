@@ -560,13 +560,13 @@ function httpError(cfg, status, body) {
   if (status === 400 && /is a decisions model/i.test(body)) {
     return new Error(
       `渠道「${cfg.name || cfg.model}」填的是判断模型（Jev）——它只会在选项里挑一个，不会写字，不能当对话模型用。` +
-        `去 设置 → 模型 把默认对话模型换成别的；判断模型在 设置 → 智能体设置 里单独配。\n原始报错：${body.slice(0, 200)}`
+        `去 设置 → 模型 把默认对话模型换成别的；判断模型要在 设置 → 模型 另加一条「TypeSafe Jev」。\n原始报错：${body.slice(0, 200)}`
     );
   }
   // 上下文超限是最常见的 400，原文是一坨英文 JSON，翻成用户能照着做的话
   if (status === 400 && /context length|context_length|maximum context|too many tokens|reduce the length/i.test(body)) {
     return new Error(
-      `这次请求超出了模型的上下文长度上限。可以在 设置 → 智能体设置 调小「上下文预算」或「单任务最大步数」，` +
+      `这次请求超出了模型的上下文长度上限。可以在 设置 → 智能体 → 执行上限 调小「每次最多给模型看多少字」或「一个任务最多做几步」，` +
         `也可以换一个上下文更大的模型；这条任务的历史已经很长，新开一个任务接着做更稳。\n原始报错：${body.slice(0, 300)}`
     );
   }
@@ -575,7 +575,7 @@ function httpError(cfg, status, body) {
   if (status === 402 || /insufficient balance|insufficient_quota|欠费|余额不足|arrearage/i.test(body)) {
     return new Error(
       `渠道「${cfg.name || cfg.model}」余额不足，模型不给跑了——这不是软件出错，去这条渠道的官网充值即可；` +
-        `急着继续可以在 设置 → 模型 换一条有余额的渠道，或者在 设置 → 智能体设置 里指定「备用渠道」，以后这条挂了会自动接上。\n原始报错：${body.slice(0, 200)}`
+        `急着继续可以在 设置 → 模型 换一条有余额的渠道，或者在 设置 → 模型 → 对话 里选好「主模型出故障时换哪个」，以后这条出故障会自动接上。\n原始报错：${body.slice(0, 200)}`
     );
   }
   // Key 不对 / 过期 / 被撤回。渠道卡上那个「测一下」按钮早就把 401 翻成人话了
@@ -840,7 +840,7 @@ async function chatWithRetry(fn, args) {
         RETRYABLE.test(msg) && !streamed && attempt < RETRY_DELAYS.length && !(args.signal && args.signal.aborted);
       if (!canRetry) {
         if (RETRYABLE.test(msg) && attempt > 0) {
-          e.message = `${msg}\n（已自动重试 ${attempt} 次仍失败：上游服务繁忙，可稍后再试或在 设置→模型 切换备用渠道）`;
+          e.message = `${msg}\n（已自动重试 ${attempt} 次仍失败：上游服务繁忙。可稍后再试，或在 设置 → 模型 → 对话 里选好「主模型出故障时换哪个」）`;
         }
         throw e;
       }

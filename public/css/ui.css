@@ -1417,7 +1417,7 @@ html[data-theme="dark"] .ui-select {
 .ch-res.is-bad { background: color-mix(in srgb, var(--owb-err) 9%, transparent); color: var(--owb-err-text); }
 .ch-key .ck-test { margin: 0; }
 
-/* 「主模型挂了换谁」：从 智能体设置 挪过来的，落在对话卡最底下 */
+/* 「主模型出故障时换哪个」：从 设置 → 智能体 挪过来的，落在对话卡最底下 */
 .ch-fb { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--owb-border); }
 .ch-fb label { flex: none; color: var(--owb-text-2); font-size: 12px; }
 .ch-fb select { min-width: 220px; margin: 0; }

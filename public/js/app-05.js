@@ -1473,12 +1473,12 @@ function chatOverview(s, po, kindLabel) {
           : `<div class="ch-note">一个都还没有。去下面的渠道卡里加一个，或者点这儿的「添加对话模型」。</div>`}
         ${!po ? "" : `
         <div class="ch-fb">
-          <label for="ov-failover">主模型挂了换谁</label>
+          <label for="ov-failover">主模型出故障时换哪个</label>
           <select id="ov-failover">
-            <option value="">不换道（默认）</option>
+            <option value="">不换，直接报错（默认）</option>
             ${s.models.map((m) => `<option value="${esc(m.name)}"${fb === m.name ? " selected" : ""}>${esc(m.name)}（${esc(m.model)}）${modelKeyed(m, s) ? "" : "（这条还没 Key）"}</option>`).join("")}
           </select>
-          <span>主模型卡住或持续报错时自动切到这条并提示，每个任务最多切一次。不选则如实报错。</span>
+          <span>主模型卡住或一直报错时换成这个，会告诉你；每个任务最多换一次。</span>
         </div>`}
         ${!po ? "" : `
         <div class="ca-form" data-chan="__all__" style="display:none">
@@ -1868,7 +1868,7 @@ function bindModels(pane, s, po) {
     liveModels.delete(p.id);
     if (await saveAllModelTables(s, msg)) { toast("Key 已清空"); paintModels(pane, s); }
   }));
-  // 「主模型挂了换谁」：以前排在 智能体设置 里，夹在步数上限和超时中间——选的明明是模型，
+  // 「主模型出故障时换哪个」：以前排在 智能体设置 里，夹在步数上限和超时中间——选的明明是模型，
   // 却要去另一页找。挪到对话卡里，跟它要替的那些模型摆在一起
   const fb = pane.querySelector("#ov-failover");
   if (fb) fb.onchange = async () => {
@@ -2812,8 +2812,44 @@ function renderTracePane(pane, s) {
   };
   pane.querySelector("#lf-goto-page").onclick = () => { closeModal(); openPageView("trace"); };
 }
+/**
+ * 「去 设置 → 模型 …」那几句做成真链接：跳到模型页，把要动的那一格直接摆到眼前。
+ *   "failover"：「对话」那张卡里的「主模型出故障时换哪个」
+ *   "judge"：判断模型那家（TypeSafe Jev）。加过就展开它那张渠道卡——没填 Key 的收在下面那一栏，一起展开；
+ *            没加过就替人点开「添加渠道」、类型选好，只差粘 Key
+ * 模型页拉完目录会整页重画一遍（renderModelsPane），所以等目录到了再找，不然拿到的是马上要被换掉的节点。
+ */
+async function gotoModelsField(s, what) {
+  const judge = what === "judge" && (s.providers || []).find((p) => p.kind === "typesafe");
+  if (what === "failover") openCaps.add("chat");
+  if (judge) { idleOpen = true; openChans.add(judge.id); }
+  await renderSettings("models");
+  await loadMediaCatalog();
+  const pane = document.getElementById("settings-pane");
+  if (!pane) return;
+  let el = null;
+  if (what === "failover") el = pane.querySelector("#ov-failover");
+  else if (judge) el = document.getElementById(`ck-${judge.id}`);
+  else {
+    const kind = pane.querySelector("#pf-kind");
+    const add = pane.querySelector("#pf-new");
+    if (add && kind && [...kind.options].some((o) => o.value === "typesafe")) {
+      add.click();
+      kind.value = "typesafe";
+      pane.querySelector("#pf-name").value = ""; // 点开时已按第一家填了名字，清掉才会换成这一家的
+      kind.dispatchEvent(new Event("change"));
+      el = pane.querySelector("#pf-key");
+    }
+  }
+  if (el) { el.scrollIntoView({ block: "center" }); el.focus(); }
+}
 async function renderAgentPane(pane, s) {
-  const judgeWarn = s.agent.judge_ready ? "" : " <b>没配判断模型，勾了不生效</b>（设置 → 模型）";
+  // 「让小模型把关」那一组共用同一个判断模型（Jev）：没配时整组勾了都不生效，所以只在组头说一次、给个直达链接
+  const judgeWarn = s.agent.judge_ready ? ""
+    : ' <b>还没配这个小模型，勾了不生效</b> <a class="link" id="ag-goto-judge" href="#">去 设置 → 模型 添加「TypeSafe Jev」</a>';
+  const fo = s.agent.failover_model || "";
+  const rowCss = "display:flex;align-items:flex-start;gap:8px;font-size:13px;color:var(--owb-text-2);cursor:pointer;margin-bottom:10px";
+  const noteCss = "color:var(--owb-text-3);font-size:12px";
   pane.innerHTML = `
     <div class="card-item">
       <div class="t">底层引擎</div>
@@ -2833,69 +2869,59 @@ async function renderAgentPane(pane, s) {
     </div>
     ${s.platform_owner ? `    <div class="card-item">
       <div class="t">执行上限</div>
-      <div class="f">最大执行步数</div>
-      <div class="d" style="margin-bottom:6px">单个任务的循环上限（默认 25）</div>
+      <div class="f">一个任务最多做几步</div>
+      <div class="d" style="margin-bottom:6px">默认 25</div>
       <input id="ag-steps" type="number" min="1" max="100" value="${s.agent.max_steps}">
-      <div class="f">单工具超时（秒）</div>
-      <input id="ag-timeout" type="number" min="5" value="${Math.round(s.agent.tool_timeout_ms / 1000)}">
-      <div class="f">任务最大运行时间（分钟）</div>
-      <div class="d" style="margin-bottom:6px">含子代理，超时强制收尾（默认 30）</div>
+      <div class="f">一个任务最多跑几分钟</div>
+      <div class="d" style="margin-bottom:6px">算上它派出去的子任务，到点就收尾（默认 30）</div>
       <input id="ag-runtime" type="number" min="1" value="${Math.round((s.agent.max_runtime_ms || 1800000) / 60000)}">
-      <div class="f">自动续跑轮数</div>
-      <div class="d" style="margin-bottom:6px">撞上限还没做完时，按 PROGRESS.md 自动接着跑几轮。每轮都计费，0 = 关（默认）</div>
-      <input id="ag-rounds" type="number" min="0" max="20" value="${s.agent.auto_continue_rounds || 0}">
-      <div class="f">续跑之前先判一句</div>
-      <div class="d" style="margin-bottom:6px">续跑前先问一句「干完没」，干完就不续，拿不准照续。续跑轮数 > 0 才用得上，每次约两万分之一美金。默认关${judgeWarn}</div>
-      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--owb-text-2);cursor:pointer;margin-bottom:10px">
-        <input type="checkbox" id="ag-cgate" style="margin:0" ${s.agent.continue_gate ? "checked" : ""}>
-        续跑前先确认没干完
-      </label>
-      <div class="f">记之前先判一句</div>
-      <div class="d" style="margin-bottom:6px">agent 存长期记忆前先问「下个月还用得上吗」，用不上就不存；你手写的不受影响。每条约两万分之一美金。默认关${judgeWarn}</div>
-      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--owb-text-2);cursor:pointer;margin-bottom:10px">
-        <input type="checkbox" id="ag-mgate" style="margin:0" ${s.agent.memory_gate ? "checked" : ""}>
-        只存以后还用得上的
-      </label>
-      <div class="f">打断你之前先判一句</div>
-      <div class="d" style="margin-bottom:6px">每轮第一问直接放行；之后每问先判是否非你答不可，不必就让它自己定、在汇报里注明。每问约两万分之一美金。默认关${judgeWarn}</div>
-      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--owb-text-2);cursor:pointer;margin-bottom:10px">
-        <input type="checkbox" id="ag-agate" style="margin:0" ${s.agent.ask_gate ? "checked" : ""}>
-        少问不必问的问题
-      </label>
-      <div class="f">开工之前先挑技能</div>
-      <div class="d" style="margin-bottom:6px">没点名技能时，先让判断模型挑一个最对口的提前加载；点了名的本来就直接加载。每问约两万分之一美金。默认关${judgeWarn}</div>
-      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--owb-text-2);cursor:pointer;margin-bottom:10px">
-        <input type="checkbox" id="ag-sgate" style="margin:0" ${s.agent.skill_gate ? "checked" : ""}>
-        自动挑技能
-      </label>
-      <div class="f">模型卡壳超时（秒）</div>
-      <div class="d" style="margin-bottom:6px">模型这么久没任何输出才判挂死，还在输出不会掐（默认 300）</div>
+      <div class="f">一个工具最多等几秒</div>
+      <input id="ag-timeout" type="number" min="5" value="${Math.round(s.agent.tool_timeout_ms / 1000)}">
+      <div class="f">模型多久没反应算卡住（秒）</div>
+      <div class="d" style="margin-bottom:6px">一直没有任何输出才算（默认 300）</div>
       <input id="ag-llm-timeout" type="number" min="30" value="${Math.round((s.agent.llm_timeout_ms || 300000) / 1000)}">
-      <div class="f">token 预算（万 tokens）</div>
-      <div class="d" style="margin-bottom:6px">单任务 token 上限（含子代理和续跑），80% 时提醒，超了强制收尾。0 = 不限（默认）</div>
+      <div class="f">一个任务最多用多少 token（万）</div>
+      <div class="d" style="margin-bottom:6px">用到 80% 提醒，超了就收尾。0 = 不限（默认）</div>
       <input id="ag-tokbudget" type="number" min="0" step="1" value="${Math.round((s.agent.max_tokens_budget || 0) / 10000)}">
-      <div class="f">备用渠道（主模型挂起自动换道）</div>
-      <div class="d" style="margin-bottom:6px">${(s.agent.failover_model || "")
-        ? `当前：<b>${esc(s.agent.failover_model)}</b>。`
-        : "已关：主模型挂了直接报错，不换模型。"}
-        在「设置 → 模型 → 对话」里改</div>
-      <div class="f">上下文上限（千字符）</div>
-      <div class="d" style="margin-bottom:6px">留空＝按模型窗口自动算；填了就不超过它，超出先截短较早的工具输出</div>
+      <div class="f">每次最多给模型看多少字（千字）</div>
+      <div class="d" style="margin-bottom:6px">留空 = 自动；超了先把较早的工具输出截短</div>
       <input id="ag-ctx" type="number" min="20" max="2000" placeholder="自动" value="${s.agent.max_context_chars ? Math.round(s.agent.max_context_chars / 1000) : ""}">
-      <div class="f">生成类并发条数</div>
-      <div class="d" style="margin-bottom:6px">出图 / 出片 / 配音同时跑几条（1-4，默认 2）。每条都花钱，填 1 = 全部排队</div>
+      <div class="f">出图 / 出视频 / 配音同时跑几条</div>
+      <div class="d" style="margin-bottom:6px">1–4，默认 2。填 1 就一条条排队</div>
       <input id="ag-genpar" type="number" min="1" max="4" value="${s.agent.gen_parallel_max || 2}">
-      <div class="f">定时任务跑绿之后再看一眼</div>
-      <div class="d" style="margin-bottom:6px">定时任务判绿但汇报很长时，再问一句「真办完没」；存疑只在通知末尾提醒，不改判。每条约两万分之一美金。默认关${judgeWarn}</div>
-      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--owb-text-2);cursor:pointer">
-        <input type="checkbox" id="ag-second" style="margin:0" ${s.agent.second_opinion ? "checked" : ""}>
-        长汇报再确认一次
+      <div class="f">主模型出故障时换哪个</div>
+      <div class="d" style="margin-bottom:6px">${fo ? `现在是 <b>${esc(fo)}</b>。` : "没设：出故障直接报错。"}
+        <a class="link" id="ag-goto-failover" href="#">去 设置 → 模型 → 对话 里改</a></div>
+      <div class="f">没做完时自动接着做几轮</div>
+      <div class="d" style="margin-bottom:6px">到了上限还没做完，就自动再做几轮，每轮都花钱。0 = 关（默认）</div>
+      <input id="ag-rounds" type="number" min="0" max="20" value="${s.agent.auto_continue_rounds || 0}">
+    </div>
+    <div class="card-item">
+      <div class="t">让小模型把关</div>
+      <div class="d" style="margin-bottom:10px">勾上的项，会先问一个便宜的小模型再决定，一万次约 0.5 美元。默认都不勾。${judgeWarn}</div>
+      <label style="${rowCss}">
+        <input type="checkbox" id="ag-cgate" style="margin:2px 0 0" ${s.agent.continue_gate ? "checked" : ""}>
+        <span>确认没做完才接着做<br><span style="${noteCss}">上面的轮数填 1 以上才有用</span></span>
       </label>
-      <div class="f">定时任务没变化就不推</div>
-      <div class="d" style="margin-bottom:6px">推送前跟上一次推出的那条比，没新内容就不响铃（记录照留）；失败或存疑照推。每条约两万分之一美金。默认关${judgeWarn}</div>
-      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--owb-text-2);cursor:pointer">
-        <input type="checkbox" id="ag-pgate" style="margin:0" ${s.agent.push_gate ? "checked" : ""}>
-        没新内容不推送
+      <label style="${rowCss}">
+        <input type="checkbox" id="ag-mgate" style="margin:2px 0 0" ${s.agent.memory_gate ? "checked" : ""}>
+        <span>AI 只存以后用得上的记忆<br><span style="${noteCss}">你自己写的不受影响</span></span>
+      </label>
+      <label style="${rowCss}">
+        <input type="checkbox" id="ag-agate" style="margin:2px 0 0" ${s.agent.ask_gate ? "checked" : ""}>
+        <span>少问我不必问的问题<br><span style="${noteCss}">它自己拿主意的，会在汇报里写明</span></span>
+      </label>
+      <label style="${rowCss}">
+        <input type="checkbox" id="ag-sgate" style="margin:2px 0 0" ${s.agent.skill_gate ? "checked" : ""}>
+        <span>没指定技能时自动挑一个</span>
+      </label>
+      <label style="${rowCss}">
+        <input type="checkbox" id="ag-second" style="margin:2px 0 0" ${s.agent.second_opinion ? "checked" : ""}>
+        <span>定时任务办完后再核实一遍<br><span style="${noteCss}">汇报很长才核实；有疑问只在通知末尾提一句</span></span>
+      </label>
+      <label style="${rowCss};margin-bottom:0">
+        <input type="checkbox" id="ag-pgate" style="margin:2px 0 0" ${s.agent.push_gate ? "checked" : ""}>
+        <span>定时任务没新内容就不通知<br><span style="${noteCss}">记录照留；失败或有疑问照常通知</span></span>
       </label>
     </div>
     <button class="btn-brand" id="ag-save">保存</button><span class="ok-msg" id="ag-msg"></span>` : `
@@ -2927,6 +2953,10 @@ async function renderAgentPane(pane, s) {
       // 漏掉这个字段不会报错，只会在某次「改了下步数上限」之后悄悄把备用渠道关掉
       failover_model: (s.agent || {}).failover_model || "",
     } }, pane.querySelector("#ag-msg"));
+  const goFailover = pane.querySelector("#ag-goto-failover");
+  if (goFailover) goFailover.onclick = (e) => { e.preventDefault(); gotoModelsField(s, "failover"); };
+  const goJudge = pane.querySelector("#ag-goto-judge");
+  if (goJudge) goJudge.onclick = (e) => { e.preventDefault(); gotoModelsField(s, "judge"); };
   renderEngineCard(pane.querySelector("#ag-engines"));
   renderThinkingCard(pane.querySelector("#ag-thinking"), pane.querySelector("#ag-thinking-note"), pane.querySelector("#ag-thinking-msg"));
 }
@@ -3267,7 +3297,7 @@ function engineExtraHtml(e, ctx = {}) {
     ${owner && ctx.multi ? `<label>成员可选的型号<span style="color:var(--owb-text-3)">（逗号隔开；上面钉的那个总能选。成员只能在这些里挑）</span>
       <input type="text" data-k="models" placeholder="不填 = 成员只能用上面钉的那个" value="${esc(allowed.filter((m) => m !== g.pinned).join(", "))}" autocomplete="off"></label>` : ""}
     ${owner && e.id === "codex" ? `<label class="eng-chk"><input type="checkbox" data-k="network"${g.network ? " checked" : ""}> <span>引擎里的命令能联网</span><span style="color:var(--owb-text-3)">（默认关，只管它在沙箱里跑的命令）</span></label>` : ""}
-    ${owner && e.id === "claude-code" ? `<label class="eng-chk"><input type="checkbox" data-k="approval"${g.approval ? " checked" : ""}> <span>要审批的动作交给安全中心判</span><span style="color:var(--owb-text-3)">（默认关；不开时名单外的命令多半被拒。用的是 claude 没公开的参数）</span></label>` : ""}
+    ${owner && e.id === "claude-code" ? `<label class="eng-chk"><input type="checkbox" data-k="approval"${g.approval ? " checked" : ""}> <span>删文件等操作先问我</span><span style="color:var(--owb-text-3)">（默认关。不勾时这类操作直接不做，名单外的命令也多半跑不了）</span></label>` : ""}
     ${owner && (e.id === "claude-code" || e.id === "codex") ? `<label class="eng-chk"><input type="checkbox" data-k="relay"${g.relay ? " checked" : ""}> <span>借给它的工具（生图、资料库等）在这边执行</span><span style="color:var(--owb-text-3)">${e.id === "codex" ? "（默认关；开了审批、记账跟内置引擎一样，它命令行里的 owb 除外）" : "（默认关；开了审批、记账、组织规矩跟内置引擎一样）"}</span></label>` : ""}
     <label>${esc(e.thinkingLabel || "思考模式")}<span style="color:var(--owb-text-3)">（只对这个引擎生效；「跟随全局」= 用助理设置里的思考模式）</span>
       <select data-k="thinking">${ENGINE_THINK_LEVELS.map(([v, l]) => `<option value="${v}"${(o.thinking || "") === v ? " selected" : ""}>${l}</option>`).join("")}</select></label>
@@ -4181,7 +4211,7 @@ function renderImPane(pane, s) {
       </div>
       <div class="im-card im-card-static packed">
         <div class="im-card-h" role="button" tabindex="0" aria-expanded="false" data-activate="1" title="点一下展开 / 收起"><span class="ic">${ic("eraser")} </span><div class="tt"><b>清空 IM 会话记忆</b><span id="im-sess-n">正在数…</span></div><button class="btn-plain im-conn" id="im-sess-clear">清空全部</button><i class="im-ar" aria-hidden="true"></i></div>
-        <div class="im-card-b"><div class="d" style="font-size:12px">只清 IM 通道（飞书 / QQ / 微信）的上下文，不影响网页对话和记忆。截断长度在 <a class="link" id="im-goto-agent" href="#">智能体设置</a> 里调。</div><div class="im-r ok-msg" id="im-sess-r"></div></div>
+        <div class="im-card-b"><div class="d" style="font-size:12px">只清 IM 通道（飞书 / QQ / 微信）的上下文，不影响网页对话和记忆。每次给模型看多少字，在 <a class="link" id="im-goto-agent" href="#">设置 → 智能体</a>里调。</div><div class="im-r ok-msg" id="im-sess-r"></div></div>
       </div>`)}
     <div style="display:flex;align-items:center;gap:10px;margin-top:4px"><button class="btn-brand" id="im-save">保存全部</button><span class="ok-msg" id="im-msg"></span><span class="d" style="font-size:12px;margin-left:auto">其他助理通道：钉钉机器人双向 / Telegram / Slack 都走「通用 Webhook」桥接</span></div>`;
 
@@ -4414,7 +4444,12 @@ function renderImPane(pane, s) {
   pane.querySelector("#im-save").onclick = async () => {
     if (await saveSettings(imPayload(), globalMsg)) refreshStatus(false);
   };
-  pane.querySelector("#im-goto-agent").onclick = (e) => { e.preventDefault(); renderSettings("agent"); };
+  pane.querySelector("#im-goto-agent").onclick = async (e) => {
+    e.preventDefault();
+    await renderSettings("agent");
+    const ctxBox = document.getElementById("ag-ctx"); // 「每次最多给模型看多少字」，滚到眼前
+    if (ctxBox) { ctxBox.scrollIntoView({ block: "center" }); ctxBox.focus(); }
+  };
 
   // ---------- 上下文管理：数会话 / 一键清空（同样两步确认） ----------
   const sessN = pane.querySelector("#im-sess-n"), sessR = pane.querySelector("#im-sess-r"), sessBtn = pane.querySelector("#im-sess-clear");

@@ -264,12 +264,14 @@ const out = (...answers) => ({ ok: true, answers });
     ok(ui.indexOf('id="ag-mgate"') > ui.indexOf('id="ag-cgate"')
       && ui.indexOf('id="ag-mgate"') - ui.indexOf('id="ag-cgate"') < 2200,
       "★就近★ 跟另外那道判断模型的闸摆在一块儿");
-    ok(/两万分之一美金/.test(ui.slice(ui.indexOf('id="ag-cgate"'), ui.indexOf('id="ag-mgate"'))),
-      "  └ 说清楚它花钱");
-    const label = (ui.match(/<div class="f">(记之前[^<]*)<\/div>/) || [])[1];
-    ok(!!label, "  └ 找得到那一行的标题", label);
+    // 这一组几个开关花的是同一笔钱，组头说一次，不在每一项后面各说一遍
+    const at = ui.indexOf('id="ag-mgate"');
+    ok(/美元|美金|花钱/.test(ui.slice(ui.lastIndexOf('class="card-item"', at), at)),
+      "  └ 说清楚它花钱（写在这一组的组头）");
+    const label = (ui.match(/id="ag-mgate"[^>]*>\s*<span>([^<]+)/) || [])[1];
+    ok(!!label, "  └ 找得到勾选框上那句话", label);
     const i18n = fs.readFileSync(path.join(ROOT, "public", "js", "i18n.js"), "utf8");
-    ok(label && i18n.includes(`"${label}"`), "  └ 标题有英文（这个产品是双语的，漏一条就半中半英）", label);
+    ok(label && i18n.includes(`"${label}"`), "  └ 那句话有英文（这个产品是双语的，漏一条就半中半英）", label);
 
     const srv = src("server");
     ok(/b\.agent\.memory_gate !== undefined/.test(srv), "  └ 后端收得下这个开关");

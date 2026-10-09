@@ -278,14 +278,14 @@ const out = (...answers) => ({ ok: true, answers });
     ok(/s\.agent\.continue_gate \? "checked"/.test(ui), "  └ 存过之后回来还是勾着的（写了但从来没渲染是另一种坏）");
     ok(ui.indexOf('id="ag-cgate"') - ui.indexOf('id="ag-rounds"') > 0 &&
        ui.indexOf('id="ag-cgate"') - ui.indexOf('id="ag-rounds"') < 1400,
-      "★就近★ 摆在「自动续跑轮数」正下方：它管的就是那个数字要不要再往下走一轮");
-    ok(/两万分之一美金|美金|花钱|计费/.test(ui.slice(ui.indexOf('id="ag-rounds"'), ui.indexOf('id="ag-cgate"'))),
+      "★就近★ 摆在「没做完时自动接着做几轮」正下方：它管的就是那个数字要不要再往下走一轮");
+    ok(/美元|美金|花钱|计费/.test(ui.slice(ui.indexOf('id="ag-rounds"'), ui.indexOf('id="ag-cgate"'))),
       "  └ 说清楚它花钱");
 
     const i18n = fs.readFileSync(path.join(ROOT, "public", "js", "i18n.js"), "utf8");
-    const label = (ui.match(/<div class="f">(续跑之前[^<]*)<\/div>/) || [])[1];
-    ok(!!label, "  └ 找得到那一行的标题", label);
-    ok(label && i18n.includes(`"${label}"`), "  └ 标题有英文（这个产品是双语的，漏一条就半中半英）", label);
+    const label = (ui.match(/id="ag-cgate"[^>]*>\s*<span>([^<]+)/) || [])[1];
+    ok(!!label, "  └ 找得到勾选框上那句话", label);
+    ok(label && i18n.includes(`"${label}"`), "  └ 那句话有英文（这个产品是双语的，漏一条就半中半英）", label);
 
     const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, "config.example.json"), "utf8"));
     eq(cfg.agent.continue_gate, false, "  └ 配置模板里默认关着");

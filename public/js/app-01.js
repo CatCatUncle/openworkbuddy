@@ -1831,7 +1831,7 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
       const proc = ensureProc();
       let note = proc.querySelector(".trim-note");
       if (!note) { note = procNote("scissors", "", "trim-note"); proc.appendChild(note); }
-      note.lastChild.textContent = `历史过长，已截短较早的工具输出（约 ${Math.round((ev.chars || 0) / 1000)} 千字符），最近几步保留原文。可在 设置→智能体设置 调上下文上限`;
+      note.lastChild.textContent = `历史过长，已截短较早的工具输出（约 ${Math.round((ev.chars || 0) / 1000)} 千字符），最近几步保留原文。可在 设置 → 智能体 调「每次最多给模型看多少字」`;
     } else if (ev.type === "compact_start") {
       // 压缩要跟模型说一次话，长会话十几秒是常事，而它正卡在「他按下发送」和「第一个字」中间。
       // 只转圈不说话，他只能猜是模型卡了还是网断了——先把「在压什么、压多少、等了多久」摆出来
@@ -1847,7 +1847,7 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
       const note = compactNote(ensureProc());
       note.classList.remove("running");
       note.lastChild.textContent = ev.failed
-        ? `压缩失败：${ev.failed}。原内容未动（可在 设置→智能体设置 调大预算）`
+        ? `压缩失败：${ev.failed}。原内容未动（可在 设置 → 智能体 调大「每次最多给模型看多少字」）`
         : `已把早前 ${ev.removed || 0} 条消息压成摘要（原文存 data/compact-archive）`;
       if (ev.failed) note.classList.add("err");
     } else if (ev.type === "context") {

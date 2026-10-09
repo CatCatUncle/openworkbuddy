@@ -69,7 +69,7 @@ function renderSecurityPane(pane, s) {
     <div class="card-item">
       <div class="t">${ic("shield")} 数据安全</div>
       ${chk("sec-gateway", sec.gateway !== false, "安全网关", "总开关：命令审批与文件/网络黑白名单的硬拦截由它启用，关闭后只记审计不拦截")}
-      ${chk("sec-delprot", sec.delete_protect !== false, "删除保护", "rm 类删除命令必须在界面上批准后才执行")}
+      ${chk("sec-delprot", sec.delete_protect !== false, "删除保护", "AI 删文件前先问你")}
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size: 14px;margin:7px 0">
         批量删除审批阈值 <input id="sec-batch" type="number" min="1" style="width:70px;margin:0" value="${esc(String(sec.batch_delete_threshold ?? 50))}"> 个文件 ·
         审批等待上限 <input id="sec-aptimeout" type="number" min="10" style="width:70px;margin:0" value="${esc(String(sec.approval_timeout_s ?? 120))}"> 秒（超时按拒绝）
@@ -86,14 +86,14 @@ function renderSecurityPane(pane, s) {
     </div>
     <div class="card-item">
       <div class="t">${ic("keyboard")} 沙箱安全 · 命令</div>
-      <div class="d">按命令前缀匹配：放行名单直接执行，询问名单等你批准。每行一个。</div>
+      <div class="d">每行写一个命令开头。比如在放行名单写 rm，AI 删文件就不再先问你。</div>
       <div style="display:flex;gap:10px">
-        ${listCol("放行名单（直接执行）", "sec-cal", joinLines(sec.cmd_allow))}
-        ${listCol("询问名单（需批准）", "sec-cak", joinLines(sec.cmd_ask))}
+        ${listCol("放行名单（直接跑，不问你）", "sec-cal", joinLines(sec.cmd_allow))}
+        ${listCol("询问名单（先问你）", "sec-cak", joinLines(sec.cmd_ask))}
       </div>
-      ${chk("sec-crisk", sec.cmd_risk_gate === true, "名单外先判一句",
-        "名单外的命令（含 run_node）先问判断模型能否撤回，撤不回就弹审批，拿不准照跑。<b>命令原文会发给判断模型</b>，每条约两万分之一美金。默认关"
-        + (s.agent && s.agent.judge_ready ? "" : "<br><b>没配判断模型，勾了也不生效</b>（设置 → 模型 填 Key）"))}
+      ${chk("sec-crisk", sec.cmd_risk_gate === true, "名单外的命令先问小模型",
+        "它判断撤不回的，先问你；拿不准照跑。一万次约 0.5 美元，默认关。<b>命令原文会发给小模型。</b>"
+        + (s.agent && s.agent.judge_ready ? "" : '<br><b>还没配这个小模型，勾了不生效</b> <a class="link" id="sec-goto-judge" href="#">去 设置 → 模型 添加「TypeSafe Jev」</a>'))}
       ${sbxOs ? `
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size: 14px;margin:12px 0 4px">
         <b>系统沙箱</b> <select id="sec-sbx" style="margin:0">${[
@@ -160,6 +160,8 @@ function renderSecurityPane(pane, s) {
   renderTwoFactorBox(pane.querySelector("#tfa-box"));
   if (!po) return; // 下面全是平台管理员那套卡片的事件；没画出来就别去 querySelector
 
+  const goJudge = pane.querySelector("#sec-goto-judge");
+  if (goJudge) goJudge.onclick = (e) => { e.preventDefault(); gotoModelsField(s, "judge"); };
   const linesOf = (sel) => pane.querySelector(sel).value.split(/\n/).map(x => x.trim()).filter(Boolean);
   pane.querySelector("#sec-save").onclick = () => saveSettings({
     security: {
