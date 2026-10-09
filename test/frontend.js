@@ -3680,6 +3680,12 @@ const ENGINE_I18N_CASES = [
   ["这一趟是计划模式，本机 CLI 按只读跑；引擎设置里手填的档位 bypassPermissions、沙箱 danger-full-access、全局连接器、附加参数 --yolo / --full-auto这次不用", "本机 CLI 按只读跑；引擎设置里手填的"],
   ["这一趟是问答模式，本机 CLI 按只读跑；引擎设置里手填的全局连接器这次不用", "这次不用"],
   ["引擎那头上次的会话线程已经不在了，这次把对话历史重新带过去，开一根新的"],
+  // 本机 Claude Code 没开审批（engineGuard 的 canAsk）：尾巴指去引擎卡上「删文件等操作先问我」那一勾
+  ["安全档位是「每步都问」，本机 Claude Code 这一趟没开审批，要写文件或跑命令会被直接拒。想让它先问你：设置 → 智能体 → 底层引擎，勾「删文件等操作先问我」。", "本机 Claude Code 这一趟没开审批，要写文件或跑命令会被直接拒。"],
+  ["按你的安全设置，本机 Claude Code 这一趟不跑：sudo、rm。想让它先问你：设置 → 智能体 → 底层引擎，勾「删文件等操作先问我」。", "按你的安全设置，本机 Claude Code 这一趟不跑："],
+  ["按你的安全设置，本机 Claude Code 这一趟不跑：rm、rmdir。想让它先问你：设置 → 智能体 → 底层引擎，勾「删文件等操作先问我」（多人共用时只有平台管理员能改）。", "想让它先问你：设置 → 智能体 → 底层引擎，勾「删文件等操作先问我」${isMultiUser() ? \"（多人共用时只有平台管理员能改）\" : \"\"}。"],
+  ["删文件等操作这次没法弹卡问你（connect ENOENT），碰到会直接不做", "删文件等操作这次没法弹卡问你（"],
+  ["借出去的工具没能改由主进程跑（connect ENOENT），这次照老样子由桥自己跑", "），这次照老样子由桥自己跑"],
   ["Codex 生成的图已放进对话目录：codex-image-1007-120000.png、codex-image-1007-120001.png", "Codex 生成的图已放进对话目录："],
   ["本机 Codex 还在运行，已 30 秒没有新输出", " 还在运行，已 "],
   ["本机 Claude Code 还在运行，已 1 分钟没有新输出", "没有新输出"],
@@ -3717,6 +3723,10 @@ function testEngineI18n() {
     en("回复里提到的文件没找到：a.pdf、b.pdf、c.pdf、d.pdf、e.pdf 等 7 个"));
   ok("  └ 视频收单的任务号多于三个：尾巴「等 5 个」也翻", en(ENGINE_I18N_CASES[ENGINE_I18N_CASES.length - 1][0]) === "When stopped, 5 video job(s) had been accepted upstream. Task IDs: a, b, c (5 in all). This provider can't cancel them and still charges; they'll go into this chat's folder when ready",
     en(ENGINE_I18N_CASES[ENGINE_I18N_CASES.length - 1][0]));
+  ok("  └ 没开审批那句：命令列表翻、尾巴指的勾名跟引擎卡英文一字不差", en("按你的安全设置，本机 Claude Code 这一趟不跑：sudo、rm。想让它先问你：设置 → 智能体 → 底层引擎，勾「删文件等操作先问我」。") ===
+    "Per your safety settings, your local Claude Code won't run these this time: sudo, rm. To have it ask you first: Settings → Agent → Engine, tick “Ask me before deleting files and similar”."
+    && en("删文件等操作先问我") === "Ask me before deleting files and similar", en("按你的安全设置，本机 Claude Code 这一趟不跑：sudo、rm。想让它先问你：设置 → 智能体 → 底层引擎，勾「删文件等操作先问我」。"));
+  ok("  └ 多人共用：说清只有平台管理员能改", en("安全档位是「每步都问」，本机 Claude Code 这一趟没开审批，要写文件或跑命令会被直接拒。想让它先问你：设置 → 智能体 → 底层引擎，勾「删文件等操作先问我」（多人共用时只有平台管理员能改）。").endsWith(" (when shared, only the platform admin can change this)."));
   ok("  └ 安全档位的名字单独也能翻（安全页下拉）", en("只看不动") === "Look only" && en("每步都问") === "Ask every step" && en("全自动") === "Full auto" && en("自动改文件") === "Edit files for me");
   // ★反向对照★ 摘掉 i18n.js 里「本机引擎运行页上的那些话」那一节再加载：这套断言得真红，而且红的就是这一节管的句子
   const src = fs.readFileSync(path.join(jsDir, "i18n.js"), "utf8");

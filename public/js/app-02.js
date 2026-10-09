@@ -2585,7 +2585,7 @@ async function pollApprovals() {
       return;
     }
     if (allow && r.downgraded) toast(`已允许，本次运行期间不再问「${r.ruleKey}」。${r.reason || "永久放行需平台管理员设置"}`);
-    else if (allow && r.scope === "always" && r.ruleKey) toast(`已永久放行「${r.ruleKey}」（可在 设置 → 安全中心 的放行名单里删掉）`);
+    else if (allow && r.scope === "always" && r.ruleKey) toast(`已永久放行「${r.ruleKey}」，要撤回去 设置 → 安全 的「放行名单」删掉`);
     else if (allow && r.scope === "session" && r.ruleKey) toast(`本次运行期间不再问「${r.ruleKey}」`);
     pollApprovals();
   });

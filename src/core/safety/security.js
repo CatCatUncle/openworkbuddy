@@ -69,10 +69,14 @@ const ENGINE_MODES = {
  *
  * disallow 这一串是同一个道理的第二面：名单里写着「这类命令要问我一下」，可这条路上
  * 没有「问」这个动作，那就只剩「不给用」。全自动档不加——那一档的意思就是别再拦了。
+ * 本机 Claude Code 勾了「删文件等操作先问我」就有「问」了（见下面的 askingGuard）。
  *
+ * @param {any} sec
+ * @param {{canAsk?: boolean}} [o] canAsk：这个引擎勾一下就能弹卡问（本机 Claude Code），只是属主没勾。
+ *   提示里就别说「没有审批通道」，指到那颗勾上——说没有，人就不会去找
  * @returns {{mode:string, claudeMode:string, codexSandbox:string, allowShim:boolean, disallow:string[], note:string}}
  */
-function engineGuard(sec) {
+function engineGuard(sec, { canAsk = false } = {}) {
   const mode = permissionMode(sec);
   const m = ENGINE_MODES[mode] || ENGINE_MODES[DEFAULT_MODE];
   const heads = [];
@@ -80,16 +84,26 @@ function engineGuard(sec) {
     // 名单里写的是前缀（"sudo "、"diskutil erase"），CLI 那边的匹配单位是可执行文件名，
     // 所以取第一个词。"diskutil erase" 收紧成整个 diskutil：宁可多禁一点，也别放过
     for (const p of (sec || {}).cmd_ask || []) heads.push(String(p || "").trim().split(/\s+/)[0]);
-    // 删除保护是另一颗独立开关（不在 cmd_ask 里），但道理一样：说了要问，这条路问不着
-    if ((sec || {}).delete_protect !== false) heads.push("rm");
+    // 删除保护是另一颗独立开关（不在 cmd_ask 里），但道理一样：说了要问，这条路问不着。
+    // rmdir 也得点名：「自动改文件」档里 claude 自己放行 rm 和 rmdir（2.1.295 实测），unlink、shred 这些它本来就会来问
+    if ((sec || {}).delete_protect !== false) heads.push("rm", "rmdir");
   }
   const uniq = [...new Set(heads.filter(Boolean))];
-  const notes = {
-    plan: "安全档位是「只看不动」：本机 CLI 这一趟按只读跑，不写文件也不跑命令。",
-    ask: "安全档位是「每步都问」，而本机 CLI 这条路没有审批通道（非交互，没人能点同意）——它要写文件或跑命令会被直接拒。想让它动手，把档位调到「自动改文件」。",
-    auto: uniq.length ? `按你的安全设置，本机 CLI 不许自己跑这些命令：${uniq.join("、")}（这条路没有审批通道，只能直接禁）。` : "",
-    full: "",
-  };
+  // 那颗勾只有属主看得见：多人共用时说一声找谁，不然成员翻遍设置也找不到（跟 engines/approve.js 的 wayOut 一个口径）
+  const tip = `想让它先问你：设置 → 智能体 → 底层引擎，勾「删文件等操作先问我」${isMultiUser() ? "（多人共用时只有平台管理员能改）" : ""}。`;
+  const notes = canAsk
+    ? {
+      plan: "安全档位是「只看不动」：本机 CLI 这一趟按只读跑，不写文件也不跑命令。",
+      ask: "安全档位是「每步都问」，本机 Claude Code 这一趟没开审批，要写文件或跑命令会被直接拒。" + tip,
+      auto: uniq.length ? `按你的安全设置，本机 Claude Code 这一趟不跑：${uniq.join("、")}。` + tip : "",
+      full: "",
+    }
+    : {
+      plan: "安全档位是「只看不动」：本机 CLI 这一趟按只读跑，不写文件也不跑命令。",
+      ask: "安全档位是「每步都问」，而本机 CLI 这条路没有审批通道（非交互，没人能点同意）——它要写文件或跑命令会被直接拒。想让它动手，把档位调到「自动改文件」。",
+      auto: uniq.length ? `按你的安全设置，本机 CLI 不许自己跑这些命令：${uniq.join("、")}（这条路没有审批通道，只能直接禁）。` : "",
+      full: "",
+    };
   return {
     mode,
     claudeMode: m.claude,
@@ -112,6 +126,39 @@ function engineGuard(sec) {
  */
 function readOnlyGuard(base) {
   return { ...base, claudeMode: ENGINE_MODES.plan.claude, codexSandbox: ENGINE_MODES.plan.codex, allowShim: false, readOnly: true, note: "" };
+}
+
+/**
+ * 审批交回了主进程的那一趟（属主勾了「删文件等操作先问我」，只有 claude 有这条路，见 engines/approve.js）：
+ * 名单里说「要问」的不再直接禁，改挂成 claude 的「先问」规则（claude-code.js 拼成 --settings）——
+ * 它碰到这类命令就来问，主进程摆卡等人点。不挂的话「自动改文件」档里它自己就把 rm 跑了，根本不来问。
+ * 档位那两句「这条路没有审批通道」也不说了：现在有了，碰到会弹卡
+ * @param {ReturnType<typeof engineGuard>} base
+ * @returns {ReturnType<typeof engineGuard> & {ask: string[]}}
+ */
+function askingGuard(base) {
+  if (/** @type {any} */ (base).readOnly) return { ...base, ask: [] };
+  // 「只看不动」那句照说：能问了也还是只读
+  return { ...base, ask: base.disallow, disallow: [], note: base.mode === "plan" ? base.note : "" };
+}
+
+/**
+ * 要人点头、这次又没批下来（或者问不了）的时候，用户去哪儿放行。照设置页上真有的字写：模型会原样转告，
+ * 差一个字用户就找不到（10-09 有人照着「设置 → 安全中心 的名单」翻了半天——页签叫「安全」，名单叫「放行名单」）。
+ * 内置引擎的审批闸（agent/tools.js passGate）和本机 Claude Code 的审批（engines/approve.js）共用这一份。
+ * 设置里没地方能预先放行的返回空串：指过去用户翻遍了也找不到
+ * @param {{rule?: string, ruleKey?: string, blacklist?: boolean}} verdict
+ */
+function wayOut(verdict) {
+  const rule = String((verdict && verdict.rule) || "");
+  const who = isMultiUser() ? "（多人共用时只有平台管理员能改）" : "";
+  if (rule.startsWith("删除保护")) return `到 设置 → 安全 →「数据安全」关掉「删除保护」，或者在「沙箱安全 · 命令」的「放行名单」加一行 rm${who}`;
+  if (rule.startsWith("命令询问名单")) return `到 设置 → 安全 →「沙箱安全 · 命令」，把它从「询问名单」删掉，或者加进「放行名单」${who}`;
+  if (rule.startsWith("每步都问") || rule.startsWith("写文件")) return `到 设置 → 安全 →「权限档位」选「自动改文件」${who}`;
+  // 高危命令、碰了文件黑名单、看不清内容的（编码过、太长没拆完）、代码里开子进程：要么排在放行名单前面判，
+  // 要么本来就不让永久放开，加进名单也照样问
+  if (!isPersistableRule(verdict && verdict.ruleKey) || (verdict && verdict.blacklist)) return "";
+  return `到 设置 → 安全 →「沙箱安全 · 命令」的「放行名单」加上这类命令${who}`;
 }
 
 const DEFAULTS = {
@@ -1567,7 +1614,7 @@ function isPersistableRule(ruleKey) {
  *   没有归属就等于谁登录了都能看，还能替别人点「允许」。
  *   IM / 定时任务这类没有登录态的后台跑法留空，只有平台管理员看得见。
  */
-function requestApproval(kind, text, { timeoutMs = 120000, stopSignal, rule = "", ruleKey = "", source = "", owner = "", detail = "", seg = "", sessionId = "", blacklist = false } = {}) {
+function requestApproval(kind, text, { timeoutMs = 120000, stopSignal = null, rule = "", ruleKey = "", source = "", owner = "", detail = "", seg = "", sessionId = "", blacklist = false } = {}) {
   const id = "ap_" + Date.now() + "_" + Math.floor(Math.random() * 1e6);
   // 只算一次：列表、通知、计时器三处必须是同一个时刻，否则审批卡倒数到 0 了人还能点
   const deadline = Date.now() + Math.max(5000, timeoutMs);
@@ -1719,6 +1766,8 @@ module.exports = {
   permissionMode,
   engineGuard, // 把档位翻成外部 CLI 引擎认的开关（claude -p / codex exec）
   readOnlyGuard, // 问答 / 计划那一趟：不管档位，本机 CLI 按只读跑
+  askingGuard, // 审批交回了主进程：要问的改挂成 claude 的「先问」，碰到弹卡
+  wayOut, // 没批下来时用户去哪儿放行（设置页上的真名）
   checkWrite,
   checkCommand,
   checkCode,

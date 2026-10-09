@@ -197,7 +197,7 @@ function gateView(id, config) {
     pinned: typeof owner.model === "string" ? owner.model.trim() : "",
     allowed: gate.allowedModels(owner),
     network: owner.network === true,
-    approval: owner.approval === true, // claude 要审批的动作交给安全中心判（engines/approve.js）
+    approval: owner.approval === true, // claude 那颗「删文件等操作先问我」（engines/approve.js）
     relay: owner.relay === true, // 借出去的工具交回主进程跑（engines/tool-relay.js）
   };
 }

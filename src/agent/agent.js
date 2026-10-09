@@ -312,6 +312,7 @@ const evolve = require("./evolve");
 const mediaModels = require("../core/model/media-models"); // 各路媒体模型：把「默认那条 + 还能选谁」一起交给工具
 const harvest = require("../engines/harvest"); // 本机引擎出视频：上游收了单、这一趟没收回来的，后台接着收
 const toolRelay = require("../engines/tool-relay"); // 借出去的工具交回主进程跑（属主在引擎卡上勾，默认关）
+const engineApprove = require("../engines/approve"); // 本机 Claude Code 要审批时交回这里判、摆卡（属主勾「删文件等操作先问我」）
 const scheduler = require("../core/automation/scheduler"); // 排期表：只取那个插座（activeScheduler），实例是 server 插上来的
 
 // ================= 成果核验（治「幻觉执行」） =================
@@ -2528,8 +2529,13 @@ function modePrompt(mode) {
     // 问答 / 计划：不管安全档位是哪档，这一趟按只读跑（见 security.readOnlyGuard）。
     // 内置引擎这两档只摆读的工具、清单外的一律不执行（runTask 里的 readOnlyMode）；换成本机 CLI，能做的事不该变多
     const readOnly = mode === "ask" || mode === "plan";
-    // 档位要在搭桥之前定：命令行入口给不给看它。以前 codex 不看，「只看不动」照样把 owb 挂进 PATH
-    const baseGuard = security.engineGuard(security.getSecurity(config));
+    // 属主勾了「删文件等操作先问我」（engine_options["claude-code"].approval: true，见 engines/approve.js）：
+    // claude 要审批时桥把这一问交回这里，按这一趟的安全设置判，要人点头的摆一张跟内置引擎一样的审批卡——
+    // 网页、终端、手机都看得见，等多久、叫停收卡也跟内置那边一样。走的是下面 relay 那个口子，没勾「交回主进程跑」时一个工具都不借
+    const askOn = backend.id === "claude-code" && opts.approval === true && !readOnly;
+    // 档位要在搭桥之前定：命令行入口给不给看它。以前 codex 不看，「只看不动」照样把 owb 挂进 PATH。
+    // claude 没勾那颗的：提示里指到那颗勾上，别说「没有审批通道」
+    const baseGuard = security.engineGuard(security.getSecurity(config), { canAsk: backend.id === "claude-code" && !askOn });
     const guard = readOnly ? security.readOnlyGuard(baseGuard) : baseGuard;
     let bridged = null;
     // 属主在引擎卡上勾了「借给它的工具在这边执行」（engine_options[引擎].relay: true，默认关，见 engines/tool-relay.js）：
@@ -2559,10 +2565,23 @@ function modePrompt(mode) {
         return r;
       } finally { release(); }
     };
+    // 审批交回来以后在这儿判（askOn 见上面）：卡上的来源、谁批、哪条对话跟内置引擎 passGate 那张一样
+    const approveHere = (req, { signal }) => {
+      const s = sec || security.getSecurity(config);
+      return engineApprove.decide(req, {
+        sec: s, readOnly, root: getWorkspaceDir(), base: cwd,
+        ask: engineApprove.cardAsk({ sec: s, signal, deadline: () => deadline, source: taskLabel || "", owner: user || "", sessionId: sessionId || "" }),
+      });
+    };
     let relay = null;
-    if (opts.relay === true) {
-      try { relay = await toolRelay.open({ exec: relayExec, stopSignal, deadline: () => deadline, readOnly }); }
-      catch (e) { emit({ type: "status", notice: true, text: `借出去的工具没能改由主进程跑（${(e && e.message) || e}），这次照老样子由桥自己跑`, depth: 0 }); }
+    let askDown = false; // 勾了「先问我」、口子没开成：已经说过碰到会直接不做
+    if (opts.relay === true || askOn) {
+      try { relay = await toolRelay.open({ exec: relayExec, approve: askOn ? approveHere : null, stopSignal, deadline: () => deadline, readOnly }); }
+      catch (e) {
+        const why = (e && e.message) || e;
+        if (opts.relay === true) emit({ type: "status", notice: true, text: `借出去的工具没能改由主进程跑（${why}），这次照老样子由桥自己跑`, depth: 0 });
+        if (askOn) { askDown = true; emit({ type: "status", notice: true, text: `删文件等操作这次没法弹卡问你（${why}），碰到会直接不做`, depth: 0 }); }
+      }
     }
     try {
       bridged = bridge.attach(backend.id, {
@@ -2587,24 +2606,28 @@ function modePrompt(mode) {
         disabled: config.mcp_disabled || [],
         readOnly,
         noShim: !guard.allowShim,
-        // 要审批的动作交给安全中心判（engines/approve.js）：属主在引擎设置里勾了才挂，只认布尔 true
-        approve: backend.id === "claude-code" && opts.approval === true && !readOnly,
-        // 交回主进程跑：桥只拿凭据文件的路径（见上面的 relay）
-        relayFile: relay ? relay.ticketFile : "",
+        // 「删文件等操作先问我」（engines/approve.js）：属主在引擎设置里勾了才挂，只认布尔 true
+        approve: askOn,
+        // 交回主进程跑：桥只拿凭据文件的路径（见上面的 relay）。只开审批的那一趟，借出去的工具照旧桥自己跑
+        relayFile: relay && opts.relay === true ? relay.ticketFile : "",
+        approveFile: relay && askOn ? relay.ticketFile : "",
       });
     } catch (e) {
       // 挂不上就照常跑，只是少了那些工具；不能因为桥没搭起来把整个任务毙掉
       emit({ type: "status", notice: true, text: `本项目工具没能挂给引擎（${e.message}），这次只能用 CLI 自带的工具`, depth: 0 });
       if (relay) { relay.close().catch(() => {}); relay = null; }
     }
-    // 交回来的只认这一趟借出去的那几样（跟桥那头同一份名单）
-    if (relay) relay.allow(bridged.lent);
+    // 交回来的只认这一趟借出去的那几样（跟桥那头同一份名单）；只开审批的那一趟一样都不收
+    if (relay) relay.allow(opts.relay === true ? bridged.lent : []);
+    // 审批真交回来了：名单里说「要问」的改成 claude 的「先问」（碰到弹卡），不再直接禁；那句「没有审批通道」也不说了
+    const runGuard = bridged && bridged.askHuman ? security.askingGuard(guard) : guard;
     // 走网址的连接器两个 CLI 写法各不相同，这边没转。不说一句，用户只会看到工具少了几个
     if (bridged && bridged.skipped.length) emit({ type: "status", notice: true, text: `这几个连接器走网址，本机引擎挂不上：${bridged.skipped.join("、")}`, depth: 0 });
 
     // 档位收紧了就明说一句。不说的话，用户看到的是「它怎么什么都不肯干」，
     // 而真正的原因在另一个页面上的一颗开关里，隔着两层根本联系不起来
-    if (guard.note) emit({ type: "status", notice: true, text: guard.note, depth: 0 });
+    // 口子没开成那句已经说了碰到会直接不做，档位那句（这一趟不跑哪些、没有审批通道）不再重复；「只看不动」照说
+    if (runGuard.note && !(askDown && runGuard.mode !== "plan")) emit({ type: "status", notice: true, text: runGuard.note, depth: 0 });
     // 属主在引擎设置里手填的档位、沙箱、放宽权限的附加参数，平时以它为准（手填是更明确的表态）；
     // 只读那一趟不认，在 runWith 里 ...opts 之后盖回去。盖了什么在运行页上说一句，免得属主以为自己的设置没生效是 bug
     const loose = readOnly ? require("../engines/gate").looseArgs(opts.extraArgs, backend.id) : null;
@@ -2637,7 +2660,7 @@ function modePrompt(mode) {
         maxTurns: config.agent.max_steps || 25,
         // 安全档位：这两个 CLI 自带工具、自带循环，写文件跑命令**不经过**本项目的安全中心，
         // 所以档位得翻成它们自己认的开关一路传下去（见 security.engineGuard）
-        guard,
+        guard: runGuard,
         // 思考模式跟 app 设置对齐：设置页选什么档，接管的本机 CLI 就用什么档。
         // 放在 opts 前面 = 单个引擎还能自己覆盖（engine_options[id].thinking）
         thinking: prefs.agentCfg(config).thinking || "auto",
@@ -2768,12 +2791,17 @@ function modePrompt(mode) {
     // claude 按「自动改文件」跑（acceptEdits）：改文件不用问，命令要审批——而 -p 是非交互的，没人点得了同意。
     // 不说的话它被拒一次就换个写法再试，一趟能撞十几回，最后交付里只剩一句「环境限制」
     const stopLoss = extra.engine === "claude-code" && extra.claudeMode === "acceptEdits"
-      ? bridged && bridged.approve
-        // 属主勾了「要审批的动作交给安全中心判」（engines/approve.js）：命令照名单裁决，要人点头的那几类照样没人批
-        ? "这一趟的档位是「自动改文件」：改文件不用问；命令按安全中心的名单裁决，名单放行的直接跑，删除、sudo 这类要人点头的会被拒——这条路没人能点同意。" +
-          "被拒一次就别换个写法再试：停下来，在交付里写清楚卡在哪条命令、它要干什么，让用户决定是自己在终端里跑，还是在 设置 → 安全中心 的名单里预先放行这类。"
-        : `这一趟的档位是「自动改文件」：改文件不用问；命令行里${bridged && bridged.lent.length ? "除了 owb，" : ""}只有少数只读命令（ls、cat 这类）能直接跑，别的多半会被拒——这条路没人能点同意。` +
-          "被拒一次就别换个写法再试：停下来，在交付里写清楚卡在哪条命令、它要干什么，让用户决定是自己在终端里跑，还是把安全档位调到「全自动」。"
+      ? bridged && bridged.askHuman
+        // 属主勾了「删文件等操作先问我」、审批也交回了主进程（engines/approve.js）：要人点头的弹卡问用户
+        ? "这一趟的档位是「自动改文件」：改文件不用问；命令按用户的安全设置裁决，放行的直接跑，删除、sudo 这类会弹卡问用户，批了才跑。" +
+          "没批下来就别换个写法再试：停下来，在交付里写清楚卡在哪条命令、它要干什么，让用户决定。"
+        : bridged && bridged.approve
+        // 勾了，但这一趟审批没交回主进程（口子没开成）：桥里照规则判，要人点头的照拒，拒的话里写了去哪儿放行
+        ? "这一趟的档位是「自动改文件」：改文件不用问；命令按用户的安全设置裁决，放行的直接跑，删除、sudo 这类要人点头的会被拒——这一趟没法问人。" +
+          "被拒一次就别换个写法再试：停下来，在交付里写清楚卡在哪条命令、它要干什么，照拒绝说明里写的告诉用户去哪儿放行，或者让他自己在终端里跑。"
+        : `这一趟的档位是「自动改文件」：改文件不用问；命令行里${bridged && bridged.lent.length ? "除了 owb，" : ""}只有少数只读命令（ls、cat 这类）能直接跑，别的多半会被拒——这一趟没开审批，没人能点同意。` +
+          "被拒一次就别换个写法再试：停下来，在交付里写清楚卡在哪条命令、它要干什么，让用户决定是自己在终端里跑，" +
+          `还是到 设置 → 智能体 → 底层引擎 勾上「删文件等操作先问我」${security.isMultiUser() ? "（多人共用时只有平台管理员能改）" : ""}——勾了以后这类会弹卡问他。`
       : "";
     const modeLine =
       mode === "ask" ? "本次只回答问题，不改文件、不执行有副作用的命令。"

@@ -65,10 +65,10 @@ function explain(stderr, code) {
     return "本机 Claude Code 账号额度不够了。";
   if (/ENOENT|command not found/i.test(s))
     return "找不到 claude 命令。装一个（npm i -g @anthropic-ai/claude-code）或在设置里填绝对路径。";
-  // 「要审批的动作交给安全中心判」靠的是 claude 没写进 --help 的参数：它不认、或者说找不到那个工具，当场就退出。
+  // 「删文件等操作先问我」靠的是 claude 没写进 --help 的参数：它不认、或者说找不到那个工具，当场就退出。
   // 只点名是哪个开关、去哪关，原话照附
   if (/permission-prompt-tool/.test(s) && /not found|unknown option/i.test(s))
-    return `本机 Claude Code 没接住「要审批的动作交给安全中心判」这一项，先到 ${gate.WHERE} 里把这一勾去掉再跑。它的原话：${s.slice(-600)}`;
+    return `本机 Claude Code 没接住「删文件等操作先问我」这一项，先到 ${gate.WHERE} 里把这一勾去掉再跑。它的原话：${s.slice(-600)}`;
   return s ? s.slice(-600) : `claude 异常退出（退出码 ${code}）且没有任何输出`;
 }
 
@@ -235,6 +235,18 @@ async function probeAddDir(bin) {
 }
 
 /**
+ * 这版 claude 认不认 --settings？「先问」规则靠它挂（见 run() 里 guard.ask 那段）。
+ * 跟 --add-dir 一样用 --help 探：给它一份合法的 JSON 也是 exit 0，假值法判不出来
+ */
+const settingsCaps = new Map();
+async function probeSettings(bin) {
+  if (settingsCaps.has(bin)) return settingsCaps.get(bin);
+  const p = probeHelp(bin, "--settings");
+  settingsCaps.set(bin, p);
+  return p;
+}
+
+/**
  * 工作目录之外还要让它读哪些地方：真实存在、不是 cwd 本身、去重。
  * 导出是为了让测试不起进程也能验这段逻辑。
  */
@@ -338,8 +350,11 @@ async function run({
   // 读一下都是「需要审批」，而这里没人能点同意，对外就是一句「不能读取文件」。
   // --add-dir 把这几处明着放进来（一个目录一个 --add-dir：这个选项是变长参数，
   // 一口气跟一串会把后面的东西也当目录吞掉）。老版 claude 不认这个选项时不发。
-  // 两个探测互相不依赖，串行等于白等一趟往返。都带模块级缓存，同一个 bin 只有第一次真去 spawn
-  const [addDirOk, thinkingFlag] = await Promise.all([probeAddDir(exe), probeThinking(exe)]);
+  // 几个探测互相不依赖，串行等于白等一趟往返。都带模块级缓存，同一个 bin 只有第一次真去 spawn
+  // 「先问」规则（guard.ask，见 security.askingGuard）只有挂上了审批工具才有人答
+  const asks = Array.isArray(guard.ask) ? guard.ask : [];
+  const canAsk = asks.length > 0 && !!mcpConfigPath && !!permissionPromptTool;
+  const [addDirOk, thinkingFlag, settingsOk] = await Promise.all([probeAddDir(exe), probeThinking(exe), canAsk ? probeSettings(exe) : false]);
   const dirs = pickAddDirs(addDirs, cwd);
   if (dirs.length && addDirOk) for (const d of dirs) args.push("--add-dir", d);
   if (mcpConfigPath) {
@@ -364,8 +379,14 @@ async function run({
   // 「只看不动」那一档连这条也不放：本项目的工具是能写文件的，从这道后门绕开档位，
   // 跟没设过没区别。别的档位放行——这批工具从桥回流时照样过本项目的安全中心
   if (shimBin && guard.allowShim !== false) args.push("--allowed-tools", `Bash(${shimBin}:*)`);
-  // 名单里说「这类命令要问我一下」的，在这条路上问不着（-p 非交互），只能直接不给用
-  for (const t of guard.disallow || []) args.push("--disallowed-tools", t);
+  // 名单里说「这类命令要问我一下」的：挂了审批（guard.ask，见 security.askingGuard）就写成 claude 的「先问」规则，
+  // 它碰到就来问上面那个审批工具，主进程弹卡等人点。2.1.295 实测：rm、/bin/rm、复合命令里夹的 rm 都会来问，
+  // 用户自己 settings 里写了「允许 rm」也压得住（先问比放行优先）。
+  // 没挂审批、或这版 claude 不认 --settings 时问不着（-p 非交互），并回直接不给用，一条也不漏
+  const asking = canAsk && settingsOk;
+  if (asking) args.push("--settings", JSON.stringify({ permissions: { ask: asks } }));
+  const deny = asks.length && !asking ? [...(guard.disallow || []), ...asks] : guard.disallow || [];
+  for (const t of deny) args.push("--disallowed-tools", t);
   // 思考模式：跟 app 设置页那个下拉框同一个档位。auto 什么也不发（今天的行为一个字节不变），
   // 这版 claude 不认 --thinking 时也什么都不发 —— 发了会被静默吞掉，不如明着在界面上说不支持
   const think = thinking.planForEngine(ID, thinkingLevel, { thinkingFlag });

@@ -114,10 +114,12 @@ const TOOLS_ENV = process.env.OPENWORKBUDDY_BRIDGE_TOOLS;
 // 问答 / 计划那一趟（bridge.js 传 readOnly）：名单本来就只有读的，这里照 READ_ONLY 再滤一道，
 // 名单被人改过、多写了生图之类，照样借不出去
 const READONLY = process.env.OPENWORKBUDDY_BRIDGE_READONLY === "1";
-// 属主勾了「要审批的动作交给安全中心判」、这一趟又是 claude：tools/list 多一个 approve。它不算借出去的工具，不进 ALLOW
+// 属主勾了「删文件等操作先问我」、这一趟又是 claude：tools/list 多一个 approve。它不算借出去的工具，不进 ALLOW
 const APPROVE = process.env.OPENWORKBUDDY_BRIDGE_APPROVE === "1";
 // 交回主进程跑（engines/tool-relay.js）：值是凭据文件的路径。有它时借出去的工具一律交回去，本进程不读设置、不执行
 const RELAY_FILE = process.env[toolRelay.ENV] || "";
+// 审批也交回主进程（同一个口子的 approve）：要人点头的在那边摆卡等人点。交不回去才在这里照规则判（要人点头的照拒）
+const APPROVE_FILE = APPROVE ? process.env[toolRelay.APPROVE_ENV] || "" : "";
 const ALLOW = new Set(lentFor({ tools: TOOLS_ENV === undefined ? undefined : parseList(TOOLS_ENV), readOnly: READONLY }));
 
 // 只借给外部引擎、本项目自己的模型看不到的工具定义。
@@ -264,11 +266,26 @@ async function callTool(name, args, { signal } = {}) {
 }
 
 /**
- * claude 要审批时来问。每次现读设置：安全中心里改了档位、放行了一类命令，下一条就认，不用重开引擎。
+ * claude 要审批时来问。交得回主进程就交回去（摆卡等人点）；交不回去在这里判：
+ * 每次现读设置：安全中心里改了档位、放行了一类命令，下一条就认，不用重开引擎。
  * 读不出来一律拒：照默认放行，等于用户写的名单整个不算数
  * @param {any} req claude 递过来的 {tool_name, input, tool_use_id}
+ * @param {{signal?: AbortSignal}} [o] CLI 不等了（notifications/cancelled、SIGTERM）：卡收掉、按拒
  */
-async function approveCall(req) {
+async function approveCall(req, { signal } = {}) {
+  // 答法是 claude 定的：判词整个 JSON 塞进一段文字
+  const answer = (/** @type {any} */ d) => ({ content: [{ type: "text", text: JSON.stringify(d) }] });
+  if (APPROVE_FILE) {
+    try {
+      const d = await toolRelay.approval(APPROVE_FILE, req, { signal });
+      if (d && (d.behavior === "allow" || d.behavior === "deny")) return answer(d);
+      return answer({ behavior: "deny", message: "主进程回的审批结果看不懂，按拒绝处理，没有执行。" });
+    } catch (e) {
+      const why = String((e && /** @type {any} */ (e).message) || e);
+      if (!(e && /** @type {any} */ (e).connect)) return answer({ behavior: "deny", message: `审批这一步没走完（${why}），按拒绝处理，没有执行。` });
+      appLog.warn("engine-bridge", "审批交不回主进程，这一条在桥里照规则判（要人点头的照拒）", { err: why, tool: String((req && req.tool_name) || "") });
+    }
+  }
   const lc = loadConfig();
   let d;
   if (lc.error) {
@@ -283,8 +300,7 @@ async function approveCall(req) {
     const root = tools.getWorkspaceDir();
     d = await approve.decide(req, { sec: security.getSecurity({ security: lc.config.security }), readOnly: READONLY, root, base: path.join(root, BASE_DIR) });
   }
-  // 答法是 claude 定的：判词整个 JSON 塞进一段文字
-  return { content: [{ type: "text", text: JSON.stringify(d) }] };
+  return answer(d);
 }
 
 // ---- JSON-RPC over stdio ----
@@ -343,12 +359,15 @@ async function handle(msg) {
         result = { tools: APPROVE ? [...listTools(), approve.DEF] : listTools() };
         break;
       case "tools/call": {
-        if (APPROVE && (params || {}).name === approve.TOOL) { result = await approveCall((params || {}).arguments); break; }
         const key = JSON.stringify(id);
         const ac = new AbortController();
         live.set(key, ac);
-        try { result = await callTool((params || {}).name, (params || {}).arguments, { signal: ac.signal }); }
-        finally { live.delete(key); }
+        // 审批也进 live：等人点的那张卡，CLI 不等了就得收掉，别挂在界面上让人对着一个没人等的按钮点
+        try {
+          result = APPROVE && (params || {}).name === approve.TOOL
+            ? await approveCall((params || {}).arguments, { signal: ac.signal })
+            : await callTool((params || {}).name, (params || {}).arguments, { signal: ac.signal });
+        } finally { live.delete(key); }
         break;
       }
       default:

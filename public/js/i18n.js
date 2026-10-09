@@ -2658,6 +2658,11 @@
       [/^在等你批准：(.*)$/, "Waiting on your approval: $1"],
       [/^「(.+)」在等你回答，点这里过去$/, "“$1” is waiting on your answer. Click to go there"],
       [/^「(.+)」在等你批准，点这里过去$/, "“$1” is waiting on your approval. Click to go there"],
+      // 审批条点完那几句（app-02.js）：键夹在中间；降档的两种原因是服务端给的
+      [/^已永久放行「(.+)」，要撤回去 设置 → 安全 的「放行名单」删掉$/, "Always allowed “$1”. To undo, remove it from the allow list in Settings → Security"],
+      [/^已允许，本次运行期间不再问「(.+)」。永久放行需平台管理员设置$/, "Allowed. Won't ask about “$1” again this run. Allowing it for good needs the platform admin"],
+      [/^已允许，本次运行期间不再问「(.+)」。高危命令、写文件、跑代码只能本次运行期间放行，不进永久名单$/, "Allowed. Won't ask about “$1” again this run. Risky commands, file writes and code can only be allowed per run, not for good"],
+      [/^本次运行期间不再问「(.+)」$/, "Won't ask about “$1” again this run"],
       // 过程区的进度卡：数目夹在中间
       [/^里程碑 (\d+)\/(\d+)\s*$/, "Milestones $1/$2"],
       [/^进度 (\d+)\/(\d+)\s*$/, "Progress $1/$2"],
@@ -3265,6 +3270,17 @@
       (m) => `When stopped, ${m[1]} video job(s) had been accepted upstream. Task IDs: ${zhList(m[2])}. Cancellable ones were cancelled upstream; the rest go into this chat's folder when ready`],
     [/^停下时有 (\d+) 条视频上游已经收单（任务号 (.+)），这家停不掉、照样扣费；出好了放进对话目录$/,
       (m) => `When stopped, ${m[1]} video job(s) had been accepted upstream. Task IDs: ${zhList(m[2])}. This provider can't cancel them and still charges; they'll go into this chat's folder when ready`],
+  );
+  // 本机 Claude Code 没开审批时那几句（security.js engineGuard 的 canAsk）：尾巴指去引擎卡上那一勾，勾名跟引擎卡的英文一字不差
+  const askTipEn = (multi) => " To have it ask you first: Settings → Agent → Engine, tick “Ask me before deleting files and similar”" +
+    (multi ? " (when shared, only the platform admin can change this)" : "") + ".";
+  PATTERNS.en.push(
+    [/^安全档位是「每步都问」，本机 Claude Code 这一趟没开审批，要写文件或跑命令会被直接拒。想让它先问你：设置 → 智能体 → 底层引擎，勾「删文件等操作先问我」(（多人共用时只有平台管理员能改）)?。$/,
+      (m) => "Safety level is “Ask every step”, and approvals are off for your local Claude Code this time, so any file write or command it tries is refused." + askTipEn(!!m[1])],
+    [/^按你的安全设置，本机 Claude Code 这一趟不跑：(.+)。想让它先问你：设置 → 智能体 → 底层引擎，勾「删文件等操作先问我」(（多人共用时只有平台管理员能改）)?。$/,
+      (m) => `Per your safety settings, your local Claude Code won't run these this time: ${zhList(m[1])}.` + askTipEn(!!m[2])],
+    [/^删文件等操作这次没法弹卡问你（(.+)），碰到会直接不做$/, "Couldn't set up the ask-first prompt this time ($1), so deleting files and similar actions will be skipped"],
+    [/^借出去的工具没能改由主进程跑（(.+)），这次照老样子由桥自己跑$/, "Couldn't hand the lent tools over to the main process ($1), so the bridge runs them itself as before"],
   );
 
   // ---------- 设置页引擎卡：型号下拉、装了几份、升级提示、试连结论（2026-10-09） ----------

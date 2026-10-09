@@ -16,6 +16,10 @@
  *
  * 协议：一个连接一次调用。客户端发一行 JSON {t, op:"call", name, args}，
  * 服务端回一行 {text, isError} 或 {error}，然后断开。客户端先断开 = 叫停这一单。
+ *
+ * 审批也走这条（属主勾了「删文件等操作先问我」，见 engines/approve.js）：claude 要审批时桥发
+ * {t, op:"approve", req}，主进程照安全中心裁决，要人点头的摆进网页、终端、手机都看得见的那份审批卡，
+ * 回 {text: 判词 JSON}。没勾「交回主进程跑」的那一趟也开这个口子，只是一个工具都不借（allow([])）。
  */
 
 const fs = require("fs");
@@ -27,6 +31,8 @@ const { AsyncResource } = require("async_hooks");
 const { READ_ONLY } = require("./lendable");
 
 const ENV = "OPENWORKBUDDY_RELAY_TICKET_FILE";
+/** 审批交回主进程时桥认的那个变量（值也是凭据文件的路径）。跟上面分开：只开审批的那一趟，借出去的工具照旧由桥自己跑 */
+const APPROVE_ENV = "OPENWORKBUDDY_APPROVE_TICKET_FILE";
 /** 一次调用的请求最多这么大：参数是文字和路径，图片走文件 */
 const MAX_REQ = 4 * 1024 * 1024;
 /** 连上了却迟迟不发请求的，这么久就断 */
@@ -70,13 +76,15 @@ function toReply(r) {
 
 /**
  * 开一个口子。exec 在这里绑定当前的异步上下文：之后每次调用都在开跑时的那份里跑（谁在跑、工作区、资料库、组织策略）。
- * allow() 之前来的调用一律拒。
+ * allow() 之前来的调用一律拒。approve 同理绑定；不给就不收审批
  * @param {{ exec: (name: string, args: any, o: {signal: AbortSignal}) => Promise<any>,
+ *   approve?: ((req: any, o: {signal: AbortSignal}) => Promise<any>)|null,
  *   stopSignal?: AbortSignal|null, deadline?: number|(() => number), readOnly?: boolean }} o
  */
-async function open({ exec, stopSignal = null, deadline = 0, readOnly = false }) {
+async function open({ exec, approve = null, stopSignal = null, deadline = 0, readOnly = false }) {
   if (typeof exec !== "function") throw new Error("缺执行函数");
   const run = AsyncResource.bind(exec);
+  const judge = typeof approve === "function" ? AsyncResource.bind(approve) : null;
   const ticket = crypto.randomBytes(32).toString("hex");
   const dir = makeDir();
   opened.add(dir);
@@ -99,6 +107,8 @@ async function open({ exec, stopSignal = null, deadline = 0, readOnly = false })
     if (stopSignal && stopSignal.aborted) return "这一趟已经叫停，没有执行";
     const d = due();
     if (d && Date.now() > d) return "这一趟已经超时，没有执行";
+    // 审批不看借出去的名单：问的是 claude 自带的那几样（Bash、Write……），本来就不在名单上
+    if (req.op === "approve") return judge ? "" : "这一趟没开审批，没有执行";
     if (req.op !== "call") return `不认 ${String(req.op)} 这种请求，没有执行`;
     const name = typeof req.name === "string" ? req.name : "";
     if (!lent) return "主进程这边还没准备好，没有执行";
@@ -133,9 +143,13 @@ async function open({ exec, stopSignal = null, deadline = 0, readOnly = false })
       const args = req.args && typeof req.args === "object" && !Array.isArray(req.args) ? req.args : {};
       /** @type {{ac: AbortController, done: Promise<void>}} */
       const job = { ac, done: Promise.resolve() };
+      // 判词原样塞进 text（桥再原样交给 claude）；判的时候抛了错由那头按拒处理
+      const work = req.op === "approve"
+        ? () => /** @type {NonNullable<typeof judge>} */ (judge)(req.req, { signal: ac.signal }).then((d) => ({ text: JSON.stringify(d), isError: false }))
+        : () => run(req.name, args, { signal: ac.signal }).then(toReply);
       job.done = Promise.resolve()
-        .then(() => run(req.name, args, { signal: ac.signal }))
-        .then(toReply, (e) => ({ text: String((e && e.message) || e), isError: true }))
+        .then(work)
+        .then((out) => out, (e) => ({ text: String((e && e.message) || e), isError: true }))
         .then((out) => reply(out))
         .finally(() => {
           inflight.delete(job);
@@ -198,6 +212,15 @@ async function open({ exec, stopSignal = null, deadline = 0, readOnly = false })
  * @returns {Promise<{text: string, isError: boolean}>}
  */
 function call(ticketFile, name, args, { signal } = {}) {
+  return send(ticketFile, (t) => ({ t, op: "call", name, args: args || {} }), signal);
+}
+
+/**
+ * 连一次、发一行、等一行回话
+ * @param {string} ticketFile @param {(ticket: string) => any} body @param {AbortSignal|undefined} signal
+ * @returns {Promise<{text: string, isError: boolean}>}
+ */
+function send(ticketFile, body, signal) {
   return new Promise((resolve, reject) => {
     let info;
     try { info = JSON.parse(fs.readFileSync(ticketFile, "utf8")); }
@@ -210,7 +233,7 @@ function call(ticketFile, name, args, { signal } = {}) {
     const onAbort = () => { c.destroy(); finish(reject, new Error("已叫停")); };
     if (signal) signal.addEventListener("abort", onAbort, { once: true });
     c.setEncoding("utf8");
-    c.on("connect", () => c.write(JSON.stringify({ t: info.ticket, op: "call", name, args: args || {} }) + "\n"));
+    c.on("connect", () => c.write(JSON.stringify(body(info.ticket)) + "\n"));
     c.on("data", (d) => {
       buf += d;
       const i = buf.indexOf("\n");
@@ -223,6 +246,19 @@ function call(ticketFile, name, args, { signal } = {}) {
     });
     c.on("error", (e) => finish(reject, Object.assign(new Error(`连不上（${e.message}）`), { connect: true })));
     c.on("close", () => finish(reject, new Error("主进程没回话就断开了")));
+  });
+}
+
+/**
+ * 桥那头用：claude 要审批，交回主进程判。回的是判词（{behavior, …}）；连不上带 connect: true，跟 call 一样
+ * @param {string} ticketFile @param {any} req claude 递过来的 {tool_name, input, tool_use_id}
+ * @param {{signal?: AbortSignal}} [o]
+ * @returns {Promise<any>}
+ */
+function approval(ticketFile, req, { signal } = {}) {
+  return send(ticketFile, (t) => ({ t, op: "approve", req: req || {} }), signal).then((m) => {
+    if (m.isError) throw new Error(m.text || "主进程判的时候出了错");
+    return JSON.parse(m.text);
   });
 }
 
@@ -243,4 +279,4 @@ function cards() {
   };
 }
 
-module.exports = { ENV, open, call, cards, _internals: { sunMax, makeDir, MAX_REQ, HELLO_MS, SETTLE_MS } };
+module.exports = { ENV, APPROVE_ENV, open, call, approval, cards, _internals: { sunMax, makeDir, MAX_REQ, HELLO_MS, SETTLE_MS } };
