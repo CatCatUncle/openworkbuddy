@@ -1818,7 +1818,13 @@ const ATTACH_STUBS = [
   "window.uploadDelay = 0; window.uploadFail = false;",
   "window.fetch = async (url, init) => {",
   "  if (url === '/api/upload') {",
-  "    const body = JSON.parse(init.body);",
+  // 前端直接发原文件（大视频不过内存），名字、会话、replace 在请求头里、URI 编码过。
+  // 这儿拼回 { name, session, replace, data_b64 } 的样子：下面那些断言照旧查名字、会话、字节一个不差
+  "    const h = init.headers || {};",
+  "    const dec = (k) => (h[k] == null ? undefined : decodeURIComponent(h[k]));",
+  "    const raw = new Uint8Array(await new Response(init.body).arrayBuffer());",
+  "    let bin = ''; for (let i = 0; i < raw.length; i += 8192) bin += String.fromCharCode.apply(null, raw.subarray(i, i + 8192));",
+  "    const body = { name: dec('X-Upload-Name'), session: dec('X-Upload-Session'), replace: dec('X-Upload-Replace'), data_b64: btoa(bin), type: h['Content-Type'], isBlob: init.body instanceof Blob };",
   "    window.uploads.push(body);",
   "    if (window.uploadDelay) await new Promise((r) => setTimeout(r, window.uploadDelay));",
   "    if (window.uploadFail) return { ok: false, status: 500, json: async () => ({}) };",
@@ -1900,6 +1906,8 @@ const ATTACH_CHECKS = `
     ok("上传带上了会话 id", up.session === "s_test_1", JSON.stringify(up.session));
     ok("剪贴板的通用名换成时间戳", /^粘贴图片_\\d{4}_\\d{6}\\.png$/.test(up.name), up.name);
     ok("图片二进制没被改坏", up.data_b64 === B64PNG);
+    // 原文件直接当请求体：再转回 base64 塞 JSON 的话，体积胖三分之一、整份进内存，大视频又传不上去了
+    ok("发的是原文件本身，不是 base64 JSON", up.isBlob && up.type === "application/octet-stream", JSON.stringify({ isBlob: up.isBlob, type: up.type }));
     ok("chip 带缩略图", !!(await until(() => document.querySelector("#attach-chips img.attach-thumb"))));
     // 输入框里只能有人自己写的话。以前粘一张图，框里先多出一行看不懂的中括号——
     // 人得绕开它打字，删一半就成了半截锚点。GPT/Claude/飞书都是「框里干净，图挂在上面」
@@ -2097,6 +2105,23 @@ const ATTACH_CHECKS = `
     await until(() => pendingAttach[0] && pendingAttach[0].state === "done");
     ok("传完转圈停了、可以点开看", !chips()[0].querySelector(".attach-state .spinner") && !chips()[0].querySelector(".attach-open").disabled);
     window.uploadDelay = 0;
+  }
+
+  // ---- 10b. 几百兆的录屏照样收 ----
+  // 以前输入框卡 30MB（base64 塞 JSON，服务端 express.json 只接 60MB）：2026-10-08 拖进一段 241MB 的录屏，
+  // 直接被一句「超过 30 MB 的上限」挡回去，想剪的视频根本进不来
+  {
+    inputEl.value = ""; attachChips.innerHTML = ""; pendingAttach.length = 0; window.toasts = [];
+    const big = new File([new Uint8Array(2048)], "录制 2026-10-06 21.59.37.mp4", { type: "video/mp4" });
+    // 体积报成 241MB 就够了：真造一份 241MB 的内容，测试机的内存吃不消，而闸判的就是 size
+    Object.defineProperty(big, "size", { value: 241 * 1048576 });
+    const n0 = uploads.length;
+    await dropFiles([big]);
+    const up = await nextUpload(n0);
+    ok("★241MB 的录屏照样挂上、传上去，不再报「超过上限」★", !!up && up.name === big.name && !window.toasts.some((t) => /上限/.test(t)),
+       JSON.stringify({ name: up && up.name, toasts: window.toasts }));
+    ok("名字里的空格、中文原样到了服务端（请求头里编过码）", !!up && up.name === "录制 2026-10-06 21.59.37.mp4", up && up.name);
+    ok("chip 上照实写着 241 MB", chips().length === 1 && /241 MB/.test(chips()[0].textContent), chips().length && chips()[0].textContent);
   }
 
   // ---- 11. 同一个文件又拖一次：不多一枚 chip，但得让人看见 ----
@@ -4343,7 +4368,9 @@ const DEAD_CHECKS = `
   const posts = [];
   window.fetch = (url, opt) => {
     const method = (opt && opt.method) || "GET";
-    if (method !== "GET") posts.push({ url, method, body: opt && opt.body ? JSON.parse(opt.body) : null });
+    // 上传发的是文件本身（不是 JSON），原样记下来连同请求头，别拿 JSON.parse 去啃一个 File
+    if (method !== "GET") posts.push({ url, method, body: !opt || !opt.body ? null
+      : typeof opt.body === "string" ? JSON.parse(opt.body) : { raw: opt.body, headers: opt.headers || {} } });
     const j = (v, code) => Promise.resolve({ ok: !code || code < 400, status: code || 200, json: () => Promise.resolve(v), text: () => Promise.resolve("") });
     if (url === "/api/schedules") return denyRead ? j(FORBID, 403) : j([{ id: "s1", name: "早报", task: "发早报", cron: "0 9 * * *", enabled: true }]);
     if (url.startsWith("/api/schedules/runs")) return denyRead ? j(FORBID, 403) : j([{ at: "2026-09-11T09:00:00Z", name: "早报", by: "定时", ms: 3000, result: "成功" }]);
@@ -5152,8 +5179,14 @@ const DEAD_CHECKS = `
   await fire({ error: "同名文件已存在", ok: false });
   ok("上传失败就说失败（以前一律 toast「已上传」配绿勾）", window.toasts.join("|").startsWith("[circle-x]"), window.toasts.join("|"));
   ok("而且把服务端给的原因带出来", window.toasts.join("|").includes("同名文件已存在"), window.toasts.join("|"));
+  posts.length = 0;
   await fire({ ok: true, name: "手册.md" });
   ok("反向对照：真传上去了才说成功，还报个数", window.toasts.join("|") === "[circle-check] 已上传 1 个", window.toasts.join("|"));
+  // 以前是 FileReader 读成 base64 再塞 JSON：几百兆的片子先在页面里膨胀一圈，服务端 60MB 那道线也过不去
+  const libUp = posts.find((x) => x.url === "/api/library/upload");
+  const libHd = (libUp && libUp.body && libUp.body.headers) || {};
+  ok("资料库上传发的是文件本身，不是 base64 JSON", !!libUp && libUp.body.raw instanceof File && libHd["Content-Type"] === "application/octet-stream", JSON.stringify(libHd));
+  ok("文件名走请求头，中文原样解得回来", decodeURIComponent(libHd["X-Upload-Name"] || "") === "手册.md", libHd["X-Upload-Name"]);
 
   // ⑦ 记笔记 / 删资料：拒了就说，别让东西凭空消失
   window.settingsCache = { platform_owner: true };

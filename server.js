@@ -4168,18 +4168,30 @@ app.delete("/api/library/folder", (req, res) => {
   }
 });
 
-app.post("/api/library/upload", (req, res) => {
+// 跟 /api/upload 一样认两种请求体：原始字节（名字、目录在 X-Upload-Name / X-Upload-Dir 里）边收边写盘，
+// 大视频不过内存；老的 JSON + base64 照收，受 express.json 60MB 的限制
+app.post("/api/library/upload", async (req, res) => {
+  const raw = !!req.is("application/octet-stream");
+  let tmp = "";
   try {
-    const { name, data_b64 } = req.body || {};
-    if (!name || !data_b64) return res.status(400).json({ error: "缺少 name 或 data_b64" });
-    const dir = libRel((req.body || {}).dir);
+    const meta = raw ? uploadHeaders(req) : (req.body || {});
+    const { name, data_b64 } = meta;
+    if (!name || (!raw && !data_b64)) return res.status(400).json({ error: raw ? "缺少文件名（X-Upload-Name）" : "缺少 name 或 data_b64" });
+    const dir = libRel(meta.dir);
     // 浏览器拖整个文件夹进来时 file.name 可能自带层级，一并接住；两边都有就拼起来
     const rel = libRel(dir ? `${dir}/${name}` : name);
     const abs = libPath(rel);
     fs.mkdirSync(path.dirname(abs), { recursive: true });
-    fs.writeFileSync(abs, Buffer.from(data_b64, "base64"));
+    if (raw) {
+      tmp = await uploadName.receiveUploadToTemp(req, path.dirname(abs));
+      fs.renameSync(tmp, abs);
+      tmp = "";
+    } else {
+      fs.writeFileSync(abs, Buffer.from(data_b64, "base64"));
+    }
     res.json({ ok: true, name: path.basename(rel), path: rel });
   } catch (e) {
+    if (tmp) { try { fs.unlinkSync(tmp); } catch {} }
     res.status(400).json({ error: e.message });
   }
 });
@@ -5739,10 +5751,17 @@ async function startPluginMcp(pluginName) {
 // 「我传的素材」和「它做出来的成果」分了家，根目录越堆越乱（真实数据里躺了 22 个）。
 // 时序坑：用户是**先传文件再发消息**，而成果文件夹要等第一条消息才建得出名字。
 // 所以没文件夹时先落根目录并记账，等文件夹一建好，assignSessionDir 再把它们搬进去。
-app.post("/api/upload", (req, res) => {
+//
+// 两种请求体：
+// - 原始字节（Content-Type: application/octet-stream）：输入框、画布现在都走这条。边收边写盘，多大的视频都不过内存；
+//   名字、会话、replace 放在请求头里，URI 编码过（请求头只认 ASCII）
+// - JSON + base64：老页面、脚本还在用，照收。这条受全局 express.json 60MB 的限制，大文件别走它
+app.post("/api/upload", async (req, res) => {
+  const raw = !!req.is("application/octet-stream");
+  let tmp = "";
   try {
-    const { name, data_b64, session, replace } = req.body || {};
-    if (!name || !data_b64) return res.status(400).json({ error: "缺少 name 或 data_b64" });
+    const { name, data_b64, session, replace } = raw ? uploadHeaders(req) : (req.body || {});
+    if (!name || (!raw && !data_b64)) return res.status(400).json({ error: raw ? "缺少文件名（X-Upload-Name）" : "缺少 name 或 data_b64" });
     // basename 之后再洗一遍：控制字符和路径分隔符在文件名里没有正当用途，
     // 而这些名字会被拼进链接、传给系统程序、写进日志
     const base = path.basename(String(name)).replace(/[\u0000-\u001f\u007f]/g, "").trim();
@@ -5759,7 +5778,9 @@ app.post("/api/upload", (req, res) => {
     // 同名的已经在了就叫 名字_2、名字_3，不覆盖（见 src/util/upload-name.js）。挑出来的名字只多了个
     // 后缀，跟原名在同一个目录里，不用再判一次
     const dir = path.dirname(safePath(own ? path.join(own, base) : base));
-    const buf = Buffer.from(data_b64, "base64");
+    // 原始字节先收进同目录一个点开头的临时文件（见 uploadName.receiveUploadToTemp），下面挑好名字再改名过去
+    if (raw) tmp = await uploadName.receiveUploadToTemp(req, dir);
+    const buf = raw ? { from: tmp } : Buffer.from(data_b64, "base64");
     // 同一枚附件重拖了一遍：replace 是它上一趟落盘的相对路径。只有那份确实是这一枚刚传的——同一个目录、
     // 名字是原名或 原名_N、盘上的 mtime 跟上传那一刻记的对得上（Agent 改写过就对不上）——才原地换；
     // 认不出来（服务重启过、路径是别处的）就照常另起名字，宁可多一份也不盖错
@@ -5770,6 +5791,7 @@ app.post("/api/upload", (req, res) => {
       try { return isUserInput({ name: prev, mtime: fs.statSync(file).mtime.toISOString() }); } catch { return false; }
     }) : "";
     const saved = swapped || uploadName.writeUploadFresh(dir, base, buf);
+    tmp = ""; // 已经改名成正式文件了，下面出错也别删
     const rel = own ? path.join(own, saved) : saved;
     // 记一笔「这份是用户传的」。不记的话，正在跑的那趟任务下一次对账就会把它当成自己的产出
     // 摆进「本回合产出」——用户粘张图想追问，图当场出现在上一轮的成果里（见 tools.js userInputs）
@@ -5783,9 +5805,19 @@ app.post("/api/upload", (req, res) => {
     // replaced：原地换掉了这一枚上一趟那份，前端说「换成刚拖进来的这份」，不说「另存成了…」
     res.json({ ok: true, name: saved, path: rel, ...(swapped ? { replaced: true } : {}), ...(saved !== base ? { renamedFrom: base } : {}) });
   } catch (e) {
+    if (tmp) { try { fs.unlinkSync(tmp); } catch {} } // 收好了却没落成（权限、挑不出名字）：临时文件别留在用户目录里
     res.status(400).json({ error: e.message });
   }
 });
+/** 原始字节那条的元数据：前端拿 encodeURIComponent 编过。解不开的当没带 */
+function uploadHeaders(req) {
+  const get = (k) => {
+    const v = req.get(k);
+    if (!v) return "";
+    try { return decodeURIComponent(v); } catch { return ""; }
+  };
+  return { name: get("x-upload-name"), session: get("x-upload-session"), replace: get("x-upload-replace"), dir: get("x-upload-dir") };
+}
 // 专家管理：增删改就地改 experts 数组（runtime 闭包同一引用，热生效）+ 持久化 experts.json
 // 一个专家 = 头像 + 名字 + 花名 + 说明 + 绑定技能 + 默认提示词 的智能体，用户可自建。
 const EXPERT_FIELDS = ["name", "alias", "avatar", "category", "tags", "description", "skills", "system"];

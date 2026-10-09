@@ -51,18 +51,13 @@ function canvasFileKindFromFile(file) {
   return /^(image|video|audio)\//.test(mime) ? mime.split("/")[0] : "note";
 }
 
-function canvasBytesToB64(bytes) {
-  let text = "";
-  for (let i = 0; i < bytes.length; i += 8192) text += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
-  return btoa(text);
-}
-
 async function canvasUploadWorkspaceFile(file) {
   if (!file) throw new Error("没有选择文件");
   const kind = canvasFileKindFromFile(file);
   if (!["image", "video", "audio"].includes(kind)) throw new Error("只支持图片、视频或音频文件");
-  if (file.size > 30 * 1048576) throw new Error("文件不能超过 30MB");
-  const response = await fetch("/api/upload", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: file.name, data_b64: canvasBytesToB64(new Uint8Array(await file.arrayBuffer())) }) });
+  // 原文件直接当请求体发，服务端边收边写盘（server.js /api/upload）。以前整份读进内存转 base64，
+  // 卡在 30MB，几分钟的素材视频拖不上卡
+  const response = await fetch("/api/upload", { method: "POST", headers: { "Content-Type": "application/octet-stream", "X-Upload-Name": encodeURIComponent(file.name) }, body: file });
   const result = await response.json().catch(() => ({}));
   if (!response.ok || !result.name) throw new Error(result.error || "文件上传失败");
   return String(result.name);

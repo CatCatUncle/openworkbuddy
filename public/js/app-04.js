@@ -767,9 +767,12 @@ async function renderLibPage() {
       // 全都报「成功」，然后列表里一个文件都没多。一句假的成功比一句失败更难查。
       let done = 0, err = "";
       for (const file of e.target.files) {
-        const data_b64 = await new Promise((ok) => { const rd = new FileReader(); rd.onload = () => ok(rd.result.split(",")[1]); rd.readAsDataURL(file); });
-        const r = await fetch("/api/library/upload", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: file.name, dir: libState.dir || "", data_b64 }) })
-          .then(x => x.json()).catch(() => ({ error: "网络异常" }));
+        // 原文件直接发，服务端边收边写盘：以前转 base64 塞 JSON，过了 45MB 左右就被 express.json 的 60MB 闸挡回来
+        const r = await fetch("/api/library/upload", {
+          method: "POST",
+          headers: { "Content-Type": "application/octet-stream", "X-Upload-Name": encodeURIComponent(file.name), "X-Upload-Dir": encodeURIComponent(libState.dir || "") },
+          body: file,
+        }).then(x => x.json()).catch(() => ({ error: "网络异常" }));
         if (r && r.ok) done++; else err = err || `${file.name}：${(r && r.error) || "上传失败"}`;
       }
       toast(err ? err : `已上传 ${done} 个`, err ? "circle-x" : "circle-check");

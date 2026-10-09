@@ -207,8 +207,6 @@ const ATTACH_KIND = {
   text: { label: "文本摘录", icon: "file-text" },
   file: { label: "文件", icon: "paperclip" },
 };
-// 服务端 express.json 的上限是 60MB，base64 会把体积撑到 4/3，所以这边卡 30MB 正好够它接住。
-const MAX_UPLOAD = 30 * 1048576;
 function attachKind(name, mime, forced) {
   if (forced && ATTACH_KIND[forced]) return forced;
   const type = String(mime || "").toLowerCase();
@@ -415,21 +413,6 @@ function addAttachChip(item, hint) {
   return chip;
 }
 /**
- * 一份内容转 base64。
- *
- * 交给浏览器做，不自己在主线程上拼字符串：30MB 的片子，手写那版 `String.fromCharCode` 循环
- * 要 116ms，而且这 116ms 里主线程一次都不让出去——转圈图标是停着的，点什么都没反应。
- * FileReader 同样一份只要 35ms 且不占主线程，产物一个字节不差（实测对比过）。
- */
-function blobToB64(blob) {
-  return new Promise((resolve, reject) => {
-    const fr = new FileReader();
-    fr.onload = () => resolve(String(fr.result).slice(String(fr.result).indexOf(",") + 1));
-    fr.onerror = () => reject(fr.error || new Error("读不出这个文件"));
-    fr.readAsDataURL(blob);
-  });
-}
-/**
  * 缩略图。28×28 那一格不需要原图。
  *
  * 以前是把整份文件的 base64 直接当 img.src：实测 300KB 的图片挂上去是 409,622 个字符的
@@ -467,17 +450,26 @@ async function sendAttach(item) {
   if (!item.blob) return false;
   setAttachState(item, "uploading");
   try {
-    const b64 = await blobToB64(item.blob);
+    // 原文件直接当请求体发，服务端边收边写盘（server.js /api/upload）。以前先转 base64 塞进 JSON：
+    // 体积胖三分之一、整份进内存，服务端 express.json 又卡在 60MB，于是这边只敢收 30MB，
+    // 录一段屏就被拒在门外。名字、会话、replace 放请求头里，请求头只认 ASCII，先编码
     const resp = await fetch("/api/upload", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      // 带上会话 id：服务端好把文件直接放进本对话的成果文件夹，别再堆到工作空间根目录。
-      // ensureSessionId 而不是裸 sessionId——新开一条对话时它还是 null，那就等于没带（见上面那段注释）
-      // replace：同一枚重拖过，上一趟那份已经落了盘。带上它的路径，服务端认得出是这一枚自己那份就原地换，
-      // 不再另起 名字_2——另起的话上一趟那份没人认了，模型列目录看见两份不知道用哪份
-      body: JSON.stringify({ name: item.asked || item.name, data_b64: b64, session: ensureSessionId(), ...(item.replace ? { replace: item.replace } : {}) }),
+      method: "POST",
+      headers: {
+        "Content-Type": "application/octet-stream",
+        "X-Upload-Name": encodeURIComponent(item.asked || item.name),
+        // 带上会话 id：服务端好把文件直接放进本对话的成果文件夹，别再堆到工作空间根目录。
+        // ensureSessionId 而不是裸 sessionId——新开一条对话时它还是 null，那就等于没带（见上面那段注释）
+        "X-Upload-Session": encodeURIComponent(ensureSessionId()),
+        // replace：同一枚重拖过，上一趟那份已经落了盘。带上它的路径，服务端认得出是这一枚自己那份就原地换，
+        // 不再另起 名字_2——另起的话上一趟那份没人认了，模型列目录看见两份不知道用哪份
+        ...(item.replace ? { "X-Upload-Replace": encodeURIComponent(item.replace) } : {}),
+      },
+      body: item.blob,
     });
-    if (!resp.ok) throw new Error("HTTP " + resp.status);
     const data = await resp.json().catch(() => ({}));
+    // 服务端说了为什么（磁盘放不下、没传完），就把它的原话带给人看；没说才只报状态码
+    if (!resp.ok) throw new Error(data.error || "HTTP " + resp.status);
     item.replace = "";                  // 这一趟用掉了；服务端没认（data.replaced 不在）就是另起了名字，下面照常改名
     // 工作目录里已经有同名的：服务端另起了 名字_2 存，没盖掉那份。chip 和输入框里的锚点跟着改名，
     // 不改的话模型照着原名去读，读到的是盘上原来那份
@@ -486,7 +478,7 @@ async function sendAttach(item) {
     // 顺手记进 attachPaths：一会儿这条消息发出去，气泡上面那排缩略图要按这个路径去取图。
     // 服务端刚亲口说了它放哪儿，比事后拿 sessionDirs 去拼准得多
     attachPaths.set(item.name, item.path);
-    item.blob = null;                   // 传完就松手，别攥着 30MB 不放
+    item.blob = null;                   // 传完就松手，别攥着几百兆的片子不放
     setAttachState(item, "done");
     return true;
   } catch (err) {
@@ -494,7 +486,8 @@ async function sendAttach(item) {
     // chip 留着变红，带一颗重试——文件还在用户手里，别让他重新去 Finder 里找一遍。
     removeAttachmentMarker(item.marker);
     setAttachState(item, "failed", "没传上去");
-    toast(`${item.name} 没传上去，点 chip 上的 ↺ 再试一次`, "circle-x");
+    const why = err && err.message && !/^HTTP \d+$|fetch|network/i.test(err.message) ? `：${err.message}` : "";
+    toast(`${item.name} 没传上去${why}。点 chip 上的 ↺ 再试一次`, "circle-x");
     return false;
   }
 }
@@ -532,10 +525,6 @@ async function uploadFiles(fileList, { rename, dirs } = {}) {
   for (const file of [...fileList]) {
     if (looksLikeDir(file, dirs)) {
       toast(`「${file.name}」是个文件夹，拖不进来。进去把里面的文件选中再拖，或者先压成 zip`, "folder");
-      continue;
-    }
-    if (file.size > MAX_UPLOAD) {
-      toast(`${file.name} 有 ${humanSize(file.size)}，超过 ${humanSize(MAX_UPLOAD)} 的上限，没有加进来`, "circle-x");
       continue;
     }
     const name = rename ? rename(file) : file.name;

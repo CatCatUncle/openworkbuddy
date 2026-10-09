@@ -22,7 +22,7 @@ function ok(cond, name, extra) {
   else { fail++; console.log("  ✗ " + name + (extra !== undefined ? "  ← " + String(typeof extra === "string" ? extra : JSON.stringify(extra)).slice(0, 300) : "")); }
 }
 
-const { uploadCandidate, writeUploadFresh, uploadIsCandidate, writeUploadReplace } = require(mod("upload-name"));
+const { uploadCandidate, writeUploadFresh, uploadIsCandidate, writeUploadReplace, receiveUploadToTemp } = require(mod("upload-name"));
 const WS = fs.mkdtempSync(path.join(os.tmpdir(), "owb-upload-name-"));
 const read = (n) => fs.readFileSync(path.join(WS, n), "utf8");
 
@@ -101,9 +101,91 @@ ok(writeUploadReplace(R, "封面.png", "../封面.png", Buffer.from("x"), yes) =
 ok(writeUploadReplace(R, "封面.png", "", Buffer.from("x"), yes) === "" && writeUploadReplace(R, "封面.png", "封面.png", Buffer.from("x")) === "", "没带上一趟的名字、没给认领判据：不换");
 ok(/uploadName\.writeUploadReplace\(/.test(up) && /isUserInput\(/.test(up) && /replaced: true/.test(up) && /swapped \|\| uploadName\.writeUploadFresh\(/.test(up),
   "/api/upload：带 replace 的先试原地换（拿上传那一刻记的 mtime 认领），换不了照常另起名字");
-ok(/\.\.\.\(item\.replace \? \{ replace: item\.replace \}/.test(chat) && /if \(dup\.path && !dup\.blob\) dup\.replace = dup\.path/.test(chat), "前端：重拖的那枚带上上一趟落盘的路径");
+ok(/\.\.\.\(item\.replace \? \{ "X-Upload-Replace": encodeURIComponent\(item\.replace\) \}/.test(chat) && /if \(dup\.path && !dup\.blob\) dup\.replace = dup\.path/.test(chat), "前端：重拖的那枚带上上一趟落盘的路径");
 ok(!/内容更新成最新的了/.test(chat), "不再没传完就说「更新成最新的了」");
 
-try { fs.rmSync(WS, { recursive: true, force: true }); } catch {}
-console.log(fail ? `\n有失败：${pass} 过 / ${fail} 挂` : `\n全部通过：${pass} 过 / 0 挂`);
-process.exit(fail ? 1 : 0);
+function finish() {
+  try { fs.rmSync(WS, { recursive: true, force: true }); } catch {}
+  console.log(fail ? `\n有失败：${pass} 过 / ${fail} 挂` : `\n全部通过：${pass} 过 / 0 挂`);
+  process.exit(fail ? 1 : 0);
+}
+
+console.log("\n【7】大文件不过内存：请求体流进同目录的临时文件，收齐了再改名");
+// 以前输入框先转 base64 塞 JSON：服务端 express.json 卡 60MB，前端只敢收 30MB。2026-10-08 拖进一段 241MB 的录屏，直接被拒
+(async () => {
+  const { Readable } = require("stream");
+  const crypto = require("crypto");
+  const BIG = path.join(WS, "大文件");
+  const sha = (f) => crypto.createHash("sha256").update(fs.readFileSync(f)).digest("hex");
+  // 请求的替身：一段可读流 + 请求头。块的内容按序号变，错一块哈希就对不上
+  const req = (chunks, len) => Object.assign(Readable.from(chunks), { headers: len == null ? {} : { "content-length": String(len) } });
+  const MB = 1 << 20, N = 48;
+  const block = (i) => Buffer.alloc(MB, i % 251);
+  const want = crypto.createHash("sha256");
+  for (let i = 0; i < N; i++) want.update(block(i));
+  const wantHex = want.digest("hex");
+  const leftovers = () => (fs.existsSync(BIG) ? fs.readdirSync(BIG).filter((n) => n.startsWith(".upload-")) : []);
+
+  const tmp = await receiveUploadToTemp(req((function* () { for (let i = 0; i < N; i++) yield block(i); })(), N * MB), BIG);
+  ok(path.dirname(tmp) === BIG && path.basename(tmp).startsWith("."), "临时文件就在目标目录里、点开头（列目录、本回合产出都跳过点开头的）", tmp);
+  ok(fs.statSync(tmp).size === N * MB, "收到的字节数对得上 Content-Length");
+  const first = writeUploadFresh(BIG, "录屏.mp4", { from: tmp });
+  ok(first === "录屏.mp4" && sha(path.join(BIG, first)) === wantHex, "★改名成正式文件，48MB 一个字节不差★", first);
+  ok(!fs.existsSync(tmp) && !leftovers().length, "临时文件被改名带走了，没留下", leftovers());
+
+  const t2 = await receiveUploadToTemp(req([Buffer.from("第二段")], Buffer.byteLength("第二段")), BIG);
+  const second = writeUploadFresh(BIG, "录屏.mp4", { from: t2 });
+  ok(second === "录屏_2.mp4" && fs.readFileSync(path.join(BIG, second), "utf8") === "第二段" && sha(path.join(BIG, "录屏.mp4")) === wantHex,
+    "同名的已经在了：落到 _2，第一份没被盖", second);
+
+  // rename 自己不认 wx：不先占住名字的话，两份同名的同时到，后到的照样把先到的盖掉
+  let raced = false;
+  const racing = Object.assign({}, fs, {
+    writeFileSync(p, d, o) {
+      if (!raced && path.basename(p) === "抢名.mp4") { raced = true; fs.writeFileSync(p, "先到的那份"); }
+      return fs.writeFileSync(p, d, o);
+    },
+  });
+  const t3 = await receiveUploadToTemp(req([Buffer.from("后到的那份")], Buffer.byteLength("后到的那份")), BIG);
+  const got = writeUploadFresh(BIG, "抢名.mp4", { from: t3 }, { fs: racing });
+  ok(got === "抢名_2.mp4" && fs.readFileSync(path.join(BIG, "抢名.mp4"), "utf8") === "先到的那份" && fs.readFileSync(path.join(BIG, got), "utf8") === "后到的那份",
+    "★改名那一刻原名被人占了：挪到 _2，先到的那份不动★", got);
+
+  const t4 = await receiveUploadToTemp(req([Buffer.from("换过的")], Buffer.byteLength("换过的")), BIG);
+  const swapped = writeUploadReplace(BIG, "录屏.mp4", "录屏_2.mp4", { from: t4 }, () => true);
+  ok(swapped === "录屏_2.mp4" && fs.readFileSync(path.join(BIG, "录屏_2.mp4"), "utf8") === "换过的" && !fs.existsSync(t4), "原地换也认临时文件：直接改名盖上去", swapped);
+  const t5 = await receiveUploadToTemp(req([Buffer.from("不该换")], Buffer.byteLength("不该换")), BIG);
+  ok(writeUploadReplace(BIG, "录屏.mp4", "录屏_2.mp4", { from: t5 }, () => false) === "" && fs.existsSync(t5) && fs.readFileSync(path.join(BIG, "录屏_2.mp4"), "utf8") === "换过的",
+    "认不出是自己那份：不换，临时文件留给调用方另起名字");
+  fs.unlinkSync(t5);
+
+  let err = null;
+  try { await receiveUploadToTemp(req([Buffer.alloc(1000)], 5000), BIG); } catch (e) { err = e; }
+  ok(err && /没传完/.test(err.message), "★收到的比 Content-Length 少（传到一半断了）：报错，不当成传好了★", err && err.message);
+  let sent = false;
+  const broken = Object.assign(new Readable({ read() { if (sent) this.destroy(new Error("aborted")); else { sent = true; this.push(Buffer.alloc(4096)); } } }), { headers: { "content-length": "1000000" } });
+  err = null;
+  try { await receiveUploadToTemp(broken, BIG); } catch (e) { err = e; }
+  ok(!!err, "连接中途断了：报错", err && err.message);
+  ok(!leftovers().length, "★没传完的、断了的，都没留下半截临时文件★", leftovers());
+
+  const tight = Object.assign({}, fs, { statfsSync: () => ({ bavail: 10, bsize: 4096 }) });
+  err = null;
+  try { await receiveUploadToTemp(req([Buffer.alloc(10)], 5 * 1073741824), BIG, { fs: tight }); } catch (e) { err = e; }
+  ok(err && err.message === "磁盘只剩 40 KB，放不下这个 5.0 GB 的文件", "★磁盘放不下：一个字节都不写就报，说清还剩多少、文件多大★", err && err.message);
+  ok(!leftovers().length, "放不下的那份连临时文件都没建");
+
+  console.log("\n【8】接线：输入框、画布、资料库都直接发原文件，30MB 的闸拆了");
+  ok(/req\.is\("application\/octet-stream"\)/.test(up) && /uploadName\.receiveUploadToTemp\(req, dir\)/.test(up) && /\{ from: tmp \}/.test(up),
+    "/api/upload 认原始字节：流进临时文件，再交给同一套挑名字 / 原地换");
+  ok(/if \(tmp\) \{ try \{ fs\.unlinkSync\(tmp\)/.test(up), "/api/upload 收好了却没落成：临时文件删掉");
+  const lib = (server.match(/app\.post\("\/api\/library\/upload"[\s\S]*?\n\}\);/) || [""])[0];
+  ok(/uploadName\.receiveUploadToTemp\(/.test(lib), "资料库上传也走边收边写盘");
+  ok(!/MAX_UPLOAD/.test(chat) && !/超过 .* 的上限/.test(chat), "★输入框不再按体积拒文件★");
+  ok(/"Content-Type": "application\/octet-stream"/.test(chat) && /body: item\.blob/.test(chat) && !/data_b64/.test(chat), "输入框发的是原文件本身，不是 base64 JSON");
+  const canvasNodes = fs.readFileSync(path.join(ROOT, "public/js/app-07-canvas-nodes.js"), "utf8");
+  ok(!/30 \* 1048576|不能超过 30MB/.test(canvasNodes) && /application\/octet-stream/.test(canvasNodes) && /body: file/.test(canvasNodes), "画布拖素材：不卡 30MB，直接发原文件");
+  const libPage = fs.readFileSync(path.join(ROOT, "public/js/app-04.js"), "utf8");
+  ok(/"\/api\/library\/upload", \{[\s\S]{0,200}application\/octet-stream[\s\S]{0,200}body: file/.test(libPage) && !/readAsDataURL\(file\)/.test(libPage), "资料库上传：直接发原文件");
+  finish();
+})().catch((e) => { fail++; console.log("  ✗ 【7】抛了：" + (e && e.stack)); finish(); });

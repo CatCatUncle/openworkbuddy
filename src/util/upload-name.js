@@ -13,8 +13,29 @@
  */
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
+const { pipeline } = require("stream/promises");
 
 const MAX_TRY = 999;
+
+/**
+ * data 是 Buffer：照写。是 { from }：那是 receiveUploadToTemp 收好的临时文件，改名过去，不再读进内存。
+ * exclusive 时先用独占写占住这个名字（空文件），再拿临时文件 rename 盖上去——rename 本身不认 wx，
+ * 不先占住的话两份同名的同时到，后到的照样把先到的盖掉
+ */
+function placeUpload(fsx, file, data, exclusive) {
+  if (!data || Buffer.isBuffer(data) || typeof data.from !== "string") {
+    fsx.writeFileSync(file, data, exclusive ? { flag: "wx" } : undefined);
+    return;
+  }
+  if (exclusive) fsx.writeFileSync(file, "", { flag: "wx" });
+  try {
+    fsx.renameSync(data.from, file);
+  } catch (e) {
+    if (exclusive) { try { fsx.unlinkSync(file); } catch {} } // 占位的空文件别留下
+    throw e;
+  }
+}
 
 /** 第 n 个候选名：1 就是原名，往后是 名字_n.扩展名。点开头的（.env）整个当名字，不拆扩展名 */
 function uploadCandidate(base, n) {
@@ -29,7 +50,7 @@ function uploadCandidate(base, n) {
  * 目录不在就建。写不进去（权限、磁盘满）照原样抛，不吞
  * @param {string} dir
  * @param {string} base 已经洗过的文件名（不含路径分隔符）
- * @param {Buffer} buf
+ * @param {Buffer | { from: string }} buf 内容，或者 receiveUploadToTemp 收好的临时文件
  * @param {{ fs?: typeof fs }} [o]
  * @returns {string}
  */
@@ -39,7 +60,7 @@ function writeUploadFresh(dir, base, buf, o = {}) {
   for (let n = 1; n <= MAX_TRY; n += 1) {
     const name = uploadCandidate(base, n);
     try {
-      fsx.writeFileSync(path.join(dir, name), buf, { flag: "wx" });
+      placeUpload(fsx, path.join(dir, name), buf, true);
       return name;
     } catch (e) {
       if (e && e.code === "EEXIST") continue;
@@ -48,7 +69,7 @@ function writeUploadFresh(dir, base, buf, o = {}) {
   }
   // 九百多个同名还都在：加个时间戳，照样不覆盖
   const name = uploadCandidate(base, Date.now());
-  fsx.writeFileSync(path.join(dir, name), buf, { flag: "wx" });
+  placeUpload(fsx, path.join(dir, name), buf, true);
   return name;
 }
 
@@ -74,7 +95,7 @@ function uploadIsCandidate(base, name) {
  * @param {string} dir
  * @param {string} base 这次请求洗过的文件名
  * @param {string} prevName 上一趟落盘的名字（不含目录）
- * @param {Buffer} buf
+ * @param {Buffer | { from: string }} buf 内容，或者 receiveUploadToTemp 收好的临时文件（那就直接改名过去）
  * @param {(name: string, file: string) => boolean} owns
  * @param {{ fs?: typeof fs }} [o]
  * @returns {string}
@@ -85,10 +106,57 @@ function writeUploadReplace(dir, base, prevName, buf, owns, o = {}) {
   if (!name || path.basename(name) !== name || !uploadIsCandidate(base, name)) return "";
   const file = path.join(dir, name);
   if (typeof owns !== "function" || !owns(name, file)) return "";
+  if (buf && !Buffer.isBuffer(buf) && typeof buf.from === "string") {
+    placeUpload(fsx, file, buf, false);
+    return name;
+  }
   const tmp = `${file}.${process.pid}.tmp`;
   fsx.writeFileSync(tmp, buf);
   fsx.renameSync(tmp, file);
   return name;
 }
 
-module.exports = { uploadCandidate, writeUploadFresh, uploadIsCandidate, writeUploadReplace };
+/**
+ * 请求体原样流进 dir 里一个点开头的临时文件，收齐了返回它的路径，交给 writeUploadFresh / writeUploadReplace 改名。
+ *
+ * 以前输入框先把文件转成 base64 塞进 JSON：体积胖三分之一、整份进内存，express.json 又卡在 60MB，
+ * 于是前端只敢收 30MB。录一段屏就两三百兆，拖进来直接被拒（2026-10-08，一段 241MB 的录屏）。
+ *
+ * - 临时文件放在目标目录里，不放系统临时目录：工作目录可能在外置盘上，跨盘 rename 会 EXDEV
+ * - 点开头的名字，列目录、「本回合产出」对账都跳过，收到一半不会被当成文件露脸
+ * - 先看磁盘还剩多少：放不下就不开始写。写到一半才 ENOSPC 的话，整块盘已经被填满了，别的程序跟着出错
+ * - 收到的字节数跟 Content-Length 对不上（传到一半断了）就删掉临时文件、报错，不留半截
+ * @param {import("stream").Readable & { headers?: Record<string, string | string[] | undefined> }} req
+ * @param {string} dir
+ * @param {{ fs?: typeof fs }} [o]
+ * @returns {Promise<string>}
+ */
+async function receiveUploadToTemp(req, dir, o = {}) {
+  const fsx = o.fs || fs;
+  fsx.mkdirSync(dir, { recursive: true });
+  const want = Number((req.headers || {})["content-length"]);
+  const known = Number.isFinite(want) && want >= 0;
+  if (known && typeof fsx.statfsSync === "function") {
+    let free = Infinity;
+    try { const st = fsx.statfsSync(dir); free = st.bavail * st.bsize; } catch {} // 查不了就不拦，照写
+    if (want > free) throw new Error(`磁盘只剩 ${mb(free)}，放不下这个 ${mb(want)} 的文件`);
+  }
+  const tmp = path.join(dir, `.upload-${process.pid}-${crypto.randomBytes(6).toString("hex")}.part`);
+  try {
+    await pipeline(req, fsx.createWriteStream(tmp, { flags: "wx" }));
+    const got = fsx.statSync(tmp).size;
+    if (known && got !== want) throw new Error(`只收到 ${mb(got)}，文件有 ${mb(want)}，没传完`);
+    return tmp;
+  } catch (e) {
+    try { fsx.unlinkSync(tmp); } catch {}
+    throw e;
+  }
+}
+/** 人看的体积：报错里要说清是差了多少 */
+function mb(n) {
+  if (n >= 1073741824) return `${(n / 1073741824).toFixed(1)} GB`;
+  if (n >= 1048576) return `${(n / 1048576).toFixed(1)} MB`;
+  return n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} 字节`;
+}
+
+module.exports = { uploadCandidate, writeUploadFresh, uploadIsCandidate, writeUploadReplace, receiveUploadToTemp };
