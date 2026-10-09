@@ -238,7 +238,9 @@ const has = (p) => fs.existsSync(p);
       "IM / 定时任务的文件夹在 go 里算：报了负责人的定时任务要进了那个租户，根才是对的");
     ok(acc && /finally \{[\s\S]*?settleRunDir\(source, rest, runRoot, runDir\)/.test(acc[0]), "跑完（成败都算）在 finally 里收空文件夹");
     ok(acc && /baseDir: runDir,[\s\S]*?\.\.\.rest,/.test(acc[0]), "调用方在 args 里给了 baseDir 的照旧听调用方的（...rest 在后面）");
-    ok(/send\(\{ type: "dir", dir: taskBaseDir \|\| "" \}\)/.test(srv), "网页对话每一轮都报 dir：中途换到自选文件夹时报空串，前端好清掉旧的那格");
+    ok(/send\(\{ type: "dir", dir: taskBaseDir \|\| "", moved \}\)/.test(srv), "网页对话每一轮都报 dir：中途换到自选文件夹时报空串，前端好清掉旧的那格");
+    ok(/if \(!useSessionDirHere\(sess\)\) moved = assignSessionDir\(sess, message\);/.test(srv),
+      "  └ 这一轮才建的格，连带报刚从根上搬进来的附件（前端拿它改气泡的指向，不然一点预览就是「文件不存在」）");
     ok(/const perChat = perChatHere\(\);[\s\S]{0,800}dir: perChat \? sessDirOf\(s\) : null,[^\n]*att_dir: s\.dir \|\| null/.test(srv),
       "/api/session：dir 只给当前根下的那格，附件另给 att_dir（换过根也看得见历史里的图）");
     ok(/root_files: perChat \? rootFilesOf\(s\) : \[\]/.test(srv) && /function rootFilesOf\(sess\)[\s\S]{0,400}statSync\(path\.join\(root, n\)\)\.isFile\(\)/.test(srv),
@@ -285,6 +287,18 @@ const has = (p) => fs.existsSync(p);
     ok(S.sessDirOf(sess) === null, "★反向对照★ 那格已经被删了：不报一个不存在的名字");
     cur = path.join(HOME, "别处");
     ok(S.sessDirOf(sess) === null, "★反向对照★ 没来过的根：没有");
+    // 新对话是先传附件、后发头一条消息：附件先落在根上，这格建出来时才搬进去。
+    // 搬了哪几个得报回去——气泡是按根上那份画的，不报的话一点预览就是「文件不存在」（10-09 实撞：课本 PDF）
+    cur = W;
+    fs.writeFileSync(path.join(W, "课本.pdf"), "PDF");
+    fs.mkdirSync(path.join(W, "是个文件夹.png"), { recursive: true });
+    const s2 = { title: "讲课", pending_uploads: ["课本.pdf", "早没了.png", "是个文件夹.png"] };
+    const moved = S.assignSessionDir(s2, "讲课");
+    ok(Array.isArray(moved) && moved.join() === "课本.pdf", "搬进去的附件名报回来（前端拿它改气泡的指向）", moved);
+    ok(has(path.join(W, s2.dir, "课本.pdf")) && !has(path.join(W, "课本.pdf")), "  └ 文件真在新格里，根上那份没了", s2.dir);
+    ok(!moved.includes("早没了.png") && !moved.includes("是个文件夹.png") && has(path.join(W, "是个文件夹.png")),
+      "★反向对照★ 根上已经没有的、不是文件的：不搬也不报（报了，气泡就指到一个不存在的地方）", moved);
+    ok(Array.isArray(s2.pending_uploads) && !s2.pending_uploads.length, "  └ 待搬清单清空");
   }
 
   section("【8】并排跑的几趟，产出按整条文件夹路径认主");

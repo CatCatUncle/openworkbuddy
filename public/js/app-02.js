@@ -449,6 +449,9 @@ function ensureSessionId() {
 async function sendAttach(item) {
   if (!item.blob) return false;
   setAttachState(item, "uploading");
+  // ensureSessionId 而不是裸 sessionId——新开一条对话时它还是 null，那就等于没带（见上面那段注释）。
+  // 这一枚记在哪条对话名下也按这一刻定：传到一半切去别的对话，记录不能跟着跑过去
+  const sid = ensureSessionId();
   try {
     // 原文件直接当请求体发，服务端边收边写盘（server.js /api/upload）。以前先转 base64 塞进 JSON：
     // 体积胖三分之一、整份进内存，服务端 express.json 又卡在 60MB，于是这边只敢收 30MB，
@@ -458,9 +461,8 @@ async function sendAttach(item) {
       headers: {
         "Content-Type": "application/octet-stream",
         "X-Upload-Name": encodeURIComponent(item.asked || item.name),
-        // 带上会话 id：服务端好把文件直接放进本对话的成果文件夹，别再堆到工作空间根目录。
-        // ensureSessionId 而不是裸 sessionId——新开一条对话时它还是 null，那就等于没带（见上面那段注释）
-        "X-Upload-Session": encodeURIComponent(ensureSessionId()),
+        // 带上会话 id：服务端好把文件直接放进本对话的成果文件夹，别再堆到工作空间根目录
+        "X-Upload-Session": encodeURIComponent(sid),
         // replace：同一枚重拖过，上一趟那份已经落了盘。带上它的路径，服务端认得出是这一枚自己那份就原地换，
         // 不再另起 名字_2——另起的话上一趟那份没人认了，模型列目录看见两份不知道用哪份
         ...(item.replace ? { "X-Upload-Replace": encodeURIComponent(item.replace) } : {}),
@@ -477,7 +479,7 @@ async function sendAttach(item) {
     item.path = data.path || item.name; // 预览要按工作目录下的相对路径找它
     // 顺手记进 attachPaths：一会儿这条消息发出去，气泡上面那排缩略图要按这个路径去取图。
     // 服务端刚亲口说了它放哪儿，比事后拿 sessionDirs 去拼准得多
-    attachPaths.set(item.name, item.path);
+    memoAttach(sid, item.name, item.path);
     item.blob = null;                   // 传完就松手，别攥着几百兆的片子不放
     setAttachState(item, "done");
     return true;

@@ -511,7 +511,9 @@ function attachSpotsOf(sess) {
 }
 
 /** 给对话分配成果文件夹（任务_月日_标题），并把「消息发出前就传上来的」附件一起搬进去。
- *  搬运失败一概不抛：文件夹没建成事小，因为一个附件搬不动就让整条对话起不来事大。*/
+ *  搬运失败一概不抛：文件夹没建成事小，因为一个附件搬不动就让整条对话起不来事大。
+ *  返回真搬进去的那几个名字：页面上那条消息的气泡是按上传那一刻的落点（根上）画的，
+ *  不告诉它搬了，一点预览就是「文件不存在」——文件好好的，只是换了地方没人说。*/
 function assignSessionDir(sess, message) {
   // 存进会话，后续轮次/重启都落同一个文件夹。连**哪个根**下的这个文件夹也一起记住：
   // 只记相对名的后果就是用户换一次工作目录，这条对话的成果全部变成「文件不存在」——
@@ -519,6 +521,7 @@ function assignSessionDir(sess, message) {
   const dir = taskDirs.newSessDir(sess, getWorkspaceDir(), dataPath("workspace"), message, assignedDirs);
   rememberRoot(sess.root);
   const full = path.join(getWorkspaceDir(), dir);
+  const moved = [];
   for (const n of sess.pending_uploads || []) {
     try {
       const from = path.join(getWorkspaceDir(), n), to = path.join(full, n);
@@ -527,11 +530,12 @@ function assignSessionDir(sess, message) {
         fs.renameSync(from, to);
         // 「这份是用户传的」那笔账记的是路径，搬完得跟着改键，否则这张图换个位置就又变成产出了
         moveUserInput(n, path.join(dir, n));
+        moved.push(n);
       }
     } catch {}
   }
   sess.pending_uploads = [];
-  return dir;
+  return moved;
 }
 
 function sessFile(id) {
@@ -7343,16 +7347,17 @@ app.post("/api/chat", async (req, res) => {
   // 应用自己建的根（默认工作空间、没填目录的项目、租户根）：每个对话固定一个成果子文件夹（任务_月日_标题），
   // 根目录不再越堆越乱；用户自选的现成文件夹保持原地读写（素材要在原文件夹里就地处理）。
   // 聊到一半换了根：旧文件夹留在旧根下，这边另起一个。拿旧名字在新根下接着写，落点就成了一个没人认的同名新文件夹
-  let taskBaseDir = null;
+  let taskBaseDir = null, moved = [];
   if (perChatHere()) {
-    if (!useSessionDirHere(sess)) assignSessionDir(sess, message);
+    if (!useSessionDirHere(sess)) moved = assignSessionDir(sess, message);
     taskBaseDir = sess.dir;
   }
   // 分文件夹以前摊在根上的老产出：整篇重写时写回那份，不在新格里另起第二份（见 src/util/task-dirs.js flatOutputs）
   try { require("./src/agent/tools").ownRootFiles(sessionId, taskBaseDir ? rootFilesOf(sess).map((n) => path.join(getWorkspaceDir(), n)) : []); } catch {}
   // 成果面板标「本对话」用；不进回放记录。换到自选文件夹时发空串：面板手里还是上一个根里的文件夹名，
-  // 拿它去筛这边摊在根上的文件，永远是「本对话 0」
-  send({ type: "dir", dir: taskBaseDir || "" });
+  // 拿它去筛这边摊在根上的文件，永远是「本对话 0」。
+  // moved：刚从根上搬进这格的附件名。气泡是按上传那一刻的落点画的，前端拿它改指向（app-01.js repointAttach）
+  send({ type: "dir", dir: taskBaseDir || "", moved });
   // Goal 模式：第一次用目标消息建目标（拆成验收标准）；已有进行中的目标就直接接着冲
   const goalMode = modes.isGoalMode(mode);
   if (goalMode && (!sess.goal || sess.goal.status !== "active")) {

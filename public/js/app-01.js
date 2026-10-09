@@ -138,9 +138,11 @@ const sessionAttachDirs = new Map();
 // sessionId -> { 附件名: { root: 根指纹, dir } }：换过根以后还留在别的根那格里的附件（服务端 att_spots）。
 // 那边的格名跟这边不一样，光靠名字拼不出来；有这一份就直接带着根去取，缩略图、预览、下载都是那一份
 const sessionAttachSpots = new Map();
-// 附件原名 -> /api/upload 回的工作区相对路径。这是最准的一份：上传那一刻服务端亲口说了
-// 「我把它放这儿了」，不用再靠 sessionDirs 去猜。只活在这一次开着的窗口里，
-// 刷新之后老回合走 attachRel 里后面两档兜底
+// sessionId -> Map(附件原名 -> /api/upload 回的工作区相对路径)。这是最准的一份：上传那一刻服务端亲口说了
+// 「我把它放这儿了」，不用再靠 sessionDirs 去猜。按对话分开记：两条对话各传过一份同名的，
+// 混在一张表里，后传的那份就把先那条对话的气泡指到别人那份上去了。
+// 新对话头一条消息发出去时，先落在根上的附件会被搬进刚建的成果文件夹，跟着改（见 repointAttach）。
+// 只活在这一次开着的窗口里，刷新之后老回合走 attachRel 里后面两档兜底
 const attachPaths = new Map();
 const sessionModels = new Map(); // sessionId -> 该对话指定的模型名（没有 = 跟随全局默认）
 const sessionGoals = new Map(); // sessionId -> 该对话的目标状态（Goal 模式的目标卡）
@@ -945,9 +947,14 @@ const BUBBLE_ATT_ICON = { "图片": "image", "视频": "film", "音频": "volume
 // 气泡上面那排缩略图只画图。视频不画：preload=metadata 会去拉每条片子的文件头，
 // 一屏历史里十几条就是十几个连接，而用户发视频本来就少
 const BUBBLE_PIC_RE = /\.(png|jpe?g|gif|webp|bmp|ico|avif|svg)$/i;
+/** 记一笔「这条对话里这份附件落在哪」。按对话分开记，见 attachPaths */
+function memoAttach(sid, name, rel) {
+  if (!attachPaths.has(sid)) attachPaths.set(sid, new Map());
+  attachPaths.get(sid).set(name, rel);
+}
 /**
  * 用户发进来的那份素材，现在躺在工作区的哪个相对路径上。三档，越靠前越准：
- * ① 这次开着的窗口里刚传的 —— 服务端回过确切路径，直接用；
+ * ① 这次开着的窗口里、这条对话刚传的 —— 服务端回过确切路径（搬过家的也跟着改了），直接用；
  * ② 老回合：这条对话有成果子文件夹，素材就在里面；
  * ③ 连子文件夹都没有：那就是工作区根上。
  *
@@ -958,7 +965,7 @@ const BUBBLE_PIC_RE = /\.(png|jpe?g|gif|webp|bmp|ico|avif|svg)$/i;
  * 当前那格里没有它，服务端才会报。root 空串 = 当前根。
  */
 function attachRel(name, sid) {
-  const memo = attachPaths.get(name);
+  const memo = attachPaths.get(sid)?.get(name);
   if (memo) return { rel: memo, alt: "", root: "" };
   const spots = sessionAttachSpots.get(sid);
   const spot = spots && Object.prototype.hasOwnProperty.call(spots, name) ? spots[name] : null;
@@ -971,6 +978,31 @@ function attachThumb(rel, root) {
   const stamp = curStamp(rel, root || "");
   const q = [/\.svg$/i.test(rel) ? "" : "thumb=320", stamp ? "v=" + encodeURIComponent(stamp) : ""].filter(Boolean).join("&");
   return withRoot("/api/files/view/" + fpath(rel) + (q ? "?" + q : ""), root || "");
+}
+/**
+ * 新对话的头一条消息发出去，服务端才建得出成果文件夹，先落在根上的附件这时被搬了进去（server.js assignSessionDir）。
+ * 可这条消息的气泡早按上传那一刻的落点画好了：不改，一点预览就是「文件不存在」；
+ * 缩略图赶上搬家那一下去取，还会退成名字条。dir 事件带回搬了哪几个，记的路径和画好的那几个一起改过去。
+ * 只改还指着根上那份的：服务端没搬的（文件夹里已有同名的）留在根上，那份才是这条消息传的。
+ */
+function repointAttach(turn, sid, dir, moved) {
+  if (!dir || !Array.isArray(moved)) return;
+  for (const n of moved) {
+    const name = String(n || "");
+    if (!name) continue;
+    const rel = dir + "/" + name;
+    memoAttach(sid, name, rel);
+    if (!turn) continue;
+    for (const el of turn.querySelectorAll(".bubble-pics .bpic, .bubble-attach .batt")) {
+      if (el.dataset.rel !== name || el.dataset.root) continue;
+      el.dataset.rel = rel;
+      el.dataset.alt = "";
+      el.classList.remove("gone");
+      el.title = name + " · 点击预览";
+      const img = el.querySelector("img");
+      if (img) img.src = attachThumb(rel, "");
+    }
+  }
 }
 function stripSceneTag(t) {
   return String(t == null ? "" : t)
@@ -1849,6 +1881,8 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
         sessionDirs.delete(turnSid);
         if (turnSid === sessionId) renderFiles(filesCache);
       }
+      // 这格是这一轮才建的，先落在根上的附件刚搬进来：气泡还指着根上那份，跟着改过去
+      if (ev.dir && Array.isArray(ev.moved) && ev.moved.length) repointAttach(turn, turnSid, ev.dir, ev.moved);
     } else if (ev.type === "goal") {
       // 目标卡状态直播（拆解完成/每轮验收后各推一次）；不进回放记录，回放由 /api/session 的 goal 字段补上
       if (ev.goal) {

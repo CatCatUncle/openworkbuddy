@@ -1915,6 +1915,18 @@ const FILELIST_CHECKS = `
     ok("换回来又发了文件夹名：照样记上", sessionDirs.get("s_now") === "任务_0903_本对话");
     onDir({ type: "dir", dir: "" }, "s_bg");
     ok("反向对照：别的对话发的空串不动这个对话的", sessionDirs.get("s_now") === "任务_0903_本对话");
+    // 这格是这一轮才建的：连带报了刚从根上搬进来的附件，交给 repointAttach 改这一回合的气泡
+    // （改得对不对在气泡那一屏里验，这儿只验接没接上）
+    const calls = [], T = { turn: 1 };
+    const onDirT = new Function("ev", "turnSid", "turn", "repointAttach", ${JSON.stringify(DIR_EV_SRC)});
+    const rec = (...a) => calls.push(a);
+    onDirT({ type: "dir", dir: "任务_0903_本对话", moved: ["课本.pdf"] }, "s_now", T, rec);
+    ok("dir 带着 moved 来：交给 repointAttach 改这一回合的气泡",
+       calls.length === 1 && calls[0][0] === T && calls[0][1] === "s_now" && calls[0][2] === "任务_0903_本对话" && calls[0][3].join() === "课本.pdf",
+       JSON.stringify(calls.map((c) => c.slice(1))));
+    onDirT({ type: "dir", dir: "任务_0903_本对话", moved: [] }, "s_now", T, rec);
+    onDirT({ type: "dir", dir: "任务_0903_本对话" }, "s_now", T, rec);
+    ok("★反向对照★ 没搬东西（或老服务端不报 moved）：不去动气泡", calls.length === 1, String(calls.length));
     if (!wasOpen) openDirs.delete("任务_0903_本对话");
     window.sessionId = null; window.settingsCache = { platform_owner: true, workspace_is_default: true };
   }
@@ -2044,6 +2056,12 @@ const ATTACH_HTML =
   "<div class='input-card'><div id='attach-chips'></div><textarea id='input'></textarea></div>" +
   "<button id='attach-btn'></button><input type='file' id='file-input'></body>";
 
+// 传完记「这份附件落在哪」走的是 app-01.js 里那个真的 memoAttach（按对话分开记），不另编一份
+const MEMO0 = APP02X.indexOf("function memoAttach(sid, name, rel) {");
+const MEMO1 = APP02X.indexOf("\n}\n", MEMO0) + 3;
+if (MEMO0 < 0 || MEMO1 <= MEMO0) throw new Error("app-01.js 里的 memoAttach 找不到了（改名/挪窝？），附件落点记账这一半没法核");
+const MEMO_ATTACH_SRC = APP02X.slice(MEMO0, MEMO1);
+
 // 页面里其他文件提供的东西，在这儿给最小替身；网络请求全部截下来当证据
 const ATTACH_STUBS = [
   IC_STUB,
@@ -2051,6 +2069,7 @@ const ATTACH_STUBS = [
   // 传完要把「服务端说它放哪儿了」记进来，气泡上面那排缩略图按这个取图。
   // 用真的 Map，下面才断言得动它到底记没记
   "window.attachPaths = new Map();",
+  MEMO_ATTACH_SRC,
   // 慢和失败都得能造出来：这一段里「没传完就点发送」「传挂了怎么救回来」两条，
   // 靠真实网络的快慢去撞是撞不出来的
   "window.uploadDelay = 0; window.uploadFail = false;",
@@ -2161,6 +2180,7 @@ const ATTACH_CHECKS = `
   {
     const keep = sessionId;
     sessionId = null; // 点完「新建任务」、第一条消息还没发出去，就是这个状态
+    window.uploadDelay = 150; // 让服务端晚点回话：下面要在「还没传完」的时候切回别的对话
     const dt = new DataTransfer();
     dt.items.add(new File([bytes(B64PNG)], "新对话第一张.png", { type: "image/png" }));
     const n0 = uploads.length;
@@ -2171,7 +2191,14 @@ const ATTACH_CHECKS = `
     // 用户传进去的**输入**图就这么出现在「本回合产出」里
     ok("全新对话也带着会话 id 上传", typeof up.session === "string" && /^s_/.test(up.session), JSON.stringify(up.session));
     ok("现取的这个 id 就留着用，等下发消息不会再换一个", sessionId === up.session, sessionId + " vs " + up.session);
+    // 传到一半切回别的对话：这一枚的落点仍记在上传时那条对话名下。记到眼下这条去，
+    // 两条对话各传过一份同名的，气泡就指到别人那份上（以前整张表只按名字记，就是这样串的）
     sessionId = keep;
+    // 等不到也落到下面这条 ok 上报：记串了的时候光一句「等了 2000ms」，看不出坏的是哪件事
+    const landed = await until(() => window.attachPaths.get(up.session)?.get("新对话第一张.png")).catch(() => null);
+    ok("  └ 落点记在上传时那条对话名下，没串到切回来的这条", !!landed && !window.attachPaths.get(keep)?.has("新对话第一张.png"),
+       JSON.stringify([...window.attachPaths].map(([k, m]) => [k, [...m]])));
+    window.uploadDelay = 0;
     // 这一段自己多挂了一枚 chip，收走：后面几段是按 chip 数数的
     const mine = pendingAttach[pendingAttach.length - 1];
     const before = chips().length;
@@ -2439,9 +2466,9 @@ const ATTACH_CHECKS = `
        window.previewed[0] === "out/季度汇报.pdf", JSON.stringify(window.previewed));
     // 消息发出去之后，气泡上面那排缩略图要按这条路径取图。这儿不记，
     // 那边只能拿成果文件夹去拼一个——拼错就是一整排灰方块
-    ok("服务端说它放哪儿了，当场记下来给气泡用",
-       window.attachPaths.get("季度汇报.pdf") === "out/季度汇报.pdf",
-       JSON.stringify([...window.attachPaths]));
+    ok("服务端说它放哪儿了，当场记下来给气泡用（记在这条对话名下）",
+       window.attachPaths.get("s_test_1")?.get("季度汇报.pdf") === "out/季度汇报.pdf",
+       JSON.stringify([...window.attachPaths].map(([k, m]) => [k, [...m]])));
   }
 
   // ---- 16. 缩略图是缩过的，不是把整份文件塞进 img.src ----
@@ -15124,10 +15151,14 @@ for (const k of ["bubble-quote", "bubble-attach", "bubble-pics", "BUBBLE_ATT_ICO
 // 缩略图挂在 .u-stack 里，而下面那个壳子是测试自己搭的。真骨架哪天把这层去掉，
 // 这儿要当场红——不然测试会在一个线上根本不存在的结构里一路绿下去
 if (!APP02X.includes('<div class="u-stack">')) throw new Error("app-01.js 的回合骨架里没有 .u-stack 了：气泡上面那排缩略图没地方挂，测试搭的壳子已经不是线上那个");
-// 「这份素材躺在工作区哪儿」那三档也按真源码跑：拼错一档，用户看到的就是一整排灰方块
-const RS0 = APP02X.indexOf("function attachRel(name, sid) {");
-const RS1 = APP02X.indexOf("\n}\n", APP02X.indexOf("function attachThumb(rel, root) {")) + 3; // 切到 attachThumb 的收尾大括号：它现在是多行的（缩略图地址带盘上那一版的时间戳）
-if (RS0 < 0 || RS1 <= RS0) throw new Error("app-01.js 里的 attachRel / attachThumb 找不到了（改名/挪窝？），素材路径这一半没法核");
+// 「这份素材躺在工作区哪儿」那三档也按真源码跑：拼错一档，用户看到的就是一整排灰方块。
+// 从记账的 memoAttach 切到搬家后改指向的 repointAttach，中间是 attachRel / attachThumb
+const RS0 = APP02X.indexOf("function memoAttach(sid, name, rel) {");
+const RS1 = APP02X.indexOf("\n}\n", APP02X.indexOf("function repointAttach(turn, sid, dir, moved) {")) + 3;
+if (RS0 < 0 || RS1 <= RS0) throw new Error("app-01.js 里的 memoAttach / repointAttach 找不到了（改名/挪窝？），素材路径这一半没法核");
+for (const k of ["function attachRel(name, sid) {", "function attachThumb(rel, root) {"]) {
+  if (!APP02X.slice(RS0, RS1).includes(k)) throw new Error("切出来的素材路径那段里没有 " + k + "（挪出了 memoAttach…repointAttach 之间？）");
+}
 const WR0 = APP02X.indexOf("function withRoot(url, root) {");
 const WR1 = APP02X.indexOf("\n}\n", WR0) + 3;
 if (WR0 < 0 || WR1 <= WR0) throw new Error("app-01.js 里的 withRoot 找不到了，素材带根取图那一半没法核");
@@ -15164,7 +15195,7 @@ const BUBBLE_CHECKS = `
   const fpath = (n) => String(n == null ? "" : n).split("/").map(encodeURIComponent).join("/");
   const sessionAttachSpots = new Map();
   const RESOLVE = new Function("attachPaths", "sessionDirs", "sessionAttachDirs", "sessionAttachSpots", "fpath", "curStamp",
-    window.__RESOLVE_SRC + "; return { attachRel: attachRel, attachThumb: attachThumb };")(attachPaths, sessionDirs, sessionAttachDirs, sessionAttachSpots, fpath, () => "");
+    window.__RESOLVE_SRC + "; return { attachRel: attachRel, attachThumb: attachThumb, memoAttach: memoAttach, repointAttach: repointAttach };")(attachPaths, sessionDirs, sessionAttachDirs, sessionAttachSpots, fpath, () => "");
   let pvOpened = [], pvRoots = [];
   const previewFile = (rel, root) => { pvOpened.push(rel); pvRoots.push(root); };
   const stage = document.createElement("div");
@@ -15226,7 +15257,7 @@ const BUBBLE_CHECKS = `
   // ---------- 素材锚点：图画成缩略图摞在气泡上面，其余折成气泡底下那排 ----------
   {
     attachPaths.clear(); sessionDirs.clear();
-    attachPaths.set("主图.png", "报价单/主图.png");
+    RESOLVE.memoAttach("sid-0", "主图.png", "报价单/主图.png");
     const t = turnOf("【图片 1：主图.png】\\n【文件 2：报价单.pdf】\\n第一张放左边，把报价单里的数填进去\\n（已上传文件：主图.png、报价单.pdf）");
     const b = t.querySelector(".bubble");
     const pics = [...t.querySelectorAll(".bubble-pics .bpic")];
@@ -15260,7 +15291,7 @@ const BUBBLE_CHECKS = `
   // ---------- 这份素材躺在工作区哪儿：三档，越靠前越准 ----------
   {
     attachPaths.clear(); sessionDirs.clear();
-    attachPaths.set("截图.png", "01_看图/截图.png");
+    RESOLVE.memoAttach("s9", "截图.png", "01_看图/截图.png");
     sessionDirs.set("s9", "别的文件夹");
     const btn = turnOf("【图片 1：截图.png】\\n这是在哪", "s9").querySelector(".bpic");
     ok("这次刚传的：按服务端亲口说的那条路径取，不拿成果文件夹去拼",
@@ -15325,10 +15356,46 @@ const BUBBLE_CHECKS = `
        src === "/api/files/view/" + fpath("图标.svg"), src);
   }
 
+  // ---------- 新对话：附件先落在根上，头一条消息建出成果文件夹才搬进去 ----------
+  // 10-09 实撞：课本 PDF 一点预览就是「文件不存在」。气泡按上传那一刻的落点（根上）画好了，
+  // 服务端随后把它搬进了「任务_…」，却没人告诉气泡
+  {
+    attachPaths.clear(); sessionDirs.clear(); pvOpened = []; pvRoots = [];
+    RESOLVE.memoAttach("s_new", "课本.pdf", "课本.pdf");
+    RESOLVE.memoAttach("s_new", "插图.png", "插图.png");
+    RESOLVE.memoAttach("s_new", "旧图.png", "旧图.png");
+    const t = turnOf("【文件 1：课本.pdf】\\n【图片 2：插图.png】\\n【图片 3：旧图.png】\\n做个讲课 PPT", "s_new");
+    const doc = t.querySelector(".batt"), pic = t.querySelectorAll(".bpic")[0], old = t.querySelectorAll(".bpic")[1];
+    ok("夹具自检：发出去那一刻，气泡指着根上那份（上传时还没有成果文件夹）",
+       doc.dataset.rel === "课本.pdf" && pic.dataset.rel === "插图.png", doc.dataset.rel + " / " + pic.dataset.rel);
+    pic.querySelector("img").onerror(); // 缩略图赶上搬家那一下去取：根上已经没了
+    ok("夹具自检：缩略图取空，退成了名字条", pic.classList.contains("gone"), pic.className);
+    RESOLVE.repointAttach(t, "s_new", "任务_1009_讲课", ["课本.pdf", "插图.png"]);
+    doc.click(); pic.click();
+    ok("★搬进成果文件夹之后，点开的是新位置★（不改的话一点预览就是「文件不存在」）",
+       pvOpened.join() === "任务_1009_讲课/课本.pdf,任务_1009_讲课/插图.png" && pvRoots.join() === ",", JSON.stringify([pvOpened, pvRoots]));
+    ok("  └ 已经退成名字条的缩略图回来了，按新位置重取",
+       !pic.classList.contains("gone") && /点击预览/.test(pic.title)
+       && pic.querySelector("img").getAttribute("src") === "/api/files/view/" + fpath("任务_1009_讲课/插图.png") + "?thumb=320",
+       pic.className + " " + pic.title + " " + pic.querySelector("img").getAttribute("src"));
+    ok("★反向对照★ 服务端没搬的那份照旧指着根上（它就在那儿）", old.dataset.rel === "旧图.png", old.dataset.rel);
+    const again = turnOf("【文件 1：课本.pdf】\\n做个讲课 PPT", "s_new").querySelector(".batt");
+    ok("  └ 记的路径也跟着改了：切走再切回来重画，还是新位置", again.dataset.rel === "任务_1009_讲课/课本.pdf", again.dataset.rel);
+  }
+  {
+    // 两条对话各传过一份同名的：按对话分开记，谁也不指到谁那份上
+    attachPaths.clear(); sessionDirs.clear();
+    RESOLVE.memoAttach("sA", "报价单.pdf", "任务_1008_报价/报价单.pdf");
+    const b = turnOf("【文件 1：报价单.pdf】\\n再看看", "sB").querySelector(".batt");
+    ok("★别的对话传过同名的，不串过来★", b.dataset.rel === "报价单.pdf", b.dataset.rel);
+    const a = turnOf("【文件 1：报价单.pdf】\\n再看看", "sA").querySelector(".batt");
+    ok("  └ 自己那条对话照旧按自己记的", a.dataset.rel === "任务_1008_报价/报价单.pdf", a.dataset.rel);
+  }
+
   // ---------- 点得开：他要的是「找到那个文件」，不是「看一眼」 ----------
   {
     attachPaths.clear(); sessionDirs.clear();
-    attachPaths.set("主图.png", "d/主图.png"); attachPaths.set("报价单.pdf", "d/报价单.pdf");
+    RESOLVE.memoAttach("sid-0", "主图.png", "d/主图.png"); RESOLVE.memoAttach("sid-0", "报价单.pdf", "d/报价单.pdf");
     const t = turnOf("【图片 1：主图.png】\\n【文件 2：报价单.pdf】\\n看这个");
     pvOpened = [];
     t.querySelector(".bpic").onclick();
@@ -15376,7 +15443,7 @@ const BUBBLE_CHECKS = `
   // ---------- 版式：真在屏幕上量一遍（"写了 state 没渲染" 这类事，纯断言看不见）----------
   {
     attachPaths.clear(); sessionDirs.clear();
-    attachPaths.set("大图.png", "d/大图.png");
+    RESOLVE.memoAttach("sid-0", "大图.png", "d/大图.png");
     const t = turnOf("【图片 1：大图.png】\\n这是在哪");
     const img = t.querySelector(".bpic img");
     // 这页后面没有服务端，真去取那张图只会 404。塞一张 600×400 的进去量版式——
@@ -15384,6 +15451,9 @@ const BUBBLE_CHECKS = `
     const SVG = "data:image/svg+xml;utf8," + encodeURIComponent(
       "<svg xmlns='http://www.w3.org/2000/svg' width='600' height='400'><rect width='600' height='400' fill='#5b5ff7'/></svg>");
     img.onerror = null;
+    // 气泡里的图是 loading="lazy"：这一屏前面已经画了几十条，这条排在视口外，懒加载的图在视口外不取，
+    // 量出来就是 0×0。前面多一条测试就挪一截，量版式不该跟着它排第几条变
+    img.loading = "eager";
     await new Promise((r) => { img.onload = r; img.onerror = r; img.src = SVG; setTimeout(r, 2000); });
     const pics = t.querySelector(".bubble-pics").getBoundingClientRect();
     const bub = t.querySelector(".bubble").getBoundingClientRect();
