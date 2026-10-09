@@ -520,13 +520,27 @@ function createLeakGuard(onTextDelta) {
   };
 }
 
-/** OpenAI 兼容通道的输出上限：模型条目写了正整数就用它，缺省 8192；extra_body 里自己写了上限就不发 */
+/** OpenAI 兼容通道的输出上限：模型条目写了正整数就用它，没写查下面那张表，再查不到缺省 8192；
+ *  extra_body 里自己写了上限就不发 */
 const DEFAULT_MAX_TOKENS = 8192;
+// 查过厂商文档的「官方地址 + 型号 → 一条回复给多少」。只收核实过的：发超了厂商上限是当场 400，比截断还糟。
+// 同一个型号挂在别家平台（百炼、方舟、聚合网关）上限各不相同，所以连地址一起认。
+// 不给满额：够思考完再写一整个大文件就行，给满只会让一条跑偏的回复拖得更久。
+// 2026-10-09 查 api-docs.deepseek.com 定价页：deepseek-flash / deepseek-v4-pro 一条最多 384K，默认开思考，
+// 思考也算在这份额度里——按缺省 8192 发，想完再写个大网页，参数写到一半就被截，连截两次任务就停了
+const OUTPUT_CAP_TABLE = [
+  { host: /(^|\.)deepseek\.com$/, model: /^deepseek-(flash|v4)/, cap: 65536 },
+];
 function outputCap(cfg) {
   const extra = (cfg && cfg.extra_body) || {};
   if (extra.max_completion_tokens != null || extra.max_tokens != null) return 0;
   const n = Math.round(Number(cfg && cfg.max_tokens));
-  return n > 0 ? n : DEFAULT_MAX_TOKENS;
+  if (n > 0) return n;
+  let host = "";
+  try { host = new URL(String((cfg && cfg.base_url) || "")).hostname.toLowerCase(); } catch { /* 地址写坏了按缺省发，报错交给请求本身 */ }
+  const model = String((cfg && cfg.model) || "").toLowerCase();
+  const hit = OUTPUT_CAP_TABLE.find((r) => r.host.test(host) && r.model.test(model));
+  return hit ? hit.cap : DEFAULT_MAX_TOKENS;
 }
 /** 上限字段名：OpenAI 官方和 Azure 的推理模型（o 系列、gpt-5）不收 max_tokens，发了直接 400，
  *  它们全系都认 max_completion_tokens；其余兼容厂商（DeepSeek/通义/方舟/Ollama/OpenRouter）只认 max_tokens */

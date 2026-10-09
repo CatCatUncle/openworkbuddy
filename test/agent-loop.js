@@ -413,6 +413,12 @@ const emptyAN = (m) => m.role === "assistant" && (!m.content || (Array.isArray(m
       }
       eq(outputCap({ max_tokens: 2000 }), 2000, "  └ 模型条目自己写了 max_tokens 就用它");
       eq(outputCap({ max_tokens: "abc" }), 8192, "  └ 写了个不是数的：退回缺省，不发 NaN 过去");
+      eq(outputCap({ base_url: "https://api.deepseek.com/v1", model: "deepseek-flash" }), 65536, "★DeepSeek 官方的 deepseek-flash 不按 8192 发★ 它默认开思考、思考也吃这份额度，8192 写个大网页必被截");
+      eq(outputCap({ base_url: "https://api.deepseek.com", model: "deepseek-v4-pro" }), 65536, "  └ deepseek-v4-pro 同上");
+      eq(outputCap({ base_url: "https://api.deepseek.com/v1", model: "deepseek-chat" }), 8192, "  └ 老的 deepseek-chat 上限就是 8K：照缺省发，发超了当场 400");
+      eq(outputCap({ base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "deepseek-v4-flash" }), 8192, "  └ 挂在别家平台的同名型号不认：那边上限没核实过");
+      eq(outputCap({ base_url: "https://api.deepseek.com/v1", model: "deepseek-flash", max_tokens: 4000 }), 4000, "  └ 模型条目自己写了上限还是听它的");
+      eq(outputCap({ base_url: "https://api.deepseek.com/v1", model: "deepseek-flash", extra_body: { max_tokens: 9000 } }), 0, "  └ extra_body 里写了的也照旧不另发");
       eq(outputCap({ extra_body: { max_completion_tokens: 4000 } }), 0, "  └ extra_body 里写了 max_completion_tokens 的：不再发 max_tokens（有的模型两个一起发会 400）");
       eq(outputCap({ extra_body: { max_tokens: 4000 } }), 0, "  └ extra_body 里自己写了 max_tokens 的：以用户那份为准，不另发");
       eq(outputCapField({ base_url: "https://api.openai.com/v1" }), "max_completion_tokens", "  └ OpenAI 官方：推理模型不收 max_tokens，改发 max_completion_tokens");
@@ -459,10 +465,11 @@ const emptyAN = (m) => m.role === "assistant" && (!m.content || (Array.isArray(m
         eq(userTexts(history).filter((c) => c.startsWith("【系统·输出截断】")).length, 1, "  └ 续写提示只追加了一条");
         ok(/write_file/.test(userTexts(llm.seen[1]).pop() || "") && /append/.test(userTexts(llm.seen[1]).pop() || ""), "  └ 续写提示说清是哪个调用没执行、该怎么拆小", userTexts(llm.seen[1]).pop());
         eq(r.stopped, TRUNC_STOP, "★第二次还被截：停下来★");
-        ok(r.finalText.includes("输出被截断，已停止执行"), "★告诉用户「输出被截断，已停止执行」★", r.finalText.slice(-120));
+        ok(r.finalText.includes(TRUNC_STOP), "★告诉用户「" + TRUNC_STOP + "」★", r.finalText.slice(-120));
+        ok(/回一句「继续」/.test(r.finalText) && !/单条回复的上限|参数没写完/.test(r.finalText), "  └ 说人话：告诉人回一句「继续」就接着做，不甩「单条回复上限」这种词", r.finalText.slice(-160));
         ok(!/执行上限/.test(r.finalText), "  └ 不劝人去调「执行上限」：这跟步数、时长没关系", r.finalText.slice(-120));
         const saidA = events.filter((e) => e.type === "text").map((e) => e.delta).join("");
-        ok(/调用都没有执行/.test(saidA), "  └ 真摘掉了调用：界面上那条提示告诉用户这一批没执行", saidA.slice(-160));
+        ok(/没写完的那步没执行/.test(saidA), "  └ 真摘掉了调用：界面上那条提示告诉用户没执行", saidA.slice(-160));
         ok(events.some((e) => e.type === "limit" && e.note === TRUNC_STOP), "  └ 界面收到了 limit 事件");
         eq(llm.wraps(), 0, "  └ 不再花一次钱写收尾：刚连着两次写爆上限，收尾那段大概率也是截断");
         // 摘掉的调用不能在历史里留下没人应答的 tool_use，否则下一轮就是 400
@@ -502,7 +509,7 @@ const emptyAN = (m) => m.role === "assistant" && (!m.content || (Array.isArray(m
         ok(!fs.existsSync(path.join(dir, "半截.md")), "  └ 被截的那次照样没执行");
         eq(fs.existsSync(path.join(dir, "年报.md")) ? fs.readFileSync(path.join(dir, "年报.md"), "utf8") : null, "第一章", "  └ 重发的那次真执行了");
         eq(llm.seen.length, 3, "  └ 一共三次：被截 / 重发 / 收尾");
-        ok(!/输出被截断，已停止/.test(r.finalText), "  └ 最后的回复里没有「已停止」", r.finalText);
+        ok(!r.finalText.includes(TRUNC_STOP), "  └ 最后的回复里没有「先停下了」", r.finalText);
       }
 
       // C 一批两个调用，只截了最后一个：前面那个参数已经闭合，照常执行
@@ -626,7 +633,8 @@ const emptyAN = (m) => m.role === "assistant" && (!m.content || (Array.isArray(m
 
       // 停下来那句话：说对下一步
       const tn = stopNotice(TRUNC_STOP);
-      ok(tn.includes(TRUNC_STOP) && tn.includes("接着上次进度做") && !tn.includes("执行上限"), "停止提示：给一条走得回去的路，不劝人调执行上限", tn);
+      // 「继续」和「接着上次进度做」都是接着干的口令（agent.js 的 ASK_BARE_RE），短的那句人更愿意打
+      ok(tn.includes(TRUNC_STOP) && /「(继续|接着上次进度做)」/.test(tn) && !tn.includes("执行上限"), "停止提示：给一条走得回去的路，不劝人调执行上限", tn);
       ok(!/调用/.test(tn), "  └ 不说「调用没有执行」：纯正文被截也走这句，有没有调用由循环里那条提示分开说", tn);
     }
 

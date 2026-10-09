@@ -37,6 +37,13 @@ const LEVEL_LABEL = { auto: "跟随模型默认", off: "关闭思考", low: "低
 const CLAUDE_BUDGET = { low: 4000, medium: 10000, high: 24000 };
 /** 通义的思考预算 */
 const QWEN_BUDGET = { low: 1024, medium: 4096, high: 16384 };
+/** DeepSeek V4 的强度：它只有 low / high / max，「中」落在它的默认 high 上 */
+const DEEPSEEK_EFFORT = { low: "low", medium: "high", high: "max" };
+
+/** base_url 的主机名；写坏了返回空串 */
+function hostOf(url) {
+  try { return new URL(String(url || "")).hostname.toLowerCase(); } catch { return ""; }
+}
 
 function norm(level) {
   const s = String(level || "").trim().toLowerCase();
@@ -112,8 +119,21 @@ function planFor(entry, level) {
   }
 
   if (/deepseek/i.test(model)) {
-    // 这一家是两个型号两条命，不是一个开关：reasoner 永远思考，chat 永远不思考
+    // 老一代是两个型号两条命，不是一个开关：reasoner 永远思考，chat 永远不思考
     if (/reasoner|-r1\b|\br1\b/i.test(model)) return none("deepseek", "deepseek-reasoner 没有关闭思考的参数。要不思考，把模型换成 deepseek-chat。");
+    // V4 这一代（deepseek-flash / deepseek-v4-pro）一个型号两种模式，默认就开着思考（强度 high）。
+    // 参数照 2026-10-09 的官方文档（api-docs.deepseek.com 的 thinking_mode）：thinking.type 管开关，
+    // reasoning_effort 只分 low / high / max。只认官方地址：同一型号挂在别家平台，开关参数不一定一样
+    if (/^deepseek-(flash|v4)/i.test(model)) {
+      if (!/(^|\.)deepseek\.com$/i.test(hostOf(url))) return none("deepseek", `${model} 挂在别家平台上，那边的思考参数没核实过，没敢乱发。要用的话，在这条模型的 extra_body 里手填。`);
+      if (!isOn(lv)) return { level: lv, vendor: "deepseek", supported: true, params: { thinking: { type: "disabled" } }, note: "thinking.type=disabled" };
+      const eff = DEEPSEEK_EFFORT[lv];
+      return {
+        level: lv, vendor: "deepseek", supported: true,
+        params: { thinking: { type: "enabled" }, reasoning_effort: eff },
+        note: `thinking.type=enabled, reasoning_effort=${eff}（DeepSeek 只分 low/high/max 三档，「中」就是它默认的 high）`,
+      };
+    }
     return none("deepseek", `${model} 本来就不是思考模型，没有可关的东西。`);
   }
 

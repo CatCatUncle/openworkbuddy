@@ -10953,6 +10953,9 @@ async function testThinkingSwitch() {
     qwen: { base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen3-max" },
     glm: { base_url: "https://open.bigmodel.cn/api/paas/v4", model: "glm-4.6" },
     dsR: { base_url: "https://api.deepseek.com/v1", model: "deepseek-reasoner" },
+    dsV4: { base_url: "https://api.deepseek.com/v1", model: "deepseek-flash" },
+    dsV4Pro: { base_url: "https://api.deepseek.com", model: "deepseek-v4-pro" },
+    dsV4Elsewhere: { base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "deepseek-v4-flash" },
     weird: { base_url: "https://llm.example.internal/v1", model: "某个自建模型" },
   };
 
@@ -10974,12 +10977,25 @@ async function testThinkingSwitch() {
   assert.deepStrictEqual(thinking.planFor(M.or, "off").params, { reasoning: { enabled: false } }, "OpenRouter 关思考的参数不对");
   assert.deepStrictEqual(thinking.planFor(M.qwen, "off").params, { enable_thinking: false }, "通义关思考的参数不对");
   assert.deepStrictEqual(thinking.planFor(M.glm, "off").params, { thinking: { type: "disabled" } }, "智谱关思考的参数不对");
+  // DeepSeek V4（deepseek-flash / deepseek-v4-pro）一个型号两种模式、默认开思考：以前说它「本来就不是思考模型」，用户关不掉
+  for (const k of ["dsV4", "dsV4Pro"]) {
+    const p = thinking.planFor(M[k], "off");
+    assert(p.supported, `${k} 关思考被标成不支持：` + p.note);
+    assert.deepStrictEqual(p.params, { thinking: { type: "disabled" } }, `${k} 关思考的参数不对`);
+  }
+  const dsEl = thinking.planFor(M.dsV4Elsewhere, "off");
+  assert(!dsEl.supported && Object.keys(dsEl.params).length === 0, "挂在别家平台的 DeepSeek V4 不该照官方参数乱发：" + JSON.stringify(dsEl.params));
+  assert(/extra_body/.test(dsEl.note), "别家平台的 DeepSeek V4 没告诉用户可以自己在 extra_body 里填：" + dsEl.note);
   // ③ 开：强度得真的传下去，而不是三档发同一个东西
   const budgets = ["low", "medium", "high"].map((lv) => thinking.planFor(M.claude, lv).params.thinking.budget_tokens);
   assert(new Set(budgets).size === 3 && budgets[0] < budgets[1] && budgets[1] < budgets[2], "Claude 三档思考预算没有递增：" + budgets.join("/"));
   assert(budgets[2] < 32000, "思考预算必须小于 max_tokens(32000)，否则 Anthropic 直接 400");
   assert.deepStrictEqual(thinking.planFor(M.or, "high").params, { reasoning: { effort: "high" } }, "OpenRouter 强度没传下去");
   assert(thinking.planFor(M.qwen, "low").params.thinking_budget < thinking.planFor(M.qwen, "high").params.thinking_budget, "通义强度没分档");
+  // DeepSeek 只认 low / high / max 三档：三档要真分开，而且只发它认的值
+  const dsEff = ["low", "medium", "high"].map((lv) => thinking.planFor(M.dsV4, lv).params);
+  assert(dsEff.every((p) => p.thinking && p.thinking.type === "enabled"), "DeepSeek V4 开思考没发 thinking.type=enabled：" + JSON.stringify(dsEff));
+  assert.deepStrictEqual(dsEff.map((p) => p.reasoning_effort), ["low", "high", "max"], "DeepSeek V4 的强度没按它的三档发");
 
   // ④ 关不到零就别谎称关到零 —— 这三条是「如实告知」的红线
   const o = thinking.planFor(M.gpt5, "off");

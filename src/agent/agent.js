@@ -994,7 +994,7 @@ function activeChannel(config, llmOverride) {
 }
 
 /** 连着两次回复撞上输出长度上限时的停止原因。主循环落 stopNote、stopNotice 认前缀都用这一份 */
-const TRUNC_STOP = "输出被截断，已停止执行";
+const TRUNC_STOP = "写太长被截断，先停下了";
 /** 连着几次回复都是说到一半就断（不是写满上限）时的停止原因 */
 const CUT_STOP = "回复连着几次中途断开，已停止执行";
 /** 认得的结束原因；别的都记一行日志 */
@@ -1032,7 +1032,7 @@ function stopNotice(note) {
   if (String(note).startsWith("陷入死循环")) return `注意：${note}，已经停下来不再烧时间和额度，这种停不会自动续跑。先把它撞墙的那条路修好（渠道、文件或命令），或者把要求说得更具体，再跟我说「接着上次进度做」。`;
   // 截断是单条回复写不下，跟步数/时长上限无关，劝人调「执行上限」同样是答非所问。
   // 这里不说「调用没有执行」：纯正文被截两次也走这条，那时根本没有调用（有没有调用由循环里那条提示说）
-  if (String(note).startsWith(TRUNC_STOP)) return `注意：${note}。模型连着两次写满单条回复的上限，不会自动续跑。把要求拆小，再跟我说「接着上次进度做」。`;
+  if (String(note).startsWith(TRUNC_STOP)) return `注意：${note}。它连着两次一口气写太多、写到一半被截断，不会自己接着做。前面做好的都还在，回一句「继续」就接着做。`;
   if (String(note).startsWith(CUT_STOP)) return `注意：${note}。这是上游那边的回复没发完，不是任务本身的问题，不会自动续跑。过一会儿跟我说「继续」，或者换一条渠道再试。`;
   return `注意：${note}，任务强制收尾。${resume}；想让它一口气跑更久，去「设置 → 执行上限」调大上限、或把「自动续跑轮数」设成 1 以上（这页归平台管理员）。`;
 }
@@ -1162,7 +1162,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
 - run_shell：执行 shell 命令（${shellNote()}），可用系统已装的 CLI 工具（git、curl、ffmpeg、lark-cli 等）。调现成命令行工具用它，写程序逻辑用 run_node。
 - read_file：读文件（大文件用 start_line/end_line 只读要看的那段）
 - read_document：读 Word/Excel/PPT/压缩包（.docx/.xlsx/.pptx/.zip）。这几种是打包格式，read_file 读出来是乱码。甲方发来的材料、自己刚产出的文档，都用它复核
-- write_file：**新建**文件。写长文档用 append:true 一节一节续写，别把前文重新吐一遍（既慢又容易越写越短）。写完会自动做语法/结构自检，报了问题就当场修
+- write_file：**新建**文件。写长文档、长网页、长代码都用 append:true 一节一节续写（每次几千字以内），别把前文重新吐一遍（既慢又容易越写越短），也别一口气写完整个文件——一条回复写不下会被截断。写完会自动做语法/结构自检，报了问题就当场修
 - edit_file：改已有文件里的某一段（精确替换）。改代码、改文档只用它，不要 write_file 整篇重写
 - multi_edit：同一个文件一次改好几处，要么全改成、要么一处不动
 - search_files：全文搜索，返回 文件:行号:命中行。找定义、找调用点、改名前找引用，用它
@@ -3431,8 +3431,10 @@ function modePrompt(mode) {
         if (giveUp) {
           stopNote = hitCap ? TRUNC_STOP : CUT_STOP;
           // 只有真摘掉了调用才说「没有执行」；纯正文被截，半截正文照样交给用户（finalText 已拼好）
-          const why = hitCap ? "连着两次写满单条回复的上限" : `${cutWhy}，连着 ${cutStreak} 次`;
-          emit({ type: "text", delta: callout.line("warn", `**${stopNote}**：${why}${cutCall ? "，这一批调用都没有执行" : ""}。`), depth });
+          const why = hitCap
+            ? `连着两次一口气写太多，写到一半被截断${cutCall ? "，没写完的那步没执行" : ""}。前面做好的都还在，回一句「继续」就接着做`
+            : `${cutWhy}，连着 ${cutStreak} 次${cutCall ? "，这一批调用都没有执行" : ""}`;
+          emit({ type: "text", delta: callout.line("warn", `**${stopNote}**：${why}。`), depth });
           break;
         }
         if (cutWhy) {
@@ -3446,11 +3448,11 @@ function modePrompt(mode) {
           });
         } else {
           truncAsk = cutCall
-            ? `【系统·输出截断】你上一条回复撞上了输出长度上限，最后那个 ${cutCall.name} 调用的参数没写完，没有执行。重发这一步，但要拆小：长文件用 write_file 带 append:true 一节一节写，长参数拆成几次调用。`
+            ? `【系统·输出截断】你上一条回复撞上了输出长度上限，最后那个 ${cutCall.name} 调用的参数没写完，没有执行。重发这一步，但要拆小：长文件先用 write_file 写开头一段，再带 append:true 一段段往后接，每段几千字以内；长参数拆成几次调用。`
             : `【系统·输出截断】你上一条回复写到一半撞上了输出长度上限。从断开的地方接着写，别重复已经写过的部分；还很长就分几次说完，或者写进文件。`;
           emit({
             type: "text",
-            delta: callout.line("warn", cutCall ? `**输出被截断**：\`${cutCall.name}\` 的参数没写完，没有执行，已让它拆小重发。` : "**输出被截断**：已让它从断开的地方接着写。"),
+            delta: callout.line("warn", cutCall ? "**写太长被截断了**：没写完的那步没执行，已让它拆小重来。" : "**写太长被截断了**：已让它从断的地方接着写。"),
             depth,
           });
         }

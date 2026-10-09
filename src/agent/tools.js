@@ -317,7 +317,7 @@ const TOOL_DEFS = [
   {
     name: "write_file",
     description:
-      "写文件（.md 报告、.txt、.csv、.html、代码文件都行）。路径相对于 workspace。**只用于新建**；改已有文件的局部内容用 edit_file。写长文档时用 append:true 一节一节续写，不用把前文重新吐一遍。写完会自动做语法/结构自检（JS/JSON/HTML/Markdown），有问题会直接告诉你。",
+      "写文件（.md 报告、.txt、.csv、.html、代码文件都行）。路径相对于 workspace。**只用于新建**；改已有文件的局部内容用 edit_file。写长文档、长网页、长代码时用 append:true 一节一节续写（每次几千字以内），不用把前文重新吐一遍；一口气写整个大文件会被截断。写完会自动做语法/结构自检（JS/JSON/HTML/Markdown），有问题会直接告诉你。",
     input_schema: {
       type: "object",
       properties: {
