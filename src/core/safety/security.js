@@ -487,8 +487,8 @@ function resolvePathWithPolicy(sec, rel, workspaceDir, base, platform = process.
     const wp = expandPath(w, platform);
     if (under(real, realOf(wp) || wp)) return { path: p, allowed: true, outside: true };
   }
-  if (inWs) return { path: p, allowed: false, reason: "路径经符号链接指到了工作区外面：workspace 外仅文件白名单目录可访问（设置 → 安全中心 → 文件安全）" };
-  return { path: p, allowed: false, reason: "路径越界：workspace 外仅文件白名单目录可访问（设置 → 安全中心 → 文件安全）" };
+  if (inWs) return { path: p, allowed: false, reason: "路径经符号链接指到了工作区外面：workspace 外仅文件白名单目录可访问（设置 → 安全 →「沙箱安全 · 文件」）" };
+  return { path: p, allowed: false, reason: "路径越界：workspace 外仅文件白名单目录可访问（设置 → 安全 →「沙箱安全 · 文件」）" };
 }
 
 // ---------- 命令安全 ----------

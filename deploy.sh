@@ -183,5 +183,5 @@ fi
 
 if [ "$OPENWORKBUDDY_BIND" = "0.0.0.0" ] && [ -z "$OPENWORKBUDDY_DOMAIN" ]; then
   warn "你把它直接挂在 0.0.0.0 上，而且没有 HTTPS。这个 agent 手里有 run_shell，"
-  warn "等于把这台机器的 shell 用明文 HTTP 挂到了公网。至少去设置 → 安全中心把命令审批打开。"
+  warn "等于把这台机器的 shell 用明文 HTTP 挂到了公网。至少去 设置 → 安全 确认「安全网关」开着。"
 fi

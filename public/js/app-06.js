@@ -957,7 +957,7 @@ function renderAboutPane(pane) {
     <div class="card-item">
       <div class="t">${ic("message-circle")} 帮助与反馈</div>
       <div class="d">快速上手：输入框里 <b>@</b> 引用文件、<b>/</b> 调用技能；手机远程在 设置→助理设置 绑定飞书或企业微信。<br>
-      遇到问题：先看 设置→安全中心→审计中心 是否被拦；LLM 报 503 是上游繁忙，可在 设置→模型 换渠道。</div>
+      遇到问题：先看 设置→安全→审计中心 是否被拦；LLM 报 503 是上游繁忙，可在 设置→模型 换渠道。</div>
     </div>`;
   pane.querySelector("#about-onb").onclick = () => { mask.classList.remove("show"); openOnboarding(); };
   drawAboutLicense(pane.querySelector("#ab-lic-now"));

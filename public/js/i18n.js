@@ -33,7 +33,7 @@
       "部署配置、脚本、技能模板等示例代码按 MIT 发布，可商用。": "Deployment configs, scripts, skill templates and sample code are MIT-licensed and free for commercial use.",
       "点「检查更新」重试；仍不行请重启 OpenWorkBuddy。": "Click Check for updates to retry; if it persists, restart OpenWorkBuddy.",
       "登录已过期，刷新页面重新登录。": "Session expired — refresh and sign in again.",
-      "遇到问题：先看 设置→安全中心→审计中心 是否被拦；LLM 报 503 是上游繁忙，可在 设置→模型 换渠道。": "Trouble? Check Settings → Security → Audit for blocks; an LLM 503 means the upstream is busy — switch provider in Settings → Models.",
+      "遇到问题：先看 设置→安全→审计中心 是否被拦；LLM 报 503 是上游繁忙，可在 设置→模型 换渠道。": "Trouble? Check Settings → Security → Audit for blocks; an LLM 503 means the upstream is busy — switch provider in Settings → Models.",
       "；手机远程在 设置→助理设置 绑定飞书或企业微信。": "; for mobile, link Feishu or WeCom in Settings → Assistant.",
       "引用文件、": "to reference files,",
       "五步：大模型 → 联网搜索 → 图/视频/语音 → 远程指挥 → 工作目录。": "Five steps: LLM → web search → image/video/voice → remote control → working folder.",

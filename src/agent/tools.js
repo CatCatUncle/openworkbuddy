@@ -4305,7 +4305,7 @@ async function executeToolCore(name, input, opts = {}) {
         if (orgBlocksShell()) return shellBlocked("run_node");
         if (sec.runtime_node === false) {
           security.audit("命令拦截", "run_node（内置 Node.js 运行时已停用）", "拦截");
-          return { content: "内置 Node.js 运行时已在 设置 → 安全中心 停用，无法执行代码。", isError: true };
+          return { content: "内置 Node.js 运行时已在 设置 → 安全 →「内置运行时」停用，无法执行代码。", isError: true };
         }
         const code = String(input.code || "");
         const diy = diyBrowser(code);

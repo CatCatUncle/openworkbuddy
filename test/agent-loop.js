@@ -129,8 +129,12 @@ console.log("\n④ 转圈检测：只看尾巴，周期只认 2 和 3");
 console.log("\n⑤ 停了要说对下一步：调上限 / 修路 / 什么都不用做");
 {
   const cap = stopNotice("已达最大步数（40 步）");
-  ok(cap.includes("执行上限") && cap.includes("自动续跑"),
+  ok(cap.includes("设置 → 智能体 → 执行上限") && cap.includes("「没做完时自动接着做几轮」"),
     "撞上限：开关在哪一页、叫什么名字说全，别让人回头来问", cap);
+  // 点名的开关得在设置页上一字不差地找得到：以前写的「自动续跑轮数」，设置页上早就不叫这个了
+  const page = fs.readFileSync(path.join(ROOT, "public/js/app-05.js"), "utf8");
+  for (const name of ["执行上限", "没做完时自动接着做几轮", "确认没做完才接着做"])
+    ok(page.includes(`>${name}<`), `设置页上真有「${name}」这一项（停下来那句话点名的跟页面一字不差）`);
   const dead = stopNotice("陷入死循环（read_file 连续 6 次拿到同样的结果）");
   ok(!dead.includes("上限"),
     "★死循环不许劝人去调大上限★ 上限再大它也只是多转几圈", dead);

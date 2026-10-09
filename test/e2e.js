@@ -15099,9 +15099,9 @@ async function testEngineStoppedSurfacing() {
     assert(A.r.finalText.includes("注意：已达最大步数（25 步），任务强制收尾。"),
       "收尾提示的措辞跟内置引擎对不上：" + A.r.finalText);
     // 等于没说。
-    // 撞上限这条必须自带下一步：上限在哪一页、还有「自动续跑轮数」这个开关。
-    assert(A.r.finalText.includes("设置 → 执行上限") && A.r.finalText.includes("自动续跑轮数"),
-      "★撞上限了却没说上限在哪一页、也没提自动续跑★ 用户只能回过头来问「怎么回事」：" + A.r.finalText);
+    // 撞上限这条必须自带下一步：上限在哪一页、还有「没做完时自动接着做几轮」这个开关。
+    assert(A.r.finalText.includes("设置 → 智能体 → 执行上限") && A.r.finalText.includes("「没做完时自动接着做几轮」"),
+      "★撞上限了却没说上限在哪一页、也没提自动接着做★ 用户只能回过头来问「怎么回事」：" + A.r.finalText);
     assert(A.r.finalText.includes("PROGRESS.md"), "没告诉用户进度档在哪，「接着上次进度做」就成了空话：" + A.r.finalText);
     assert(A.r.finalText.startsWith("我先看一下这个文件"), "模型原话被吃掉了：" + A.r.finalText);
     assert.strictEqual(A.limits.length, 1, "limit 事件没发或发重了：" + A.limits.length);
