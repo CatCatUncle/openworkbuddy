@@ -109,7 +109,9 @@ function settingsOf(config) {
       }
     }
   }
-  return { provider, key, from, caps };
+  // 行程卡「打开路线」默认跳哪家：只管国内的路线，国外的一律 Google 地图（高德网页在国外没路网）
+  const nav = m.nav === "google" ? "google" : "amap";
+  return { provider, key, from, caps, nav };
 }
 
 // ---------------- 限速、额度、缓存 ----------------
@@ -221,10 +223,36 @@ const CAP_HIT = {
   route: "这个月的高德路线次数到上限了，两站之间先画直线",
 };
 /**
- * 高德说的是 Key 本身的毛病，当天再打也一样：10001 Key 不对，10003 / 10044 当天总量用完，10009 Key 的平台类型不对。
+ * 高德说的是 Key 本身的毛病，当天再打也一样：10001 Key 不对，10003 / 10044 当天总量用完，10005 本机 IP 不在白名单，
+ * 10007 Key 开了数字签名（这里不签），10009 Key 的平台类型不对，10013 Key 删了。
  * 别的（单次超时、某个地点参数不对）只算这一次没成。
  */
-const KEY_DEAD = new Set(["10001", "10003", "10009", "10044"]);
+const KEY_DEAD = new Set(["10001", "10003", "10005", "10007", "10009", "10013", "10044"]);
+/**
+ * 高德错误码说人话：照高德「Web服务 API 错误码说明」里每个码写明的意思翻，原码跟在后面好对照；
+ * 要去控制台改的再带一句怎么改，fix: "key" 让设置页挂上控制台的链接。
+ * 没收的码照原话「高德：INFO（码）」——不认识的不替人解释。
+ * @type {Record<string, { why: string, todo?: string, fix?: "key" }>}
+ */
+const AMAP_WHY = {
+  "10001": { why: "高德不认这把 Key，Key 不对或已过期", todo: "到高德控制台重新复制一遍贴进来", fix: "key" },
+  "10003": { why: "这把 Key 今天的调用量用完了，明天恢复" },
+  "10004": { why: "高德说这会儿请求太频繁，等一会儿再试" },
+  "10005": { why: "这台机器的 IP 不在这把 Key 的白名单里", todo: "到高德控制台改白名单，或者清空", fix: "key" },
+  "10007": { why: "这把 Key 开了数字签名，这里发的请求不带签名", todo: "到高德控制台关掉这把 Key 的数字签名", fix: "key" },
+  "10009": { why: "这把 Key 的服务平台不是「Web服务」", todo: "到高德控制台添加 Key，服务平台选「Web服务」，换上再试", fix: "key" },
+  "10013": { why: "这把 Key 已经被删掉了", todo: "到高德控制台新建一把，服务平台选「Web服务」", fix: "key" },
+  "10019": { why: "高德说这会儿请求太频繁，等一会儿再试" },
+  "10020": { why: "高德说这会儿请求太频繁，等一会儿再试" },
+  "10021": { why: "高德说这会儿请求太频繁，等一会儿再试" },
+  "10044": { why: "这个高德账号今天的调用量用完了，明天恢复" },
+};
+/** @param {string} code 高德的 infocode @param {string} info 高德的 info 原话 */
+function amapWhy(code, info) {
+  const w = AMAP_WHY[code];
+  if (!w) return `高德：${info || "没给原因"}${code ? `（${code}）` : ""}`;
+  return `${w.why}（高德 ${code}）${w.todo ? "。" + w.todo : ""}`;
+}
 
 /**
  * @typedef {{ key: string, caps: { search: number, route: number }, probe?: boolean }} AmapSt probe：设置页「测一下」，不受上限和停用挡
@@ -264,7 +292,8 @@ async function amapGet(u, st, kind) {
     const code = String(j && j.status) === "1" ? "" : s(j && j.infocode);
     if (!st.probe && !KEY_DEAD.has(code)) vet = { key: st.key, day: today(), wait: vet.wait };
     if (String(j && j.status) !== "1") {
-      const msg = `高德：${s(j && j.info) || "没给原因"}${code ? `（${code}）` : ""}`;
+      const msg = amapWhy(code, s(j && j.info));
+      const fix = AMAP_WHY[code] && AMAP_WHY[code].fix;
       if (KEY_DEAD.has(code) && !st.probe) {
         // 同一时刻已经在路上的几个会一起撞回来：停一次、记一行就够
         if (!stopMsg()) {
@@ -273,9 +302,9 @@ async function amapGet(u, st, kind) {
           log.warn("geo", "高德 Key 用不了，今天先不打高德", { err: msg });
         }
         if (vet.key === st.key) vet = { key: "", day: "", wait: vet.wait };
-        throw Object.assign(new Error(msg), { off: "stop" });
+        throw Object.assign(new Error(msg), { off: "stop", ...(fix ? { fix } : {}) });
       }
-      throw new Error(msg);
+      throw Object.assign(new Error(msg), fix ? { fix } : {});
     }
     return j;
   } finally {
@@ -690,4 +719,4 @@ function _testing(o = {}) {
   return { flush: () => saver.flush(), cacheFile: cacheFile() };
 }
 
-module.exports = { lookup, photos, legs, test, usage, resetStop, settingsOf, thin, MAX_ITEMS, MAX_LEGS, SEARCH_CAP, ROUTE_CAP, UA, _testing };
+module.exports = { lookup, photos, legs, test, usage, resetStop, settingsOf, thin, amapWhy, MAX_ITEMS, MAX_LEGS, SEARCH_CAP, ROUTE_CAP, UA, _testing };

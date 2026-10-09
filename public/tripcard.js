@@ -454,14 +454,21 @@
   function saveLayout(v) {
     try { root.localStorage.setItem(LAYOUT_KEY, JSON.stringify(v)); } catch (e) { /* 存不了就只管这一张 */ }
   }
-  // 国内的路线用哪家地图打开：默认高德，点过 Google 就记在本机，下一张卡片照这个来
+  // 国内的路线用哪家地图打开：按设置→地图里那项（/api/geo/config 的 nav），卡片上点过就记在本机，这台电脑以后照点的来。
+  // 设置页存了一回就把本机记的忘掉（forgetProv），重新跟着设置走
   const MAPS_KEY = "owb.tripcard.maps";
+  /** 本机点过的；没点过是 "" */
   function loadProv() {
-    try { return root.localStorage.getItem(MAPS_KEY) === "google" ? "google" : "amap"; } catch (e) { return "amap"; }
+    try { const v = root.localStorage.getItem(MAPS_KEY); return v === "google" || v === "amap" ? v : ""; } catch (e) { return ""; }
   }
   function saveProv(v) {
     try { root.localStorage.setItem(MAPS_KEY, v); } catch (e) { /* 存不了就只管这一张 */ }
   }
+  function forgetProv() {
+    try { root.localStorage.removeItem(MAPS_KEY); } catch (e) { /* 存不了也就没记过 */ }
+  }
+  /** 本机点过的优先，没点过听设置的 */
+  const provOf = (cfg) => loadProv() || (cfg && cfg.nav === "google" ? "google" : "amap");
 
   // ---------------- 墨卡托 ----------------
   const TS = 256;
@@ -522,7 +529,7 @@
       pop: -1,                           // 地图上弹着小卡的那一站（当天第几站），-1 没弹
       nav: -1,                           // 列表里展开了「导航」菜单的那一段，-1 没展开
       qr: null,                          // 「发到手机」的二维码开在哪：{ at: "leg"|"day"|"pop", i, mode }
-      prov: loadProv(),                  // 国内的导航链接给哪家："amap" | "google"（国外只有 Google）
+      prov: provOf(null),                // 国内的导航链接给哪家："amap" | "google"（国外只有 Google）；设置到了再按设置定
       moved: false,                      // 拖过、缩放过、点过地点：别再自作主张地重新取景
     };
     const tiles = new Map();
@@ -594,7 +601,7 @@
     }
     /** 整天的「打开路线」：每站都找到了才给 */
     function dayNav(d) { const ps = dayPts(d); return ps ? dayNavUrl(ps, st.prov) : ""; }
-    /** 选哪家地图：只在这一天整个在国内时给（国外高德没有路网）。选了就记住，连段间导航、「导航到这」一起换 */
+    /** 选哪家地图：这一天找到的站都在国内才给（国外高德没有路网）。选了就记住，连段间导航、「导航到这」一起换 */
     function setProv(v) {
       if (v === st.prov) return;
       st.prov = v;
@@ -608,12 +615,15 @@
     function renderPanel() {
       const d = st.day, day = it.days[d];
       const pts = dayPts(d), nav = pts ? dayNavUrl(pts, st.prov) : "";
-      const cn = !!pts && pts.length > 1 && pts.every((p) => { const w = convert(p.lng, p.lat, p.datum, "wgs84"); return inChina(w[0], w[1]); });
+      const inCn = (p) => { const w = convert(p.lng, p.lat, p.datum, "wgs84"); return inChina(w[0], w[1]); };
+      const cn = !!pts && pts.length > 1 && pts.every(inCn);
       // Google 地图一趟带不下这么多站：整条路线给不了，照实说，切回高德就有
       const full = !nav && cn && st.prov === "google" && pts.length > DAY_MAX.google;
       const dayQr = !!nav && !!st.qr && st.qr.at === "day";
       const app = navApp(nav);
-      const provs = cn ? `<span class="tc-provs" role="group" aria-label="用哪家地图打开">${[["amap", "高德"], ["google", "Google"]].map(([v, t]) =>
+      // 有一站没找到、整天路线给不了的时候也给换：段间「导航」、小卡里「导航到这」照样跟着换
+      const got = it.days[d].stops.map((s, i) => navPt(d, i)).filter(Boolean);
+      const provs = got.length && got.every(inCn) ? `<span class="tc-provs" role="group" aria-label="用哪家地图打开">${[["amap", "高德"], ["google", "Google"]].map(([v, t]) =>
         `<button type="button" class="tc-prov" data-prov="${v}" aria-pressed="${st.prov === v}">${t}</button>`).join("")}</span>` : "";
       let h = `<div class="tc-dh"><div class="tc-dl">${esc(dayLabel(day, d))}</div>${day.title ? `<div class="tc-dt">${esc(day.title)}</div>` : ""}`
         + (day.summary ? `<div class="tc-ds">${esc(day.summary)}</div>` : "")
@@ -621,7 +631,8 @@
           + (nav ? `<a class="tc-open" href="${esc(nav)}" target="_blank" rel="noopener" title="在${/^[A-Z]/.test(app) ? " " : ""}${app}里打开这一天的路线">${ICON.nav}打开路线</a>`
             + `<button type="button" class="tc-qr" data-at="day" aria-expanded="${dayQr}">发到手机</button>`
             : `<span class="tc-app">Google 地图一次最多 ${DAY_MAX.google} 站，这天 ${pts.length} 站</span>`)
-          + (provs || `<span class="tc-app">${app}</span>`) + `</div>` : "")
+          + (provs || `<span class="tc-app">${app}</span>`) + `</div>`
+          : provs ? `<div class="tc-acts"><span class="tc-app">导航用</span>${provs}</div>` : "")
         + (dayQr ? qrHtml(nav) : "") + `</div>`;
       let seg = null;
       day.stops.forEach((s, i) => {
@@ -785,7 +796,7 @@
     function renderAlert() {
       alertEl.hidden = !st.alert;
       alertEl.innerHTML = st.alert
-        ? `高德今天停用了，它回的是「${esc(st.alert)}」，先改用 OpenStreetMap${canSetKey() ? ` · ${keyBtn("打开地图设置")}` : ""}` : "";
+        ? `高德今天先停用，改用 OpenStreetMap：${esc(st.alert)}${canSetKey() ? ` · ${keyBtn("打开地图设置")}` : ""}` : "";
     }
     /** 高德的 Key 级报错：服务端当天熔断了，这张卡上说一次 */
     function setAlert(m) {
@@ -803,7 +814,7 @@
       const run = (async () => {
         const cfg = await getCfg();
         if (stale()) return;
-        if (!st.cfg) st.cfg = cfg;
+        if (!st.cfg) { st.cfg = cfg; st.prov = provOf(cfg); }
         const stops = it.days[d].stops;
         const q = stops.map((s) => ({ name: s.name, city: s.city || it.city }));
         // 只问还没答案的：找到的、确实没找到的都在 placeMemo 里，「再查一次」只重查没查成的那几站
@@ -1678,6 +1689,6 @@
   root.TripCard = {
     parse, normalize, whyBad, moreText, segmentOf, dayLabel, cardHtml, staticHtml, staticOf, unescHtml, hashKey,
     wgsToGcj, gcjToWgs, convert, inChina, distance, legNavUrl, dayNavUrl, stopNavUrl, navApp, NAV_MODES, DAY_MAX, fmtDist, fmtDur,
-    hydrate, hydrateAll, resetConfig, LIMIT, _live: live,
+    hydrate, hydrateAll, resetConfig, provOf, forgetProv, LIMIT, _live: live,
   };
 })(window);

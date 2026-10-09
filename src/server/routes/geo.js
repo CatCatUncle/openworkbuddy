@@ -4,7 +4,7 @@
 /**
  * 行程卡（聊天里的地图卡片）用的几个接口：
  *   GET  /api/geo/config                    用哪家查地点、有没有 Key（不给 Key 本身）、几种底图的坐标系和署名、
- *                                           这个月打了高德几次（设置页看）
+ *                                           这个月打了高德几次（设置页看）、国内路线默认用哪家打开（nav）
  *   POST /api/geo/places   { items }        一批地点名 → 坐标、照片、评分（src/domains/geo/places.js）
  *   POST /api/geo/photos   { items }        钉子钉上之后再补的照片（去 Wikidata 找，慢，所以单独一趟）
  *   POST /api/geo/legs     { pairs }        相邻两站之间的路线 / 直线距离
@@ -22,10 +22,13 @@ const tiles = require("../../domains/geo/tiles");
 
 let getConfig = () => ({});
 
-/** @param {import("express").Response} res @param {() => Promise<any>} fn */
+/**
+ * fix: "key" 是 places.js 认出来的 Key 本身的毛病（平台不对、删了、白名单……），设置页凭它挂「去高德控制台」
+ * @param {import("express").Response} res @param {() => Promise<any>} fn
+ */
 async function send(res, fn) {
   try { res.json(await fn()); }
-  catch (e) { res.status((e && e.status) || 502).json({ error: (e && e.message) || String(e) }); }
+  catch (e) { res.status((e && e.status) || 502).json({ error: (e && e.message) || String(e), ...(e && e.fix ? { fix: e.fix } : {}) }); }
 }
 
 /** @param {import("express").Response} res @param {() => Promise<{ buf: Buffer, type: string }>} fn */
@@ -44,7 +47,7 @@ const router = express.Router();
 
 router.get("/api/geo/config", (_req, res) => {
   const st = places.settingsOf(getConfig());
-  res.json({ provider: st.provider, amap: !!st.key, keyFrom: st.from, sources: tiles.sources(), usage: places.usage(getConfig()) });
+  res.json({ provider: st.provider, amap: !!st.key, keyFrom: st.from, nav: st.nav, sources: tiles.sources(), usage: places.usage(getConfig()) });
 });
 
 router.post("/api/geo/places", (req, res) => send(res, () => places.lookup(getConfig(), (req.body || {}).items)));

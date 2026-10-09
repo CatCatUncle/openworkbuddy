@@ -1927,13 +1927,14 @@ app.get("/api/settings", (req, res) => {
       custom_url: (config.search || {}).custom_url || "",
       custom_query_field: (config.search || {}).custom_query_field || "",
     },
-    // 行程卡的地图：用哪家查地点、高德 Web 服务 Key、每月打高德的上限（搜索、路线分开）。
+    // 行程卡的地图：用哪家查地点、高德 Web 服务 Key、每月打高德的上限（搜索、路线分开）、国内路线默认用哪家打开。
     // 上限给的是折算后的：老配置只有「每天上限」，怎么折见 places.settingsOf
     map: {
       provider: (config.map || {}).provider || "auto",
       amap_key: (config.map || {}).amap_key || "",
       amap_search_cap: geoPlaces.settingsOf(config).caps.search,
       amap_route_cap: geoPlaces.settingsOf(config).caps.route,
+      nav: geoPlaces.settingsOf(config).nav,
     },
     im: {
       feishu: (config.im || {}).feishu || { app_id: "", app_secret: "", verification_token: "", group_reply_mode: "mention" },
@@ -2304,6 +2305,10 @@ app.post("/api/settings", (req, res) => {
       if (b.map.provider !== undefined) {
         if (!["auto", "amap", "osm"].includes(b.map.provider)) throw new Error(`地图只认 auto / amap / osm，收到的是「${b.map.provider}」`);
         config.map.provider = b.map.provider;
+      }
+      if (b.map.nav !== undefined) {
+        if (!["amap", "google"].includes(b.map.nav)) throw new Error(`打开路线只认 amap / google，收到的是「${b.map.nav}」`);
+        config.map.nav = b.map.nav;
       }
       // 老界面（升级前开着没刷新的那页）还会送每天的上限：照收，places.settingsOf 会折成每月
       if (b.map.amap_daily_cap !== undefined) {

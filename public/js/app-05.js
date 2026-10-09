@@ -2231,8 +2231,15 @@ function renderSearchPane(pane, s) {
 
 // 行程卡（public/tripcard.js）查地点用哪家。以前塞在联网搜索那页最底下，填过 Key 的人都找不着，
 // 现在单独一页，行程卡上「填高德 Key」直接跳过来。Key 是服务器级的，普通成员看不到这一页。
+// 「打开路线用哪家」以前只在卡片上、而且整天每站都找到了才露面，找不着就等于没有，这里常摆着一份。
+const MAP_NAVS = [
+  ["amap", "高德地图", "一条路线最多 15 站"],
+  ["google", "Google 地图", "一条路线最多 10 站，国内打开要能连上 Google"],
+];
 function renderMapPane(pane, s) {
   const m = s.map || {};
+  // 卡片上点过就按这台电脑点的来（TripCard.provOf）：这里显示的就是卡片眼下跳的那家，存了以后变成大家的默认
+  const navNow = window.TripCard ? TripCard.provOf({ nav: m.nav }) : (m.nav === "google" ? "google" : "amap");
   pane.insertAdjacentHTML("beforeend", `
     <div class="card-item">
       <div class="t">地图（行程卡）</div>
@@ -2244,7 +2251,8 @@ function renderMapPane(pane, s) {
         <option value="osm">OpenStreetMap（不要 Key，国内慢一些）</option>
       </select>
       <div class="f">高德 Web 服务 Key ${keyLink("amap")}</div>
-      <input id="map-key" type="password" placeholder="建 Key 时服务平台选「Web服务」" value="${esc(m.amap_key || "")}">
+      <input id="map-key" type="password" placeholder="只填 Key，安全密钥不用填" value="${esc(m.amap_key || "")}">
+      <div class="d" id="map-key-hint" style="margin-top:4px">建 Key 时服务平台选「Web服务」，只填 Key，不用安全密钥。「Web端」的 Key 在这儿用不了。</div>
       <div class="d" id="map-from" style="margin-top:4px"></div>
       <div class="f">每月最多搜几次地点</div>
       <input id="map-cap" type="number" min="0" step="100" value="${esc(String(m.amap_search_cap ?? 4500))}">
@@ -2253,6 +2261,17 @@ function renderMapPane(pane, s) {
       <div class="d" style="margin-top:4px">高德按月给免费额度，个人和企业不一样，以高德控制台显示的为准。超出要按量付费。</div>
       <div class="d" style="margin-top:4px">到数就改用 OpenStreetMap，路线画直线；填 0 就不用高德。</div>
       <div class="d" id="map-usage" style="margin-top:4px"></div>
+    </div>
+    <div class="card-item">
+      <div class="t">国内路线用哪家打开</div>
+      <div class="d">行程卡上「打开路线」「导航」「发到手机」跳去哪家地图。国外的路线一律用 Google 地图。</div>
+      <div id="map-nav" style="display:flex;flex-direction:column;gap:6px;margin:8px 0">
+        ${MAP_NAVS.map(([k, label, desc]) => `<label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size: 14px">
+          <input type="radio" name="map-nav" value="${k}" style="margin:3px 0 0"${k === navNow ? " checked" : ""}>
+          <span><b>${label}</b><span style="color:var(--owb-text-3)"> — ${desc}</span></span>
+        </label>`).join("")}
+      </div>
+      <div class="d">卡片上也能临时换，这台电脑记住点的那家。</div>
     </div>
     <button class="btn-brand" id="map-save">保存</button>
     <button class="btn-plain" id="map-test">测一下</button>
@@ -2268,7 +2287,7 @@ function renderMapPane(pane, s) {
     const u = c && c.usage;
     if (u && u.used) {
       pane.querySelector("#map-usage").textContent = `这个月已用：搜索 ${u.used.search} 次，路线 ${u.used.route} 次`
-        + (u.stop ? `；今天停用高德，它回的是「${u.stop}」` : "");
+        + (u.stop ? `；今天停用了高德：${u.stop}` : "");
     }
   }).catch(() => {});
   // 清空了按默认，不当成 0（0 是「不用高德」，不该是删掉一个数的结果）
@@ -2281,10 +2300,12 @@ function renderMapPane(pane, s) {
     amap_key: pane.querySelector("#map-key").value.trim(),
     amap_search_cap: capVal("#map-cap", 4500),
     amap_route_cap: capVal("#map-route-cap", 140000),
+    nav: (pane.querySelector('input[name="map-nav"]:checked') || { value: "amap" }).value,
   });
   const save = async (el) => {
     const ok = await saveSettings({ map: collect() }, el);
-    if (ok && window.TripCard) TripCard.resetConfig();
+    // 存的就是上面显示的那家：这台电脑卡片上点过的忘掉，以后跟着这里走
+    if (ok && window.TripCard) { TripCard.forgetProv(); TripCard.resetConfig(); }
     return ok;
   };
   pane.querySelector("#map-save").onclick = () => save(msg);
@@ -2296,6 +2317,8 @@ function renderMapPane(pane, s) {
       const r = await fetch("/api/geo/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })
         .then((x) => x.json()).catch((err) => ({ error: "请求没发出去：" + String((err && err.message) || err) }));
       msg.textContent = r.ok ? "✓ " + r.msg : "✗ " + (r.error || r.msg || "测试失败");
+      // Key 本身的毛病（平台不对、删了、白名单……）得去高德控制台改：给个真链接
+      if (!r.ok && r.fix === "key") msg.insertAdjacentHTML("beforeend", " " + keyLink("amap", "去高德控制台"));
     } finally { e.target.disabled = false; }
   };
 }

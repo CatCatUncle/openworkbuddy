@@ -11443,6 +11443,19 @@ async function testOnboardingWizardApi() {
     const o6 = (await req("GET", "/api/onboarding")).json || {};
     assert(o6.search && o6.search.provider === "custom" && o6.search.has_key === true, "自定义搜索填了地址没填 Key，向导应算已配：" + JSON.stringify(o6.search));
 
+    // 设置 → 地图「国内路线用哪家打开」：存得下，拉设置、行程卡问的 /api/geo/config 都带回来；认不得的 400 不改盘；成员碰不到
+    const mNav = await req("POST", "/api/settings", { map: { nav: "google" } });
+    assert(mNav.code === 200, "存「国内路线用哪家打开」失败：HTTP " + mNav.code + " " + mNav.body.slice(0, 200));
+    const sNav = (await req("GET", "/api/settings")).json || {};
+    assert(sNav.map && sNav.map.nav === "google", "拉设置时 map.nav 应是刚存的 google：" + JSON.stringify(sNav.map && sNav.map.nav));
+    const gNav = (await req("GET", "/api/geo/config")).json || {};
+    assert(gNav.nav === "google", "行程卡问的 /api/geo/config 应带 nav: google：" + JSON.stringify(gNav.nav));
+    const mNavBad = await req("POST", "/api/settings", { map: { nav: "baidu" } });
+    assert(mNavBad.code === 400 && /打开路线只认 amap \/ google/.test((mNavBad.json || {}).error || ""), "认不得的 nav 应 400 并照实说：HTTP " + mNavBad.code + " " + mNavBad.body.slice(0, 200));
+    assert(((cfgOnDisk() || {}).map || {}).nav === "google", "被拒的那次不许改掉盘上的 nav");
+    const memNav = await reqAs(memberToken, "POST", "/api/settings", { map: { nav: "amap" } });
+    assert(memNav.code === 403 && ((cfgOnDisk() || {}).map || {}).nav === "google", "★普通成员能改「国内路线用哪家打开」★：HTTP " + memNav.code);
+
     // 6. 未登录不给看（体检表里有渠道名、目录路径）
     const anon = await new Promise((resolve) => {
       http.get({ host: "127.0.0.1", port, path: "/api/onboarding" }, (res) => { res.resume(); resolve(res.statusCode); }).on("error", () => resolve(0));
@@ -11478,6 +11491,7 @@ async function testOnboardingWizardApi() {
     console.log("✅ 本机 Ollama 选型号：问得到机器上装了哪些(3 个)·10 分钟走缓存(上游只打 1 次)·匿名打不到上游·没起来/地址没写全各报各的·点名的型号真拿去验并落盘·验不过不许改坏原来那条(盘上+内存都查)·模板那条也认 model_id、兜底不再是 14b");
     console.log("✅ 向导自己填地址：只填域名自动补 /v1 且落盘的是验过的那个·Key 带到上游·验不过说「地址或模型名」+打的地址且不留半成品·外网不填 Key/判断模型/地址不全各 400·Anthropic 格式记在渠道上·成员 403");
     console.log("✅ 向导第三步真的存下：生图落成渠道 + 默认模型、压平后还在、回来算已配·本机转写不填 Key 能存·没型号 400 不留半截·成员 403·自定义搜索只填地址算已配");
+    console.log("✅ 设置 → 地图「国内路线用哪家打开」：存得下·拉设置和 /api/geo/config 都带回 nav·认不得的 400 不改盘·成员 403");
   } finally {
     child.kill("SIGKILL");
     try { if (fakeOllama) fakeOllama.close(); } catch {}

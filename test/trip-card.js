@@ -294,6 +294,21 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
     ok(mixLeg.startsWith("https://www.google.com/maps/dir/") && !mixLeg.includes("origin=" + enc("25.048,102.703") + "&"), "两站一国内一国外：Google，国内那站 WGS-84 先换成 GCJ-02", mixLeg);
     ok(TC.dayNavUrl(Array.from({ length: 10 }, () => P1)) !== "" && TC.dayNavUrl(Array.from({ length: 11 }, () => P1)) === "", "国外十站给，超过 10 站不给（Google 途经点有上限）");
     eq([cn3, cn4, gd, ""].map(TC.navApp), ["高德地图", "高德地图", "Google 地图", "Google 地图"], "卡片上写的是哪家：认得出高德的两种链接");
+    // 国内路线用哪家打开：这台电脑在卡片上点过的优先，没点过听设置（/api/geo/config 的 nav）；设置页存一回就忘掉本机点过的
+    const LS = new Map();
+    sandbox.window.localStorage = { getItem: (k) => (LS.has(k) ? LS.get(k) : null), setItem: (k, v) => LS.set(k, String(v)), removeItem: (k) => LS.delete(k) };
+    eq([null, {}, { nav: "amap" }, { nav: "google" }, { nav: "baidu" }].map((c) => TC.provOf(c)), ["amap", "amap", "amap", "google", "amap"], "卡片上没点过：听设置的；没设、认不得的按高德");
+    LS.set("owb.tripcard.maps", "amap");
+    eq(TC.provOf({ nav: "google" }), "amap", "  这台电脑在卡片上点过高德：设置是 Google 也照这台点的来");
+    LS.set("owb.tripcard.maps", "google");
+    eq(TC.provOf({ nav: "amap" }), "google", "  点过 Google 同理");
+    LS.set("owb.tripcard.maps", "坏的");
+    eq(TC.provOf({ nav: "google" }), "google", "  本机记的那份认不得：当没点过");
+    TC.forgetProv();
+    ok(!LS.has("owb.tripcard.maps") && TC.provOf({ nav: "google" }) === "google", "forgetProv（设置页存下时调）：忘掉本机点过的，又跟着设置走");
+    delete sandbox.window.localStorage;
+    ok(TC.provOf({ nav: "google" }) === "google" && TC.provOf(null) === "amap", "  这台存不了（隐私模式之类）：照设置的来，不报错");
+    TC.forgetProv();
     eq([5, 834, 1234, 12345, NaN].map(TC.fmtDist), ["10 米", "830 米", "1.2 公里", "12 公里", ""], "距离：米取整十、公里一位小数、十公里以上取整");
     eq([0, 30, 600, 3600, 5400, NaN].map(TC.fmtDur), ["", "约 1 分钟", "约 10 分钟", "约 1 小时", "约 1 小时 30 分", ""], "用时：分钟 / 小时几分");
 
@@ -381,6 +396,7 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
     const json = (o, code = 200) => { res.writeHead(code, { "Content-Type": "application/json" }); res.end(JSON.stringify(o)); };
     if (u.pathname.startsWith("/v5/") && /bad/.test(q.key)) return json({ status: "0", info: "INVALID_USER_KEY", infocode: "10001" });
     if (u.pathname.startsWith("/v5/") && /over/.test(q.key)) return json({ status: "0", info: "USER_DAILY_QUERY_OVER_LIMIT", infocode: "10044" });
+    if (u.pathname.startsWith("/v5/") && /plat/.test(q.key)) return json({ status: "0", info: "USERKEY_PLAT_NOMATCH", infocode: "10009" });
     if (u.pathname === "/v5/place/text") {
       if (q.keywords === "炸了") return json({ oops: true }, 500);
       if (q.keywords === "参数错") return json({ status: "0", info: "INVALID_PARAMS", infocode: "20000" });
@@ -441,10 +457,10 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
   {
     const DEF = { search: places.SEARCH_CAP, route: places.ROUTE_CAP };
     ok(DEF.search === 4500 && DEF.route === 140000, "每月默认上限：搜索 4500、路线 14 万（比高德给个人认证开发者的 5000 / 15 万各留一点）", DEF);
-    eq(places.settingsOf({}), { provider: "auto", key: "", from: "", caps: DEF }, "什么都没配：auto，没 Key，按月的默认上限");
-    eq(places.settingsOf({ map: { amap_key: " sk-test-amap ", amap_search_cap: 50, amap_route_cap: "300" } }), { provider: "auto", key: "sk-test-amap", from: "settings", caps: { search: 50, route: 300 } },
+    eq(places.settingsOf({}), { provider: "auto", key: "", from: "", caps: DEF, nav: "amap" }, "什么都没配：auto，没 Key，按月的默认上限，国内路线用高德打开");
+    eq(places.settingsOf({ map: { amap_key: " sk-test-amap ", amap_search_cap: 50, amap_route_cap: "300" } }), { provider: "auto", key: "sk-test-amap", from: "settings", caps: { search: 50, route: 300 }, nav: "amap" },
       "设置里填的 Key（去掉两边空白）、搜索和路线各自的上限");
-    eq(places.settingsOf({ mcp_servers: [{ env: {} }, { env: { AMAP_MAPS_API_KEY: "sk-test-conn" } }] }), { provider: "auto", key: "sk-test-conn", from: "connector", caps: DEF }, "设置里没填：用高德连接器里那把");
+    eq(places.settingsOf({ mcp_servers: [{ env: {} }, { env: { AMAP_MAPS_API_KEY: "sk-test-conn" } }] }), { provider: "auto", key: "sk-test-conn", from: "connector", caps: DEF, nav: "amap" }, "设置里没填：用高德连接器里那把");
     eq(places.settingsOf({ map: { amap_key: "sk-test-set" }, mcp_servers: [{ env: { AMAP_MAPS_API_KEY: "sk-test-conn" } }] }).from, "settings", "两处都有：设置里的优先");
     eq(places.settingsOf({ map: { provider: "osm", amap_key: "sk-test-amap" }, mcp_servers: [{ env: { AMAP_MAPS_API_KEY: "sk-test-conn" } }] }).key, "", "选了 OpenStreetMap：哪儿的 Key 都不用");
     eq([0, "-1", "abc", 12.7].map((c) => places.settingsOf({ map: { amap_search_cap: c, amap_route_cap: c } }).caps),
@@ -455,6 +471,21 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
     eq(places.settingsOf({ map: { amap_daily_cap: 2000 } }).caps, DEF, "老设置页每次保存都写上默认的每天 2000：当没填，按新的默认（不把路线压到 6.2 万）");
     eq(places.settingsOf({ map: { amap_daily_cap: 0, amap_search_cap: 100 } }).caps, { search: 100, route: 0 }, "新的两项填了哪项就用哪项，没填的那项才看老的");
     eq(places.settingsOf({ map: { provider: "baidu" } }).provider, "auto", "不认识的 provider 按 auto");
+    eq(["google", "amap", "baidu", "", null].map((v) => places.settingsOf({ map: { nav: v } }).nav), ["google", "amap", "amap", "amap", "amap"],
+      "国内路线用哪家打开：认 google / amap，别的都按高德");
+    eq(places.settingsOf({ map: { provider: "osm", nav: "google" } }).nav, "google", "查地点不用高德，也不碍着打开路线选哪家");
+  }
+
+  console.log("\n六之二、高德错误码说人话");
+  {
+    eq(places.amapWhy("10009", "USERKEY_PLAT_NOMATCH"), "这把 Key 的服务平台不是「Web服务」（高德 10009）。到高德控制台添加 Key，服务平台选「Web服务」，换上再试",
+      "10009（拿「Web端」的 Key 来用）：说清是服务平台不对、去哪改、改成什么；原码跟在后面好对照");
+    eq(places.amapWhy("10001", "INVALID_USER_KEY"), "高德不认这把 Key，Key 不对或已过期（高德 10001）。到高德控制台重新复制一遍贴进来", "10001：Key 不对");
+    eq(places.amapWhy("10044", "USER_DAILY_QUERY_OVER_LIMIT"), "这个高德账号今天的调用量用完了，明天恢复（高德 10044）", "10044：今天用完了，不用去控制台改什么，就不带「去哪改」");
+    eq(places.amapWhy("20000", "INVALID_PARAMS"), "高德：INVALID_PARAMS（20000）", "没收的码照原话，不替人解释");
+    eq(places.amapWhy("", ""), "高德：没给原因", "啥都没给：照实说");
+    const all = ["10001", "10003", "10004", "10005", "10007", "10009", "10013", "10019", "10020", "10021", "10044"].map((c) => places.amapWhy(c, "X"));
+    ok(all.every((m) => !m.startsWith("高德：") && m.length <= 70), "收了的码都翻成了话，每句不超过 70 字", all.filter((m) => m.startsWith("高德：") || m.length > 70));
   }
 
   const KEY = "amap-test-key-0123456789";
@@ -506,18 +537,19 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
     const badKey = "amap-test-badkey-987654321";
     const nb = count("/v5/place/text");
     const bad = await places.lookup({ map: { amap_key: badKey } }, [{ name: "滇池", city: "昆明" }]);
-    ok(bad.amapOff === "高德：INVALID_USER_KEY（10001）", "Key 不对：高德的原话原样往上递（amapOff），不替人猜原因", bad);
+    const BAD_MSG = "高德不认这把 Key，Key 不对或已过期（高德 10001）。到高德控制台重新复制一遍贴进来";
+    ok(bad.amapOff === BAD_MSG, "Key 不对：高德说的码照它文档翻成话往上递（amapOff），原码跟着", bad);
     ok(!JSON.stringify(bad).includes(badKey), "报错里不带 Key");
     eq(bad.items[0], { ok: false, tried: ["osm"] }, "高德停了不算问过：只问了 OpenStreetMap，它也没有 → 没找到（不是没查成，再查一次也一样）");
-    eq(places.usage({}).stop, "高德：INVALID_USER_KEY（10001）", "今天停了高德：设置页看得到原话");
+    eq(places.usage({}).stop, BAD_MSG, "今天停了高德：设置页看得到为什么");
     const again2 = await places.lookup({ map: { amap_key: badKey } }, [{ name: "滇池", city: "昆明" }, { name: "西山", city: "昆明" }, { name: "海埂", city: "昆明" }]);
-    ok(count("/v5/place/text") === nb + 1 && again2.amapOff === "高德：INVALID_USER_KEY（10001）", "当天后面的站一次也不再打高德（每站再试只是白记用量）", count("/v5/place/text") - nb);
+    ok(count("/v5/place/text") === nb + 1 && again2.amapOff === BAD_MSG, "当天后面的站一次也不再打高德（每站再试只是白记用量）", count("/v5/place/text") - nb);
     places.resetStop();
     ok(places.usage({}).stop === "", "resetStop（存地图设置时调）：今天的停用作废");
     // 一批一起来、Key 又是坏的：头一站先去问，后面的等它回话——高德只挨一下，用量也只记一次
     const nbb = count("/v5/place/text"), ub = places.usage({}).used.search;
     const batch = await places.lookup({ map: { amap_key: "amap-test-badkey-batch" } }, ["石屏", "建水", "元阳", "弥勒"].map((name) => ({ name, city: "红河" })));
-    ok(count("/v5/place/text") === nbb + 1 && places.usage({}).used.search === ub + 1 && batch.amapOff === "高德：INVALID_USER_KEY（10001）"
+    ok(count("/v5/place/text") === nbb + 1 && places.usage({}).used.search === ub + 1 && batch.amapOff === BAD_MSG
       && batch.items.every((x) => x.ok === false && !x.failed), "一批四站、Key 不对：高德只打了一次，用量只记一次，四站都去问了 OpenStreetMap",
       { hits: count("/v5/place/text") - nbb, used: places.usage({}).used.search - ub, items: batch.items });
     places.resetStop();
@@ -526,9 +558,17 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
     ok(count("/v5/place/text") === nok + 3, "Key 是好的：一批照常每站都问（只有头一回要等）", count("/v5/place/text") - nok);
     for (const [k, code] of [["amap-test-over-1", "10044"]]) {
       await places.lookup({ map: { amap_key: k } }, [{ name: "大观楼", city: "昆明" }]);
-      ok(places.usage({}).stop.endsWith(`（${code}）`), `高德说当天总量用完（${code}）：也停`, places.usage({}).stop);
+      ok(places.usage({}).stop.endsWith(`（高德 ${code}）`), `高德说当天总量用完（${code}）：也停`, places.usage({}).stop);
       places.resetStop();
     }
+    // 10009：拿「Web端」（JS API）的 Key 来调 Web 服务。也是 Key 本身的毛病，当天停，卡片、设置页看到的是该去哪改
+    const platKey = "amap-test-platkey-55";
+    const npl = count("/v5/place/text");
+    const plat = await places.lookup({ map: { amap_key: platKey } }, [{ name: "陆军讲武堂", city: "昆明" }, { name: "圆通寺", city: "昆明" }]);
+    ok(count("/v5/place/text") === npl + 1 && /服务平台不是「Web服务」（高德 10009）/.test(plat.amapOff || "") && places.usage({}).stop === plat.amapOff,
+      "Key 的服务平台不对（10009）：当天停用，高德只挨一下，说清是平台不对", { hits: count("/v5/place/text") - npl, off: plat.amapOff });
+    ok(!JSON.stringify(plat).includes(platKey) && !places.usage({}).stop.includes(platKey), "  报错里不带 Key");
+    places.resetStop();
     const pe = await places.lookup(withKey, [{ name: "参数错", city: "昆明" }]);
     ok(!pe.amapOff && places.usage({}).stop === "" && pe.notes.includes("高德：INVALID_PARAMS（20000）"), "别的错（这一站的参数不对）只算这一次没成，不停高德", pe);
     eq(pe.items[0], { ok: false, failed: true, error: "高德：INVALID_PARAMS（20000）" }, "高德报错 + OSM 也没查到：标没查成，带原话（前端不记住它，能再查一次）");
@@ -695,7 +735,7 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
     ok((await places.legs({}, Array.from({ length: 25 }, () => ({ a: A, b: B })))).items.length === places.MAX_LEGS, `一次最多 ${places.MAX_LEGS} 段`);
 
     const badLeg = await places.legs({ map: { amap_key: "amap-test-badkey-2" } }, [{ a: A, b: { lng: 102.72, lat: 25.04, datum: "gcj02" } }]);
-    ok(badLeg.items[0].mode === "line" && badLeg.amapOff === "高德：INVALID_USER_KEY（10001）", "Key 不对：退回直线，高德原话带上（amapOff），今天停用", badLeg);
+    ok(badLeg.items[0].mode === "line" && /（高德 10001）/.test(badLeg.amapOff || ""), "Key 不对：退回直线，为什么带上（amapOff），今天停用", badLeg);
     const nr = count("/v5/direction/walking") + count("/v5/direction/driving");
     const stopped = await places.legs(withKey, [{ a: A, b: { lng: 102.721, lat: 25.041, datum: "gcj02" } }]);
     ok(count("/v5/direction/walking") + count("/v5/direction/driving") === nr && stopped.items[0].mode === "line" && stopped.amapOff, "停用的这一天：查路也不打高德，画直线");
@@ -734,7 +774,12 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
     const tc = await places.test({ map: { amap_key: KEY, amap_search_cap: 0 } }).catch((e) => ({ error: e.message }));
     ok(tc.ok && tc.provider === "amap", "上限填了 0 也能测：人点的这一下不被每月的上限挡住", tc);
     ok(places.usage({}).used.search === u0 + 1, "  测的这一下照算进这个月的搜索次数", { before: u0, after: places.usage({}).used });
-    await rejects(places.test({}, "amap-test-badkey-3"), /^高德：INVALID_USER_KEY（10001）$/, "Key 不对：原话报出来");
+    const tb = await rejects(places.test({}, "amap-test-badkey-3"), /^高德不认这把 Key，Key 不对或已过期（高德 10001）。到高德控制台重新复制一遍贴进来$/, "Key 不对：说清楚，带上原码");
+    ok(tb && tb.fix === "key", "  要去控制台改的：带 fix: key（设置页凭它挂「去高德控制台」）", tb && tb.fix);
+    const tp = await rejects(places.test({}, "amap-test-platkey-3"), /^这把 Key 的服务平台不是「Web服务」（高德 10009）。到高德控制台添加 Key，服务平台选「Web服务」，换上再试$/,
+      "「测一下」一把「Web端」的 Key（10009）：说清是服务平台不对、去哪改成什么");
+    ok(tp && tp.fix === "key" && !String(tp.message).includes("amap-test-platkey-3"), "  也带 fix: key，不带 Key 本身", tp && tp.fix);
+    ok(places.usage({}).stop === "", "  测的不停卡片用的高德");
     ok(places.usage({}).stop === "", "测一把不对的 Key 不停卡片用的高德（测的未必是存着的那把）");
 
     await places.lookup({ map: { amap_key: "amap-test-badkey-4" } }, [{ name: "圆通山", city: "昆明" }]);
@@ -809,12 +854,14 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
     const post = (p, body) => fetch(API + p, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 
     const c = await (await fetch(API + "/api/geo/config")).json();
-    ok(c.provider === "auto" && c.amap === true && c.keyFrom === "settings" && c.sources.amap.datum === "gcj02", "config：用哪家、有没有 Key、Key 从哪来、底图信息", c);
+    ok(c.provider === "auto" && c.amap === true && c.keyFrom === "settings" && c.sources.amap.datum === "gcj02" && c.nav === "amap", "config：用哪家、有没有 Key、Key 从哪来、底图信息、国内路线默认用高德打开", c);
     ok(!JSON.stringify(c).includes("sk-test") && !JSON.stringify(c).includes(KEY), "config 里不给 Key 本身");
     ok(c.usage && c.usage.caps.search === 4500 && c.usage.caps.route === 140000 && typeof c.usage.used.search === "number" && c.usage.stop === "", "config 带上这个月用了几次、上限、今天停没停（设置页显示）", c.usage);
     cfg = { mcp_servers: [{ env: { AMAP_MAPS_API_KEY: "sk-test-conn-9" } }] };
     const c2 = await (await fetch(API + "/api/geo/config")).json();
     ok(c2.keyFrom === "connector" && c2.amap === true, "配置热生效：每次现取（换成连接器那把）");
+    cfg = { map: { amap_key: KEY, nav: "google" } };
+    ok((await (await fetch(API + "/api/geo/config")).json()).nav === "google", "设置里选了 Google：行程卡问到的默认就是 Google");
     cfg = { map: { amap_key: KEY } };
 
     const pr = await (await post("/api/geo/places", { items: [{ name: "翠湖公园", city: "昆明" }] })).json();
@@ -840,7 +887,11 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
     ok(okImg.status === 200 && okImg.headers.get("content-type") === "image/jpeg", "img：取得到");
     const te = await post("/api/geo/test", { key: "sk-test-badkey-4" });
     const tej = await te.json();
-    ok(te.status === 502 && tej.error === "高德：INVALID_USER_KEY（10001）", "test Key 不对：502 + 高德原话", tej);
+    ok(te.status === 502 && tej.error === "高德不认这把 Key，Key 不对或已过期（高德 10001）。到高德控制台重新复制一遍贴进来" && tej.fix === "key", "test Key 不对：502 + 说清楚 + fix: key", tej);
+    const tpl = await post("/api/geo/test", { key: "sk-test-platkey-4" });
+    const tplj = await tpl.json();
+    ok(tpl.status === 502 && /服务平台不是「Web服务」（高德 10009）/.test(tplj.error) && tplj.fix === "key" && !JSON.stringify(tplj).includes("sk-test-platkey-4"),
+      "test 一把「Web端」的 Key：502 + 平台不对 + fix: key，不带 Key", tplj);
 
     // 「发到手机」的二维码：只编卡片自己生成的导航链接
     const QR_OPTS = { type: "svg", margin: 2, errorCorrectionLevel: "M" };
@@ -952,6 +1003,11 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
     ok(!app05.includes("每天免费") && app05.includes("每月最多搜几次地点") && app05.includes("每月最多查几次路线"), "设置页按月说上限，搜索、路线分开填（不再写「每天免费」）");
     ok(app05.includes("以高德控制台显示的为准") && app05.includes('id="map-usage"'), "  额度以高德控制台为准；这个月用了几次也摆出来");
     ok(/return v === "" \? def :/.test(app05), "  框清空了按默认算，不当成 0（0 是不用高德）");
+    ok(app05.includes('<input type="radio" name="map-nav"') && app05.includes("国内路线用哪家打开")
+      && app05.includes(`nav: (pane.querySelector('input[name="map-nav"]:checked') || { value: "amap" }).value,`), "设置页常摆着「国内路线用哪家打开」，存的时候带上 nav");
+    ok(/id="map-key-hint"[^>]*>[^<]*「Web服务」[^<]*不用安全密钥/.test(app05), "  Key 框底下明写：服务平台选「Web服务」、不用安全密钥（不只藏在占位字里）");
+    ok(app05.includes('if (!r.ok && r.fix === "key") msg.insertAdjacentHTML("beforeend", " " + keyLink("amap", "去高德控制台"));'), "  测一下撞上 Key 本身的毛病：后面挂「去高德控制台」");
+    ok(app05.includes("if (ok && window.TripCard) { TripCard.forgetProv(); TripCard.resetConfig(); }"), "  存下：本机卡片上点过的忘掉，卡片当场重新问设置");
     ok(app01.includes('".tc[data-tc], .tc-bad"'), "复制回答时没画成的那块贴原文");
     const tcSrc = read("public/tripcard.js");
     ok(/class="tc-ai"[^>]*>AI 排的</.test(tcSrc), "卡头标「AI 排的」");
@@ -987,6 +1043,8 @@ const PTS = [[102.7, 25.04], [116.4074, 39.9042], [121.4737, 31.2304], [121.5, 2
     const server = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
     ok(/app\.use\(createGeoRouter\(\{ getConfig: \(\) => config \}\)\)/.test(server), "server.js 挂上了 /api/geo/*");
     ok(/b\.map\.provider[\s\S]{0,200}\["auto", "amap", "osm"\]/.test(server), "保存设置时 provider 只认 auto / amap / osm");
+    ok(/if \(b\.map\.nav !== undefined\) \{\n\s+if \(!\["amap", "google"\]\.includes\(b\.map\.nav\)\)/.test(server) && server.includes("nav: geoPlaces.settingsOf(config).nav,"),
+      "保存设置时打开路线只认 amap / google；拉设置时带回 nav（设置页那组单选按它勾）");
     ok(/\["amap_search_cap", "每月高德搜索的上限"\], \["amap_route_cap", "每月高德路线的上限"\]/.test(server), "保存设置时两项上限分别检查（0 或正整数）");
     ok(/geoPlaces\.resetStop\(\)/.test(server), "  存一次地图设置就解开今天的熔断（换了 Key 能马上用）");
   }

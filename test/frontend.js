@@ -6535,6 +6535,12 @@ const SVG_STREAM_CHECKS = `
 // （不然地图一闪一闪、切到第二天又被打回第一天、每一帧都重新查路）；窄了要上下叠，不许横向拖。
 const TRIPCARD_SRC = fs.readFileSync(path.join(__dirname, "..", "public", "tripcard.js"), "utf8");
 const TRIPCARD_CSS = fs.readFileSync(path.join(__dirname, "..", "public", "css", "tripcard.css"), "utf8");
+// 设置页「地图」那一屏（app-05.js 的 MAP_NAVS + renderMapPane）也切进这个窗口：这里的 TripCard 是真的，
+// 能验「设置里选了 Google、存下，页面上那张卡片当场跟着换」这一整条
+const MAPP0 = APP05.indexOf("const MAP_NAVS = [");
+const MAPP1 = APP05.indexOf("\n}", APP05.indexOf("function renderMapPane(pane, s) {")) + 2;
+if (MAPP0 < 0 || MAPP1 <= MAPP0 || APP05.indexOf("function renderMapPane(pane, s) {") < MAPP0) throw new Error("app-05.js 的 MAP_NAVS / renderMapPane 找不到了（改名/挪走？），行程卡测试没法定位真源码");
+const MAPPANE_SRC = APP05.slice(MAPP0, MAPP1);
 const TRIP_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "\n" + TRIPCARD_CSS + "</style>"
   // index.html 给 body 写的是 display:flex + overflow:hidden（侧栏和主区左右排），这里三块要上下排、能滚
   + "<body style='margin:0;width:760px;display:block;height:auto;overflow:visible'><div class='a-text' id='t'></div><div class='a-text' id='ref'></div>"
@@ -6552,8 +6558,11 @@ window.__geo = { calls: [] };
     window.__geo.calls.push({ url: String(url), body: body });
     const res = (o, status) => ({ ok: (status || 200) < 400, status: status || 200, json: async () => o });
     // window.__noKey = true：高德 Key 没填，查地点走 OpenStreetMap
-    if (url === "/api/geo/config") return res({ provider: "auto", amap: !window.__noKey, keyFrom: window.__noKey ? "" : "settings",
+    // window.__nav = "google"：设置里「国内路线用哪家打开」选的是 Google 地图
+    if (url === "/api/geo/config") return res({ provider: "auto", amap: !window.__noKey, keyFrom: window.__noKey ? "" : "settings", nav: window.__nav,
       sources: { osm: { datum: "wgs84", maxZoom: 19, attr: "© OpenStreetMap 贡献者" }, amap: { datum: "gcj02", maxZoom: 18, attr: "© 高德地图" } } });
+    // window.__geoTest：设置页「测一下」服务端回什么（没查成是 502 + { error, fix? }）
+    if (url === "/api/geo/test") { const t = window.__geoTest || { ok: true, msg: "高德查到了天安门" }; return res(t, t.ok ? 200 : 502); }
     // window.__geoDown = { 名字: 原话 }：这几站服务端没查成（回 failed 和原话），删掉那一项再查就查成了
     // window.__amapOff = "原话"：服务端说高德今天熔断了
     if (url === "/api/geo/places") return res({ provider: window.__noKey ? "osm" : "amap", notes: [], amapOff: window.__amapOff || undefined, items: body.items.map((x) => {
@@ -7039,7 +7048,7 @@ const TRIP_CHECKS = `
     && !!fcards()[0].querySelector(".tc-retry"), txt(fcards()[0], ".tc-miss"));
   ok("确实没找到的那站另说，不给「再查一次」（再查也是没有）", txt(fcards()[2], ".tc-miss") === "没找到：高德地图和 OpenStreetMap 都没搜到" && !fcards()[2].querySelector(".tc-retry"));
   const falert = fw.querySelector(".tc-alert");
-  ok("高德今天停用了：卡片顶上照原话说一次，不替人猜原因", !falert.hidden && falert.textContent === "高德今天停用了，它回的是「INVALID_USER_KEY」，先改用 OpenStreetMap", falert.textContent);
+  ok("高德今天停用了：卡片顶上照服务端的话说一次，不替人猜原因", !falert.hidden && falert.textContent === "高德今天先停用，改用 OpenStreetMap：INVALID_USER_KEY", falert.textContent);
   delete window.__amapOff;
   const placesF0 = calls("/api/geo/places");
   delete window.__geoDown;
@@ -7230,6 +7239,78 @@ const TRIP_CHECKS = `
   ok("填好 Key 存下之后：那张卡片换成高德查的，「填高德 Key」不见了", !kw.querySelector(".tc-setkey") && /地点数据：高德地图/.test(txt(kw, ".tc-list"))
     && TripCard._live.get(kw.parentNode.dataset.tcKey).some((x) => x._state.cfg && x._state.cfg.amap === true), txt(kw, ".tc-list").slice(-40));
   kw.querySelector(".tc-found").click();
+
+  // ---------- 国内路线用哪家打开：有一站没找到也能换；卡片上没点过就听设置的 ----------
+  // kw 这时停在第 1 天（「不存在的地方」没找到，整天路线给不了），本机记着上面点回的「高德」
+  const kprovs = () => [...kw.querySelectorAll(".tc-panel .tc-prov")].map((b) => b.textContent + (b.getAttribute("aria-pressed") === "true" ? "✓" : "")).join();
+  ok("有一站没找到、整天路线给不了：照样摆「导航用 高德 / Google」（段间导航、小卡里「导航到这」跟着换）", !kw.querySelector(".tc-panel .tc-open")
+    && txt(kw, ".tc-panel .tc-acts .tc-app") === "导航用" && kprovs() === "高德✓,Google", kw.querySelector(".tc-panel .tc-dh") && kw.querySelector(".tc-panel .tc-dh").innerHTML.slice(0, 300));
+  kw.querySelector('.tc-panel .tc-prov[data-prov="google"]').click();
+  const kNav = [...kw.querySelectorAll(".tc-panel .tc-navm a")];
+  ok("  点「Google」：两段路的导航都换成 Google 地图，记在本机", kprovs() === "高德,Google✓" && kNav.length === 8 && kNav.every((a) => a.href.indexOf("https://www.google.com/maps/dir/") === 0)
+    && localStorage.getItem("owb.tripcard.maps") === "google", kNav.length + " " + (kNav[0] && kNav[0].href));
+  kw.querySelector('.tc-panel .tc-prov[data-prov="amap"]').click();
+  // 设置页存了「Google 地图」= 忘掉本机点过的 + 叫卡片重新问设置
+  const cfgK0 = calls("/api/geo/config");
+  TripCard.forgetProv();
+  window.__nav = "google";
+  TripCard.resetConfig();
+  await until(() => calls("/api/geo/config") > cfgK0 && kprovs() === "高德,Google✓");
+  ok("卡片上没点过：跟着设置里「国内路线用哪家打开」走（设置是 Google 就默认 Google）", kprovs() === "高德,Google✓" && localStorage.getItem("owb.tripcard.maps") === null
+    && [...kw.querySelectorAll(".tc-panel .tc-navm a")].every((a) => a.href.indexOf("https://www.google.com/maps/dir/") === 0), kprovs());
+  kw.querySelector('.tc-panel .tc-prov[data-prov="amap"]').click();
+  const cfgK1 = calls("/api/geo/config");
+  TripCard.resetConfig();
+  await until(() => calls("/api/geo/config") > cfgK1 && /^找到/.test(txt(kw, ".tc-found")) && kprovs() !== "");
+  await new Promise((r) => setTimeout(r, 80));
+  ok("  这台电脑在卡片上点过「高德」：设置是 Google 也照这台点的来", kprovs() === "高德✓,Google" && localStorage.getItem("owb.tripcard.maps") === "amap", kprovs());
+  TripCard.forgetProv();
+  delete window.__nav;
+
+  // ---------- 设置页「地图」那一屏（真源码）：Key 只填 Key；「国内路线用哪家打开」常摆着；存了卡片当场跟着走 ----------
+  const SAVED = [];
+  window.saveSettings = async (patch) => { SAVED.push(patch); if (patch.map && patch.map.nav) window.__nav = patch.map.nav; return true; };
+  window.lastSaveError = "";
+  window.keyLink = (id, label) => (id === "amap" ? '<a class="get-key" href="https://console.amap.com/dev/key/app" target="_blank" rel="noopener">' + (label || "去拿 Key") + "</a>" : "");
+  const mp = document.createElement("div");
+  document.body.appendChild(mp);
+  const navR = () => [...mp.querySelectorAll('input[name="map-nav"]')].map((r) => r.value + (r.checked ? "✓" : "")).join();
+  renderMapPane(mp, { map: { provider: "auto", amap_key: "", nav: "amap" } });
+  ok("设置页常摆着「国内路线用哪家打开」：高德地图 / Google 地图两样都看得见，默认高德", navR() === "amap✓,google" && mp.querySelector("#map-nav").offsetHeight > 0
+    && /高德地图/.test(txt(mp, "#map-nav")) && /Google 地图/.test(txt(mp, "#map-nav")), navR());
+  ok("Key 框底下明写：服务平台选「Web服务」，只填 Key，不用安全密钥（不是只藏在占位字里）", /服务平台选「Web服务」/.test(txt(mp, "#map-key-hint")) && /不用安全密钥/.test(txt(mp, "#map-key-hint"))
+    && mp.querySelector("#map-key-hint").offsetHeight > 0, txt(mp, "#map-key-hint"));
+  mp.innerHTML = "";
+  localStorage.setItem("owb.tripcard.maps", "google");
+  renderMapPane(mp, { map: { nav: "amap" } });
+  ok("  这台电脑在卡片上点过 Google：这里就勾着 Google（显示的是卡片眼下跳的那家）", navR() === "amap,google✓", navR());
+  mp.innerHTML = "";
+  localStorage.setItem("owb.tripcard.maps", "amap");
+  renderMapPane(mp, { map: { nav: "amap" } });
+  mp.querySelector('input[name="map-nav"][value="google"]').click();
+  const cfgS0 = calls("/api/geo/config");
+  mp.querySelector("#map-save").click();
+  await until(() => calls("/api/geo/config") > cfgS0 && kprovs() === "高德,Google✓");
+  ok("选「Google 地图」存下：存的是 nav: google，本机卡片上点过的忘掉，页面上那张卡片当场换成 Google", SAVED.length === 1 && SAVED[0].map.nav === "google"
+    && localStorage.getItem("owb.tripcard.maps") === null && kprovs() === "高德,Google✓", JSON.stringify(SAVED) + " / " + kprovs());
+  window.__geoTest = { error: "这把 Key 的服务平台不是「Web服务」（高德 10009）。到高德控制台添加 Key，服务平台选「Web服务」，换上再试", fix: "key" };
+  mp.querySelector("#map-test").click();
+  await until(() => /^✗/.test(txt(mp, "#map-msg")));
+  const mpLink = mp.querySelector("#map-msg a.get-key");
+  ok("测一下撞上 Key 平台不对（10009）：照服务端的人话写，后面跟一个真能点的「去高德控制台」", txt(mp, "#map-msg").indexOf("✗ 这把 Key 的服务平台不是「Web服务」（高德 10009）") === 0
+    && !!mpLink && mpLink.textContent === "去高德控制台" && mpLink.href === "https://console.amap.com/dev/key/app" && mpLink.target === "_blank", mp.querySelector("#map-msg").innerHTML);
+  window.__geoTest = { error: "高德：SERVICE_NOT_AVAILABLE（20003）" };
+  mp.querySelector("#map-test").click();
+  await until(() => /20003/.test(txt(mp, "#map-msg")));
+  ok("  不是 Key 本身的毛病：照原话写，不挂去控制台的链接", !mp.querySelector("#map-msg a"), mp.querySelector("#map-msg").innerHTML);
+  delete window.__geoTest;
+  mp.remove();
+  delete window.__nav; delete window.saveSettings; delete window.lastSaveError; delete window.keyLink;
+  TripCard.forgetProv();
+  const cfgK9 = calls("/api/geo/config");
+  TripCard.resetConfig();
+  await until(() => calls("/api/geo/config") > cfgK9 && kprovs() === "高德✓,Google");
+  ok("  收尾：设置换回默认，卡片换回高德", kprovs() === "高德✓,Google", kprovs());
   delete window.openModal; delete window.amPlatformOwner;
 
   // ---------- 窄 ----------
@@ -16299,7 +16380,7 @@ app.whenReady().then(async () => {
     try {
       await winTRIP.loadURL(tripBase);
       const tr = await winTRIP.webContents.executeJavaScript(IC_BOOT + STREAM_STUBS + "\n" + TRIP_STUBS + "\n;" + TRIPCARD_SRC
-        + "\n" + STREAM_SRC + "\n" + srcBlock("function renderedCopy(") + "\n" + TRIP_CHECKS, true)
+        + "\n" + STREAM_SRC + "\n" + srcBlock("function renderedCopy(") + "\n" + MAPPANE_SRC + "\n" + TRIP_CHECKS, true)
         .catch((e) => { throw new Error("[行程卡] " + ((e && (e.stack || e.message)) || String(e))); });
       if (tripHits.out.length) tr.fails.push("✗ 页面往本机以外发了请求：" + tripHits.out.slice(0, 5).join(" "));
       else if (!tripHits.tile || !tripHits.img || !tripHits.qr) tr.fails.push("✗ 瓦片 / 照片 / 二维码一张都没跟本机服务端要（" + JSON.stringify(tripHits) + "）：上面那几条「真取到了」量的不是这条路");
