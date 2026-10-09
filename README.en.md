@@ -282,6 +282,18 @@ The diagram doubles as a reading order: start at `server.js`, then see how `src/
 
 ## What's new
 
+- **Oct 10** With more than one account, working folders, outputs and the library are kept per account; files in Local output can now be deleted, though not while a task is running
+- **Oct 10** Local Claude Code: tick "Ask me before deleting files and similar" and rm, sudo and the like pop up an approval card and run only once approved; owner-only box, off by default
+- **Oct 10** Settings descriptions in plain words: each item says what it does, its default and whether it costs money; settings named in error messages match the Settings page word for word
+- **Oct 9** Switching the working folder no longer brings along another chat's files: folders you pick also get one subfolder per chat, and the placement is remembered per folder
+- **Oct 9** Attachments sent with a new chat's first message no longer say "file not found" when you open the preview
+- **Oct 9** Answered options stay pinned: after a long task's history is compacted the agent doesn't ask again, and if it's stuck it says where instead of quietly switching approach
+- **Oct 9** Local Codex tells the owner when a newer version is out, with an upgrade command; when a model isn't recognized it says which version you have and which models work
+- **Oct 9** The local engine's model dropdown lists specific models, the newest of several installed copies is used, and the engine test reports the model that actually ran
+- **Oct 9** Platform admins can switch to local Claude Code / Codex and use it right away; on shared servers only other accounts are held back
+- **Oct 9** DeepSeek V4 on the official endpoint gets up to 64K per reply; when a reply is cut off for length you're told plainly, and replying "continue" carries on
+- **Oct 9** Map settings: AMap errors in plain words, the key hint says to pick the Web Service key type, and routes in China can open in AMap or Google
+- **Oct 9** Attachments no longer stop at 30MB: the original file is uploaded and written to disk as it arrives, so screen recordings of a few hundred MB go through
 - **Oct 8** Tools lent to local Claude Code / Codex (image generation, library…) can run inside the main app instead: approval cards show up everywhere and usage is billed to whoever started the run; owner-only box, off by default
 - **Oct 8** Local Claude Code / Codex can pull PDFs, images and Word files from your library: they're copied into the run's working folder first, and only your own library is reachable
 - **Oct 7** Local Claude Code can hand actions that need approval to the Security Center: list-allowed ones run, anything needing a person's yes is refused; owner-only box, off by default
