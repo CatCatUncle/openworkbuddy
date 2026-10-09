@@ -2588,6 +2588,7 @@
   .eng-c { font-family: var(--font-mono); font-size: 11.5px; color: var(--owb-text-3); margin-top: 4px; }
   .eng-i { font-size: 12px; color: var(--owb-text-2); margin-top: 5px; }
   .eng-i code { font-family: var(--font-mono); background: var(--owb-bg-hover); padding: 1px 5px; border-radius: var(--radius-xs); }
+  .eng-up code { word-break: break-all; }
   .eng-b { border: 1px solid var(--owb-border); color: var(--owb-text-2); }
   .eng-b.ok { border-color: color-mix(in srgb, var(--owb-ok) 34%, transparent); color: var(--owb-ok-text); }
   .eng-b.free { border-color: var(--owb-brand); color: var(--owb-brand-text); }
@@ -2599,6 +2600,8 @@
   .eng-x { margin-top: 9px; padding-top: 9px; border-top: 1px dashed var(--owb-border); display: grid; gap: 7px; }
   .eng-x label { font-size: 12px; color: var(--owb-text-2); display: grid; gap: 3px; }
   .eng-x input, .eng-x select { height: var(--owb-ctl-h-sm); font-size: 12.5px; }
+  /* 型号：下拉列全，文字框只在选了「手填别的型号…」时露出来（engineModelPick） */
+  .eng-x input[hidden] { display: none; }
   .eng-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .eng-try { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
   .eng-bin { margin-top: 8px; }

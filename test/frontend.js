@@ -1157,6 +1157,10 @@ async function saveSettings(p){ window.SAVES.push(JSON.stringify(p)); if (window
 // 真的 amPlatformOwner 就是读这一格（app-01），这里照抄判据，谁是管理员由各节自己拨
 var settingsCache = { platform_owner: true };
 function amPlatformOwner(){ return !!(settingsCache && settingsCache.platform_owner); }
+// 升级命令那行的「复制」：只记下来，不碰真剪贴板
+window.COPIES = []; window.TOASTS = [];
+async function copyText(t){ window.COPIES.push(t); return true; }
+function toast(m){ window.TOASTS.push(m); }
 `;
 
 const ENG_CHECKS = `
@@ -1455,6 +1459,198 @@ const ENG_CHECKS = `
   await renderGate("builtin", { multiUser: false, shellOff: true }, { codex: CX });
   ok("组织关了命令行：两张外部引擎卡都写明不能用，内置那张不写",
     /本组织关了命令行/.test(card("codex").textContent) && /本组织关了命令行/.test(card("claude-code").textContent) && !/本组织关了命令行/.test(card("builtin").textContent));
+
+  // ⑨ 型号下拉（10-09「怎么列表没有特定模型」）：以前只有 <datalist>，Chromium 按框里已经填的字过滤候选——
+  // 框里是 opus 就只列得出 opus，具体型号一个都看不见。现在 <select> 列全、按组分开；存盘、试连照旧读那个文字框
+  const MI = [
+    { id: "claude-opus-5-5", name: "Opus 5.5", group: "main" },
+    { id: "claude-sonnet-5-5", name: "Sonnet 5.5", group: "main" },
+    { id: "opus", name: "", group: "alias" },
+    { id: "sonnet", name: "", group: "alias" },
+    { id: "claude-haiku-4-5", name: "Haiku 4.5", group: "other" },
+    { id: "opus[1m]", name: "", group: "mine" },
+  ];
+  const renderCC = async (cur, patch) => {
+    window.__P = PAY(cur);
+    Object.assign(window.__P.engines[0], { models: MI.map((m) => m.id), modelInfo: MI, modelSource: "claude_catalog" }, patch || {});
+    window.SAVES = []; window.COPIES = []; window.TOASTS = [];
+    await renderEngineCard(box);
+  };
+  const px = () => card("claude-code").querySelector(".eng-x");
+  const sel = () => px().querySelector('[data-role="model-pick"]');
+  const inp = () => px().querySelector('input[data-k="model"]');
+  const shown = (el) => getComputedStyle(el).display !== "none";
+  const optsOf = (s) => [...s.options].map((o) => [o.value, o.textContent, o.disabled, o.selected]);
+  const ccSaved = () => ((JSON.parse(window.SAVES[0] || "{}").agent || {}).engine_options || {})["claude-code"] || {};
+  settingsCache.platform_owner = true;
+  await renderCC("claude-code");
+  ok("★属主：型号是一个分好组的下拉★ 具体型号、别名、其他型号、你配置里用过的",
+    !!sel() && [...sel().querySelectorAll("optgroup")].map((g) => g.label).join("|") === "具体型号|别名（升级后自动换新）|其他型号|你配置里用过的",
+    sel() && [...sel().querySelectorAll("optgroup")].map((g) => g.label));
+  ok("  ← 具体型号写显示名加全名，别名只写它自己",
+    optsOf(sel()).some((o) => o[1] === "Opus 5.5 · claude-opus-5-5") && optsOf(sel()).some((o) => o[0] === "opus" && o[1] === "opus"), optsOf(sel()));
+  ok("  ← 没钉过：第一项是选不了的「先选一个（必填）」，最后一项是「手填别的型号…」", (() => {
+    const o = optsOf(sel());
+    return o[0][1] === "先选一个（必填）" && o[0][2] && o[0][3] && o[o.length - 1][0] === "…" && o[o.length - 1][1] === "手填别的型号…";
+  })(), optsOf(sel()));
+  ok("  ← 文字框藏着（量的是算出来的 display）", !shown(inp()), getComputedStyle(inp()).display);
+  ok("  ← 说明换成「本机 Claude Code 能用的型号」", px().textContent.includes("本机 Claude Code 能用的型号，选一个钉住。"));
+  sel().value = "claude-opus-5-5";
+  sel().dispatchEvent(new Event("change"));
+  ok("选一个：文字框里填上它的全名，框照旧藏着", inp().value === "claude-opus-5-5" && !shown(inp()), [inp().value, shown(inp())]);
+  px().querySelector('[data-act="save"]').click();
+  await wait(60);
+  ok("★存的就是选中的那个全名★", ccSaved().model === "claude-opus-5-5", window.SAVES);
+  await renderCC("claude-code");
+  sel().value = "…";
+  sel().dispatchEvent(new Event("change"));
+  ok("选「手填别的型号…」：文字框露出来", shown(inp()) && !inp().hidden, getComputedStyle(inp()).display);
+  inp().value = " claude-opus-4-1 ";
+  px().querySelector('[data-act="save"]').click();
+  await wait(60);
+  ok("  ← 存的是手填的那个（去掉首尾空格）", ccSaved().model === "claude-opus-4-1", window.SAVES);
+  await renderCC("claude-code", { options: { model: "claude-opus-4-1" } });
+  ok("★存过的型号不在单子里：落到「手填」、框亮着、原样回显★ 不悄悄换成别的",
+    sel().value === "…" && shown(inp()) && inp().value === "claude-opus-4-1", [sel().value, shown(inp()), inp().value]);
+  await renderCC("claude-code", { options: { model: "sonnet" } });
+  ok("  ← 反向对照：存过的在单子里，下拉选中它、框藏着，也没有「先选一个」",
+    sel().value === "sonnet" && !shown(inp()) && !optsOf(sel()).some((o) => o[1] === "先选一个（必填）"), [sel().value, shown(inp())]);
+  await renderCC("codex");
+  ok("一个候选都没有的（这台的 Codex 没探到型号）：不画下拉，直接一个文字框",
+    !card("codex").querySelector('[data-role="model-pick"]') && shown(card("codex").querySelector('.eng-x input[data-k="model"]')));
+
+  // 成员：只能在属主放行的里挑。第一项「跟属主钉的那个」存空串——属主换了钉的型号，他跟着换
+  const renderMember = async (model) => {
+    window.__P = Object.assign(PAY("codex"), { multiUser: true });
+    window.__P.engines.forEach((e) => { e.gate = e.id === "codex" ? CX : G0; });
+    window.__P.engines[1].options = model ? { model } : {};
+    window.SAVES = []; await renderEngineCard(box);
+  };
+  const msel = () => card("codex").querySelector('.eng-x [data-role="model-pick"]');
+  settingsCache.platform_owner = false;
+  await renderMember("");
+  ok("★成员：第一项「跟属主钉的那个（gpt-5.4）」选着、值是空串★ 后面只列放行的，没有「手填」", (() => {
+    const o = optsOf(msel());
+    return o[0][0] === "" && o[0][1] === "跟属主钉的那个（gpt-5.4）" && o[0][3]
+      && o.slice(1).map((x) => x[0]).join() === "gpt-5.4,gpt-5.4-mini" && !o.some((x) => x[0] === "…");
+  })(), msel() && optsOf(msel()));
+  await renderMember("o3");
+  ok("★成员存过的型号属主后来没放行：照实挂一项「o3（属主没放行）」选着★ 文字框不给他露出来",
+    msel().value === "o3" && msel().selectedOptions[0].textContent === "o3（属主没放行）" && !shown(card("codex").querySelector('.eng-x input[data-k="model"]')),
+    optsOf(msel()));
+  msel().value = "";
+  msel().dispatchEvent(new Event("change"));
+  card("codex").querySelector('.eng-x [data-act="save"]').click();
+  await wait(60);
+  {
+    const mo = ((JSON.parse(window.SAVES[0] || "{}").agent || {}).engine_options || {}).codex || {};
+    ok("  ← 改回「跟属主钉的那个」：存空串，发出去的还是只有模型和思考档", mo.model === "" && Object.keys(mo).sort().join() === "model,thinking", window.SAVES);
+  }
+  {
+    const zh = ["跟属主钉的那个（gpt-5.4）", "跟属主钉的那个", "o3（属主没放行）", "（只能从属主放行的型号里选。）"].filter((t) => /[一-鿿（）]/.test(I18.tr(t, "en")));
+    ok("英文界面：成员那几项都翻得动", zh.length === 0, zh.map((t) => [t, I18.tr(t, "en")]));
+  }
+
+  // 本机装了好几份：用的是哪份、别的几份什么版本，照实列。「版本最新的」只在真比得出来时说
+  settingsCache.platform_owner = true;
+  const OTH = [{ bin: "/opt/homebrew/bin/claude", installed: true, version: "2.1.263 (Claude Code)" }, { bin: "/usr/local/bin/claude", installed: false, version: "" }];
+  const infoLines = () => [...card("claude-code").querySelectorAll(".eng-i")].map((n) => n.textContent);
+  const othersLine = () => infoLines().find((t) => t.includes("本机装了")) || "";
+  await renderCC("builtin", { version: "2.1.295 (Claude Code)", how: "补全的 PATH", others: OTH });
+  ok("★装了三份：说用的是版本最新的这份，另外两份照实列（读得出的写版本，跑不起来的写跑不起来）★",
+    othersLine().includes("本机装了 3 份，用的是版本最新的这份（2.1.295）：/u/.local/bin/claude")
+    && othersLine().includes("另一份（2.1.263）：/opt/homebrew/bin/claude") && othersLine().includes("另一份（跑不起来）：/usr/local/bin/claude"), othersLine());
+  ok("  ← 那行已经列了路径，不再多一行「补全的 PATH里找到的」", !infoLines().some((t) => t.includes("里找到的")), infoLines());
+  await renderCC("builtin", { version: "2.1.263 (Claude Code)", others: [{ bin: "/u/.local/bin/claude", installed: true, version: "2.1.295 (Claude Code)" }] });
+  ok("★反向对照★ 另一份比用的这份还新：不说「版本最新的」", othersLine().includes("本机装了 2 份，用的是这份（2.1.263）") && !othersLine().includes("版本最新的"), othersLine());
+  await renderCC("builtin", { version: "dev build", others: OTH });
+  ok("  ← 用的这份读不出版本：同样不说", othersLine().includes("本机装了 3 份") && !othersLine().includes("版本最新的"), othersLine());
+  await renderCC("builtin", { how: "补全的 PATH", others: [] });
+  ok("  ← 只装了一份：「补全的 PATH里找到的」那行照旧在", infoLines().includes("（补全的 PATH里找到的：/u/.local/bin/claude）"), infoLines());
+  await renderCC("builtin", { how: "设置里填的", others: [] });
+  ok("设置里填了路径的：说「用的是设置里填的路径」，不拼成「设置里填的里找到的」",
+    infoLines().includes("（用的是设置里填的路径：/u/.local/bin/claude）") && !infoLines().some((t) => t.includes("填的里")), infoLines());
+
+  // 型号表里有、这份 CLI 太旧跑不了的：只跟属主说，给一条能直接粘的升级命令
+  const NU = [{ id: "claude-opus-5-5", name: "Opus 5.5", min: "2.1.280" }, { id: "claude-fable-5-1", name: "Fable 5.1", min: "2.1.290" }, { id: "claude-x-1", name: "", min: "2.1.285" }];
+  const UPC = "/u/.local/bin/claude update";
+  const up = () => card("claude-code").querySelector(".eng-up");
+  await renderCC("builtin", { version: "2.1.263 (Claude Code)", needsUpgrade: NU, upgrade: UPC });
+  ok("★属主：太旧跑不了的型号单列一行：升到几起就能用（取最高那个），点两个名字、报总数★",
+    !!up() && up().textContent.includes("升到 2.1.290 起就能用 Opus 5.5、Fable 5.1 等 3 个型号：") && up().querySelector("code").textContent === UPC,
+    up() && up().textContent);
+  up().querySelector('[data-act="copy-up"]').click();
+  await wait(60);
+  ok("  ← 点「复制」：命令原样进剪贴板，弹一句粘到哪；不切引擎、不存盘",
+    JSON.stringify(window.COPIES) === JSON.stringify([UPC]) && window.TOASTS.length === 1 && window.TOASTS[0].includes("终端") && window.SAVES.length === 0,
+    [window.COPIES, window.TOASTS, window.SAVES]);
+  up().querySelector("code").click();
+  await wait(60);
+  ok("  ← 点命令本身（想选中了手抄）也不切引擎", window.SAVES.length === 0, window.SAVES);
+  card("claude-code").querySelector(".eng-n").click();
+  await wait(60);
+  ok("  ← 反向对照：点卡片正文确实会切（不是整张卡被点死了）", window.SAVES.some((x) => x.includes('"engine":"claude-code"')), window.SAVES);
+  await renderCC("builtin", { version: "2.1.263 (Claude Code)", needsUpgrade: [{ id: "claude-x-1", name: "", min: "" }], upgrade: UPC });
+  ok("型号表没写要几版的：只说「升级后就能用」，名字没有就写 id", !!up() && up().textContent.includes("升级后就能用 claude-x-1："), up() && up().textContent);
+  settingsCache.platform_owner = false;
+  await renderCC("builtin", { version: "2.1.263 (Claude Code)", needsUpgrade: NU, upgrade: UPC });
+  ok("★成员看不到升级那一行★ 升级是属主的事", !up());
+  settingsCache.platform_owner = true;
+  await renderCC("builtin", { needsUpgrade: [], upgrade: "" });
+  ok("  ← 没有跑不了的型号：不画这一行", !up());
+
+  // 试连结论写真跑的型号：填的是别名时两个都写，用户看得到 opus 落到了哪个具体型号
+  const BODIES = [];
+  const fetchB = window.fetch;
+  window.fetch = async (u, o) => { if (o && o.body) BODIES.push(JSON.parse(o.body)); return fetchB(u, o); };
+  const vr = () => card("claude-code").querySelector(".eng-r.ok");
+  await renderCC("claude-code", { version: "2.1.263 (Claude Code)", others: OTH, needsUpgrade: NU, upgrade: UPC, options: { model: "claude-opus-5-5" } });
+  reply = () => ({ ok: true, ms: 1800, reply: "ok", model: "claude-opus-5-5", asked: "claude-opus-5-5", path: "/u/.local/bin/claude", version: "2.1.263 (Claude Code)" });
+  card("claude-code").querySelector('[data-act="test"]').click();
+  await wait();
+  ok("填的就是全名：只说一句「实际跑的模型是 claude-opus-5-5。」",
+    !!vr() && vr().textContent.includes("实际跑的模型是 claude-opus-5-5。") && !vr().textContent.includes("你填的是"), vr() && vr().textContent);
+  ok("  ← 试连带的是下拉填进（藏着的）文字框的那个", (BODIES[0] && BODIES[0].options || {}).model === "claude-opus-5-5", BODIES);
+  await renderCC("claude-code", { version: "2.1.263 (Claude Code)", others: OTH, needsUpgrade: NU, upgrade: UPC, options: { model: "opus" } });
+  reply = () => ({ ok: true, ms: 1800, reply: "ok", model: "claude-opus-5-5", asked: "opus", path: "/u/.local/bin/claude", version: "2.1.263 (Claude Code)" });
+  card("claude-code").querySelector('[data-act="test"]').click();
+  await wait();
+  ok("★填的是别名：结论里两个都写——你填的 opus、实际跑的 claude-opus-5-5★",
+    !!vr() && vr().textContent.includes("你填的是 opus，实际跑的是 claude-opus-5-5。"), vr() && vr().textContent);
+  window.fetch = fetchB;
+
+  // 英文界面：这一屏新加的字逐个节点过真词典（分组标题是 <optgroup label>，靠 ATTRS 里的 label）
+  {
+    await renderCC("claude-code", { version: "2.1.295 (Claude Code)", others: OTH, needsUpgrade: NU, upgrade: UPC, options: { model: "opus" } });
+    const en = card("claude-code").cloneNode(true);
+    I18.apply(en, "en");
+    const ZH = /[一-鿿（）：，。]/;
+    const leftZh = (el) => {
+      const out = [];
+      const w = (n) => {
+        if (n.nodeType === 3) { if (ZH.test(n.nodeValue)) out.push(n.nodeValue); return; }
+        if (n.nodeType !== 1 || /^(code|svg)$/i.test(n.nodeName)) return;
+        for (const a of ["label", "placeholder"]) if (ZH.test(n.getAttribute(a) || "")) out.push(a + "=" + n.getAttribute(a));
+        n.childNodes.forEach(w);
+      };
+      w(el);
+      return out;
+    };
+    const mlabel = [...en.querySelectorAll(".eng-x label")].find((l) => l.querySelector('[data-role="model-pick"]'));
+    const oline = [...en.querySelectorAll(".eng-i")].find((n) => n.querySelectorAll(".eng-p").length === 3);
+    const parts = { 型号: mlabel, 装了几份: oline, 升级: en.querySelector(".eng-up"), 结论: en.querySelector(".eng-r.ok") };
+    const zh = Object.entries(parts).flatMap(([k, p]) => (p ? leftZh(p).map((t) => k + "：" + t) : [k + "：这一块没画出来"]));
+    ok("★英文界面：分组标题、型号项、说明、装了几份、升级提示、试连结论，一个中文字都不剩★", zh.length === 0, zh);
+    ok("  ← 译出来的是人话", [...mlabel.querySelectorAll("optgroup")].map((g) => g.label).join("|") === "Specific models|Aliases (point to newer models after updates)|Other models|From your settings"
+      && oline.textContent.includes("3 copies are installed here; using the newest one (2.1.295): ")
+      && oline.textContent.includes("Another copy (won't run): ")
+      && en.querySelector(".eng-up").textContent.includes("Update to 2.1.290 or later to use Opus 5.5, Fable 5.1 and 1 more:")
+      && en.querySelector(".eng-r.ok").textContent.includes("You asked for opus, and it ran claude-opus-5-5."),
+      [[...mlabel.querySelectorAll("optgroup")].map((g) => g.label), oline.textContent, en.querySelector(".eng-up").textContent, en.querySelector(".eng-r.ok").textContent]);
+    const one = ["先选一个（必填）", "实际跑的模型是", "命令已复制，粘到「终端」里回车就行", "（补全的 PATH里找到的：", "（登录 shell里找到的：", "（用的是设置里填的路径：", "）", "升级后就能用 claude-x-1："]
+      .filter((t) => ZH.test(I18.tr(t, "en")));
+    ok("  ← 这一屏别的状态才出现的那几句也翻得动", one.length === 0, one.map((t) => [t, I18.tr(t, "en")]));
+  }
   window.fetch = fetch0;
 
   return names;

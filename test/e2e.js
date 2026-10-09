@@ -7267,8 +7267,9 @@ function enginePathProblems(src) {
   // 找得到：三级找法那层必须真的被引擎用上
   const whichSpec = JSON.stringify(modPath.spec("engines", "which")).replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
   has("index", new RegExp(`require\\(${whichSpec}\\)`), "src/engines/index.js 没接 which（GUI 启动时 PATH 是残废的）");
-  has("claude", /resolveBin/, "claude-code.js 没走 resolveBin，双击启动会说没装");
-  has("codex", /resolveBin/, "codex.js 没走 resolveBin，双击启动会说没装");
+  // resolveNewest 是 resolveBin 那套找法加「装了几份挑最新」，两个都算
+  has("claude", /\bresolve(Bin|Newest)\(/, "claude-code.js 没走 resolveBin / resolveNewest，双击启动会说没装");
+  has("codex", /\bresolve(Bin|Newest)\(/, "codex.js 没走 resolveBin / resolveNewest，双击启动会说没装");
   has("jsonl", /augmentedPath/, "jsonl.js 没给子进程补 PATH，CLI 起来了也会在第一个工具调用上死掉");
   // 前端：一键连接 + 说清楚从哪找到的
   has("app05", /\/api\/engines\/test/, "设置页没有一键连接（用户只能看到「已装」，不知道能不能用）");

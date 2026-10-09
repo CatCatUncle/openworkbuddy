@@ -29,7 +29,7 @@
 
 const { runJsonl, probeVersion, enginePath } = require("./jsonl");
 const thinking = require("../core/model/thinking");
-const { resolveBin } = require("../platform/which");
+const { resolveNewest } = require("../platform/which");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -434,17 +434,21 @@ function explain(stderr, code, model, available) {
   return s ? s.slice(-600) : `codex 异常退出（退出码 ${code}）且没有任何输出`;
 }
 
+const versionOf = (b) => probeVersion(b, ["--version"]);
+
 /** 收整份设置，理由同 claude-code.js 里那条注释 */
 async function detect(opts) {
   const explicit = typeof opts === "string" ? opts : (opts && opts.bin) || "";
-  const found = await resolveBin("codex", explicit);
+  // 装了不止一份（npm 全局一份、ChatGPT.app 里带一份）时挑版本最新的，见 which.resolveNewest
+  const found = await resolveNewest("codex", explicit, versionOf, { fresh: true });
   if (!found.bin) return { id: ID, installed: false, path: explicit || "codex", version: "", how: "", error: found.why };
-  const r = await probeVersion(found.bin, ["--version"]);
+  const r = found.probe || (await versionOf(found.bin));
   const fromAccount = r.installed ? await accountModels(found.bin, openWorkBuddyCodexHome(process.env).env) : null;
   const models = fromAccount || configuredModels(process.env);
   return {
     id: ID, installed: r.installed, path: found.bin, version: r.version, how: found.how,
-    error: r.installed ? "" : "找到了 " + found.bin + "，但 --version 跑不通（装坏了？）",
+    others: found.others || [],
+    error: r.installed ? "" : "找到了 " + found.bin + "，但 --version 跑不通",
     // 不塞会过期的硬编码 GPT 名称表：优先用 `codex debug models` 拿账号真实目录，
     // 拿不到（旧版 CLI / 没登录）才退回用户 Codex 配置里出现过的 model 字段。
     models,
@@ -499,7 +503,7 @@ async function run({
   if (bad) throw new Error(`本机 Codex 的附加参数里有换型号的「${bad}」，到 ${gate.argsWhere(ID)} 里删掉它。`);
   const pinned = String(model || "").trim();
   if (!pinned) throw new Error(`先在 ${gate.WHERE} 里给本机 Codex 指定型号，再开跑。`);
-  const found = await resolveBin("codex", bin);
+  const found = await resolveNewest("codex", bin, versionOf);
   if (!found.bin) throw new Error(found.why + "。装一个（npm i -g @openai/codex），或在设置里填 codex 的绝对路径。");
   const exe = found.bin;
   const isolated = openWorkBuddyCodexHome({ ...process.env, ...(env || {}) });

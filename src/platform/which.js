@@ -19,6 +19,9 @@
  *   ③ 问用户自己的登录 shell（zsh -lic 'command -v claude'）—— 版本管理器五花八门，
  *      与其把每一种的目录结构都猜一遍，不如让 shell 自己回答。慢（几百毫秒），所以垫底并缓存。
  *
+ * 引擎（claude / codex）走的是 resolveNewest：②里找到不止一份时不停在第一个，挑版本最新的，
+ * 见文件末尾那一节——不然双击启动的 App 会用上 homebrew 里那份没人升级的旧版。
+ *
  * 缓存按「名字 + 显式路径」记，forget() 清掉——用户在设置页点「重新检测」时清一次，
  * 不然刚装完 CLI 的人得重启整个应用才看得见。
  *
@@ -379,9 +382,10 @@ function askLoginShell(name, timeoutMs = 6000) {
 }
 
 const cache = new Map(); // 键 = 命令名 + 空格 + 用户填的路径
+const newestCache = new Map(); // 键 = 命令名；值 = { at, r }，见 resolveNewest
 
 /** 清缓存。用户刚装完 CLI 点「重新检测」时调，不然得重启整个应用才看得见 */
-function forget() { cache.clear(); }
+function forget() { cache.clear(); newestCache.clear(); }
 
 /**
  * 找出这个 CLI 的绝对路径。
@@ -419,8 +423,150 @@ async function resolveBin(name, explicit) {
   return r;
 }
 
+// ── 本机装了好几份：用版本最新的那份 ──────────────────────────────────────
+//
+// 2026-10-09 实测：同一台 Mac 上两个 claude。~/.local/bin/claude 是官方安装器装的，自己会升级，当天升到 2.1.295；
+// /opt/homebrew/bin/claude 是早先 npm i -g 装的，一直停在 2.1.263。终端的 PATH 先排 ~/.local/bin，用的是新的；
+// 双击启动的 App 拿到残废 PATH，补全目录里 homebrew 排在前头，用的是旧的。
+// 旧的认不得新型号（Opus 5.5 要 2.1.280 起），用户在终端里用得好好的型号，到这边就说没有。
+// 所以没填路径时，搜索路径上的每一份都问一遍 --version，用最新的；其余几份如实报出来，卡上写明。
+
+/**
+ * 从 --version 的输出里抠出 x.y.z（可带 -beta.1 之类），认不出给 null。
+ * 「2.1.295 (Claude Code)」「codex-cli 0.162.0」都认得。
+ * @param {string} s
+ */
+function cliVersion(s) {
+  const m = String(s || "").match(/(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?/);
+  return m ? { nums: [+m[1], +m[2], +m[3]], pre: m[4] || "" } : null;
+}
+
+/**
+ * a 比 b 新给 1，旧给 -1，一样给 0。有一边认不出也给 0，由调用方决定认不出的怎么排。
+ * 1.0.0 比 1.0.0-beta 新；预发布段逐节比，数字按大小（beta.10 比 beta.9 新）
+ * @param {string} a
+ * @param {string} b
+ */
+function cmpCliVersion(a, b) {
+  const x = cliVersion(a), y = cliVersion(b);
+  if (!x || !y) return 0;
+  for (let i = 0; i < 3; i++) if (x.nums[i] !== y.nums[i]) return x.nums[i] > y.nums[i] ? 1 : -1;
+  if (x.pre === y.pre) return 0;
+  if (!x.pre) return 1;
+  if (!y.pre) return -1;
+  const xs = x.pre.split("."), ys = y.pre.split(".");
+  for (let i = 0; i < Math.max(xs.length, ys.length); i++) {
+    if (xs[i] === undefined) return -1;
+    if (ys[i] === undefined) return 1;
+    const xn = /^\d+$/.test(xs[i]), yn = /^\d+$/.test(ys[i]);
+    if (xn && yn) { if (+xs[i] !== +ys[i]) return +xs[i] > +ys[i] ? 1 : -1; continue; }
+    if (xn !== yn) return xn ? -1 : 1; // 纯数字那节排在字母那节前面
+    if (xs[i] !== ys[i]) return xs[i] > ys[i] ? 1 : -1;
+  }
+  return 0;
+}
+
+/**
+ * 跟 findIn 一样找，但不停在第一个：每个目录里的都列出来，按搜索顺序。
+ * 同一个文件经不同路径进来（软链、PATH 里写了两遍）只算一份。Windows 上的别名照旧排最后。
+ * @param {string[]} dirs
+ * @param {string} name
+ * @param {string} [platform] 测试用
+ * @param {Pick<typeof fs, "statSync" | "lstatSync" | "accessSync" | "realpathSync">} [io] 测试用
+ */
+function findAllIn(dirs, name, platform = process.platform, io = fs) {
+  const win = platform === "win32";
+  const exts = win ? WIN_EXT : [""];
+  const join = win ? path.win32.join : path.join;
+  /** @param {string} p */
+  const real = (p) => { try { return String(io.realpathSync(p)); } catch { return p; } };
+  const seen = new Set();
+  /** @type {string[]} */
+  const files = [];
+  /** @type {string[]} */
+  const aliases = [];
+  for (const d of dirs) {
+    if (!d) continue;
+    for (const ext of exts) {
+      const p = join(d, name + ext);
+      if (!runnable(p, platform, io)) continue;
+      const k = win ? real(p).toLowerCase() : real(p);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      (!win || plainFile(p, io) ? files : aliases).push(p);
+    }
+  }
+  return files.concat(aliases);
+}
+
+/**
+ * @typedef {{installed: boolean, version: string}} Probed
+ * @typedef {{bin: string, installed: boolean, version: string}} Candidate
+ */
+
+/**
+ * 几份候选里挑版本最新的。probe 几份一起问。
+ * 跑不起来的不算；版本认不出的排在认得出的后面；版本一样的按搜索顺序。
+ * 一份都跑不起来就退回第一份——让后面的检测如实报它自己的错。
+ * @param {string[]} bins 按搜索顺序
+ * @param {(bin: string) => Promise<Probed>} probe
+ * @returns {Promise<{pick: Candidate, others: Candidate[]}>}
+ */
+async function pickNewest(bins, probe) {
+  const got = await Promise.all(bins.map(async (bin) => {
+    try {
+      const r = await probe(bin);
+      return { bin, installed: !!(r && r.installed), version: String((r && r.version) || "") };
+    } catch { return { bin, installed: false, version: "" }; }
+  }));
+  /** @type {Candidate|null} */
+  let best = null;
+  for (const c of got) {
+    if (!c.installed) continue;
+    if (!best) { best = c; continue; }
+    if (cliVersion(c.version) && (!cliVersion(best.version) || cmpCliVersion(c.version, best.version) > 0)) best = c;
+  }
+  const pick = best || got[0];
+  return { pick, others: got.filter((c) => c !== pick) };
+}
+
+const NEWEST_TTL = 10 * 60 * 1000;
+
+/**
+ * 跟 resolveBin 一样找，只是本机装了好几份时用版本最新的那份，其余几份放进 others 如实报。
+ * 填了路径照旧只认它。
+ * fresh = 不读缓存，几份都重新问一遍：检测时用。真跑任务时读缓存，不为这个多等；
+ * 缓存十分钟就作废——官方安装器会在后台自己升级，开着的应用不该一直认着那天早上的版本。
+ * @param {string} name
+ * @param {string} explicit
+ * @param {(bin: string) => Promise<Probed>} probe 问版本的办法；测试里换成假的
+ * @param {{fresh?: boolean}} [opts]
+ * @returns {Promise<{bin:string, how:string, why:string, probe?: Probed, others: Candidate[]}>}
+ */
+async function resolveNewest(name, explicit, probe, { fresh = false } = {}) {
+  const given = String(explicit || "").trim();
+  if (given) return { ...(await resolveBin(name, given)), others: [] };
+  const hit = newestCache.get(name);
+  if (!fresh && hit && Date.now() - hit.at < NEWEST_TTL && hit.r.bin && runnable(hit.r.bin)) return hit.r;
+  const all = findAllIn(searchDirs(), name);
+  let r;
+  if (all.length < 2) {
+    r = { ...(await resolveBin(name, "")), others: [] };
+  } else {
+    const { pick, others } = await pickNewest(all, probe);
+    const onPath = String(process.env.PATH || "").split(path.delimiter).includes(path.dirname(pick.bin));
+    r = {
+      bin: pick.bin, how: onPath ? "PATH" : "补全的 PATH", why: "",
+      probe: { installed: pick.installed, version: pick.version }, others,
+    };
+  }
+  newestCache.set(name, { at: Date.now(), r });
+  return r;
+}
+
 module.exports = {
-  resolveBin, augmentedPath, searchDirs, extraDirs, findIn, runnable, askLoginShell, forget,
+  resolveBin, resolveNewest, findAllIn, pickNewest, cliVersion, cmpCliVersion,
+  augmentedPath, searchDirs, extraDirs, findIn, runnable, askLoginShell, forget,
   refreshWinPath, parseRegPath, expandWinVars, splitWinPath, popplerBins,
   /** 测试用：把记住的注册表 PATH 清掉，回到「一次都没读过」 */
   _resetWinPath: () => { regDirs = []; regInflight = null; },

@@ -87,6 +87,12 @@ async function detectAllUncached(overrides = {}) {
       // 没有动态来源的 CLI 再回落到后端内置的稳定候选。
       models: Array.isArray(r.models) ? r.models : (b.models || []),
       modelSource: r.modelSource || "builtin",
+      // 型号的显示名和分组（[{id, name, group}]），有就按组画下拉；这份 CLI 太旧、跑不了的型号和怎么升级
+      modelInfo: Array.isArray(r.modelInfo) ? r.modelInfo : [],
+      needsUpgrade: Array.isArray(r.needsUpgrade) ? r.needsUpgrade : [],
+      upgrade: r.upgrade || "",
+      // 本机还装着、但没被选上的那几份（[{bin, installed, version}]）：设置页照实列出来，不然用户不知道用的是哪份
+      others: Array.isArray(r.others) ? r.others : [],
       thinkingLabel: b.thinkingLabel || "",
       // 用户在设置里给这个引擎填过什么（路径 / 模型 / 思考档），前端要能回显出来
       options: {
@@ -201,8 +207,10 @@ function gateView(id, config) {
  * 成本：一句 "回复 ok 两个字"，几十个 token，走的是用户自己的订阅，不碰 API Key。
  * 跑在系统临时目录里，不往用户工作区留任何东西。
  *
+ * model 报的是这趟真跑的型号：引擎报得上来就用引擎的（填别名时是它落到的全名），报不上来才用填的那个；
+ * asked 是设置里填的原样，两个不一样时前端两个都写出来。
  * @returns {Promise<{ok:boolean, ms:number, engine:string, path:string, version:string,
- *                    reply:string, model:string, why:string, hint:string}>}
+ *                    reply:string, model:string, asked:string, why:string, hint:string}>}
  */
 async function testConnect(id, opts = {}, timeoutMs = 90000) {
   const backend = get(id);
@@ -211,7 +219,7 @@ async function testConnect(id, opts = {}, timeoutMs = 90000) {
   const det = await backend.detect(opts);
   if (!det.installed) {
     return { ok: false, ms: Date.now() - t0, engine: id, path: det.path || "", version: "",
-             reply: "", model: "", why: det.error || `本机没找到 ${backend.bin}`, hint: backend.install };
+             reply: "", model: "", asked: String(opts.model || ""), why: det.error || `本机没找到 ${backend.bin}`, hint: backend.install };
   }
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "owb-engine-test-"));
   let model = "";
@@ -227,7 +235,8 @@ async function testConnect(id, opts = {}, timeoutMs = 90000) {
     });
     return {
       ok: true, ms: Date.now() - t0, engine: id, path: det.path, version: det.version,
-      reply: String(r.finalText || "").trim().slice(0, 120), model: opts.model || model, why: "", hint: "",
+      reply: String(r.finalText || "").trim().slice(0, 120), model: String((r && r.model) || model || opts.model || ""),
+      asked: String(opts.model || ""), why: "", hint: "",
     };
   } catch (e) {
     const why = String((e && e.message) || e).slice(0, 400);
@@ -236,7 +245,7 @@ async function testConnect(id, opts = {}, timeoutMs = 90000) {
       : /限流|额度/.test(why) ? "等订阅窗口重置后再点一次"
       : /找不到|没有/.test(why) ? backend.install
       : "";
-    return { ok: false, ms: Date.now() - t0, engine: id, path: det.path, version: det.version, reply: "", model: "", why, hint };
+    return { ok: false, ms: Date.now() - t0, engine: id, path: det.path, version: det.version, reply: "", model: "", asked: String(opts.model || ""), why, hint };
   } finally {
     try { fs.rmSync(cwd, { recursive: true, force: true }); } catch {}
   }

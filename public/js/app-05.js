@@ -2992,13 +2992,20 @@ function engBadgeHtml(e, v) {
   return `<span class="eng-b">本机有${ver ? " " + esc(ver) : ""}</span>${free}`;
 }
 
-/** 测出来的结论长什么样。重画卡片时也走这里，所以结论跟着卡片一起活 */
+/**
+ * 测出来的结论长什么样。重画卡片时也走这里，所以结论跟着卡片一起活。
+ * 型号写引擎报上来的那个：填的是别名（opus）时，用户要看的是它落到了哪个具体型号，两个都写出来。
+ * 每句话单独一个文本节点，英文界面才翻得动（拼成一长串的话词典对不上）
+ */
 function engVerdictHtml(v, on) {
   if (!v) return "";
   if (v.ok) {
-    return `<div class="eng-r ok">${ic("circle-check")} 真跑通了，用了 ${(v.ms / 1000).toFixed(1)} 秒。它回了「${esc(v.reply || "")}」`
-      + (v.model ? `，实际跑的模型是 <code>${esc(v.model)}</code>` : "")
-      + "。这一趟没花 API 额度，走的是你本机的订阅。"
+    const ran = !v.model ? ""
+      : v.asked && v.asked !== v.model ? `你填的是 <code>${esc(v.asked)}</code>，实际跑的是 <code>${esc(v.model)}</code>。`
+      : `实际跑的模型是 <code>${esc(v.model)}</code>。`;
+    return `<div class="eng-r ok">${ic("circle-check")} <span>真跑通了，用了 ${(v.ms / 1000).toFixed(1)} 秒，它回了「${esc(v.reply || "")}」。</span>`
+      + ran
+      + "<span>这一趟没花 API 额度，走的是你本机的订阅。</span>"
       + (on ? "" : "<br>想用它的话，点这张卡就切过去了。")
       + `<br><span class="eng-p">${esc(v.path || "")}${v.version ? " · " + esc(v.version) : ""}</span></div>`;
   }
@@ -3049,9 +3056,15 @@ async function renderEngineCard(box, force) {
     const gateRow = !builtin && e.installed && ctx.multi && amPlatformOwner()
       ? `<label class="eng-gate eng-row"><input type="checkbox" data-act="enable"${g.enabled ? " checked" : ""}> <span>也给其他账号用</span><span class="eng-msg">（走你的订阅，命令在这台机器上跑）</span></label>` : "";
     const v = engTested.get(e.id);
-    // 从补全的 PATH / 登录 shell 里找到的，说一声——用户要是纳闷"我明明装了它怎么现在才看见"，这就是答案
-    const howNote = !builtin && e.installed && e.how && e.how !== "PATH"
-      ? `<div class="eng-i">（${esc(e.how)}里找到的：<span class="eng-p">${esc(e.path || "")}</span>）</div>` : "";
+    const others = !builtin && e.installed && Array.isArray(e.others) ? e.others : [];
+    // 从补全的 PATH / 登录 shell 里找到的，说一声——用户要是纳闷"我明明装了它怎么现在才看见"，这就是答案。
+    // 装了好几份的，下面那行已经把每份的路径都列了，不再重复
+    // 设置里填了路径的，说「用的是设置里填的路径」，别拼成「设置里填的里找到的」
+    const howNote = !builtin && e.installed && e.how && e.how !== "PATH" && !others.length
+      ? `<div class="eng-i">（${e.how === "设置里填的" ? "用的是设置里填的路径" : esc(e.how) + "里找到的"}：<span class="eng-p">${esc(e.path || "")}</span>）</div>` : "";
+    const othersNote = others.length ? engOthersHtml(e, others) : "";
+    // 型号表里有、这份 CLI 太旧跑不了的：只跟属主说（升级是他的事），给一条能直接粘的命令
+    const upNote = !builtin && e.installed && amPlatformOwner() ? engUpgradeHtml(e) : "";
     // 「试一下能不能用」挂在每一张装了的卡上，不管选没选中。
     // 以前它只长在展开区里，而展开区只对**已经选中的**引擎渲染——
     // 等于「想知道它能不能用，得先切过去用它」。开关摆在只有切过去才看得见的地方，等于没有。
@@ -3063,6 +3076,8 @@ async function renderEngineCard(box, force) {
       <div class="eng-h"><span class="eng-dot">${on ? "●" : "○"}</span><b>${esc(e.label)}</b><span class="eng-bs">${engBadgeHtml(e, v)}</span></div>
       <div class="eng-n">${esc(e.note || "")}</div>
       ${howNote}
+      ${othersNote}
+      ${upNote}
       ${gateNote}
       ${!builtin && !e.installed ? `<div class="eng-i">${esc(e.error || "没找到")}<br>装法：<code>${esc(e.install || "")}</code></div>${engineBinRowHtml(e)}` : ""}
       ${gateRow}
@@ -3079,6 +3094,11 @@ async function renderEngineCard(box, force) {
     if (el.classList.contains("on")) bindEngineExtra(el, id, box);
     const tb = el.querySelector('[data-act="test"]');
     if (tb) tb.onclick = (ev) => { ev.stopPropagation(); testEngineConnect(el, id); };
+    const ub = el.querySelector('[data-act="copy-up"]');
+    if (ub) ub.onclick = (ev) => {
+      ev.preventDefault(); ev.stopPropagation();
+      copyText(ub.dataset.cmd || "").then((ok) => ok ? toast("命令已复制，粘到「终端」里回车就行") : toast("复制失败，手抄一下", "circle-x"));
+    };
     const eb = el.querySelector('[data-act="enable"]');
     if (eb) eb.onchange = async () => {
       msg.textContent = "保存中…";
@@ -3098,7 +3118,7 @@ async function renderEngineCard(box, force) {
     };
     el.onclick = async (ev) => {
       // 展开区的输入框、试一试那一行、测出来的结论、填路径那一行，点了都不算"切引擎"
-      if (ev.target.closest(".eng-x, .eng-try, .eng-r, .eng-bin, .eng-gate")) return;
+      if (ev.target.closest(".eng-x, .eng-try, .eng-r, .eng-bin, .eng-gate, .eng-up")) return;
       if (el.classList.contains("on")) return;
       if (el.dataset.ready !== "1") {
         // 没找到的那条：点了不切。静默切到一个跑不起来的引擎，用户会以为在用本机订阅，
@@ -3119,6 +3139,48 @@ async function renderEngineCard(box, force) {
   });
 }
 
+/** 「2.1.295」→ [2, 1, 295]；读不出就 null */
+function engVerNums(v) {
+  const m = String(engVer(v)).match(/^(\d+)\.(\d+)(?:\.(\d+))?/);
+  return m ? [+m[1], +m[2], +(m[3] || 0)] : null;
+}
+
+/** a 比 b 新 → 正数，旧 → 负数；有一边读不出版本就当一样（0），不替人下结论 */
+function engVerCmp(a, b) {
+  const x = engVerNums(a), y = engVerNums(b);
+  if (!x || !y) return 0;
+  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] - y[i];
+  return 0;
+}
+
+/**
+ * 本机装了不止一份：用的是哪份、另外几份是什么版本，照实列出来。
+ * 不然 homebrew 里那份没人升级的旧版一直躲在那儿——10-09 就是它让设置页只认得老型号。
+ * 「版本最新的」只在真比得出来时才说：用的这份读得出版本、而且不比哪一份旧
+ */
+function engOthersHtml(e, others) {
+  const newest = !!engVerNums(e.version) && others.every((o) => !o.installed || engVerCmp(o.version, e.version) <= 0);
+  const ver = engVer(e.version);
+  const one = (o) => {
+    const ov = o.installed ? engVer(o.version) : "";
+    return `<br>另一份${ov ? "（" + esc(ov) + "）" : o.installed ? "（版本读不出）" : "（跑不起来）"}：<span class="eng-p">${esc(o.bin || "")}</span>`;
+  };
+  return `<div class="eng-i">本机装了 ${others.length + 1} 份，用的是${newest ? "版本最新的" : ""}这份${ver ? "（" + esc(ver) + "）" : ""}：<span class="eng-p">${esc(e.path || "")}</span>${others.map(one).join("")}</div>`;
+}
+
+/**
+ * 型号表里有、这份 CLI 太旧跑不了的那几个（detect 给的 needsUpgrade）：说升到几起就能用，命令能一键复制。
+ * 几个型号要的版本不一样时报最高那个——升到它，这几个就都能用了。名字只点前两个，多了报个数，一行放得下
+ */
+function engUpgradeHtml(e) {
+  const need = Array.isArray(e.needsUpgrade) ? e.needsUpgrade : [];
+  if (!need.length || !e.upgrade) return "";
+  const top = need.map((m) => String(m.min || "")).reduce((a, b) => (!a || engVerCmp(b, a) > 0 ? b : a), "");
+  const names = need.slice(0, 2).map((m) => m.name || m.id).join("、") + (need.length > 2 ? ` 等 ${need.length} 个型号` : "");
+  return `<div class="eng-i eng-up">${top ? `升到 ${esc(top)} 起就能用 ${esc(names)}：` : `升级后就能用 ${esc(names)}：`}<br>`
+    + `<code>${esc(e.upgrade)}</code> <a href="#" class="link" data-act="copy-up" data-cmd="${esc(e.upgrade)}">${ic("copy")} 复制</a></div>`;
+}
+
 /**
  * 没找到的那张卡上也得能填路径。以前路径框只长在「选中之后的展开区」里，
  * 而没找到的引擎点了不许选中——报错里叫人「在设置里填绝对路径」，那个框却永远画不出来。
@@ -3130,6 +3192,38 @@ function engineBinRowHtml(e) {
     <input type="text" data-k="bin" placeholder="装在别处？填它的绝对路径" value="${esc((e.options || {}).bin || "")}" spellcheck="false" autocomplete="off">
     <button class="btn-plain" data-act="bin">按这个路径找</button>
   </div>`;
+}
+
+// 型号下拉的分组（detect 给的 modelInfo[].group，claude-code.js 的 modelList）。没分组的（Codex 账号那份清单）平铺
+const ENGINE_MODEL_GROUPS = [["main", "具体型号"], ["alias", "别名（升级后自动换新）"], ["other", "其他型号"], ["mine", "你配置里用过的"]];
+// 「手填别的型号…」那一项的值。型号名里不会有「…」，撞不上真型号
+const ENGINE_MODEL_CUSTOM = "…";
+
+/**
+ * 型号下拉。以前只有 <datalist>，而 Chromium 按框里已经填的字过滤候选——框里是 opus 时只列得出 opus，
+ * 具体型号一个都看不见（10-09「怎么列表没有特定模型」）。现在候选用 <select> 列全，
+ * 存盘照旧读那个文字框（data-k="model"），select 只往框里填，所以存盘、试连两条路都不用改。
+ * 属主多一项「手填别的型号…」，选它才露出文字框；成员只能在放行的里挑，第一项「跟属主钉的那个」存空串。
+ * 存过的型号不在候选里：属主那边落到「手填」并把框亮出来，成员那边照实挂一项「（属主没放行）」——不悄悄换成别的。
+ * @returns {{html:string, typed:boolean}} typed = 文字框要不要露出来
+ */
+function engineModelPick(e, owner, models, cur, pinned) {
+  if (!models.length) return { html: "", typed: true };
+  const info = owner && Array.isArray(e.modelInfo) && e.modelInfo.length ? e.modelInfo : models.map((id) => ({ id, name: "", group: "" }));
+  const listed = !!cur && info.some((m) => m.id === cur);
+  const opt = (m) => `<option value="${esc(m.id)}"${m.id === cur ? " selected" : ""}>${esc(m.name && m.name !== m.id ? m.name + " · " + m.id : m.id)}</option>`;
+  const known = new Set(ENGINE_MODEL_GROUPS.map(([g]) => g));
+  let html = !owner ? `<option value=""${cur ? "" : " selected"}>${pinned ? `跟属主钉的那个（${esc(pinned)}）` : "跟属主钉的那个"}</option>`
+    : !cur ? '<option value="" disabled selected>先选一个（必填）</option>' : "";
+  for (const [g, title] of ENGINE_MODEL_GROUPS) {
+    const ms = info.filter((m) => m.group === g);
+    if (ms.length) html += `<optgroup label="${esc(title)}">${ms.map(opt).join("")}</optgroup>`;
+  }
+  // 没分组的、以后服务端多给的新组，平铺在后面，别丢
+  html += info.filter((m) => !known.has(m.group)).map(opt).join("");
+  if (!owner && cur && !listed) html += `<option value="${esc(cur)}" selected>${esc(cur)}（属主没放行）</option>`;
+  if (owner) html += `<option value="${ENGINE_MODEL_CUSTOM}"${cur && !listed ? " selected" : ""}>手填别的型号…</option>`;
+  return { html: `<select data-role="model-pick">${html}</select>`, typed: owner && !!cur && !listed };
 }
 
 /** 选中的引擎才展开：可执行文件路径、模型、思考档 */
@@ -3146,9 +3240,11 @@ function engineExtraHtml(e, ctx = {}) {
   // 型号必须钉死（不再用 CLI 自己的默认型号）。成员只能在属主放行的那几个里挑，下拉也只列这几个
   const models = owner ? (Array.isArray(e.models) ? e.models : []) : allowed;
   const modelHint = !owner
-    ? (allowed.length ? "只能从属主放行的型号里选；留空跟属主钉的那个走。" : "属主还没放行型号，先找平台属主在这里填。")
+    ? (allowed.length ? "只能从属主放行的型号里选。" : "属主还没放行型号，先找平台属主在这里填。")
     : e.modelSource === "codex_account"
     ? "列的是这个 Codex 账号能用的模型，选一个钉住。"
+    : e.modelSource === "claude_catalog"
+    ? "本机 Claude Code 能用的型号，选一个钉住。"
     : e.modelSource === "claude_local"
     ? "别名（opus / sonnet…）指向最新一代，外加你配置里用过的；选一个钉住。"
     : e.modelSource === "codex_config"
@@ -3157,14 +3253,15 @@ function engineExtraHtml(e, ctx = {}) {
       ? "Codex 没有模型目录可查，手填一个模型名。"
       : "填一个它支持的模型名，必须填。";
   const placeholder = owner ? "必填" : (g.pinned || "从放行的型号里选");
+  const pick = engineModelPick(e, owner, models, String(o.model || ""), g.pinned || "");
   // 路径框只画给平台管理员：成员存的时候带上它（哪怕是空串）整单都会 403，连模型和思考档也存不下
   return `<div class="eng-x" onclick="event.stopPropagation()">
     ${owner ? `<label>可执行文件路径<span style="color:var(--owb-text-3)">（留空自动查找，找不到时再填绝对路径）</span>
       <input type="text" data-k="bin" placeholder="${esc(e.path || e.id)}" value="${esc(o.bin || "")}"></label>` : ""}
     <label>模型<span style="color:var(--owb-text-3)">（${esc(modelHint)}）</span>
-      <input type="text" data-k="model" list="${listId}" placeholder="${esc(placeholder)}" value="${esc(o.model || "")}" autocomplete="off">
+      ${pick.html}
+      <input type="text" data-k="model" list="${listId}" placeholder="${esc(placeholder)}" value="${esc(o.model || "")}" autocomplete="off"${pick.typed ? "" : " hidden"}>
       <datalist id="${listId}">${models.map((m) => `<option value="${esc(m)}">`).join("")}</datalist></label>
-    ${!owner && allowed.length ? `<div class="eng-c">放行的型号：${esc(allowed.join(" / "))}</div>` : ""}
     ${owner && ctx.multi ? `<label>成员可选的型号<span style="color:var(--owb-text-3)">（逗号隔开；上面钉的那个总能选。成员只能在这些里挑）</span>
       <input type="text" data-k="models" placeholder="不填 = 成员只能用上面钉的那个" value="${esc(allowed.filter((m) => m !== g.pinned).join(", "))}" autocomplete="off"></label>` : ""}
     ${owner && e.id === "codex" ? `<label class="eng-chk"><input type="checkbox" data-k="network"${g.network ? " checked" : ""}> <span>引擎里的命令能联网</span><span style="color:var(--owb-text-3)">（默认关，只管它在沙箱里跑的命令）</span></label>` : ""}
@@ -3192,6 +3289,14 @@ function bindEngineExtra(card, id, box) {
         : i.value.trim();
     });
     return o;
+  };
+  // 下拉只往文字框里填；选「手填别的型号…」才把框亮出来让人打字
+  const pick = x.querySelector('[data-role="model-pick"]');
+  const typed = x.querySelector('input[data-k="model"]');
+  if (pick && typed) pick.onchange = () => {
+    const own = pick.value === ENGINE_MODEL_CUSTOM;
+    typed.hidden = !own;
+    if (own) { typed.focus(); typed.select(); } else typed.value = pick.value;
   };
   x.querySelector('[data-act="save"]').onclick = async () => {
     const m = x.querySelector('[data-role="xmsg"]');
@@ -3230,7 +3335,7 @@ async function testEngineConnect(card, id) {
   btn.disabled = false;
   r = r || {};
   const v = {
-    ok: !!r.ok, ms: r.ms || Date.now() - t0, reply: r.reply || "", model: r.model || "",
+    ok: !!r.ok, ms: r.ms || Date.now() - t0, reply: r.reply || "", model: r.model || "", asked: r.asked || "",
     path: r.path || "", version: r.version || "", why: r.why || r.error || "", hint: r.hint || "",
   };
   engTested.set(id, v);

@@ -3268,6 +3268,44 @@
       (m) => `When stopped, ${m[1]} video job(s) had been accepted upstream. Task IDs: ${zhList(m[2])}. This provider can't cancel them and still charges; they'll go into this chat's folder when ready`],
   );
 
+  // ---------- 设置页引擎卡：型号下拉、装了几份、升级提示、试连结论（2026-10-09） ----------
+  // 下拉的分组标题是 <optgroup label>，所以 ATTRS 里加了 label；整句里夹版本号和型号名的走下面的正则
+  for (const [zh, en] of Object.entries({
+    "本机 Claude Code 能用的型号，选一个钉住。": "Models your local Claude Code can use. Pin one.",
+    "只能从属主放行的型号里选。": "Pick from the owner's allowed models.",
+    "具体型号": "Specific models",
+    "别名（升级后自动换新）": "Aliases (point to newer models after updates)",
+    "其他型号": "Other models",
+    "你配置里用过的": "From your settings",
+    "先选一个（必填）": "Pick one (required)",
+    "手填别的型号…": "Type another model…",
+    "跟属主钉的那个": "Follow the owner's pinned model",
+    // 试连结论拆成一句一个节点，句与句之间的空格放在译文里（中文不要空格）
+    "实际跑的模型是": "The model that ran was",
+    "你填的是": "You asked for",
+    "，实际跑的是": ", and it ran",
+    "这一趟没花 API 额度，走的是你本机的订阅。": " This run spent no API credit; it used your local subscription.",
+    "想用它的话，点这张卡就切过去了。": "To use it, click this card.",
+    "命令已复制，粘到「终端」里回车就行": "Command copied. Paste it into Terminal and press Return.",
+    // 「（补全的 PATH里找到的：<路径>）」拆成三个节点，收尾那半个括号单独一个
+    "（用的是设置里填的路径：": "(Using the path from Settings: ",
+    "）": ")",
+  })) if (!(zh in DICT.en)) DICT.en[zh] = en;
+  const copyNote = (s) => (s === "版本读不出" ? "version unreadable" : s === "跑不起来" ? "won't run" : s);
+  // 「Opus 5.5、Fable 5.1 等 6 个型号」：点了名的两个 + 剩下几个
+  const upNames = (s, n) => { const named = String(s).split("、"); return named.join(", ") + (n && +n > named.length ? ` and ${+n - named.length} more` : ""); };
+  PATTERNS.en.push(
+    [/^真跑通了，用了 ([\d.]+) 秒，它回了「([\s\S]*)」。$/, "Ran for real in $1 s; it replied “$2”. "],
+    [/^本机装了 (\d+) 份，用的是(版本最新的)?这份(?:（(.+?)）)?：$/,
+      (m) => `${m[1]} copies are installed here; using ${m[2] ? "the newest" : "this"} one${m[3] ? " (" + m[3] + ")" : ""}: `],
+    [/^另一份(?:（(.+?)）)?：$/, (m) => `Another copy${m[1] ? " (" + copyNote(m[1]) + ")" : ""}: `],
+    [/^（(补全的 PATH|登录 shell)里找到的：$/, (m) => `(Found via ${m[1] === "登录 shell" ? "your login shell" : "the extended PATH"}: `],
+    [/^升到 (\S+) 起就能用 (.+?)(?: 等 (\d+) 个型号)?：$/, (m) => `Update to ${m[1]} or later to use ${upNames(m[2], m[3])}:`],
+    [/^升级后就能用 (.+?)(?: 等 (\d+) 个型号)?：$/, (m) => `Update to use ${upNames(m[1], m[2])}:`],
+    [/^跟属主钉的那个（(.+)）$/, "Follow the owner's pin ($1)"],
+    [/^(.+)（属主没放行）$/, "$1 (not allowed by the owner)"],
+  );
+
   // 界面上开头那些表情（❌ ⚠️ ✅ 🪪 ⚙️ 🌐 …）正在一处处换成 SVG 图标。图标是 <svg>，
   // 翻译器不碰 SVG，所以换完之后 DOM 里的文本节点变成了光秃秃的「个人资料」，
   // 而词条当年是按「🪪 个人资料」收的——对不上就漏翻，页面会中英混着显示。
@@ -3333,11 +3371,18 @@
     return s;
   }
   // 保留首尾空白（模板里 "<b>x</b> 保存" 这种文本节点带前导空格）
+  // 整句包在全角括号里的说明（「（列的是这个 Codex 账号能用的模型，选一个钉住。）」）：词典收的是括号里那句，
+  // 整句查不到就剥了括号再查一次，译文配半角括号。以前设置页引擎卡上那几句提示在英文界面一直是中文，就是这么漏的
   function tr(text, lang = getLang()) {
     if (text == null) return text;
     const m = /^(\s*)([\s\S]*?)(\s*)$/.exec(String(text));
     if (!m[2]) return text;
-    const out = lookup(m[2], lang);
+    let out = lookup(m[2], lang);
+    if (out == null) {
+      const p = /^（([\s\S]+)）$/.exec(m[2]);
+      const inner = p && lookup(p[1], lang);
+      if (inner != null) out = "(" + inner + ")";
+    }
     return out == null ? text : m[1] + out + m[3];
   }
 
@@ -3345,7 +3390,8 @@
   const SKIP_TAGS = new Set(["SCRIPT", "STYLE", "PRE", "CODE", "KBD", "SVG", "NOSCRIPT"]);
   // 输入框：placeholder 是界面要翻，里面的字是用户打的不能碰——只翻属性、不进子树
   const ATTR_ONLY_TAGS = new Set(["TEXTAREA", "INPUT"]);
-  const ATTRS = ["placeholder", "title", "aria-label", "alt"];
+  // label：<optgroup label> 的分组标题（设置页型号下拉）
+  const ATTRS = ["placeholder", "title", "aria-label", "alt", "label"];
   const tag = (el) => String(el.nodeName).toUpperCase();
   function skipEl(el) {
     if (!el || el.nodeType !== 1) return false;

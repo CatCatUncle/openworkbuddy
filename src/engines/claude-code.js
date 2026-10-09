@@ -30,7 +30,7 @@ const path = require("path");
 const { execFile } = require("../platform/win"); // 不直接用 child_process 的：Windows 上 .cmd 垫片起不来、还闪黑窗
 const { runJsonl, probeVersion, probeOption, probeHelp, enginePath } = require("./jsonl");
 const thinking = require("../core/model/thinking");
-const { resolveBin } = require("../platform/which");
+const { resolveNewest, cliVersion, cmpCliVersion } = require("../platform/which");
 const { buildChildEnv } = require("../platform/child-env");
 const gate = require("./gate");
 
@@ -89,33 +89,137 @@ async function probeThinking(bin) {
   return p;
 }
 
+const versionOf = (b) => probeVersion(b, ["--version"]);
+
 /**
- * 设置页「模型」栏的候选，全从本机读，不写死型号全名——写死的那张表每出一代新模型就过期一次。
- *   · 别名（opus / sonnet / fable…）永远指向当代最新，从 `claude --help` 里 --model 那段的示例抠出来，
- *     抠不到就用三个长期存在的兜底；
- *   · 再加上用户 ~/.claude/settings.json 里真写过的 model 和 modelSettings 的键。
- * Claude Code 没有列账号可用型号的命令，所以这里只给提示；用户手填什么照发什么。
+ * claude 用的配置目录：子进程环境里有 CLAUDE_CONFIG_DIR（引擎设置的 env 里写了，或属主放进了透传清单）就是它，
+ * 否则 ~/.claude。跟子进程自己找的是同一处，读到的型号表、settings.json 才是它真正在用的那个账号的。
+ */
+function claudeDir(env) {
+  const d = String(buildChildEnv(env && typeof env === "object" ? env : {}).CLAUDE_CONFIG_DIR || "").trim();
+  return d ? path.resolve(d) : path.join(os.homedir(), ".claude");
+}
+
+/**
+ * Claude Code 自己的型号表。它启动时从官方拉一份存在配置目录 cache/model-catalog/ 下（surface 为 "cc" 的那份），
+ * 交互界面里 /model 列的就是它：这个账号能用哪些具体型号、每个要 CLI 哪一版起，都写在里面。
+ * 比从 --help 抠别名准，出新型号也不用改这里。几份里挑拉取时间最新的；读不到、格式对不上就返回 null，
+ * 退回别名 + settings.json 那套。
+ * @returns {null | {id:string, name:string, section:"main"|"other", min:string}[]}
+ */
+const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:@\-\[\]]{0,80}$/;
+function catalogModels(dir) {
+  const root = path.join(dir, "cache", "model-catalog");
+  let names = [];
+  try { names = fs.readdirSync(root).filter((n) => n.endsWith(".json")); } catch { return null; }
+  let best = null;
+  let bestAt = -1;
+  for (const n of names) {
+    let j;
+    try {
+      const f = path.join(root, n);
+      if (fs.statSync(f).size > 2 * 1024 * 1024) continue;
+      j = JSON.parse(fs.readFileSync(f, "utf8"));
+    } catch { continue; }
+    const cat = j && j.catalog;
+    if (!cat || cat.surface !== "cc" || !cat.config || !Array.isArray(cat.config.models)) continue;
+    const at = Number(j.fetchedAt) || Date.parse(j.fetchedAt) || 0;
+    if (at > bestAt) { best = cat.config.models; bestAt = at; }
+  }
+  if (!best) return null;
+  const out = [];
+  const seen = new Set();
+  for (const m of best) {
+    const id = m && typeof m.id === "string" ? m.id.trim() : "";
+    if (!MODEL_ID.test(id) || seen.has(id)) continue;
+    seen.add(id);
+    const min = typeof m.min_claude_code_version === "string" && cliVersion(m.min_claude_code_version) ? m.min_claude_code_version.trim().slice(0, 40) : "";
+    out.push({ id, name: typeof m.name === "string" ? m.name.trim().slice(0, 40) : "", section: m.section === "main" ? "main" : "other", min });
+  }
+  return out.length ? out : null;
+}
+
+/**
+ * 别名（opus / sonnet / fable…）：从 `claude --help` 里 --model 那段的示例抠，抠不到就用三个长期存在的兜底。
+ * 要起一次进程，按 bin + 版本缓存（升级之后版本号变了，自然重探）
  */
 const ALIAS_FALLBACK = ["opus", "sonnet", "haiku"];
-const modelLists = new Map();
-function localModels(bin) {
-  if (modelLists.has(bin)) return modelLists.get(bin);
+const helpAliases = new Map();
+function aliasesOf(bin, version) {
+  const key = bin + "\n" + version;
+  if (helpAliases.has(key)) return helpAliases.get(key);
   const p = new Promise((resolve) => {
     // PATH 补全跟正式跑同一份：npm 装的 claude 开头是 `#!/usr/bin/env node`，双击启动时那份 PATH 里找不到 node
     execFile(bin, ["--help"], { env: buildChildEnv({ PATH: enginePath() }), timeout: 10000 }, (_err, stdout) => {
       const seg = (/--model <model>([\s\S]*?)(?:\n\s*-{1,2}[a-z]|$)/.exec(String(stdout || "")) || [])[1] || "";
-      const aliases = [...seg.matchAll(/'([a-z][a-z0-9.\-\[\]]*)'/g)].map((m) => m[1]).filter((a) => !/^claude-/.test(a));
-      const set = [...aliases, ...ALIAS_FALLBACK];
-      try {
-        const cfg = JSON.parse(fs.readFileSync(path.join(os.homedir(), ".claude", "settings.json"), "utf8"));
-        if (typeof cfg.model === "string") set.push(cfg.model);
-        if (cfg.modelSettings && typeof cfg.modelSettings === "object") set.push(...Object.keys(cfg.modelSettings));
-      } catch {}
-      resolve([...new Set(set.map((m) => String(m).trim()).filter(Boolean))]);
+      const found = [...seg.matchAll(/'([a-z][a-z0-9.\-\[\]]*)'/g)].map((m) => m[1]).filter((a) => !/^claude-/.test(a));
+      resolve([...new Set([...found, ...ALIAS_FALLBACK])]);
     });
   });
-  modelLists.set(bin, p);
+  helpAliases.set(key, p);
   return p;
+}
+
+/** 用户 settings.json 里真写过的 model 和 modelSettings 的键。每次现读：用户改了文件，设置页刷新就该看见 */
+function settingsModels(dir) {
+  const out = [];
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(dir, "settings.json"), "utf8"));
+    if (typeof cfg.model === "string") out.push(cfg.model);
+    if (cfg.modelSettings && typeof cfg.modelSettings === "object") out.push(...Object.keys(cfg.modelSettings));
+  } catch {}
+  return [...new Set(out.map((m) => String(m).trim()).filter(Boolean))];
+}
+
+/**
+ * 设置页「模型」下拉的候选，分四组，前端照组画：
+ *   main  型号表里的主力型号（具体型号全名，选了就固定是它）
+ *   alias 别名（跟着 Claude Code 的版本走，升级后自动换新）
+ *   other 型号表里收在「更多」里的
+ *   mine  settings.json 里写过、上面都没有的
+ * 型号表说要更新版 CLI 的，这份 claude 跑不了：不进下拉（选了一跑就报错），单列在 needsUpgrade 里让设置页提示升级。
+ * 版本号读不出来时不拦——判断不了就不替人下结论。
+ * @param {{aliases?:string[], mine?:string[]}} local
+ * @param {ReturnType<typeof catalogModels>} catalog
+ * @param {string} version  `claude --version` 的原文
+ */
+function modelList(local, catalog, version) {
+  const seen = new Set();
+  const info = [];
+  const needsUpgrade = [];
+  const usable = [];
+  const known = !!cliVersion(version);
+  for (const m of catalog || []) {
+    if (known && m.min && cmpCliVersion(version, m.min) < 0) { needsUpgrade.push({ id: m.id, name: m.name, min: m.min }); seen.add(m.id); }
+    else usable.push(m);
+  }
+  const add = (id, name, group) => {
+    const k = String(id || "").trim();
+    if (!k || seen.has(k)) return;
+    seen.add(k);
+    info.push({ id: k, name: name || "", group });
+  };
+  for (const m of usable) if (m.section === "main") add(m.id, m.name, "main");
+  for (const a of (local && local.aliases) || []) add(a, "", "alias");
+  for (const m of usable) if (m.section !== "main") add(m.id, m.name, "other");
+  for (const a of (local && local.mine) || []) add(a, "", "mine");
+  return { models: info.map((m) => m.id), info, needsUpgrade, source: catalog ? "claude_catalog" : info.length ? "claude_local" : "manual" };
+}
+
+/**
+ * 这份 claude 怎么升级，按它实际装在哪儿判断，给一条能直接粘进终端的命令：
+ * npm 全局装的（mac 上软链进 node_modules，Windows 上 .cmd 垫片旁边就是 node_modules）走 npm，
+ * Homebrew cask 走 brew，其余（官方安装脚本装的）用它自带的 `claude update`。
+ */
+function upgradeCommand(bin) {
+  const b = String(bin || "claude");
+  let real = b;
+  try { real = fs.realpathSync(b); } catch {}
+  let npmShim = false;
+  try { npmShim = fs.statSync(path.join(path.dirname(b), "node_modules", "@anthropic-ai", "claude-code")).isDirectory(); } catch {}
+  if (npmShim || /[\\/]node_modules[\\/]@anthropic-ai[\\/]claude-code[\\/]/.test(real)) return "npm i -g @anthropic-ai/claude-code@latest";
+  if (/[\\/]Caskroom[\\/]claude-code[^\\/]*[\\/]/.test(real)) return "brew upgrade --cask claude-code";
+  return (/\s/.test(b) ? `"${b}"` : b) + " update";
 }
 
 /**
@@ -154,18 +258,25 @@ function pickAddDirs(addDirs, cwd) {
  * 结果是「用户填了绝对路径反而永远显示没装」。
  */
 async function detect(opts) {
-  const explicit = typeof opts === "string" ? opts : (opts && opts.bin) || "";
-  const found = await resolveBin("claude", explicit);
+  const o = typeof opts === "string" ? { bin: opts } : opts || {};
+  const explicit = o.bin || "";
+  // 本机装了不止一份时挑版本最新的那份（见 which.resolveNewest）。fresh：设置页这一下要看见刚升级完的样子
+  const found = await resolveNewest("claude", explicit, versionOf, { fresh: true });
   if (!found.bin) return { id: ID, installed: false, path: explicit || "claude", version: "", how: "", error: found.why };
-  const r = await probeVersion(found.bin, ["--version"]);
+  const r = found.probe || (await versionOf(found.bin));
   // 装上了才去探选项：没装的话探了也只是白花一个 spawn
   const thinkingFlag = r.installed ? await probeThinking(found.bin) : false;
-  const models = r.installed ? await localModels(found.bin) : [];
+  const dir = claudeDir(o.env);
+  const list = r.installed
+    ? modelList({ aliases: await aliasesOf(found.bin, r.version), mine: settingsModels(dir) }, catalogModels(dir), r.version)
+    : { models: [], info: [], needsUpgrade: [], source: "manual" };
   return {
     id: ID, installed: r.installed, path: found.bin, version: r.version, how: found.how,
-    models, modelSource: models.length ? "claude_local" : "manual",
+    others: found.others || [],
+    models: list.models, modelInfo: list.info, modelSource: list.source,
+    needsUpgrade: list.needsUpgrade, upgrade: list.needsUpgrade.length ? upgradeCommand(found.bin) : "",
     caps: { thinkingFlag },
-    error: r.installed ? "" : "找到了 " + found.bin + "，但 --version 跑不通（装坏了？）",
+    error: r.installed ? "" : "找到了 " + found.bin + "，但 --version 跑不通",
   };
 }
 
@@ -183,7 +294,8 @@ function ccUsage(u) {
 }
 
 /**
- * @returns {Promise<{finalText:string, usage:object, stopped:string|null, sessionId:string|null}>}
+ * @returns {Promise<{finalText:string, usage:object, stopped:string|null, sessionId:string|null, model:string}>}
+ *   model：这趟真跑的型号全名（填的是别名时，这里是它落到的那个），没报上来是空串
  */
 async function run({
   prompt, cwd, emit = () => {}, deadline, stopSignal,
@@ -201,7 +313,7 @@ async function run({
   if (!pinned) throw new Error(`先在 ${gate.WHERE} 里给本机 Claude Code 指定型号，再开跑。`);
   // 起进程也走同一套解析：detect 认出来的是绝对路径，run 却还 spawn 裸名字的话，
   // 双击启动的桌面版会「设置页显示已装、一跑就 ENOENT」
-  const found = await resolveBin("claude", bin);
+  const found = await resolveNewest("claude", bin, versionOf);
   if (!found.bin) throw new Error(found.why + "。装一个（npm i -g @anthropic-ai/claude-code），或在设置里填 claude 的绝对路径。");
   const exe = found.bin;
   // claude 自己的启动就是慢的：本机实测（2026-09-10，各跑 3 次）从 spawn 到它吐出第一条
@@ -264,6 +376,10 @@ async function run({
   let sessionId = null;
   let stopped = null;
   let resultSeen = false;
+  // 真跑的是哪个型号。assistant 消息里带的是 API 回报的，以它为准；init 里那个是 CLI 自己解析的，兜底用。
+  // 「<synthetic>」这种尖括号的是 CLI 自己补的假消息，不算
+  let ranModel = "";
+  let initModel = "";
   // result 里报的错。未登录、限流、API 报错，claude 是写在这里的：stderr 空着、退出码 1。
   // 不捞的话 explain 只看得见空 stderr，用户拿到的是「退出码 1 且没有任何输出」
   let errText = "";
@@ -284,10 +400,13 @@ async function run({
     if (m.session_id && !sessionId) sessionId = m.session_id;
 
     if (m.type === "system" && m.subtype === "init") {
+      if (typeof m.model === "string") initModel = m.model.trim();
       emit({ type: "status", text: `本机 Claude Code 已启动（模型 ${m.model || "默认"}，${(m.tools || []).length} 个工具），不消耗 API 额度`, model: m.model || "", depth: 0 });
       return;
     }
     if (m.type === "assistant" && m.message) {
+      const said = typeof m.message.model === "string" ? m.message.model.trim() : "";
+      if (said && !said.startsWith("<")) ranModel = said;
       step += 1;
       emit({ type: "step_start", step, depth: 0 });
       const u = m.message.usage || {};
@@ -349,13 +468,14 @@ async function run({
   }
   if (!(usage.calls > 0)) usage.calls = perCall.size;
 
-  if (r.killed === "stopped") return { finalText, usage, stopped: "已手动停止", sessionId };
-  if (r.killed === "deadline") return { finalText, usage, stopped: "已达最大运行时间", sessionId };
+  const ran = ranModel || (initModel.startsWith("<") ? "" : initModel);
+  if (r.killed === "stopped") return { finalText, usage, stopped: "已手动停止", sessionId, model: ran };
+  if (r.killed === "deadline") return { finalText, usage, stopped: "已达最大运行时间", sessionId, model: ran };
   if (!resultSeen || r.code !== 0 || errText) {
-    if (finalText && r.code === 0 && !errText) return { finalText, usage, stopped, sessionId }; // 有正文、干净退出，只是没吐 result
+    if (finalText && r.code === 0 && !errText) return { finalText, usage, stopped, sessionId, model: ran }; // 有正文、干净退出，只是没吐 result
     throw new Error(explain([r.stderr, errText].filter(Boolean).join("\n"), r.code));
   }
-  return { finalText, usage, stopped, sessionId };
+  return { finalText, usage, stopped, sessionId, model: ran };
 }
 
 module.exports = {
@@ -368,8 +488,9 @@ module.exports = {
   // 连不上时前端要给一句「接下来敲什么」。写在引擎自己身上，注册表那边就不用按 id 打补丁了
   login: "在终端里跑一次 claude 完成登录，再回来点一次",
   supportsResume: true,
-  // 真正的候选由 detect() 从本机 claude 和 ~/.claude/settings.json 读；这里只留永远有效的别名兜底
+  // 真正的候选由 detect() 从本机 claude 的型号表、--help 和 settings.json 读；这里只留永远有效的别名兜底
   models: ALIAS_FALLBACK,
   thinkingLabel: "扩展思考（claude 只有开/关，低中高都算开）",
   detect, run, explain, pickAddDirs,
+  _internals: { catalogModels, modelList, upgradeCommand, settingsModels, claudeDir },
 };

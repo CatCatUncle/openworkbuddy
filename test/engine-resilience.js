@@ -34,6 +34,8 @@
  *      思考摘要进思考提示、进度清单画成打勾的表；本机 CLI 好一阵不出声，隔一段说一声还在跑，来了新事件重新算
  *   ⑮ 收尾照实核一遍交付：说做好了的文件不在 / 是空的、说「如图」却没出新图，运行页上提一句（不打回、不重跑）；
  *      用户这一条带了图、半路停下的、真交了的，都不说
+ *   ⑯ 型号：本机装了好几份 CLI 时用版本最新的那份，其余几份照实列；Claude Code 自己的型号表（配置目录 cache/model-catalog/）
+ *      按这份 CLI 的版本拦：跑不了的不进下拉、单列并附升级命令，版本读不出不拦；试一下报真跑的型号（填别名时是它落到的全名）
  *
  * 引擎全是本地假的，不出网。
  *   node test/engine-resilience.js
@@ -1563,6 +1565,276 @@ async function partDeliveryNotes() {
   }
 }
 
+async function partModels() {
+  console.log("\n— ⑯ 型号：本机装了几份用最新的、Claude Code 自己的型号表按版本拦、试一下报真跑的型号 —");
+  const which = require(mod("which"));
+  const claude = require(mod("claude-code"));
+  const engines = require(mod("engines"));
+  const { probeVersion } = require(mod("jsonl"));
+  const I = claude._internals;
+  const posix = process.platform !== "win32"; // 假 CLI 靠 #! 起、软链要权限：Windows 上只验不起进程的那几条
+
+  // 版本号怎么比
+  const C = which.cmpCliVersion;
+  const cmp = [
+    ["2.1.295 (Claude Code)", "2.1.263 (Claude Code)", 1],
+    ["codex-cli 0.162.0", "0.160.1", 1],
+    ["2.1.10", "2.1.9", 1], // 按数比，不按字比
+    ["1.0.0", "1.0.0-beta", 1],
+    ["1.0.0-beta.10", "1.0.0-beta.9", 1],
+    ["1.0.0-beta.2", "1.0.0-beta", 1],
+    ["1.0.0-1", "1.0.0-alpha", -1], // 纯数字那节排在字母那节前面
+    ["1.0.0-rc.1", "1.0.0-beta.5", 1],
+    ["2.1.295", "2.1.295 (Claude Code)", 0],
+    ["读不出", "1.0.0", 0],
+  ];
+  const badCmp = cmp.filter(([a, b, want]) => C(a, b) !== want || C(b, a) !== -want).map(([a, b, want]) => [a, b, want, C(a, b)]);
+  ok(badCmp.length === 0, "版本号按 x.y.z 逐段比数，正式版比同号预发布新，读不出的两边都给 0", badCmp);
+
+  // 几份里挑哪份：不起进程，问版本的办法换成查表
+  const T = {
+    "/a/claude": { installed: true, version: "2.1.263 (Claude Code)" },
+    "/b/claude": { installed: true, version: "2.1.295 (Claude Code)" },
+    "/c/claude": { installed: false, version: "" },
+    "/d/claude": { installed: true, version: "Claude Code (dev build)" },
+  };
+  const look = async (b) => { if (b === "/e/claude") throw new Error("问版本时炸了"); return T[b]; };
+  {
+    const r = await which.pickNewest(["/a/claude", "/c/claude", "/d/claude", "/b/claude", "/e/claude"], look);
+    ok(r.pick.bin === "/b/claude", "★几份里挑版本最新的★ 不是搜索顺序里的第一份", r);
+    ok(same(r.others.map((c) => c.bin), ["/a/claude", "/c/claude", "/d/claude", "/e/claude"]), "其余几份按搜索顺序如实列出来", r.others);
+    ok(r.others[1].installed === false && r.others[3].installed === false, "跑不起来的、问的时候抛错的都记成没装好", r.others);
+  }
+  ok((await which.pickNewest(["/d/claude", "/a/claude"], look)).pick.bin === "/a/claude", "版本读不出的排在读得出的后面，哪怕它在前头");
+  ok((await which.pickNewest(["/c/claude", "/d/claude"], look)).pick.bin === "/d/claude", "都读不出版本：用跑得起来的第一份");
+  {
+    const r = await which.pickNewest(["/c/claude", "/e/claude"], look);
+    ok(r.pick.bin === "/c/claude" && r.pick.installed === false && same(r.others.map((c) => c.bin), ["/e/claude"]), "一份都跑不起来：退回第一份，让检测如实报它自己的错", r);
+  }
+  {
+    const r = await which.pickNewest(["/y", "/x"], async () => ({ installed: true, version: "1.0.0" }));
+    ok(r.pick.bin === "/y", "版本一样：按搜索顺序用前面那份");
+  }
+
+  if (posix) {
+    // 真文件、真 PATH：起个本机绝不会有的名字，搜索路径里只有这里放的几份
+    const W = path.join(home, "几份");
+    const name = "owbfakecli" + process.pid;
+    const D = (d) => path.join(W, d);
+    const mk = (d, body) => {
+      fs.mkdirSync(D(d), { recursive: true });
+      const f = path.join(D(d), name);
+      fs.writeFileSync(f, "#!/bin/sh\n" + body + "\n");
+      fs.chmodSync(f, 0o755);
+      return f;
+    };
+    const old = mk("旧", "echo '2.1.263 (Claude Code)'");
+    const neu = mk("新", "echo '2.1.295 (Claude Code)'");
+    const broken = mk("坏", "echo 'dyld: Library not loaded' >&2\nexit 3");
+    const odd = mk("怪", "echo 'Claude Code (dev build)'");
+    fs.mkdirSync(D("链"));
+    fs.symlinkSync(old, path.join(D("链"), name));
+    const asked = [];
+    const pv = (b) => { asked.push(b); return probeVersion(b, ["--version"]); };
+    const savedPath = process.env.PATH;
+    try {
+      process.env.PATH = [D("旧"), D("链"), D("坏"), D("怪"), D("旧"), D("新"), savedPath].join(path.delimiter);
+      const all = which.findAllIn(which.searchDirs(), name);
+      ok(same(all, [old, broken, odd, neu]), "每个目录里的都列出来、按搜索顺序；软链过去的、PATH 里写了两遍的只算一份", all);
+
+      which.forget();
+      const r = await which.resolveNewest(name, "", pv, { fresh: true });
+      ok(r.bin === neu && r.how === "PATH" && r.probe.installed && /2\.1\.295/.test(r.probe.version), "★没填路径：用版本最新的那份★ 哪怕它排在 PATH 最后", r);
+      const by = Object.fromEntries(r.others.map((c) => [c.bin, c]));
+      ok(r.others.length === 3 && /2\.1\.263/.test(by[old].version) && by[broken].installed === false && by[odd].installed && !which.cliVersion(by[odd].version),
+        "其余几份照实报：旧版、跑不起来的、版本读不出的", r.others);
+      ok(same([...asked].sort(), [old, broken, odd, neu].sort()), "每一份都问了一遍 --version", asked);
+
+      asked.length = 0;
+      ok((await which.resolveNewest(name, "", pv)).bin === neu && asked.length === 0, "真跑任务时读缓存，不为这个再问一遍", asked);
+      fs.writeFileSync(old, "#!/bin/sh\necho '2.1.300 (Claude Code)'\n"); // 旧的那份刚被升级
+      ok((await which.resolveNewest(name, "", pv)).bin === neu && asked.length === 0, "缓存期内照旧（十分钟作废）");
+      const again = await which.resolveNewest(name, "", pv, { fresh: true });
+      ok(again.bin === old && asked.length === 4, "★检测时 fresh：几份重新问一遍★ 刚升级完的那份当场换上", { again, asked });
+
+      fs.rmSync(old); // 缓存里记着的那份没了（软链也跟着断了）
+      asked.length = 0;
+      const gone = await which.resolveNewest(name, "", pv);
+      ok(gone.bin === neu && asked.length === 3, "缓存里那份被删了：不认缓存，剩下几份重新挑", { gone, asked });
+
+      const e = await which.resolveNewest(name, broken, pv);
+      ok(e.bin === broken && e.how === "设置里填的" && same(e.others, []) && !e.probe, "★填了路径只认它★ 别处有更新的也不换、不列", e);
+
+      process.env.PATH = [D("新"), savedPath].join(path.delimiter);
+      which.forget();
+      asked.length = 0;
+      const one = await which.resolveNewest(name, "", pv, { fresh: true });
+      ok(one.bin === neu && same(one.others, []) && asked.length === 0, "只有一份：不额外问版本（检测那边自己会问），也没有别的几份", one);
+    } finally {
+      process.env.PATH = savedPath;
+      which.forget();
+    }
+  }
+
+  // Claude Code 自己的型号表（配置目录 cache/model-catalog/ 下）
+  const cdir = path.join(home, "cc配置");
+  const catDir = path.join(cdir, "cache", "model-catalog");
+  fs.mkdirSync(catDir, { recursive: true });
+  const cat = (models, fetchedAt, surface = "cc") => JSON.stringify({ fetchedAt, catalog: { surface, config: { models } } });
+  fs.writeFileSync(path.join(catDir, "早.json"), cat([{ id: "claude-old-1", name: "Old", section: "main" }], 1000));
+  fs.writeFileSync(path.join(catDir, "晚.json"), cat([
+    { id: "claude-opus-5-5", name: "Opus 5.5", section: "main", min_claude_code_version: "2.1.280" },
+    { id: "claude-sonnet-5-5", name: "Sonnet 5.5", section: "main" },
+    { id: "claude-opus-5-5", name: "重复的" },
+    { id: "rm -rf ~", name: "不像型号名" },
+    { id: 42 },
+    null,
+    { id: "claude-haiku-4-5", name: "Haiku 4.5", section: "more", min_claude_code_version: "最新版" },
+  ], "2026-10-09T08:00:00.000Z"));
+  fs.writeFileSync(path.join(catDir, "别家.json"), cat([{ id: "claude-api-only", section: "main" }], "2027-01-01T00:00:00.000Z", "api"));
+  fs.writeFileSync(path.join(catDir, "坏.json"), "{不是 JSON");
+  fs.writeFileSync(path.join(catDir, "说明.txt"), cat([{ id: "claude-txt", section: "main" }], "2028-01-01T00:00:00.000Z"));
+  const got = I.catalogModels(cdir);
+  ok(same(got, [
+    { id: "claude-opus-5-5", name: "Opus 5.5", section: "main", min: "2.1.280" },
+    { id: "claude-sonnet-5-5", name: "Sonnet 5.5", section: "main", min: "" },
+    { id: "claude-haiku-4-5", name: "Haiku 4.5", section: "other", min: "" },
+  ]), "★型号表：几份里用拉取时间最新的★ 别的 surface、坏 JSON、不是 .json 的不认；重复的、id 不像型号名的跳过；要求的版本读不出就不拦", got);
+  ok(I.catalogModels(path.join(home, "没有这个目录")) === null, "没有型号表：null，退回别名那套");
+  const onlyApi = path.join(home, "只有别家", "cache", "model-catalog");
+  fs.mkdirSync(onlyApi, { recursive: true });
+  fs.writeFileSync(path.join(onlyApi, "a.json"), cat([{ id: "claude-api-only", section: "main" }], 1, "api"));
+  fs.writeFileSync(path.join(onlyApi, "b.json"), cat([{ id: "带 空格" }], 2, "cc"));
+  ok(I.catalogModels(path.join(home, "只有别家")) === null, "只有别的 surface、或一个像样的型号都没有：也是 null");
+
+  fs.writeFileSync(path.join(cdir, "settings.json"), JSON.stringify({ model: "opus[1m]", modelSettings: { "claude-x": {}, " ": {}, "opus[1m]": {} } }));
+  ok(same(I.settingsModels(cdir), ["opus[1m]", "claude-x"]), "settings.json：model 和 modelSettings 的键，去空、去重", I.settingsModels(cdir));
+  ok(same(I.settingsModels(path.join(home, "没有这个目录")), []), "没有 settings.json：空的，不报错");
+
+  ok(I.claudeDir({ CLAUDE_CONFIG_DIR: cdir }) === cdir, "子进程环境里给了 CLAUDE_CONFIG_DIR：读它那份（跟 claude 自己找的同一处）");
+  ok(I.claudeDir({ CLAUDE_CONFIG_DIR: "相对/目录" }) === path.resolve("相对/目录"), "相对路径解析成绝对路径");
+  ok(I.claudeDir({ CLAUDE_CONFIG_DIR: "  " }) === path.join(os.homedir(), ".claude") && I.claudeDir(undefined) === path.join(os.homedir(), ".claude"),
+    "没给、或是空白：~/.claude");
+
+  // 下拉里放哪些、按什么顺序；太旧的 claude 跑不了的单列
+  const L = { aliases: ["opus", "sonnet", "fable", "opus"], mine: ["claude-opus-5-5", "sonnet", "my-model[1m]"] };
+  const tooOld = I.modelList(L, got, "2.1.263 (Claude Code)");
+  ok(same(tooOld.models, ["claude-sonnet-5-5", "opus", "sonnet", "fable", "claude-haiku-4-5", "my-model[1m]"]),
+    "★这份 claude 太旧：要更新版的型号不进下拉★ 顺序是 主力 → 别名 → 更多 → 配置里写过的", tooOld.models);
+  ok(same(tooOld.needsUpgrade, [{ id: "claude-opus-5-5", name: "Opus 5.5", min: "2.1.280" }]), "拦下的单列出来，带要哪一版起", tooOld.needsUpgrade);
+  ok(!tooOld.models.includes("claude-opus-5-5"), "拦下的也不从「配置里写过」那组溜回下拉");
+  ok(same(tooOld.info.map((m) => m.group), ["main", "alias", "alias", "alias", "other", "mine"]) && tooOld.info[0].name === "Sonnet 5.5" && tooOld.source === "claude_catalog",
+    "每个型号带组和显示名，前端照组画", tooOld.info);
+  const fresh = I.modelList(L, got, "2.1.295 (Claude Code)");
+  ok(fresh.models[0] === "claude-opus-5-5" && same(fresh.needsUpgrade, []), "版本够新：一个都不拦，最新的主力排第一", fresh.models);
+  ok(same(I.modelList(L, got, "2.1.280").needsUpgrade, []), "正好是要求的那一版：放行");
+  ok(same(I.modelList(L, got, "Claude Code (dev build)").needsUpgrade, []) && I.modelList(L, got, "").models.includes("claude-opus-5-5"),
+    "★版本号读不出：不拦★ 判断不了就不替人下结论");
+  ok(I.modelList(L, null, "2.1.295").source === "claude_local" && I.modelList({}, null, "").source === "manual" && same(I.modelList({}, null, "").models, []),
+    "没有型号表：别名那套；什么都没有：手填");
+
+  // 怎么升级：按它实际装在哪儿给一条能直接粘进终端的命令
+  const U = path.join(home, "升级");
+  const touch = (p) => { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, ""); return p; };
+  const NPM = "npm i -g @anthropic-ai/claude-code@latest";
+  const shim = touch(path.join(U, "npmwin", "claude.cmd"));
+  fs.mkdirSync(path.join(U, "npmwin", "node_modules", "@anthropic-ai", "claude-code"), { recursive: true });
+  ok(I.upgradeCommand(shim) === NPM, "npm 的垫片（Windows 上 .cmd 旁边就是 node_modules）：npm 升");
+  const native = touch(path.join(U, ".local", "bin", "claude"));
+  ok(I.upgradeCommand(native) === native + " update", "官方安装器装的：用它自带的 update");
+  const spaced = touch(path.join(U, "带 空格", "claude"));
+  ok(I.upgradeCommand(spaced) === `"${spaced}" update`, "路径里有空格：带引号，粘进终端能直接跑");
+  const look2 = touch(path.join(U, "别的", "node_modules", ".bin", "claude"));
+  ok(I.upgradeCommand(look2) === look2 + " update", "反向对照：路径里有 node_modules 但不是 claude-code 那个包，不当 npm 装的");
+  if (posix) {
+    const npmCli = touch(path.join(U, "npm", "lib", "node_modules", "@anthropic-ai", "claude-code", "cli.js"));
+    fs.mkdirSync(path.join(U, "npm", "bin"), { recursive: true });
+    fs.symlinkSync(npmCli, path.join(U, "npm", "bin", "claude"));
+    ok(I.upgradeCommand(path.join(U, "npm", "bin", "claude")) === NPM, "★npm 全局装的（mac 上是软链进 node_modules）：npm 升★ 这台机器上没人升级的就是这份");
+    const cask = touch(path.join(U, "Caskroom", "claude-code", "2.1.263", "claude"));
+    fs.mkdirSync(path.join(U, "brew", "bin"), { recursive: true });
+    fs.symlinkSync(cask, path.join(U, "brew", "bin", "claude"));
+    ok(I.upgradeCommand(path.join(U, "brew", "bin", "claude")) === "brew upgrade --cask claude-code", "Homebrew cask 装的：brew 升");
+  }
+
+  // detectAll 把这几样原样交给设置页：桩替掉真引擎，不碰本机装的 claude / codex
+  const saved = engines.BACKENDS.splice(0);
+  const base = { label: "桩", bin: "x", note: "", install: "", launchHeader: "", supportsResume: false, models: ["兜底"], run: async () => ({ finalText: "" }) };
+  const full = {
+    installed: true, path: "/x", version: "1.0.0", models: ["a"], modelSource: "claude_catalog",
+    modelInfo: [{ id: "a", name: "A", group: "main" }], needsUpgrade: [{ id: "b", name: "B", min: "2.0.0" }],
+    upgrade: "x update", others: [{ bin: "/y", installed: true, version: "0.9.0" }],
+  };
+  engines.BACKENDS.push(
+    { ...base, id: "t-full", detect: async () => full },
+    { ...base, id: "t-bare", detect: async () => ({ installed: true, path: "/z", version: "1", modelInfo: "不是数组", needsUpgrade: {}, others: null }) },
+  );
+  try {
+    const list = await engines.detectAll({ "t-full": {} }, { force: true }); // 缓存键跟别人的都不一样，留在缓存里也碰不到谁
+    const a = list.find((e) => e.id === "t-full");
+    const b = list.find((e) => e.id === "t-bare");
+    ok(same([a.modelInfo, a.needsUpgrade, a.upgrade, a.others], [full.modelInfo, full.needsUpgrade, full.upgrade, full.others]),
+      "detectAll：分组、要升级的、升级命令、另外几份原样交给设置页", a);
+    ok(same([b.modelInfo, b.needsUpgrade, b.upgrade, b.others, b.models], [[], [], "", [], ["兜底"]]), "反向对照：没给或给的不是数组，一律空的，前端不用再判", b);
+  } finally {
+    engines.BACKENDS.splice(0);
+    engines.BACKENDS.push(...saved);
+  }
+
+  if (!posix) return;
+  // 真跑一趟（假 claude）：问版本、看帮助都答得上，跑起来报的型号由参数定
+  const fakeClaude = (ver, said, init) => `
+const a = process.argv.slice(2);
+if (a.includes("--version")) { console.log(${JSON.stringify(ver)}); process.exit(0); }
+if (a[0] === "--help") {
+  console.log("Usage: claude [options]\\n  --model <model>  Provide an alias for the latest model (e.g. 'sonnet' or 'opus') or a model's full name (e.g. 'claude-sonnet-4-5').\\n  --add-dir <directories...>  Additional directories");
+  process.exit(0);
+}
+const out = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
+out({ type: "system", subtype: "init", session_id: "s-1", model: ${JSON.stringify(init)}, tools: [] });
+out({ type: "assistant", session_id: "s-1", message: { id: "m-1", model: ${JSON.stringify(said)}, content: [{ type: "text", text: "ok" }], usage: { input_tokens: 3, output_tokens: 1 } } });
+out({ type: "result", subtype: "success", is_error: false, result: "ok", session_id: "s-1" });
+`;
+  const oldBin = fakeBin("cc-263", fakeClaude("2.1.263 (Claude Code)", "claude-sonnet-5-5", "sonnet"));
+  const newBin = fakeBin("cc-295", fakeClaude("2.1.295 (Claude Code)", "claude-opus-5-5", "opus"));
+  const env = { CLAUDE_CONFIG_DIR: cdir };
+  {
+    const d = await claude.detect({ bin: oldBin, env });
+    ok(d.installed && d.modelSource === "claude_catalog" && d.models.includes("claude-sonnet-5-5") && !d.models.includes("claude-opus-5-5"),
+      "★detect 读的是这份 claude 配置目录里的型号表★ 它跑不了的不进下拉", d);
+    ok(same(d.needsUpgrade.map((m) => m.id), ["claude-opus-5-5"]) && d.upgrade === oldBin + " update", "跑不了的单列，附上这份 claude 怎么升", d);
+    ok(same(d.others, []), "填了路径：不列别的几份");
+  }
+  {
+    const d = await claude.detect({ bin: newBin, env });
+    ok(d.models[0] === "claude-opus-5-5" && same(d.needsUpgrade, []) && d.upgrade === "", "版本够新：最新的排第一个，不提升级", d);
+    const g = (k) => d.modelInfo.filter((m) => m.group === k).map((m) => m.id);
+    ok(same(g("alias"), ["sonnet", "opus", "haiku"]) && same(g("mine"), ["opus[1m]", "claude-x"]),
+      "别名从 --help 里抠、三个兜底的补上；settings.json 里写过的单成一组", d.modelInfo);
+    const plain = await claude.detect({ bin: newBin, env: { CLAUDE_CONFIG_DIR: path.join(home, "没有这个目录") } });
+    ok(plain.modelSource === "claude_local" && same(plain.models, ["sonnet", "opus", "haiku"]), "别的配置目录没有型号表：只剩别名，不串用这份的", plain.models);
+  }
+  {
+    const t = await engines.testConnect("claude-code", { bin: newBin, model: "opus", env }, 20000);
+    ok(t.ok && t.reply === "ok" && t.model === "claude-opus-5-5" && t.asked === "opus", "★试一下：填的是别名，报的是它真落到的型号★ 填的原样也带上", t);
+  }
+  {
+    const synth = fakeBin("cc-synth", fakeClaude("2.1.295 (Claude Code)", "<synthetic>", "claude-sonnet-5-5"));
+    const r = await claude.run({ prompt: "hi", cwd: home, bin: synth, model: "sonnet" });
+    ok(r.model === "claude-sonnet-5-5", "assistant 报的是「<synthetic>」这种 CLI 自己补的：不算，退回 init 里那个", r.model);
+    const silent = fakeBin("cc-silent", fakeClaude("2.1.295 (Claude Code)", "", ""));
+    const r2 = await claude.run({ prompt: "hi", cwd: home, bin: silent, model: "sonnet" });
+    ok(r2.finalText === "ok" && r2.model === "", "两边都没报：空串，不瞎填", r2);
+    const t = await engines.testConnect("claude-code", { bin: silent, model: "sonnet" }, 20000);
+    ok(t.ok && t.model === "sonnet" && t.asked === "sonnet", "反向对照：引擎没报真型号，试一下报填的那个", t);
+  }
+  {
+    const dead = fakeBin("cc-dead", "process.exit(2);");
+    const t = await engines.testConnect("claude-code", { bin: dead, model: "opus" }, 20000);
+    ok(!t.ok && t.asked === "opus" && t.model === "" && t.why === "找到了 " + dead + "，但 --version 跑不通", "--version 跑不通：只说事实，不猜原因；填的型号照样带回去", t);
+  }
+}
+
 (async () => {
   try {
     await partResultErrors();
@@ -1580,6 +1852,7 @@ async function partDeliveryNotes() {
     partStatusPersist();
     await partLive();
     await partDeliveryNotes();
+    await partModels();
     console.log(`\n引擎韧性：${pass} 项全过`);
   } finally {
     fs.rmSync(home, { recursive: true, force: true });
