@@ -238,9 +238,13 @@ function canvasRefreshNode(node, dupIds) {
   if (!node || !canvasState.paper) return;
   const view = node.findView(canvasState.paper), root = view && view.el && view.el.querySelector(".canvas-joint-node");
   if (!root) return;
+  // 卡上正改着字的那一格先收起来，重画完放回去（见 canvasInlineHold）
+  const inline = typeof canvasInlineHold === "function" ? canvasInlineHold(node) : null;
   root.innerHTML = canvasNodeHtml(canvasKind(node), canvasPayload(node), node.id); canvasBindNode(node, root);
   root.classList.toggle("is-selected", canvasState.selectedAll || canvasState.selectedIds.has(node.id) || canvasState.selected === node.id);
   if (canvasKind(node) === "shot" && typeof canvasDupShotIds === "function") root.classList.toggle("is-dup-id", (dupIds || canvasDupShotIds()).has(canvasShotFileKey(canvasPayload(node).id)));
+  // 连接点和卡上直接改（见 canvasDecorateNode）：每次重画都重新挂
+  if (typeof canvasDecorateNode === "function") canvasDecorateNode(node, root, inline);
   canvasWatchAspect(node, root); canvasFitSoon(node);
 }
 
@@ -298,11 +302,13 @@ function canvasFitSoon(node) {
 /**
  * 按内容把卡片量高。这一步不存盘：高是从内容算出来的，不是人改的，
  * 下一次真改动存盘时顺带写上。要是量完就存，两台机器字体差一像素，就会你存一次、我改回来再存一次。
+ * 返回这一趟有没有卡真的改了高：手上那一步刚存完、紧接着就量高的地方（手连线、「+」新建并连上）
+ * 靠它决定要不要再存一遍——记进撤销的那一步得是量完的样子，不然 ⌘Z 头一下只退了卡高
  */
 function canvasFitFlush() {
   canvasFitArmed = false;
   const nodes = [...canvasFitQueue]; canvasFitQueue = new Set();
-  if (!canvasState.graph || !canvasState.paper || !nodes.length) return;
+  if (!canvasState.graph || !canvasState.paper || !nodes.length) return false;
   // 先全量完再一起改：量一张改一张的话，每改一张浏览器都得把整张画布重排一遍才量得出下一张
   const plan = nodes.map((node) => {
     if (node.graph !== canvasState.graph) return null;
@@ -318,7 +324,7 @@ function canvasFitFlush() {
     const h = Math.max(floor, Math.ceil(content + card.offsetHeight - card.clientHeight));
     return Math.abs(h - size.height) >= 1 ? { node, h, size } : null;
   }).filter(Boolean);
-  if (!plan.length) return;
+  if (!plan.length) return false;
   const grown = [];
   canvasState.fitting = true;
   try {
@@ -328,6 +334,7 @@ function canvasFitFlush() {
     });
     canvasMakeRoom(grown);
   } finally { canvasState.fitting = false; }
+  return true;
 }
 /**
  * 卡长高了，把正下方的卡往下推，原来那道缝留着（16–48px）。只推原本就在它下面的：

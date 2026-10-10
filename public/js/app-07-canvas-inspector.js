@@ -83,6 +83,8 @@ function canvasBindNode(node, root) {
   root.querySelectorAll("[data-canvas-job-dismiss]").forEach((button) => button.addEventListener("click", (evt) => { evt.preventDefault(); evt.stopPropagation(); canvasDismissJob(node, button.dataset.canvasJobDismiss); }));
   root.querySelector("[data-canvas-draft]")?.addEventListener("click", (evt) => { evt.preventDefault(); evt.stopPropagation(); canvasDraftStoryboard(node); });
   root.querySelectorAll("[data-canvas-inline-key]").forEach((field) => field.addEventListener("input", () => { const next = canvasPayload(node); next[field.dataset.canvasInlineKey] = field.value; node.set("canvasPayload", next); canvasPersist(); }));
+  // 卡上那格改完离开：右边检查器里同一格跟着换成新值（见 canvasInspectorSyncField）
+  root.querySelectorAll("[data-canvas-inline-key]").forEach((field) => field.addEventListener("change", () => canvasInspectorSyncField(node, field.dataset.canvasInlineKey)));
   root.querySelector("[data-canvas-expand]")?.addEventListener("click", async (evt) => {
     evt.preventDefault(); evt.stopPropagation(); const select = root.querySelector("[data-canvas-board]"), name = select && select.value; if (!name) return;
     const button = evt.currentTarget; button.disabled = true; button.textContent = "加载中…";
@@ -106,6 +108,287 @@ function canvasBindNode(node, root) {
   // 换了一份表，上一份的风格作废（检查器里那一栏读的是它），再去读新那份的
   root.querySelector("[data-canvas-board]")?.addEventListener("change", (evt) => { const next = { ...canvasPayload(node), board: evt.target.value }; delete next.style; node.set("canvasPayload", next); canvasRenderInspector(false); canvasPersist(); if (typeof canvasBoardStyleLoad === "function") canvasBoardStyleLoad(node).catch(() => {}); });
   root.addEventListener("contextmenu", (evt) => { evt.preventDefault(); evt.stopPropagation(); canvasOpenContextMenu(evt.clientX, evt.clientY, node); });
+}
+
+/**
+ * 卡右边那颗连接点，和卡上直接改字。每次 canvasRefreshNode 重画完挂一遍。
+ * 连接点挂在 .canvas-joint-node 上、不进 canvasNodeHtml：量卡高只数卡片正文（canvasFitFlush），挂在外面不会把卡撑高；
+ * 画布的 guard 认 data-canvas-port，按在它上面不拖卡、不平移。
+ * 能不能连只问 canvasLinkProblem 一处：拖线悬停判红绿、松手、「+」菜单列哪几种，都是它。
+ * 卡在 svg 里，页面那套自动翻译不进 svg，所以写进卡里的字一律过 canvasT
+ */
+function canvasDecorateNode(node, root, inline) {
+  if (!node || !root || !CANVAS_NODE_DEFS[canvasKind(node)]) return;
+  const port = document.createElement("button");
+  port.type = "button"; port.className = "canvas-port"; port.setAttribute("data-canvas-port", "");
+  port.title = canvasT("拖到另一张卡上连线，点一下新建并连上"); port.setAttribute("aria-label", port.title);
+  port.innerHTML = ic("plus");
+  port.addEventListener("pointerdown", (evt) => canvasPortDown(node, port, evt));
+  // 拖完松手，浏览器还会补一下 click：那一下不算「点」，不弹菜单
+  port.addEventListener("click", (evt) => { evt.preventDefault(); evt.stopPropagation(); if (port.dataset.dragged) { delete port.dataset.dragged; return; } canvasOpenPortMenu(node, port); });
+  root.appendChild(port);
+  canvasInlineMark(node, root);
+  if (inline) canvasInlineOpen(node, root, inline);
+}
+
+/* ---------- 从连接点拖线 ----------
+ * 线画在视口上单独一层 svg 里（不进图、不存盘），指到哪张卡就按 canvasLinkProblem 给它套绿框或红框，红框旁边写上连不上的原因。
+ * 松手落在绿框上才连，走 canvasConnectByHand → canvasConnect，跟别处连的线一模一样。
+ * 落在空白、落回自己、按了 Esc：什么都不连，线和框收干净 */
+function canvasWireRoot(id) { const cell = id && canvasState.graph ? canvasState.graph.getCell(id) : null, view = cell && canvasState.paper ? cell.findView(canvasState.paper) : null; return (view && view.el && view.el.querySelector(".canvas-joint-node")) || null; }
+function canvasWireMark(id, cls) { const root = canvasWireRoot(id); if (!root) return; root.classList.remove("is-link-ok", "is-link-bad"); if (cls) root.classList.add(cls); }
+function canvasWireTargetAt(x, y) { const el = document.elementFromPoint(x, y), holder = el && el.closest ? el.closest("[model-id]") : null; const cell = holder && canvasState.graph ? canvasState.graph.getCell(holder.getAttribute("model-id")) : null; return cell && cell.isElement && cell.isElement() ? cell : null; }
+function canvasPortDown(node, port, evt) {
+  if (evt.button !== 0) return;
+  delete port.dataset.dragged;
+  evt.preventDefault(); evt.stopPropagation();
+  // 卡上正改着字：上面拦了默认动作，焦点不会走、那一格收不起来，这里先替它收掉
+  if (canvasState.inlineEdit) canvasInlineCommit();
+  canvasWireCancel(); canvasPortMenuClose();
+  canvasState.handsOnAt = Date.now();   // 拉线期间同步要让路（见 canvasBusyNow）
+  try { port.setPointerCapture(evt.pointerId); } catch {}
+  const move = (e) => canvasWireMove(e), up = (e) => canvasWireUp(e), stop = () => canvasWireCancel();
+  // Esc 收线：手还按着，松手后补的那下 click 也不算「点」
+  const key = (e) => { if (e.key === "Escape" && !imeKey(e)) { e.preventDefault(); e.stopPropagation(); port.dataset.dragged = "1"; canvasWireCancel(); } };
+  window.addEventListener("pointermove", move, true); window.addEventListener("pointerup", up, true); window.addEventListener("pointercancel", stop, true);
+  window.addEventListener("blur", stop); document.addEventListener("keydown", key, true);
+  const off = () => { window.removeEventListener("pointermove", move, true); window.removeEventListener("pointerup", up, true); window.removeEventListener("pointercancel", stop, true); window.removeEventListener("blur", stop); document.removeEventListener("keydown", key, true); };
+  canvasState.wire = { sourceId: node.id, port, pointerId: evt.pointerId, x0: evt.clientX, y0: evt.clientY, moved: false, targetId: null, why: "", svg: null, path: null, tag: null, off };
+}
+function canvasWireMove(evt) {
+  const wire = canvasState.wire;
+  if (!wire || evt.pointerId !== wire.pointerId) return;
+  canvasState.handsOnAt = Date.now();
+  // 跟拖卡一样，挪过 4px 才算拖：手抖一下还是「点」
+  if (!wire.moved && Math.hypot(evt.clientX - wire.x0, evt.clientY - wire.y0) <= 4) return;
+  const viewport = document.getElementById("canvas-viewport"), source = canvasState.graph && canvasState.graph.getCell(wire.sourceId);
+  if (!viewport || !source) { canvasWireCancel(); return; }
+  if (!wire.moved) {
+    wire.moved = true; viewport.classList.add("is-wiring");
+    const ns = "http://www.w3.org/2000/svg";
+    wire.svg = document.createElementNS(ns, "svg"); wire.svg.setAttribute("class", "canvas-wire-layer"); wire.svg.setAttribute("aria-hidden", "true");
+    wire.path = document.createElementNS(ns, "path"); wire.path.setAttribute("class", "canvas-wire"); wire.svg.appendChild(wire.path);
+    wire.tag = document.createElement("div"); wire.tag.className = "canvas-wire-tag"; wire.tag.hidden = true;
+    viewport.append(wire.svg, wire.tag);
+  }
+  evt.preventDefault();
+  const hit = canvasWireTargetAt(evt.clientX, evt.clientY), target = hit && hit.id !== wire.sourceId ? hit : null;
+  const why = target ? canvasLinkProblem(source, target) : "";
+  if ((target ? target.id : null) !== wire.targetId || why !== wire.why) {
+    canvasWireMark(wire.targetId, "");
+    wire.targetId = target ? target.id : null; wire.why = why;
+    if (target) canvasWireMark(target.id, why ? "is-link-bad" : "is-link-ok");
+  }
+  // 线和那句原因都画在视口里：坐标从视口内边算（视口有 1px 边框）
+  const rect = viewport.getBoundingClientRect(), ox = rect.left + viewport.clientLeft, oy = rect.top + viewport.clientTop;
+  const dot = canvasWireRoot(wire.sourceId)?.querySelector("[data-canvas-port]"), at = dot ? dot.getBoundingClientRect() : null;
+  const x1 = (at ? at.left + at.width / 2 : wire.x0) - ox, y1 = (at ? at.top + at.height / 2 : wire.y0) - oy, x2 = evt.clientX - ox, y2 = evt.clientY - oy;
+  const bend = Math.max(40, Math.abs(x2 - x1) / 2);
+  wire.path.setAttribute("d", `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`);
+  wire.path.classList.toggle("is-bad", !!why);
+  wire.tag.hidden = !why; wire.tag.textContent = why;
+  // 靠右边放不下就挪到指针左边，别被视口裁掉半句
+  const left = why && x2 + 14 + wire.tag.offsetWidth > viewport.clientWidth - 8 ? Math.max(8, x2 - 14 - wire.tag.offsetWidth) : x2 + 14;
+  wire.tag.style.left = `${left}px`; wire.tag.style.top = `${y2 + 14}px`;
+}
+function canvasWireUp(evt) {
+  const wire = canvasState.wire;
+  if (!wire || evt.pointerId !== wire.pointerId) return;
+  const { sourceId, moved } = wire;
+  canvasWireCancel();
+  if (!moved) return;   // 没拖开：这是「点」，交给 click 弹菜单
+  const target = canvasWireTargetAt(evt.clientX, evt.clientY);
+  if (!target || target.id === sourceId) return;
+  // 隔一拍再连：连上那一下可能把卡整张重画（场次卡数镜头，见 sceneWatch），
+  // 松手后浏览器补的那下 click 还没发，卡一换，它就落到卡上、被当成「点了这张卡」
+  window.setTimeout(() => { const source = canvasState.graph && canvasState.graph.getCell(sourceId); if (source && target.graph && canvasConnectByHand(source, target)) canvasRenderInspector(false); }, 0);
+}
+function canvasWireCancel() {
+  const wire = canvasState.wire; if (!wire) return;
+  canvasState.wire = null; wire.off();
+  // 拖开过的这一下：松手后补的那下 click 不算「点」
+  if (wire.moved) wire.port.dataset.dragged = "1";
+  try { if (wire.port.hasPointerCapture(wire.pointerId)) wire.port.releasePointerCapture(wire.pointerId); } catch {}
+  wire.svg?.remove(); wire.tag?.remove();
+  canvasWireMark(wire.targetId, "");
+  document.getElementById("canvas-viewport")?.classList.remove("is-wiring");
+}
+
+/* ---------- 点一下连接点：新建一张连好的卡 ----------
+ * 跟工具栏「添加节点」同一套按钮、同样分组，只列这张卡连得上的那几种（还是问 canvasLinkProblem）。
+ * 新卡摆在右边空着的地方、已经连上；建卡和连线算一步，⌘Z 一下全退。
+ * 菜单挂在 #assist-page 上：画布全屏时只有它在屏幕上 */
+function canvasPortFake(kind) { return { id: "\u0000new", get: (key) => (key === "canvasKind" ? kind : undefined) }; }
+function canvasPortMenuKinds(source) { return Object.keys(CANVAS_NODE_DEFS).filter((kind) => !canvasLinkProblem(source, canvasPortFake(kind))); }
+function canvasPortMenuClose() { const menu = canvasState.portMenu; if (!menu) return; canvasState.portMenu = null; menu.off(); menu.el.remove(); }
+function canvasOpenPortMenu(node, port) {
+  canvasPortMenuClose();
+  const page = document.getElementById("assist-page"), kinds = node.graph ? canvasPortMenuKinds(node) : [];
+  if (!page || !kinds.length) return;
+  const groups = new Map();
+  kinds.forEach((kind) => { const name = CANVAS_NODE_DEFS[kind].group || ""; if (!groups.has(name)) groups.set(name, []); groups.get(name).push(kind); });
+  const el = document.createElement("div"); el.className = "canvas-port-menu"; el.setAttribute("role", "menu");
+  el.innerHTML = `<div class="canvas-port-menu-head">新建并连上</div><div class="canvas-port-menu-body">${[...groups].map(([name, list]) => `<span class="canvas-menu-group"><span class="canvas-menu-group-label">${esc(name)}</span>${list.map((kind) => { const def = CANVAS_NODE_DEFS[kind]; return `<button type="button" class="canvas-type-btn" role="menuitem" data-canvas-port-add="${kind}" title="${esc(def.subtitle)}">${ic(def.icon)}<span>${esc(def.label)}</span></button>`; }).join("")}</span>`).join("")}</div>`;
+  page.appendChild(el);
+  // 贴着连接点右边弹；右边放不下翻到左边，上下不出窗口
+  const at = port.getBoundingClientRect(), width = el.offsetWidth, height = el.offsetHeight;
+  let left = at.right + 8;
+  if (left + width > window.innerWidth - 8) left = Math.max(8, at.left - 8 - width);
+  el.style.left = `${left}px`; el.style.top = `${Math.max(8, Math.min(at.top - 12, window.innerHeight - height - 8))}px`;
+  el.querySelectorAll("[data-canvas-port-add]").forEach((button) => button.addEventListener("click", (evt) => { evt.preventDefault(); evt.stopPropagation(); canvasPortAdd(node, button.dataset.canvasPortAdd); }));
+  const outside = (event) => { if (!el.contains(event.target)) canvasPortMenuClose(); };
+  const onKey = (event) => { if (event.key === "Escape" && !imeKey(event)) { event.preventDefault(); event.stopPropagation(); canvasPortMenuClose(); page.focus({ preventScroll: true }); } };
+  document.addEventListener("pointerdown", outside, true); document.addEventListener("keydown", onKey, true); document.addEventListener("wheel", outside, { capture: true, passive: true });
+  const off = () => { document.removeEventListener("pointerdown", outside, true); document.removeEventListener("keydown", onKey, true); document.removeEventListener("wheel", outside, { capture: true, passive: true }); };
+  canvasState.portMenu = { el, nodeId: node.id, off };
+  el.querySelector("button")?.focus({ preventScroll: true });
+}
+function canvasPortAdd(source, kind) {
+  canvasPortMenuClose();
+  if (!source || !source.graph || !CANVAS_NODE_DEFS[kind]) return null;
+  const why = canvasLinkProblem(source, canvasPortFake(kind));
+  if (why) { canvasToast(why, "triangle-alert", "err"); return null; }
+  if (canvasState.historyTimer) canvasHistoryFlush();   // 前面攒着没记的那步先记掉，⌘Z 只退这一张卡和这根线
+  const fresh = canvasAddNode(kind, {}, canvasPortSpot(source, kind), { persist: false });
+  if (!fresh) return null;
+  canvasConnect(source, fresh);   // 这一下存盘：卡和线一起记成一步
+  // 新卡（还有多了一行镜头的场次卡）当场量好高，变了就再存一遍：记下的这一步就是摆好后的样子
+  if (canvasFitFlush()) canvasPersist();
+  canvasPortReveal(fresh);
+  return fresh;
+}
+// 新卡摆哪：源卡右边隔一段；那儿压着别的卡，就挪到压着的那张下面，直到摆得下
+function canvasPortSpot(source, kind) {
+  const from = source.getBBox(), def = CANVAS_NODE_DEFS[kind], others = canvasState.graph.getElements().map((item) => item.getBBox());
+  const spot = { x: from.x + from.width + 64, y: from.y, width: def.width, height: def.height };
+  for (let i = 0; i < 60; i++) {
+    const block = others.find((b) => spot.x < b.x + b.width + 16 && b.x < spot.x + spot.width + 16 && spot.y < b.y + b.height + 16 && b.y < spot.y + spot.height + 16);
+    if (!block) break;
+    spot.y = block.y + block.height + 32;
+  }
+  return { x: Math.round(spot.x), y: Math.round(spot.y) };
+}
+// 新卡落在视口外面：平移最少的一段让它整张露出来，不缩放、不居中（人还看着源卡）
+function canvasPortReveal(node) {
+  const viewport = document.getElementById("canvas-viewport"), paper = canvasState.paper;
+  if (!viewport || !paper || !node) return;
+  const b = node.getBBox(), s = canvasState.scale || 1, pad = 32, vw = viewport.clientWidth, vh = viewport.clientHeight;
+  const left = canvasState.x + b.x * s, top = canvasState.y + b.y * s, right = left + b.width * s, bottom = top + b.height * s;
+  let dx = 0, dy = 0;
+  if (right > vw - pad) dx = vw - pad - right;
+  if (left + dx < pad) dx = pad - left;
+  if (bottom > vh - pad) dy = vh - pad - bottom;
+  if (top + dy < pad) dy = pad - top;
+  if (!dx && !dy) return;
+  canvasState.x += dx; canvasState.y += dy;
+  paper.translate(canvasState.x, canvasState.y);
+}
+// 检查器里同名那一格就地换成新值、价钱重估一遍，不整块重画：失焦多半是按下了别处，整块重画会把按着的那颗按钮换掉，这一下就点空了
+function canvasInspectorSyncField(node, key) {
+  const box = document.getElementById("canvas-inspector");
+  if (!box || !node || !canvasState.inspectorOpen || canvasState.selected !== node.id) return;
+  const field = box.querySelector(`[data-inspect-key="${key}"]`), value = String(canvasPayload(node)[key] ?? "");
+  if (field && field !== document.activeElement && field.value !== value) field.value = value;
+  if (typeof canvasFillPrices === "function") canvasFillPrices(box, node).catch(() => {});
+}
+
+/* ---------- 卡上直接改 ----------
+ * 只选中这一张卡时，点它的标题、正文就地改。改的就是检查器里那一格：同一份 payload、同样存盘、同样回写分镜表，
+ * 改完检查器马上换成新值，⌘Z 单独退掉这一下。
+ * 标题一行，回车就存；正文多行，回车换行、点别处才存。Esc 不存。回车和 Esc 都先问 imeKey：拼音选字那一下不算。
+ * 每一项是 [卡上显示那格的选择器, 字段, 是不是一行]。镜头号不在卡上改（它是文件名，检查器里改有撞号提示）；
+ * 视频卡的提示词本来就是卡上一个框（data-canvas-inline-key），不再套一层 */
+const CANVAS_INLINE_FIELDS = {
+  script: [[".canvas-node-head b", "title", true], [".canvas-script-text", "text", false]],
+  agent: [[".canvas-node-head b", "title", true], [".canvas-node-body > .canvas-node-copy", "task", false]],
+  character: [[".canvas-node-head b", "name", true], [".canvas-node-desc", "description", false]],
+  location: [[".canvas-node-head b", "name", true], [".canvas-node-desc", "description", false]],
+  shot: [[".canvas-shot-prompt", "prompt", false]],
+  image: [[".canvas-node-head b", "title", true]],
+  video: [[".canvas-node-head b", "title", true]],
+  audio: [[".canvas-node-head b", "title", true], [".canvas-media-text", "text", false]],
+};
+function canvasInlineMark(node, root) {
+  (CANVAS_INLINE_FIELDS[canvasKind(node)] || []).forEach(([sel, key]) => {
+    const shown = root.querySelector(sel); if (!shown) return;
+    shown.setAttribute("data-canvas-inline-edit", key); shown.title = canvasT("选中卡片后，点这里直接改");
+    shown.addEventListener("click", (evt) => {
+      if (evt.shiftKey || evt.metaKey || evt.ctrlKey || evt.altKey) return;
+      // 还没选中、或者选着好几张：这一下照旧只是选中（交给卡本身那个 click）；刚拖完松手那一下也不算
+      if (canvasState.selectedIds.size !== 1 || !canvasState.selectedIds.has(node.id)) return;
+      if (canvasState.skipNodeClick === node.id || Date.now() < canvasState.suppressInspectorUntil) return;
+      evt.preventDefault(); evt.stopPropagation();
+      canvasInlineOpen(node, root, { key });
+    });
+  });
+}
+function canvasInlineOpen(node, root, hold) {
+  if (canvasState.inlineEdit) canvasInlineCommit();
+  const field = (CANVAS_INLINE_FIELDS[canvasKind(node)] || []).find(([, key]) => key === hold.key), shown = field && root.querySelector(field[0]);
+  if (!shown || !node.graph) return;
+  const [sel, key, single] = field, saved = String(canvasPayload(node)[key] ?? "");
+  const el = document.createElement(single ? "input" : "textarea");
+  if (single) el.type = "text";
+  el.className = single ? "canvas-inline-input" : "canvas-inline-text"; el.setAttribute("data-canvas-inline-editor", key);
+  el.value = hold.draft ?? saved;
+  if (!saved) el.placeholder = shown.textContent;
+  el.title = single ? canvasT("回车保存，Esc 取消") : canvasT("点别处保存，Esc 取消");
+  if (!single) el.style.height = `${Math.max(shown.offsetHeight, 44)}px`;
+  const state = { nodeId: node.id, key, sel, el, shown, original: hold.original ?? saved, single, hasFocus: false }, page = document.getElementById("assist-page");
+  el.addEventListener("contextmenu", (evt) => evt.stopPropagation());   // 框里右键要的是复制粘贴，不是画布菜单
+  el.addEventListener("focus", () => { state.hasFocus = true; });
+  el.addEventListener("input", () => { canvasState.handsOnAt = Date.now(); });
+  el.addEventListener("keydown", (evt) => {
+    // 拦在框里：Esc 冒到页面上是「停止任务」，回车冒上去也有人接
+    if (evt.key === "Escape" && !imeKey(evt)) { evt.preventDefault(); evt.stopPropagation(); canvasInlineCancel(); page?.focus({ preventScroll: true }); return; }
+    if (single && evt.key === "Enter" && !imeKey(evt)) { evt.preventDefault(); evt.stopPropagation(); canvasInlineCommit(); page?.focus({ preventScroll: true }); }
+  });
+  // 整图重铺、一口气摆一片时框被连带拿掉，那一下失焦不算改完（重画完会放回来，见 canvasInlineHold）
+  el.addEventListener("blur", () => { if (canvasState.inlineEdit === state && !canvasState.bulk && !canvasState.suspendSync) canvasInlineCommit(); });
+  shown.style.display = "none"; shown.after(el);
+  canvasState.inlineEdit = state; canvasState.handsOnAt = Date.now();
+  if (hold.draft == null || hold.focused) {
+    el.focus({ preventScroll: true });
+    // 还是起手模板那句：整段选中，直接打字就换掉；人写过的：光标放到最后接着写
+    if (hold.start != null) { try { el.setSelectionRange(hold.start, hold.end); } catch {} }
+    else if (single || el.value === String(canvasDefaultPayload(canvasKind(node))[key] ?? "")) el.select();
+    else el.setSelectionRange(el.value.length, el.value.length);
+  }
+  canvasFitSoon(node);
+}
+function canvasInlineCommit() {
+  const state = canvasState.inlineEdit; if (!state) return;
+  canvasState.inlineEdit = null;
+  const node = canvasState.graph && canvasState.graph.getCell(state.nodeId), value = state.el.value;
+  const restore = () => { state.el.remove(); state.shown.style.removeProperty("display"); if (node) canvasFitSoon(node); };
+  if (!node || !node.isElement || !node.isElement() || value === state.original) { restore(); return; }
+  canvasState.handsOnAt = Date.now();
+  if (canvasState.historyTimer) canvasHistoryFlush();   // 前面攒着没记的那步先记掉：⌘Z 只退这一笔
+  const kind = canvasKind(node), payload = { ...canvasPayload(node), [state.key]: value };
+  // 卡不整张重画，只把显示的那一格换成新字：失焦多半是按下了这张卡上的按钮（「生成首帧」），
+  // 整张一换，按着的那颗就没了，这一下点空。显示什么照 canvasNodeHtml 算（空了显示什么、图在不在都按它）
+  const tpl = document.createElement("template"); tpl.innerHTML = canvasNodeHtml(kind, payload, node.id);
+  const next = tpl.content.querySelector(state.sel);
+  if (next) state.shown.textContent = next.textContent; else state.shown.remove();
+  // 框收起来、卡高当场量好再存：记下的这一步就是改完的样子，⌘Z 头一下不会只退了卡高
+  restore(); canvasFitFlush();
+  node.set("canvasPayload", payload); canvasPersist();
+  canvasInspectorSyncField(node, state.key);
+  canvasBoardContentSync(node, state.key).then((back) => { if (back) canvasToast(back, "triangle-alert", "err"); });
+}
+function canvasInlineCancel() {
+  const state = canvasState.inlineEdit; if (!state) return;
+  canvasState.inlineEdit = null;
+  state.el.remove(); state.shown.style.removeProperty("display");
+  const node = canvasState.graph && canvasState.graph.getCell(state.nodeId); if (node) canvasFitSoon(node);
+}
+// 卡整张重画时（同步、生成回来、整图重铺）正好在改：先把没改完的字和光标收起来，重画完原样放回去
+function canvasInlineHold(node) {
+  const state = canvasState.inlineEdit;
+  if (!state || !node || state.nodeId !== node.id) return null;
+  canvasState.inlineEdit = null;
+  const el = state.el;
+  return { key: state.key, draft: el.value, start: el.selectionStart, end: el.selectionEnd, focused: state.hasFocus || document.activeElement === el, original: state.original };
 }
 
 /**

@@ -18,6 +18,8 @@ async function canvasLoadWorkspaceProjects() {
   const data = await fetch("/api/projects").then((r) => r.json()).catch(() => ({}));
   canvasState.workspaceProjects = Array.isArray(data.projects) ? data.projects : [];
   canvasState.workspaceLocked = !!data.locked;
+  // own：成员这类用自己工作目录的账号，项目都建在自己目录里，不能另选文件夹（服务端也不收 dir）
+  canvasState.workspaceOwn = !!data.own;
   canvasState.workspaceName = String(data.active || "");
   canvasState.workspaceDir = String(canvasState.workspaceProjects.find((item) => item.name === canvasState.workspaceName)?.dir || (typeof settingsCache !== "undefined" ? settingsCache?.workspace_dir : "") || "");
 }
@@ -962,6 +964,21 @@ function canvasConnect(source, target, relation = "") {
   canvasState.graph.addCell(link); canvasPersist();
   return link;
 }
+/**
+ * 人手连的那一下：从卡右边的连接点拖到另一张卡上松手（见 canvasPortDown）。
+ * 先按 canvasLinkProblem 那张表判一遍，不行就说为什么、不连；行就照样走 canvasConnect——
+ * 线的样子、关系、存盘、断开、分镜表 cast 回写，跟程序自己连的那些一模一样。
+ * 连之前先把手上攒着没记的那步记掉：刚改完字紧接着连线，⌘Z 只退这一根线
+ */
+function canvasConnectByHand(source, target) {
+  const why = canvasLinkProblem(source, target);
+  if (why) { canvasToast(why, "triangle-alert", "err"); return null; }
+  if (canvasState.historyTimer) canvasHistoryFlush();
+  const link = canvasConnect(source, target) || null;
+  // 场次连上镜头，卡上多一行、当场长高：量完再存一遍，记下的这一步就是连好后的样子
+  if (link && canvasFitFlush()) canvasPersist();
+  return link;
+}
 
 /**
  * 断开一条线：两头的节点都留着。跟删节点一样不问、直接断，提示上挂「撤销」。
@@ -1143,12 +1160,12 @@ function canvasApplySnapshot(snapshot, { fromRemote = false, external = fromRemo
   try { canvasPersist(); } finally { canvasState.historyMute = false; }
 }
 
-// 手上有活：正在输入框里打字，或者按着一张卡在拖。这两件事都经不起一次 graph.clear()。
+// 手上有活：正在输入框里打字，或者按着一张卡在拖、从连接点往外拉线。这几件事都经不起一次 graph.clear()。
 // 10 秒没动静就不算了——有人把光标留在框里走开、有人拖到一半松手没被接住，
 // 这个标签页不能从此再也不同步
 function canvasBusyNow() {
   if (Date.now() - Number(canvasState.handsOnAt || 0) >= 10000) return false;
-  if (canvasState.nodeGesture) return true;
+  if (canvasState.nodeGesture || canvasState.wire) return true;
   const el = typeof document !== "undefined" ? document.activeElement : null;
   return !!(el && typeof el.matches === "function"
     && el.matches("input, textarea, [contenteditable=true]") && el.closest(".canvas-layout"));

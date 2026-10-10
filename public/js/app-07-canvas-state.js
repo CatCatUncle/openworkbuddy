@@ -56,6 +56,9 @@ let canvasState = {
   missing: new Set(),
   selectedAll: false, marqueeMode: false, keyHandler: null, keyUpHandler: null, fullscreenHandler: null, spacePanning: false,
   inspectorOpen: false, nodeGesture: null, multiMove: null, skipNodeClick: null, suppressInspectorUntil: 0,
+  // 卡右边那颗连接点（见 canvasPortDown）：wire 是正从它往外拖的那根线，portMenu 是点一下弹出来的「接一张新卡」菜单；
+  // inlineEdit 是正在卡上直接改的那一格 { nodeId, key, draft, … }——卡整张重画时靠它把没改完的字放回去
+  wire: null, portMenu: null, inlineEdit: null,
   // remoteContentKey：服务器上那份画布的内容指纹。屏幕上这份跟它一样就不再往上写（见 canvasPersist）
   remoteUpdatedAt: 0, remoteContentKey: "", remoteSnapshot: null, remoteTimer: null, remoteWriteTimer: null, remoteWriteArmed: null, remoteWritePending: false, suspendSync: false, castTimer: null,
   // fitting：正在按内容给卡量高、给长高的卡让位。这期间的挪动不存盘（见 canvasFitFlush）
@@ -83,7 +86,7 @@ let canvasState = {
   // proposalGone：这台机器上点过的清单号，服务端那份还没收掉之前同步一圈也别再冒出来
   proposal: null, proposalGone: new Set(),
   canvasName: "main", canvasList: [], taskSessionId: null, chatBusy: false, chatStopping: false, chatReferences: new Map(), history: [], historyIndex: -1, historyTimer: null, historyMute: false, historySeq: 0,
-  workspaceProjects: [], workspaceLocked: false, workspaceName: "", workspaceDir: "",
+  workspaceProjects: [], workspaceLocked: false, workspaceOwn: false, workspaceName: "", workspaceDir: "",
   // 正在生成的节点 id。生一张图几十秒，这期间远端那份每 1.8 秒来一趟、整图重铺——
   // 铺的时候这几个节点留本机这份，不然刚写上的结果被一份旧快照盖回去（见 canvasApplySnapshot）
   inflight: new Set(),
@@ -170,6 +173,54 @@ function canvasDefaultRelation(source, target) {
   return "input";
 }
 function canvasLinkRelation(link, source, target) { return String(link?.get?.("canvasRelation") || canvasDefaultRelation(source, target)); }
+/**
+ * 人手连线认哪些搭配：键是下游（箭头指着的那张），值是能连进来的上游。
+ *
+ * 线只有一个意思——「上游的内容递给下游用」，而且只看直连那一层（见 generate.js canvasUpstreamInputs 和读它的那几处）。
+ * 所以这张表按「下游真会读上游什么」定：图 / 视频读上游的字当上下文、读上游的图当参考图（视频卡交的是首尾帧）；
+ * 角色 / 场景出定妆照、场景图时同样读上游的字和图，但不读彼此——定妆照要纯色背景、场景图要空镜；
+ * 声音只读连进来的角色挑嗓子（canvasVoiceCandidates），台词只认自己那格，连文字进来白连；
+ * 镜头读角色、场景、上一镜；时间线收分镜、场次、镜头和成品；Agent 什么都读；笔记什么都不读。
+ * 程序自己会连的每一种（起手模板、展开分镜表、生成结果、挂参考图）都在表里。
+ * 只拦人手连的那一下：canvasConnect 本身不查表，铺快照、Agent 连的线照原样留着
+ */
+const CANVAS_LINK_SOURCES = {
+  note: [],
+  script: ["note", "agent"],
+  agent: ["note", "script", "agent", "character", "location", "storyboard", "scene", "shot", "image", "video", "audio", "timeline"],
+  character: ["note", "script", "agent", "storyboard", "image", "video"],
+  location: ["note", "script", "agent", "storyboard", "image", "video"],
+  storyboard: ["script"],
+  scene: ["script", "storyboard"],
+  shot: ["note", "script", "agent", "character", "location", "scene", "shot", "image", "video", "audio"],
+  image: ["note", "script", "agent", "character", "location", "shot", "image", "video"],
+  video: ["note", "script", "agent", "character", "location", "shot", "image", "video"],
+  audio: ["character", "shot"],
+  timeline: ["storyboard", "scene", "shot", "video", "audio"],
+};
+/**
+ * 人手连 source → target 行不行。行交空串，不行交一句给人看的原因（已过 canvasT）。
+ * 拖线悬停时拿它判红绿，松手、点菜单时再判一次（见 canvasConnectByHand、canvasPortMenuKinds）
+ */
+function canvasLinkProblem(source, target) {
+  if (!source || !target) return canvasT("找不到这张卡");
+  if (source.id === target.id) return canvasT("不能连到自己");
+  const from = canvasKind(source), to = canvasKind(target);
+  if (!CANVAS_NODE_DEFS[from] || !CANVAS_NODE_DEFS[to]) return canvasT("认不出这种卡，连不了");
+  const links = canvasState.graph ? canvasState.graph.getLinks() : [];
+  if (links.some((link) => canvasEndpointId(link.get("source")) === source.id && canvasEndpointId(link.get("target")) === target.id)) return canvasT("这两张卡已经连着了");
+  if (!(CANVAS_LINK_SOURCES[to] || []).includes(from)) return canvasT("{b}用不上{a}的内容", { a: canvasT(CANVAS_NODE_DEFS[from].label), b: canvasT(CANVAS_NODE_DEFS[to].label) });
+  // 成环：从 target 顺着线往下游走，走得回 source 就是一个圈。两张卡互为上游，改哪张另一张都得跟着重生，永远对不齐
+  const next = new Map();
+  links.forEach((link) => { const a = canvasEndpointId(link.get("source")); if (!next.has(a)) next.set(a, []); next.get(a).push(canvasEndpointId(link.get("target"))); });
+  const seen = new Set([target.id]), stack = [target.id];
+  while (stack.length) {
+    const id = stack.pop();
+    if (id === source.id) return canvasT("这样连会绕成一个圈");
+    (next.get(id) || []).forEach((down) => { if (!seen.has(down)) { seen.add(down); stack.push(down); } });
+  }
+  return "";
+}
 function canvasRelationOptions(selected, source, target) {
   const defaults = new Set([canvasDefaultRelation(source, target), "reference"]);
   const allowed = CANVAS_EDGE_RELATIONS.filter(([key]) => ["input", "split", "generate"].includes(key) || defaults.has(key) || ["character", "background", "composition", "motion", "style", "prop", "continuity", "first_frame", "last_frame", "audio"].includes(key));

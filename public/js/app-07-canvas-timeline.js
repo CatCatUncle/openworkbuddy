@@ -379,7 +379,8 @@ function canvasCastPanelHtml(shots) {
 }
 
 /**
- * 一键挂参考图 = 在画布上连一条「角色 → 镜头」的线，走 canvasConnect，跟人手拖出来的是同一种线。
+ * 一键挂参考图 = 在画布上连一条「角色 → 镜头」的线，走 canvasConnect。从卡右边连接点上手拖的线
+ * （canvasConnectByHand）判完能不能连，最后落的也是它，所以两边是同一种线、同一种存法、同一种断法。
  * 分镜表里那一镜的 cast 由图上的 castWatch → canvasBoardCastSync 回写。这里不另开一条写表的路：
  * 两条路迟早写岔，画布上连着、表里没有，重跑那一镜照样少一张脸
  */

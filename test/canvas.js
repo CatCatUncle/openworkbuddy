@@ -202,7 +202,8 @@ const STUB2 = `
       return new Promise((r) => setTimeout(() => r({ ok: true, status: 200, json: async () => body }), window.__delay));
     }
     if (s.includes("/api/projects/switch")) { window.__active = JSON.parse(o.body).name; return J({ ok: true, active: window.__active }); }
-    if (s.includes("/api/projects")) return J({ active: window.__active, projects: [{ name: "jia", dir: "/tmp/jia" }, { name: "yi", dir: "/tmp/yi" }] });
+    // __projOwn：装成成员这类用自己工作目录的账号（真服务端回 own: true，见 server.js GET /api/projects）
+    if (s.includes("/api/projects")) return J({ active: window.__active, projects: [{ name: "jia", dir: "/tmp/jia" }, { name: "yi", dir: "/tmp/yi" }], ...(window.__projOwn ? { own: true } : {}) });
     if (s.includes("/api/settings")) return J(settingsCache);
     if (s.includes("/api/modes")) return J({ modes: [] });
     if (s.includes("/api/files")) return J({ files: [] });
@@ -3967,6 +3968,392 @@ app.whenReady().then(async () => {
   ok(配.换取消.发了 === 0 && 配.换取消.配音 === "短剧/main/配音_S1-01_v2.mp3", "反向对照：换一版点「先不了」，一枪不发、卡上还是 v2", 配.换取消);
   ok(配.没台词.发了 === 0 && 配.没台词.问价 === 0 && !配.没台词.框 && /先写台词|请先填写对白/.test(配.没台词.提示),
      "★没写台词的镜头点「生成配音」：直接说先写台词，不先拿一个价让人点★", 配.没台词);
+
+  console.log("\n— 五十、连接点：拖到另一张卡上就连线、连不上的标红说原因；点「+」新建并连上；选中卡后标题/提示词直接在卡上改 —");
+  // 全在真页面上走真事件：连接点认的是 PointerEvent（canvasPortDown），拖卡认的是 mousedown / mousemove（JointJS）。
+  // 每一段先把缩放、平移摆死，要指的卡都落在视口里、底下时间线和对话框盖不到的地方
+  const 卡片 = (id, kind, payload, x, y) => ({ id, kind, payload, position: { x, y } });
+  const 连 = (a, b) => ({ source: { id: a }, target: { id: b }, relation: "input" });
+  const 场次 = [卡片("sc1", "scene", { id: "S1", place: "站台" }, 40, 40)]
+    .concat([1, 2, 3, 4, 5].map((i) => 卡片("p" + i, "shot", { id: "S1-0" + i, prompt: "第" + i + "镜" }, i <= 3 ? 960 : 1400, [40, 340, 640, 40, 340][i - 1])));
+  const 场次线 = [1, 2, 3, 4, 5].map((i) => 连("sc1", "p" + i));
+  const 收净 = (r) => !!r && !r.线层 && !r.原因 && !r.框 && !r.拉着 && !r.拉线中 && !r.菜单;
+  const 同 = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  // 页面里共用的几样：认卡、找连接点、发指针事件、读线、读残留、按键；canvasToast 套一层记下说了什么（finally 里换回去）
+  const 连线工具 = `
+      const page = document.getElementById("assist-page"), 视窗 = () => document.getElementById("canvas-viewport");
+      const 卡 = (id) => canvasState.graph.getCell(id);
+      const 根 = (id) => canvasState.paper.findViewByModel(卡(id)).el.querySelector(".canvas-joint-node");
+      const 点 = (id) => 根(id).querySelector("[data-canvas-port]");
+      const 中 = (el) => { const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; };
+      const 指 = (el, type, at) => el.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, composed: true, clientX: at.x, clientY: at.y,
+        button: 0, buttons: type === "pointerup" ? 0 : 1, pointerId: 1, pointerType: "mouse", isPrimary: true }));
+      const 移到 = (at) => 指(document.elementFromPoint(at.x, at.y) || document.body, "pointermove", at);
+      const 线 = () => canvasState.graph.getLinks().map((l) => canvasEndpointId(l.get("source")) + ">" + canvasEndpointId(l.get("target"))).sort();
+      const 盘上线 = () => (((window.__store.jia || {}).main || {}).edges || []).map((e) => canvasEndpointId(e.source) + ">" + canvasEndpointId(e.target)).sort();
+      const 视口 = (s, x, y) => { canvasZoom(page, s); canvasState.x = x; canvasState.y = y; canvasState.paper.translate(x, y); };
+      const 清选 = () => { canvasSetSelection(new Set()); canvasState.suppressInspectorUntil = 0; canvasState.skipNodeClick = null; };
+      const 残留 = () => ({ 线层: !!document.querySelector(".canvas-wire-layer"), 原因: !!document.querySelector(".canvas-wire-tag"),
+        框: document.querySelectorAll(".is-link-ok, .is-link-bad").length, 拉着: !!canvasState.wire, 拉线中: 视窗().classList.contains("is-wiring"),
+        菜单: !!document.querySelector(".canvas-port-menu") });
+      const 悬停量 = (id) => { const r = 根(id), tag = document.querySelector(".canvas-wire-tag"), path = document.querySelector(".canvas-wire-layer path");
+        return { 绿: r.classList.contains("is-link-ok"), 红: r.classList.contains("is-link-bad"), 有线: !!(path && path.getAttribute("d")),
+          线红: !!(path && path.classList.contains("is-bad")), 话: tag && !tag.hidden ? tag.textContent : "", 拉线中: 视窗().classList.contains("is-wiring") }; };
+      const 提示们 = [], 原提示 = window.canvasToast;
+      window.canvasToast = function (text) { 提示们.push(String(text)); return 原提示.apply(this, arguments); };
+      // 从 from 的连接点按下，经过半路拖到 to（卡 id 或一个坐标）松手；松手后照浏览器的样子补一下 click
+      const 拖线 = async (from, to, 半路) => {
+        const port = 点(from), a = 中(port), b = typeof to === "string" ? 中(根(to)) : to;
+        const 拦了默认 = !指(port, "pointerdown", a);
+        移到({ x: a.x + 10, y: a.y }); 移到({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }); 移到(b);
+        const 悬停 = typeof to === "string" ? 悬停量(to) : null;
+        if (半路) 半路();
+        指(document.elementFromPoint(b.x, b.y) || document.body, "pointerup", b);
+        port.click();
+        await new Promise((r) => setTimeout(r, 60));
+        return { 拦了默认, 悬停 };
+      };
+      const 按键 = (el, init) => {
+        const ev = new KeyboardEvent("keydown", Object.assign({ bubbles: true, cancelable: true, composed: true }, init));
+        if (init.keyCode && ev.keyCode !== init.keyCode) Object.defineProperty(ev, "keyCode", { get: () => init.keyCode });
+        el.dispatchEvent(ev); return ev;
+      };`;
+
+  // ① 拖线连上：存盘、整页重开还在；跟铺回来的线一模一样；进撤销；能断开
+  const 拖连 = await run(`
+    (async () => {
+      ${摆画布([卡片("w1", "script", { title: "剧本一" }, 40, 40), 卡片("w2", "character", { name: "老周" }, 520, 40), 卡片("w4", "shot", { id: "S1-01", prompt: "雨夜站台" }, 520, 420)], [])}
+      ${连线工具}
+      try {
+        清选(); 视口(.6, 20, 20); ${等(60)}
+        const 指得到 = (() => { const at = 中(点("w1")), el = document.elementFromPoint(at.x, at.y); return !!(el && el.closest("[data-canvas-port]") === 点("w1")); })();
+        // 按在连接点上画布不起拖卡（guard）；反向对照：同样的 mousedown 按在卡头图标上，照常起拖
+        const 按 = (el) => {
+          const at = 中(el);
+          el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, clientX: at.x, clientY: at.y, button: 0, buttons: 1 }));
+          const g = canvasState.nodeGesture ? canvasState.nodeGesture.id : null;
+          document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, clientX: at.x, clientY: at.y, button: 0, buttons: 0 }));
+          return g;
+        };
+        const 按连接点 = 按(点("w1")), 按图标 = 按(根("w1").querySelector(".canvas-node-icon"));
+        清选();
+        const 一 = await 拖线("w1", "w2");
+        const 连后 = { 线: 线(), 提示: 提示们.slice(), 残留: 残留() };
+        await canvasFlushRemoteWrite();
+        const 盘上 = 盘上线();
+        // 整页重开：本机缓存清掉，只认交上去的那份
+        localStorage.clear(); localStorage.setItem("openworkbuddy.canvas.name", "main");
+        await renderCanvasPage(); ${等(400)}
+        if (canvasState.remoteTimer) { clearInterval(canvasState.remoteTimer); canvasState.remoteTimer = null; }
+        清选(); 视口(.6, 20, 20); ${等(60)}
+        const 重开 = { 线: 线(), 关系: canvasState.graph.getLinks().map((l) => l.get("canvasRelation")) };
+        canvasHistoryReset(canvasSnapshot());
+        const 二 = await 拖线("w1", "w4");
+        const 净 = (l) => { const j = JSON.parse(JSON.stringify(l.toJSON())); delete j.id; delete j.source; delete j.target; delete j.z; return JSON.stringify(j); };
+        const 找线 = (to) => canvasState.graph.getLinks().find((l) => canvasEndpointId(l.get("target")) === to);
+        const 手连 = 找线("w4"), 盘来 = 找线("w2");
+        const 再连 = { 线: 线(), 同样: !!手连 && !!盘来 && 净(手连) === 净(盘来), 手连: 手连 ? 净(手连) : "", 盘来: 盘来 ? 净(盘来) : "" };
+        ${等(400)}
+        canvasUndo(); const 撤后 = 线();
+        canvasRedo(); const 重做后 = 线();
+        const 断了 = canvasDisconnect(找线("w4"));
+        const 断后 = { 断了, 线: 线(), 提示: 提示们[提示们.length - 1] || "" };
+        await canvasFlushRemoteWrite();
+        return { 指得到, 按连接点, 按图标, 一, 连后, 盘上, 重开, 二, 再连, 撤后, 重做后, 断后, 断后盘上: 盘上线() };
+      } finally { window.canvasToast = 原提示; }
+    })()`);
+  ok(拖连.指得到, "连接点在卡右边，指得到（elementFromPoint 落在它身上）", 拖连.指得到);
+  ok(拖连.按连接点 === null && 拖连.按图标 === "w1", "★按在连接点上，画布不起拖卡★；反向对照：同样按在卡头图标上照常起拖", { 按连接点: 拖连.按连接点, 按图标: 拖连.按图标 });
+  ok(拖连.一.拦了默认 && 拖连.一.悬停.绿 && !拖连.一.悬停.红 && 拖连.一.悬停.有线 && !拖连.一.悬停.线红 && !拖连.一.悬停.话 && 拖连.一.悬停.拉线中,
+     "拖到角色卡上：角色卡套绿框，线是正常色，不冒原因", 拖连.一);
+  ok(同(拖连.连后.线, ["w1>w2"]) && !拖连.连后.提示.length && 收净(拖连.连后.残留),
+     "★从剧本的连接点拖到角色卡上松手：连上一根线★，不弹提示，线层、绿框都收干净", 拖连.连后);
+  ok(同(拖连.盘上, ["w1>w2"]) && 同(拖连.重开.线, ["w1>w2"]) && 同(拖连.重开.关系, ["input"]),
+     "★手连的线交进盘里，清掉本机缓存整页重开还在★，关系按默认记成「输入」", { 盘上: 拖连.盘上, 重开: 拖连.重开 });
+  ok(同(拖连.再连.线, ["w1>w2", "w1>w4"]) && 拖连.再连.同样, "手拖出来的线跟盘上铺回来的线一模一样（同一个 canvasConnect：样子、关系、标签）", 拖连.再连);
+  ok(同(拖连.撤后, ["w1>w2"]) && 同(拖连.重做后, ["w1>w2", "w1>w4"]), "★手连的这一下进撤销★：⌘Z 退掉刚连的那根，⇧⌘Z 回来", { 撤后: 拖连.撤后, 重做后: 拖连.重做后 });
+  ok(拖连.断后.断了 && 同(拖连.断后.线, ["w1>w2"]) && 拖连.断后.提示 === "连线已断开。" && 同(拖连.断后盘上, ["w1>w2"]),
+     "手连的线照旧能断开，盘上跟着少一根", { 断后: 拖连.断后, 盘上: 拖连.断后盘上 });
+
+  // ② 场次连上镜头，卡上多一行、当场长高：⌘Z 一下连线和长高一起退，不是头一下只退了卡高
+  const 场次长高 = await run(`
+    (async () => {
+      ${摆画布(场次.concat([卡片("sh6", "shot", { id: "S1-06", prompt: "第六镜" }, 520, 40)]), 场次线)}
+      ${连线工具}
+      try {
+        清选(); 视口(.6, 20, 20); ${等(60)}
+        canvasHistoryReset(canvasSnapshot());
+        const 高 = () => 卡("sc1").size().height, 行 = () => 根("sc1").querySelectorAll(".canvas-shot-row").length;
+        const 起 = { 高: 高(), 行: 行() };
+        await 拖线("sc1", "sh6");
+        const 连后 = { 高: 高(), 行: 行(), 线: 线() };
+        ${等(500)}
+        canvasUndo(); ${等(60)}
+        const 撤后 = { 高: 高(), 行: 行(), 线: 线() };
+        return { 起, 连后, 撤后 };
+      } finally { window.canvasToast = 原提示; }
+    })()`);
+  ok(场次长高.起.行 === 5 && 场次长高.连后.行 === 6 && 场次长高.连后.高 > 场次长高.起.高 && 场次长高.连后.线.includes("sc1>sh6"),
+     "前提：场次卡拖线连上第六镜，卡上多一行、当场长高", { 起: 场次长高.起, 连后: 场次长高.连后 });
+  ok(!场次长高.撤后.线.includes("sc1>sh6") && 场次长高.撤后.线.length === 5 && 场次长高.撤后.高 === 场次长高.起.高 && 场次长高.撤后.行 === 5,
+     "★⌘Z 一下：连线和长高一起退回去★ 记进撤销的那一步是量完卡高的样子", 场次长高.撤后);
+
+  // ③ 连不上的：悬停就标红、写原因；松手说一遍原因、不连；落回自己、落在空白、半路按 Esc 都什么也不留
+  const 连不上 = await run(`
+    (async () => {
+      ${摆画布([卡片("w1", "script", { title: "剧本一" }, 40, 40), 卡片("w2", "character", { name: "老周" }, 520, 40), 卡片("w3", "note", { title: "随手记" }, 40, 400), 卡片("w5", "image", { title: "站台参考" }, 520, 400)], [连("w1", "w2"), 连("w2", "w5")])}
+      ${连线工具}
+      try {
+        清选(); 视口(.6, 20, 20); ${等(60)}
+        const 试 = async (from, to, 半路) => { 提示们.length = 0; const r = await 拖线(from, to, 半路); return { 悬停: r.悬停, 线: 线(), 提示: 提示们.slice(), 残留: 残留() }; };
+        const 规则 = await 试("w1", "w3");
+        const 重复 = await 试("w1", "w2");
+        const 成环 = await 试("w5", "w2");
+        const 自己 = await 试("w1", "w1");
+        const vr = 视窗().getBoundingClientRect(), 空点 = { x: vr.left + 760, y: vr.top + 200 }, 空处 = document.elementFromPoint(空点.x, 空点.y);
+        const 空白 = await 试("w1", 空点);
+        空白.真空白 = !!空处 && !空处.closest("[model-id]");
+        const 半路Esc = await 试("w1", "w5", () => 按键(document.body, { key: "Escape" }));
+        await canvasFlushRemoteWrite();
+        return { 规则, 重复, 成环, 自己, 空白, 半路Esc, 盘上: 盘上线() };
+      } finally { window.canvasToast = 原提示; }
+    })()`);
+  const 原线 = ["w1>w2", "w2>w5"];
+  const 拦下 = (r, why) => r.悬停.红 && !r.悬停.绿 && r.悬停.线红 && r.悬停.话 === why && 同(r.线, 原线) && 同(r.提示, [why]) && 收净(r.残留);
+  ok(拦下(连不上.规则, "笔记用不上剧本的内容"), "★剧本拖到笔记上：笔记卡标红、线变红，旁边写「笔记用不上剧本的内容」；松手说这一句、不连★", 连不上.规则);
+  ok(拦下(连不上.重复, "这两张卡已经连着了"), "★已经连着的再拖一遍：标红写「这两张卡已经连着了」，不多连一根★", 连不上.重复);
+  ok(拦下(连不上.成环, "这样连会绕成一个圈"), "★参考图连回它上游的角色：标红写「这样连会绕成一个圈」，不连★", 连不上.成环);
+  ok(!连不上.自己.悬停.绿 && !连不上.自己.悬停.红 && 同(连不上.自己.线, 原线) && !连不上.自己.提示.length && 收净(连不上.自己.残留),
+     "拖回自己身上松手：不连、不弹提示、不留残线", 连不上.自己);
+  ok(连不上.空白.真空白 && 同(连不上.空白.线, 原线) && !连不上.空白.提示.length && 收净(连不上.空白.残留), "★拖到空白处松手：不连、不弹提示，半截线收干净★", 连不上.空白);
+  ok(连不上.半路Esc.悬停.绿 && 同(连不上.半路Esc.线, 原线) && !连不上.半路Esc.提示.length && 收净(连不上.半路Esc.残留),
+     "拖到能连的卡上、松手前按 Esc：线收掉，松手也不连，菜单不弹", 连不上.半路Esc);
+  ok(同(连不上.盘上, 原线), "连不上的几下，盘上的线一根没变", 连不上.盘上);
+
+  // ④ 卡上直接改：没选中点只是选中；选中后点提示词就地改，点别处存，检查器跟着换，进撤销
+  //   标题一行：回车存，拼音选字那一下（isComposing / 229 / 刚上屏 50ms 内）不算；Esc 不存、不往外冒
+  const 改卡 = await run(`
+    (async () => {
+      ${摆画布([卡片("w4", "shot", { id: "S1-01", prompt: "雨夜站台，路灯下两个人" }, 40, 40), 卡片("w2", "character", { name: "老周" }, 520, 40)], [])}
+      ${连线工具}
+      try {
+        清选(); 视口(1, 20, 20); ${等(60)}
+        canvasHistoryReset(canvasSnapshot());
+        const 框 = document.getElementById("canvas-inspector");
+        const 编辑框 = (id) => 根(id).querySelector("[data-canvas-inline-editor]");
+        const 检 = (key) => { const f = 框.querySelector('[data-inspect-key="' + key + '"]'); return f ? f.value : null; };
+        const 提示词格 = () => 根("w4").querySelector(".canvas-shot-prompt");
+        提示词格().click();
+        const 先选 = { 选中: [...canvasState.selectedIds], 开框: !!编辑框("w4") };
+        根("w4").querySelector("[data-canvas-settings]").click();
+        const 检查器原句 = 检("prompt");
+        提示词格().click();
+        const ed = 编辑框("w4");
+        const 进框 = { 标签: ed ? ed.tagName : "", 键: ed ? ed.getAttribute("data-canvas-inline-editor") : "", 焦点: document.activeElement === ed,
+          原格藏了: 提示词格().style.display === "none", 原句: ed ? ed.value : "" };
+        const 回车 = 按键(ed, { key: "Enter" });
+        const 回车后 = { 拦了: 回车.defaultPrevented, 开着: !!canvasState.inlineEdit && ed.isConnected };
+        ed.value = "雨夜站台，老周撑着伞"; ed.dispatchEvent(new Event("input", { bubbles: true }));
+        ed.blur();
+        let 失焦 = "真失焦";
+        if (canvasState.inlineEdit) { 失焦 = "补发blur"; ed.dispatchEvent(new FocusEvent("blur")); }
+        const 存后 = { 失焦, 字: 卡("w4").get("canvasPayload").prompt, 卡上: 提示词格() ? 提示词格().textContent : "", 卡上露着: !!提示词格() && 提示词格().style.display !== "none",
+          检查器: 检("prompt"), 框还在: !!编辑框("w4"), 开着: !!canvasState.inlineEdit };
+        await canvasFlushRemoteWrite();
+        const 盘上字 = ((window.__store.jia.main.nodes || []).find((n) => n.id === "w4") || { payload: {} }).payload.prompt;
+        ${等(400)}
+        canvasUndo(); ${等(60)}
+        const 撤后 = { 字: 卡("w4").get("canvasPayload").prompt, 卡上: 提示词格() ? 提示词格().textContent : "", 检查器: 检("prompt") };
+
+        canvasState.inspectorOpen = true; canvasSetSelection(new Set(["w2"]), "w2");
+        const 名字格 = () => 根("w2").querySelector(".canvas-node-head b"), 名 = () => 卡("w2").get("canvasPayload").name;
+        名字格().click();
+        const 名框 = 编辑框("w2");
+        const 名框样 = { 标签: 名框 ? 名框.tagName : "", 键: 名框 ? 名框.getAttribute("data-canvas-inline-editor") : "", 焦点: document.activeElement === 名框 };
+        名框.value = "老周头"; 名框.dispatchEvent(new Event("input", { bubbles: true }));
+        const 拼字 = [];
+        按键(名框, { key: "Enter", isComposing: true }); 拼字.push({ 法: "isComposing", 存了: 名() !== "老周", 开着: !!canvasState.inlineEdit });
+        按键(名框, { key: "Enter", keyCode: 229 }); 拼字.push({ 法: "keyCode229", 存了: 名() !== "老周", 开着: !!canvasState.inlineEdit });
+        名框.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "头" }));
+        按键(名框, { key: "Enter" }); 拼字.push({ 法: "刚上屏", 存了: 名() !== "老周", 开着: !!canvasState.inlineEdit });
+        ${等(80)}
+        const 真回车 = 按键(名框, { key: "Enter" });
+        const 回车存 = { 拦了: 真回车.defaultPrevented, 字: 名(), 开着: !!canvasState.inlineEdit, 卡上: 名字格().textContent, 检查器: 检("name") };
+
+        名字格().click();
+        const 再开 = 编辑框("w2");
+        再开.value = "改了不要"; 再开.dispatchEvent(new Event("input", { bubbles: true }));
+        按键(再开, { key: "Escape", isComposing: true });
+        const 拼字Esc = { 开着: !!canvasState.inlineEdit && 再开.isConnected };
+        let 冒出 = 0; const 听 = (e) => { if (e.key === "Escape") 冒出 += 1; };
+        document.addEventListener("keydown", 听);
+        const 退 = 按键(再开, { key: "Escape" });
+        document.removeEventListener("keydown", 听);
+        const Esc后 = { 开着: !!canvasState.inlineEdit, 框在: 再开.isConnected, 拦了: 退.defaultPrevented, 冒出, 字: 名(), 卡上: 名字格().textContent, 选中: [...canvasState.selectedIds] };
+        ${等(400)}
+        canvasUndo(); ${等(60)}
+        const 名撤后 = { 字: 名(), 卡上: 名字格().textContent };
+        await canvasFlushRemoteWrite();
+        return { 先选, 检查器原句, 进框, 回车后, 存后, 盘上字, 撤后, 名框样, 拼字, 回车存, 拼字Esc, Esc后, 名撤后 };
+      } finally { window.canvasToast = 原提示; }
+    })()`);
+  ok(同(改卡.先选.选中, ["w4"]) && !改卡.先选.开框, "没选中时点卡上的提示词：只是选中这张卡，不进改字", 改卡.先选);
+  ok(改卡.进框.标签 === "TEXTAREA" && 改卡.进框.键 === "prompt" && 改卡.进框.焦点 && 改卡.进框.原格藏了 && 改卡.进框.原句 === "雨夜站台，路灯下两个人"
+     && 改卡.检查器原句 === "雨夜站台，路灯下两个人", "选中后点提示词：就地换成多行输入框，光标在里面，带着原句", { 进框: 改卡.进框, 检查器原句: 改卡.检查器原句 });
+  ok(!改卡.回车后.拦了 && 改卡.回车后.开着, "提示词是多行：回车是换行，不收框（跟检查器、笔记卡一样）", 改卡.回车后);
+  ok(改卡.存后.字 === "雨夜站台，老周撑着伞" && 改卡.存后.卡上 === "雨夜站台，老周撑着伞" && 改卡.存后.卡上露着 && !改卡.存后.框还在 && !改卡.存后.开着
+     && 改卡.存后.检查器 === "雨夜站台，老周撑着伞" && 改卡.盘上字 === "雨夜站台，老周撑着伞",
+     "★卡上改完点别处：存进卡、交进盘里，开着的检查器那一格当场换成新句★", { 存后: 改卡.存后, 盘上字: 改卡.盘上字 });
+  ok(改卡.撤后.字 === "雨夜站台，路灯下两个人" && 改卡.撤后.卡上 === "雨夜站台，路灯下两个人" && 改卡.撤后.检查器 === "雨夜站台，路灯下两个人",
+     "★卡上改的这一笔进撤销★：⌘Z 一下，卡上、检查器都回到原句", 改卡.撤后);
+  ok(改卡.名框样.标签 === "INPUT" && 改卡.名框样.键 === "name" && 改卡.名框样.焦点, "角色名是一行：点名字换成单行输入框", 改卡.名框样);
+  ok(改卡.拼字.length === 3 && 改卡.拼字.every((x) => !x.存了 && x.开着),
+     "★拼音还在选字时按回车不存★（isComposing、keyCode 229、刚上屏 50ms 内都不算）", 改卡.拼字);
+  ok(改卡.回车存.拦了 && 改卡.回车存.字 === "老周头" && !改卡.回车存.开着 && 改卡.回车存.卡上 === "老周头" && 改卡.回车存.检查器 === "老周头",
+     "★选完字再回车：存了、框收起，卡头和检查器都是新名字★", 改卡.回车存);
+  ok(改卡.拼字Esc.开着, "拼字时按的 Esc 是取消拼字，框还开着", 改卡.拼字Esc);
+  ok(!改卡.Esc后.开着 && !改卡.Esc后.框在 && 改卡.Esc后.拦了 && 改卡.Esc后.冒出 === 0 && 改卡.Esc后.字 === "老周头" && 改卡.Esc后.卡上 === "老周头" && 同(改卡.Esc后.选中, ["w2"]),
+     "★Esc：框收起、不存，卡上还是原来的字★；Esc 不往外冒（冒上去是全局的「让我停下」），卡还选着", 改卡.Esc后);
+  ok(改卡.名撤后.字 === "老周" && 改卡.名撤后.卡上 === "老周", "名字这一笔也进撤销，⌘Z 回到「老周」", 改卡.名撤后);
+
+  // ⑤ 点一下连接点（不拖）：弹「新建并连上」，只列连得上的几种；点一种，新卡摆在右边空处、已经连好、整张露在视口里；⌘Z 一下全退
+  const 点加 = await run(`
+    (async () => {
+      ${摆画布([卡片("w1", "script", { title: "剧本一" }, 40, 40), 卡片("b1", "note", { title: "挡路的" }, 464, 40)], [])}
+      ${连线工具}
+      try {
+        清选(); 视口(1, 视窗().clientWidth - 420, 40); ${等(60)}
+        canvasHistoryReset(canvasSnapshot());
+        const 菜单 = () => document.querySelector(".canvas-port-menu");
+        const 量菜单 = () => {
+          const m = 菜单(); if (!m) return null;
+          const a = m.getBoundingClientRect(), p = 点("w1").getBoundingClientRect();
+          return { 挂在: m.parentElement ? m.parentElement.id : "", 头: (m.querySelector(".canvas-port-menu-head") || {}).textContent || "",
+            种: [...m.querySelectorAll("[data-canvas-port-add]")].map((b) => b.dataset.canvasPortAdd),
+            焦点在第一项: document.activeElement === m.querySelector("[data-canvas-port-add]"),
+            隔: a.left >= p.right ? Math.round(a.left - p.right) : Math.round(p.left - a.right), 竖着挨着: a.top < p.bottom && p.top < a.bottom,
+            在窗里: a.left >= 0 && a.top >= 0 && a.right <= innerWidth && a.bottom <= innerHeight };
+        };
+        点("w1").click();
+        const 开 = 量菜单();
+        按键(document.activeElement || document.body, { key: "Escape" });
+        const Esc收 = !菜单();
+        点("w1").click();
+        const vr = 视窗().getBoundingClientRect();
+        指(视窗(), "pointerdown", { x: vr.left + 40, y: vr.top + 500 });
+        const 点外收 = !菜单();
+        点("w1").click();
+        菜单().querySelector('[data-canvas-port-add="shot"]').click();
+        ${等(60)}
+        const 新 = canvasState.graph.getElements().find((n) => n.id !== "w1" && n.id !== "b1");
+        const 叠 = (a, b) => a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+        const 露全 = () => { const r = 根(新.id).getBoundingClientRect(), v = 视窗().getBoundingClientRect(); return r.left >= v.left && r.right <= v.right && r.top >= v.top && r.bottom <= v.bottom; };
+        const 加后 = 新 ? { 卡数: canvasState.graph.getElements().length, 种: canvasKind(新), 新id: 新.id, 线: 线(), 位置: 新.position(),
+          压着: canvasState.graph.getElements().filter((n) => n !== 新 && 叠(新.getBBox(), n.getBBox())).map((n) => n.id), 露全: 露全(), 平移: canvasState.x,
+          选中: [...canvasState.selectedIds], 菜单: !!菜单(), 提示: 提示们.slice() } : null;
+        await canvasFlushRemoteWrite();
+        const 盘 = window.__store.jia.main;
+        const 盘上 = { 卡: (盘.nodes || []).map((n) => n.id).sort(), 线: 盘上线() };
+        ${等(400)}
+        canvasUndo(); ${等(60)}
+        const 撤后 = { 卡: canvasState.graph.getElements().map((n) => n.id).sort(), 线: 线() };
+        await canvasFlushRemoteWrite();
+        return { 开, Esc收, 点外收, 加后, 盘上, 撤后 };
+      } finally { window.canvasToast = 原提示; }
+    })()`);
+  ok(点加.开 && 点加.开.挂在 === "assist-page" && 点加.开.头 === "新建并连上" && 点加.开.焦点在第一项 && 点加.开.在窗里
+     && 点加.开.隔 >= 0 && 点加.开.隔 <= 12 && 点加.开.竖着挨着,
+     "点一下连接点：贴着它弹「新建并连上」（右边放不下翻到左边），第一项拿到焦点", 点加.开);
+  ok(点加.开 && 同([...点加.开.种].sort(), ["agent", "character", "location", "storyboard", "scene", "shot", "image", "video"].sort()),
+     "★菜单只列剧本连得上的几种★：笔记、声音、时间线、剧本这几种不列", 点加.开 && 点加.开.种);
+  ok(点加.Esc收 && 点加.点外收, "菜单按 Esc、点画布别处都收起", { Esc收: 点加.Esc收, 点外收: 点加.点外收 });
+  ok(点加.加后 && 点加.加后.卡数 === 3 && 点加.加后.种 === "shot" && 同(点加.加后.线, ["w1>" + 点加.加后.新id]) && !点加.加后.提示.length,
+     "★点「镜头」：多出一张镜头卡，已经连在剧本后面★", 点加.加后);
+  ok(点加.加后 && 点加.加后.位置.x === 464 && 点加.加后.位置.y === 277 && !点加.加后.压着.length,
+     "新卡摆在剧本右边；那儿压着别的卡，就挪到它下面，谁也不压", 点加.加后 && { 位置: 点加.加后.位置, 压着: 点加.加后.压着 });
+  ok(点加.加后 && 点加.加后.露全 && 点加.加后.平移 < 410 && 同(点加.加后.选中, [点加.加后.新id]) && !点加.加后.菜单,
+     "新卡落在视口外就平移一段，整张露出来；选中的是它，菜单收了", 点加.加后 && { 露全: 点加.加后.露全, 平移: 点加.加后.平移, 选中: 点加.加后.选中 });
+  ok(点加.加后 && 同(点加.盘上.卡, ["b1", 点加.加后.新id, "w1"].sort()) && 同(点加.盘上.线, ["w1>" + 点加.加后.新id]), "新卡和线一起交进盘里", 点加.盘上);
+  ok(同(点加.撤后.卡, ["b1", "w1"]) && !点加.撤后.线.length, "★建卡和连线算一步：⌘Z 一下，新卡和线一起没了★", 点加.撤后);
+
+  // ⑥ 从场次卡点「+」：只列 Agent、镜头、时间线；新镜头连上、场次卡多一行长高，⌘Z 一下全退
+  const 场次加 = await run(`
+    (async () => {
+      ${摆画布(场次, 场次线)}
+      ${连线工具}
+      try {
+        清选(); 视口(.6, 20, 20); ${等(60)}
+        canvasHistoryReset(canvasSnapshot());
+        const 高 = () => 卡("sc1").size().height, 行 = () => 根("sc1").querySelectorAll(".canvas-shot-row").length;
+        const 起 = { 高: 高(), 行: 行() };
+        点("sc1").click();
+        const 种 = [...document.querySelectorAll(".canvas-port-menu [data-canvas-port-add]")].map((b) => b.dataset.canvasPortAdd);
+        document.querySelector('.canvas-port-menu [data-canvas-port-add="shot"]').click();
+        ${等(60)}
+        const 新 = canvasState.graph.getElements().find((n) => !["sc1", "p1", "p2", "p3", "p4", "p5"].includes(n.id));
+        const 加后 = { 高: 高(), 行: 行(), 线数: 线().length, 新id: 新 ? 新.id : "", 连着: !!新 && 线().includes("sc1>" + 新.id) };
+        ${等(500)}
+        canvasUndo(); ${等(60)}
+        const 撤后 = { 高: 高(), 行: 行(), 线: 线(), 卡数: canvasState.graph.getElements().length };
+        return { 起, 种, 加后, 撤后 };
+      } finally { window.canvasToast = 原提示; }
+    })()`);
+  ok(同([...场次加.种].sort(), ["agent", "shot", "timeline"]), "场次卡的「+」只列 Agent、镜头、时间线", 场次加.种);
+  ok(场次加.加后.连着 && 场次加.加后.线数 === 6 && 场次加.加后.行 === 6 && 场次加.加后.高 > 场次加.起.高, "前提：新镜头连上场次，场次卡多一行、当场长高", { 起: 场次加.起, 加后: 场次加.加后 });
+  ok(场次加.撤后.卡数 === 6 && 场次加.撤后.线.length === 5 && 场次加.撤后.行 === 5 && 场次加.撤后.高 === 场次加.起.高,
+     "★⌘Z 一下：新镜头、连线、场次卡长高一起退回去★", 场次加.撤后);
+
+  // ⑦ 拖卡不会顺手连线：按着卡头把一张卡拖到另一张卡上松手，只是挪了位置；反向对照：同一套指针事件从连接点出发就真连上
+  const 挪卡 = await run(`
+    (async () => {
+      ${摆画布([卡片("w3", "note", { title: "随手记" }, 40, 40), 卡片("w4", "shot", { id: "S1-01", prompt: "雨夜站台" }, 520, 40)], [])}
+      ${连线工具}
+      try {
+        清选(); 视口(1, 20, 20); ${等(60)}
+        const 头 = 根("w3").querySelector(".canvas-node-icon"), a = 中(头), b = 中(根("w4"));
+        const 鼠 = (el, type, at) => el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, clientX: at.x, clientY: at.y, button: 0, buttons: type === "mouseup" ? 0 : 1 }));
+        // 照浏览器的顺序：pointerdown → mousedown → (pointermove → mousemove)… → pointerup → mouseup → click
+        指(头, "pointerdown", a); 鼠(头, "mousedown", a);
+        const 起拖 = canvasState.nodeGesture ? canvasState.nodeGesture.id : null;
+        for (let i = 1; i <= 8; i++) {
+          const at = { x: a.x + (b.x - a.x) * i / 8, y: a.y + (b.y - a.y) * i / 8 };
+          指(document.elementFromPoint(at.x, at.y) || document.body, "pointermove", at); 鼠(document, "mousemove", at);
+        }
+        const 拖着 = { 框: document.querySelectorAll(".is-link-ok, .is-link-bad").length, 线层: !!document.querySelector(".canvas-wire-layer"), 拉着: !!canvasState.wire };
+        指(document.elementFromPoint(b.x, b.y) || document.body, "pointerup", b); 鼠(document, "mouseup", b); 头.click();
+        ${等(60)}
+        let 挪法 = "真拖";
+        const 到 = 卡("w3").position();
+        if (到.x === 40 && 到.y === 40) { 挪法 = "直接摆"; 卡("w3").position(680, 150); }
+        const 挪后 = { 挪法, 起拖, 位置: 卡("w3").position(), 线: 线(), 残留: 残留(), 手势: !!canvasState.nodeGesture, 拖着, 提示: 提示们.slice() };
+        卡("w3").position(40, 40); canvasState.skipNodeClick = null; canvasState.suppressInspectorUntil = 0; ${等(60)}
+        await 拖线("w3", "w4");
+        const 对照 = { 线: 线() };
+        return { 挪后, 对照 };
+      } finally { window.canvasToast = 原提示; }
+    })()`);
+  ok(挪卡.挪后.起拖 === "w3" && 挪卡.挪后.挪法 === "真拖" && (挪卡.挪后.位置.x !== 40 || 挪卡.挪后.位置.y !== 40),
+     "按着卡头拖：画布照常把卡挪走（真走 JointJS 拖卡那一路）", 挪卡.挪后);
+  ok(!挪卡.挪后.线.length && !挪卡.挪后.拖着.框 && !挪卡.挪后.拖着.线层 && !挪卡.挪后.拖着.拉着 && 收净(挪卡.挪后.残留) && !挪卡.挪后.手势 && !挪卡.挪后.提示.length,
+     "★把一张卡拖到另一张卡上松手：只是挪了位置，不连线、不标红绿、不弹菜单★", 挪卡.挪后);
+  ok(同(挪卡.对照.线, ["w3>w4"]), "反向对照：同一套指针事件从连接点出发拖到同一张卡上，就真连上了", 挪卡.对照);
+
+  console.log("\n— 五十一、成员账号的画布：文件夹下拉里不给「选择其他文件夹」 —");
+  // 成员这类账号项目只能建在自己的工作目录里，服务端不收 dir；下拉里还摆着「选择其他文件夹…」，选完只会吃一个 400。
+  // 反向对照：管理员（不带 own）照旧有这一项
+  const 选文件夹 = await run(`
+    (async () => {
+      const 量 = async (own) => {
+        window.__projOwn = own;
+        ${摆画布([卡片("w1", "script", { title: "剧本一" }, 40, 40)], [])}
+        const sel = document.querySelector("[data-canvas-workspace-select]");
+        const 项 = sel ? [...sel.options].map((o) => o.value) : [];
+        return { 项, 有选: 项.includes("__pick__"), 能点: !!sel && !sel.disabled };
+      };
+      try { return { 成员: await 量(true), 管理员: await 量(false) }; } finally { window.__projOwn = false; }
+    })()`);
+  ok(!选文件夹.成员.有选 && 选文件夹.成员.能点 && 同(选文件夹.成员.项, ["jia", "yi"]) && 选文件夹.管理员.有选,
+     "★成员账号的画布：文件夹下拉里只有自己的几个项目，没有「选择其他文件夹…」★；管理员照旧有", 选文件夹);
 
   srv.close();
   console.log(fail ? `\n有失败：${pass} 过 / ${fail} 挂` : `\n全部通过：${pass} 过 / 0 挂`);

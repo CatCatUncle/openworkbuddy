@@ -845,6 +845,35 @@ html[data-theme="dark"] .ui-select {
 .canvas-context-menu button.is-danger { color: var(--owb-err-text); }
 .canvas-context-menu button .i { width: 15px; height: 15px; }
 .canvas-context-divider { height: 1px; margin: 5px 4px; background: var(--owb-border); }
+/* 卡右边那颗连接点（canvasDecorateNode）：往外拖是连线，点一下是「新建并连上」。
+   平时藏着，指到卡上、选中卡、键盘挪到它上面才露出来；触屏没有「指到」，一直露着 */
+.canvas-joint-node { position: relative; }
+.canvas-port { position: absolute; top: 50%; right: -11px; z-index: 3; display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; width: 22px; height: 22px; margin-top: -11px; padding: 0; border: 1px solid var(--owb-border); border-radius: 50%; background: var(--owb-bg); color: var(--owb-brand-text); box-shadow: var(--shadow-surface); cursor: crosshair; opacity: 0; touch-action: none; user-select: none; transition: opacity .12s var(--owb-ease); }
+.canvas-port .i { width: 13px; height: 13px; }
+.canvas-port:hover { border-color: var(--owb-brand); background: var(--owb-brand-weak); }
+.canvas-joint-node:hover .canvas-port, .canvas-joint-node.is-selected .canvas-port, .canvas-port:focus-visible { opacity: 1; }
+@media (hover: none) { .canvas-port { opacity: 1; } }
+/* 拖出来的那根线、悬停时的红绿框：线画在视口上单独一层 svg 里，不进图、不存盘；红框旁边那句是连不上的原因 */
+.canvas-viewport.is-wiring { cursor: crosshair; user-select: none; }
+.canvas-wire-layer { position: absolute; inset: 0; z-index: 20; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.canvas-wire { fill: none; stroke: var(--owb-brand-text); stroke-width: 2; stroke-dasharray: 6 4; }
+.canvas-wire.is-bad { stroke: var(--owb-err); }
+.canvas-joint-node.is-link-ok .canvas-node { border-color: var(--owb-ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--owb-ok) 30%, transparent), var(--shadow-surface); }
+.canvas-joint-node.is-link-bad .canvas-node { border-color: var(--owb-err); box-shadow: 0 0 0 3px color-mix(in srgb, var(--owb-err) 30%, transparent), var(--shadow-surface); }
+.canvas-wire-tag { position: absolute; z-index: 21; padding: 4px 8px; border: 1px solid var(--owb-err); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--destructive) 10%, var(--owb-bg)); color: var(--owb-err-text); box-shadow: var(--shadow-surface); font-size: 12px; white-space: nowrap; pointer-events: none; }
+.canvas-wire-tag[hidden] { display: none; }
+/* 点连接点弹出来的「新建并连上」：跟工具栏「添加节点」同一套按钮（.canvas-page 下那几条也管它），只列连得上的几种 */
+.canvas-port-menu { position: fixed; z-index: 4000; box-sizing: border-box; width: min(360px, calc(100vw - 16px)); padding: 6px; border: 1px solid var(--owb-border); border-radius: var(--radius-lg); background: color-mix(in srgb, var(--owb-bg) 98%, transparent); box-shadow: var(--shadow-menu); }
+.canvas-port-menu-head { padding: 4px 6px 8px; color: var(--owb-text-2); font-size: 12px; font-weight: 600; }
+.canvas-port-menu-body { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; max-height: 300px; overflow: auto; }
+/* 卡上能直接改的那几格：选中了才像能点（指上去垫一层底色、光标变竖线）；没选中点一下只是选中 */
+.canvas-joint-node.is-selected [data-canvas-inline-edit] { cursor: text; border-radius: var(--radius-xs); }
+.canvas-joint-node.is-selected [data-canvas-inline-edit]:hover { background: var(--owb-bg-hover); box-shadow: 0 0 0 2px var(--owb-bg-hover); }
+.canvas-inline-input, .canvas-inline-text { box-sizing: border-box; width: 100%; margin: 0; padding: 4px 6px; border: 1px solid var(--owb-border); border-radius: var(--radius-md); background: var(--owb-bg); color: var(--owb-text); font: inherit; font-size: 12px; line-height: 1.45; }
+.canvas-inline-input { font-size: 13px; font-weight: 600; }
+.canvas-inline-text { display: block; margin-bottom: 8px; resize: vertical; }
+.canvas-script-body > .canvas-inline-text { flex: 1; min-height: 0; margin-bottom: 0; resize: none; }
+.canvas-inline-input:focus, .canvas-inline-text:focus { outline: none; border-color: var(--owb-brand); box-shadow: 0 0 0 2px var(--owb-brand-weak); }
 .canvas-create-board-dialog { position: fixed; z-index: 5000; inset: 0; display: grid; place-items: center; padding: 24px; background: color-mix(in srgb, var(--foreground) 42%, transparent); opacity: 0; transition: opacity .14s var(--owb-ease); }
 .canvas-create-board-dialog.is-open { opacity: 1; }
 .canvas-create-board-card { width: min(410px, 100%); padding: 20px; border: 1px solid var(--owb-border); border-radius: var(--radius-xl); background: var(--owb-bg); box-shadow: var(--shadow-menu); }
