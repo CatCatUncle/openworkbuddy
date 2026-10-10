@@ -142,6 +142,8 @@
       "以下按纯文本显示，看全请下载。": "Shown as plain text below; download for the full file.",
       "浏览器不允许写剪贴板（需 HTTPS），请右键「复制图片」或下载": "The browser blocks clipboard writes (needs HTTPS); right-click “Copy image” or download",
       "这张图无法复制，请下载后再复制": "This image can't be copied; download it first",
+      "缩略图没显示出来": "Thumbnail didn't load",
+      "浏览器放不了这段视频，点开可换系统播放器": "The browser can't play this video. Open it to use the system player",
       "这是网页，要本地起服务预览吗？（相对路径和 fetch 才正常）": "This is a web page. Serve it locally? (needed for relative paths and fetch)",
       "还没有终端任务。在终端跑": "No terminal tasks yet. Run",
       "就会出现在这里。": "in a terminal and it shows up here.",
@@ -984,6 +986,11 @@
       "（没填）": "(left blank)",
       // 「本回合产出」没数全时的说明（app-01.js 的 renderTurnOutputs）
       "这回合的产出可能没列全": "This turn's outputs may not all be listed",
+      // 产出清单里文件不在了的那行，和预览打开一个已经不在的文件（app-01.js 的 markRowGone / pvGone）
+      "已删除": "Deleted",
+      "这个文件已经不在了": "This file is no longer there",
+      "打开同名的那份": "Open the one with the same name",
+      "这个文件没读出来": "Couldn't read this file",
       "未授权": "Not granted",
       "未检测": "Not checked",
       "去授权": "Grant",
@@ -2629,6 +2636,7 @@
   // 带数字/名字的动态句子：整句匹配，$1 回填
   const PATTERNS = {
     en: [
+      [/^图片没取到（HTTP (\d+)）$/, "Couldn't fetch the image (HTTP $1)"],
       [/^这个月已用：搜索 (\d+) 次，路线 (\d+) 次$/, "Used this month: $1 searches, $2 routes"],
       [/^这个月已用：搜索 (\d+) 次，路线 (\d+) 次；今天停用高德，它回的是「(.+)」$/, "Used this month: $1 searches, $2 routes; Amap is off for today. It said: \u201c$3\u201d"],
       [/^第 (\d+) 步 · 思考规划中…$/, "Step $1 · thinking…"],

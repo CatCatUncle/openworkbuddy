@@ -282,7 +282,9 @@ The diagram doubles as a reading order: start at `server.js`, then see how `src/
 
 ## What's new
 
-- **Oct 10** With more than one account, working folders, outputs and the library are kept per account; files in Local output can now be deleted, though not while a task is running
+- **Oct 10** Turn outputs are ranked by importance: finished deliverables come first and the final one opens in the preview by itself; deleted files are marked "Deleted" and sink, and opening a file checks it's still there
+- **Oct 10** The input box grows with your text up to about a third of the window; an edge fades when there's more text out of view, and the scroll buttons no longer cover what you're typing
+- **Oct 10** With more than one account, members and branch-org accounts each get their own working folder, outputs and library, while admins keep the original shared one; files in Local output can now be deleted, though not while a task is running
 - **Oct 10** Local Claude Code: tick "Ask me before deleting files and similar" and rm, sudo and the like pop up an approval card and run only once approved; owner-only box, off by default
 - **Oct 10** Settings descriptions in plain words: each item says what it does, its default and whether it costs money; settings named in error messages match the Settings page word for word
 - **Oct 9** Switching the working folder no longer brings along another chat's files: folders you pick also get one subfolder per chat, and the placement is remembered per folder

@@ -4673,10 +4673,17 @@ function makeFilesEmitter({ emit, ownership, baseDir, runToken, scan = false, ga
       // 拷一份再发：后台那条路上快照是几条对话共用的，事件里的对象不能跟别的对话串成同一个
       if (f) extra.push({ name: f.name, size: f.size, mtime: f.mtime }); else unseen.push(n);
     }
+    // 确实没了的（删掉、挪走）照实报给前端，名字放在 gone 里。以前只从账上悄悄划掉，前端得自己拿
+    // 「清单里找不着」去猜谁没了——可清单只有最新 500 条，工作目录一大（真实用户 1840 个）就永远是
+    // 截过的，前端一次都不敢撤，草稿删了、脚本挪进子目录，卡和行照样挂着，点开就是「不存在」
+    const gone = [];
     if (unseen.length) {
-      const alive = statOutputs(unseen);
+      const lost = [];
+      const alive = statOutputs(unseen, lost);
       const live = new Set(alive.map((f) => f.name));
       for (const n of unseen) if (!live.has(n)) reported.delete(n);
+      // 基线里也抹掉：同名文件后来又被写回来（挪回原处、删了重新生成），得再认一次产出，不然前端那一行永远是「已删除」
+      for (const n of lost) { baseline.delete(n); gone.push(n); }
       extra.push(...alive);
     }
     extra.sort((a, b) => (a.mtime < b.mtime ? 1 : a.mtime > b.mtime ? -1 : 0));
@@ -4685,7 +4692,7 @@ function makeFilesEmitter({ emit, ownership, baseDir, runToken, scan = false, ga
     let sig = String(files.length) + "/" + turnFiles.length + (snap.capped ? "+" : "");
     for (const f of files) sig += "\u0000" + f.name + "|" + f.mtime + "|" + f.size;
     for (const f of turnFiles) sig += "\u0000" + f.name + "|" + f.mtime + "|" + f.size;
-    if (!changed.length && sig === lastSig) return; // 盘上一个字节没动：这条事件对界面是纯噪音
+    if (!changed.length && !gone.length && sig === lastSig) return; // 盘上一个字节没动：这条事件对界面是纯噪音
     lastSig = sig;
     // root/full 是这份清单的作用域：前端靠它判断能不能拿这份列表给旧产出盖「已删除」
     const scope = filesScope(files);
@@ -4693,6 +4700,7 @@ function makeFilesEmitter({ emit, ownership, baseDir, runToken, scan = false, ga
     emit({
       type: "files", files, changed,
       ...(turnFiles.length ? { turn_files: turnFiles } : {}),
+      ...(gone.length ? { gone } : {}),
       // 整树那趟撞了上限：更深处的改动可能没差出来，照实告诉前端，别让它当成看全了
       ...(snap.capped ? { scan_capped: true } : {}),
       ...scope,

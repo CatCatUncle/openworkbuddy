@@ -255,6 +255,7 @@ async function login(username, password) {
   eq(r.json.org, "default", "总部发的码属于默认组织，请求里塞了别家的 id 也没用");
   const hqInv = r.json.code;
   r = await call("POST", "/api/auth/register", { body: { username: "hqguy", password: "pw-hq-12345", invite: hqInv } });
+  const hq = r.cookie;
   eq(r.json.user.org, "default", "用总部的码注册，人落在总部");
 
   // 分公司刚建好一个人都没有，它自己的邀请码页没人打得开。第一张码由平台管理员从组织列表发，
@@ -1575,6 +1576,29 @@ async function login(username, password) {
         done();
       });
     });
+
+    // ---- 20.4 总部的成员：租户作用域还要问一句「留不留在共享根上」，这一问不能再翻一遍账本 ----
+    // 判这个得知道默认组织里排第一的是谁（admin.keepsSharedSpace → account.keeperName）。
+    // 以前另记一份两秒的缓存，两秒一过下一条请求就多读一整本 users.json；
+    // 现在认人那一步读账本时顺手记下，账本没动过就不再读
+    const tkHq = String(hq).split("=").slice(1).join("=");
+    poke20((db) => { db.tokens[tkHq].seen = Date.now() - 60 * 1000; }); // 刚露过面：这一趟不记活跃，量到的只有认人和这一问
+    await new Promise((done) => setTimeout(done, 2100)); // 过了两秒：老写法的缓存这时已经过期
+    const c204 = await countReads(() => call("GET", "/api/nothing", { cookie: hq }));
+    eq(c204.res.status, 200, "测试自检：总部成员 hqguy 这条请求本身是通的");
+    ok(c204.users <= 1, "★总部的成员隔两秒再来一条，users.json 还是只翻一遍★ 以前「留不留在共享根上」那一问要另读一遍",
+       { 读了: c204.users });
+    // 账本动过就得认新的：不能为了省一遍读，把换下去的人还当成排第一的
+    eq(account.keeperName(), "laoban", "测试自检：默认组织里排第一的是开服的 laoban");
+    const raw204 = fs.readFileSync(USERS20, "utf8");
+    poke20((db) => {
+      db.users.find((u) => u.username === "laoban").role = "member";
+      db.users.find((u) => u.username === "hqguy").role = "owner";
+    });
+    try {
+      eq(account.keeperName(), "hqguy", "★账本一改，下一问立刻认出新的那个★ 不用等缓存过期");
+    } finally { fs.writeFileSync(USERS20, raw204); }
+    eq(account.keeperName(), "laoban", "改回去，下一问也立刻认回来");
   }
 
 

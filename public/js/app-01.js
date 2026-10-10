@@ -1251,7 +1251,7 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
         const alt = btn.dataset.alt;
         if (alt) { btn.dataset.rel = alt; btn.dataset.alt = ""; btn.dataset.root = ""; img.src = attachThumb(alt, ""); return; } // 老会话：改试工作区根
         btn.classList.add("gone");
-        btn.title = btn.title.replace(" · 点击预览", " · 这份素材读不出来了：可能已被改名、移走或删掉");
+        btn.title = btn.title.replace(" · 点击预览", " · 没显示出来"); // 只说看到的：读不出来不一定是没了，点开预览会再问服务端
       };
     }
   }
@@ -1945,8 +1945,16 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
       const turnOut = ev.changed
         ? pool.filter(f => ev.changed.includes(f.name))
         : changedFiles(ev.files);
-      liveOuts += turnOut.length;
-      for (const f of turnOut) if (!liveOutFiles.some((x) => x.name === f.name)) liveOutFiles.push(f);
+      // 服务端报的「这回合写过、现在没了」：挪走或删掉的，一件只报一次
+      const gone = Array.isArray(ev.gone) ? ev.gone.map(String) : [];
+      // 「产出 N 件」数的是几个文件，不是来了几批：同一份网页改写八遍还是一件。
+      // 同名的换成最新那一版（收尾挑预览那件要按 mtime 认「最后一批」），没了的拿掉
+      for (const f of turnOut) {
+        const i = liveOutFiles.findIndex((x) => x.name === f.name);
+        if (i < 0) liveOutFiles.push(f); else liveOutFiles[i] = f;
+      }
+      for (let i = liveOutFiles.length - 1; i >= 0; i--) if (gone.includes(liveOutFiles[i].name)) liveOutFiles.splice(i, 1);
+      liveOuts = liveOutFiles.length;
       if (ev.root) outRoot = ev.root;
       // 这一轮写回根上的老产出（整篇重写分文件夹以前那份）：「本对话」照样摆它
       const ownDir = !isReplaying && sessionDirs.get(turnSid);
@@ -1956,6 +1964,10 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
         sessionRootFiles.get(turnSid).add(String(n));
       }
       renderTurnOutputs(body, turnOut, pool, ev); // 先算差异，快照要等 applyOutputArrival 才推进
+      // 前几回合的产出块里也挂着这几件的话一起撤。只在眼前这条对话跑着的时候做：
+      // 回放往前补旧轮时，那会儿删掉的文件后来可能又写回来了，拿旧消息去改后面的块就改错了
+      if (gone.length && !isReplaying && turnSid === sessionId && typeof markOutputGone === "function")
+        for (const n of gone) markOutputGone(n, ev.root || outRoot);
       // 回放历史任务时这些是当时的文件列表：拿它去刷右侧面板会把现在的状态盖成旧的。产出 chip 照摆，其余一律不动
       // 后台在跑的别的对话：只悄悄更新清单，不重画右侧——以前这里不分是谁的回合，
       // 几个对话同时跑时，成果区被别的对话的产出一遍遍刷掉，看着像文件串了
@@ -1972,6 +1984,7 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
         pvCurrent,
         filesOpen: document.getElementById("files-panel").classList.contains("show"),
         listed: ev.files, // 角标只数面板里点得到的
+        gone, // 预览开着的那件被挪走或删掉了：跟到新位置，或者直说没了
       }), ev.files);
     } else if (ev.type === "sweep") {
       // 只在「刚跑完的这一趟」结束时出现一次；回放历史记录时不再问——
@@ -2096,7 +2109,10 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
       filesOpen: document.getElementById("files-panel").classList.contains("show"),
       narrow: window.innerWidth <= 900,
     });
-    if (fpv.preview) previewFile(fpv.preview);
+    // next 是排在后面的几件：第一件打开发现已经不在了，预览自己往下顶，不停在一句「文件不存在」上
+    if (fpv.preview) previewFile(fpv.preview, undefined, { next: fpv.next });
+    // 这块产出里列的文件现在还在不在：跑完问一次；翻历史时滚到眼前再问
+    if (outBlock && typeof verifyOutBlock === "function") { if (isReplaying) watchOutBlock(outBlock); else verifyOutBlock(outBlock); }
     if (turnMode === "plan") renderPlanChecklist();
   }
 
@@ -2628,6 +2644,25 @@ inputEl.addEventListener("keydown", (e) => {
     mentionState = null;
   }
 }, true);
+
+// ---------- 输入框写长了：上面 / 下面还有字的那一边渐隐 ----------
+// 框的高度全交给 CSS（field-sizing: content，最少两行、最高约三分之一窗口）。这里只管 CSS 做不到的两件：
+// ① 框里还有没露出来的字，就给那一边挂 .fade-t / .fade-b，人一眼看出还能往哪滚；
+// ② 框长高时对话区跟着变矮，原来贴着底看最新回复的，接着贴底，最后几行不被挤到输入框后面。
+const inputBox = document.getElementById("input-box");
+function syncInputFade() {
+  const hidden = inputEl.scrollHeight - inputEl.clientHeight;
+  inputBox.classList.toggle("fade-t", hidden > 1 && inputEl.scrollTop > 1);
+  inputBox.classList.toggle("fade-b", hidden > 1 && hidden - inputEl.scrollTop > 1);
+}
+inputEl.addEventListener("input", syncInputFade);
+inputEl.addEventListener("scroll", syncInputFade, { passive: true });
+if (window.ResizeObserver) {
+  // 发完清空、程序改值这些不发 input 事件的路子，高度一变也会走到这里
+  new ResizeObserver(syncInputFade).observe(inputEl);
+  // 窗口拉矮、目标卡冒出来也一样：贴着底的就接着贴底
+  new ResizeObserver(() => { if (chatStick) chatScroll.scrollTop = chatScroll.scrollHeight; }).observe(chatScroll);
+}
 
 // ================= 成果文件 =================
 // ───────── AI 拿不准时的提问卡 ─────────
@@ -3600,9 +3635,10 @@ function pvVer(name, root) {
  * 所以先问一句，把答案拼进地址：同一版还是同一个地址（缓存里照样只存一份），改过了地址跟着变。
  * HEAD 是 express 给 GET 路由自带的，老服务端一样答；问不到就用原来的地址，不比以前差。
  */
-async function pvFreshTag(url) {
+async function pvFreshTag(url, seen) {
   try {
     const r = await fetch(url, { method: "HEAD", cache: "no-store" });
+    if (seen && r) seen.status = r.status; // 404 留给调用方：可能是文件已经没了，见 pvConfirmGone
     if (!r || !r.ok || !r.headers) return "";
     return String(r.headers.get("etag") || r.headers.get("last-modified") || "");
   } catch { return ""; }
@@ -3735,9 +3771,10 @@ const PV_TEXT_MAX = 512 * 1024; // 只取前 512KB。以前是整包 fetch 完�
                                 // 碰上几百 MB 的日志，渲染进程在 slice 之前就已经卡死了
 
 /** 取文件开头一段当文本。服务端是 res.sendFile，自带 Range 支持（实测 206 + Content-Range） */
-async function fetchTextHead(url) {
+async function fetchTextHead(url, seen) {
   try {
     const r = await fetch(url, { headers: { Range: `bytes=0-${PV_TEXT_MAX - 1}` } });
+    if (seen && r) seen.status = r.status;
     if (!r.ok && r.status !== 206) return null;
     let text = await r.text();
     const m = /\/(\d+)\s*$/.exec(r.headers.get("Content-Range") || "");
@@ -3783,6 +3820,71 @@ function bindPvFallback(body, name, root) {
   if (rvBtn) rvBtn.onclick = () => revealFile(name, null, r);
   const dlBtn = body.querySelector(".pv-download");
   if (dlBtn) dlBtn.onclick = () => downloadFile(name, r);
+}
+
+/**
+ * 预览拉回来 404 时，再问服务端一句：这个名字现在到底在不在。
+ * 404 不全是「没了」——越权、名字里有服务端不认的字符也是 404。只凭 404 就说「已经不在了」
+ * 是替人下结论，所以只认它明说的 false；问不通一律当还在，照原来的路子显示。
+ */
+async function pvConfirmGone(name, root) {
+  try {
+    const r = await fetch(withRoot("/api/files/exists", root), {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paths: [name] }),
+    });
+    if (!r || !r.ok) return false;
+    const d = await r.json();
+    return !!(d && d.exists && d.exists[name] === false);
+  } catch { return false; }
+}
+// 网页、PDF、SVG 是 iframe 自己去拉的，404 只会变成框里一行小字，外面看不见。
+// 先照常摆上，另外问一句；确认没了再换成 pvGone 那一屏
+async function pvProbeGone(name, url, seq, opts) {
+  const seen = {};
+  await pvFreshTag(url, seen);
+  const stale = () => seq !== pvSeq || pvCurrent !== name;
+  if (seen.status !== 404 || stale()) return;
+  if (!(await pvConfirmGone(name, pvRoot)) || stale()) return;
+  pvGone(name, opts);
+}
+// 工作目录里恰好只有一份同名文件：多半就是被挪过去的那份。两份以上猜不准是哪个，宁可不给
+function pvTwinOf(name) {
+  if (typeof filesCache === "undefined" || !Array.isArray(filesCache)) return null;
+  const fr = typeof filesRoot === "undefined" ? "" : String(filesRoot || "");
+  if (pvRoot && fr && pvRoot !== fr) return null;
+  const base = String(name).split("/").pop();
+  const hits = filesCache.filter((f) => f && f.name && f.name !== name && String(f.name).split("/").pop() === base);
+  return hits.length === 1 ? hits[0].name : null;
+}
+/**
+ * 预览的这件确定不在了（挪走或删掉）。
+ * 以前停在一句「文件不存在」上，网页那种还缩在框里一行小字，看着像预览坏了。现在：
+ *   · 对话里挂着它的卡片、清单行一起撤，别让人在别处再撞一次；
+ *   · 收尾自动打开时排了后备（opts.next），顶上下一件；
+ *   · 没有后备就直说没了；工作目录里有一份同名的，给一颗按钮去开它。
+ * 下载、系统打开、定位这几颗按钮对着的是一个不存在的文件，先收起来，换文件时 previewFile 再放出来。
+ */
+function pvGone(name, opts) {
+  if (typeof markOutputGone === "function") markOutputGone(name, pvRoot);
+  const next = ((opts && opts.next) || []).filter((n) => n && n !== name);
+  if (next.length) { previewFile(next[0], pvRoot, { next: next.slice(1) }); return; }
+  unloadPreview();
+  const body = document.getElementById("pv-body");
+  if (!body) return;
+  const twin = pvTwinOf(name);
+  body.classList.remove("pv-mid", "pv-full");
+  body.innerHTML = pvNotice("circle-x", "这个文件已经不在了", twin ? `<button class="pv-moved" title="${esc(twin)}">打开同名的那份</button>` : "");
+  const mv = body.querySelector(".pv-moved");
+  if (mv) mv.onclick = () => previewFile(twin, pvRoot);
+  for (const id of ["pv-dl", "pv-sys", "pv-rv", "pv-deploy"]) {
+    const el = document.getElementById(id);
+    if (el) el.style.display = "none";
+  }
+  setPvCopy("");
+}
+// 文件事件报了预览开着的那件没了（outputArrivalPlan 的 lost）：面板还开着、还是这件才换
+function showPreviewGone(name) {
+  if (pvCurrent === name && pvPanel.classList.contains("show")) pvGone(name);
 }
 /**
  * 大文件截断提示。
@@ -4715,7 +4817,8 @@ const PV_FIT_REPORTER = '<script>(function(){var w0=-1;function s(){try{var d=do
   + 'parent.postMessage({__wbFit:1,w:w,h:h,v:innerWidth},"*");}catch(e){}}'
   + 'addEventListener("load",s);addEventListener("resize",function(){if(innerWidth!==w0)s();});setTimeout(s,0);setTimeout(s,150);setTimeout(s,700);})()<\/script>';
 
-async function previewFile(name, root) {
+// opts.next：这件打不开（已经不在了）时接着试的几件，收尾自动打开那一下才给，见 pvGone
+async function previewFile(name, root, opts) {
   if (OFFICE_RE.test(name)) {
     // Office 文件交给本机 Office/WPS 打开。多人服务器上「本机」是服务端那台，
     // 对成员没意义也没权限——那边直接给他下载，这才是他真正想要的结果
@@ -4734,6 +4837,7 @@ async function previewFile(name, root) {
   document.getElementById("pv-body").innerHTML = pvNotice("loader-circle", "正在打开…");
   document.getElementById("pv-name").textContent = name;
   document.getElementById("pv-dl").href = withRoot("/api/files/download/" + fpath(name), pvRoot);
+  document.getElementById("pv-dl").style.display = ""; // 上一件「已经不在了」时收起来的，换了文件放回来
   const body = document.getElementById("pv-body");
   // 每次换文件都从第一行/第一屏开始。浏览器不会因为 innerHTML 换了就可靠地清掉
   // overflow 容器的旧 scrollTop；Markdown、HTML 和纯文本共用这一层，统一在这里归零。
@@ -4746,7 +4850,11 @@ async function previewFile(name, root) {
   // 图和音视频：同地址的元素浏览器不回去核对（见 pvFreshTag），先问一句这一版，拼进地址
   let elUrl = url;
   if (kind === "image" || kind === "audio" || kind === "video") {
-    const tag = await pvFreshTag(url);
+    const seen = {};
+    const tag = await pvFreshTag(url, seen);
+    if (stale()) return;
+    // 问版本这一下回了 404、服务端也确认没了：直说，不摆一张裂图、一个黑框
+    if (seen.status === 404 && (await pvConfirmGone(name, pvRoot))) { if (!stale()) pvGone(name, opts); return; }
     if (stale()) return;
     if (tag) elUrl = url + "&e=" + encodeURIComponent(tag);
   }
@@ -4810,7 +4918,10 @@ async function previewFile(name, root) {
       bindPvFallback(body, name);
     };
   } else if (kind === "doc" || kind === "sheet" || kind === "slides" || kind === "archive") {
-    const d = await fetch(withRoot("/api/files/preview/" + fpath(name) + "?v=" + ver, pvRoot)).then(r => r.json()).catch(() => null);
+    let st = 0;
+    const d = await fetch(withRoot("/api/files/preview/" + fpath(name) + "?v=" + ver, pvRoot)).then(r => { st = r.status; return r.json(); }).catch(() => null);
+    if (stale()) return;
+    if (st === 404 && (await pvConfirmGone(name, pvRoot))) { if (!stale()) pvGone(name, opts); return; }
     if (stale()) return;
     if (!d || d.error) body.innerHTML = pvFallback(d && d.error ? d.error : "读不出这个文件的内容");
     else body.innerHTML = kind === "doc" ? docHtml(d) : kind === "sheet" ? sheetHtml(d) : kind === "slides" ? slidesHtml(d) : archiveHtml(d);
@@ -4821,9 +4932,13 @@ async function previewFile(name, root) {
   } else if (kind === "binary") {
     body.innerHTML = pvFallback("这是二进制文件");
   } else {
-    const r = await fetchTextHead(url);
+    const seen = {};
+    const r = await fetchTextHead(url, seen);
     if (stale()) return;
-    if (!r) body.innerHTML = pvNotice("circle-x", "这个文件没读出来，可能刚刚被移走或删掉了");
+    if (!r && seen.status === 404 && (await pvConfirmGone(name, pvRoot))) { if (!stale()) pvGone(name, opts); return; }
+    if (stale()) return;
+    // 没读出来又不是「确认没了」：只说读没读出来，不替人猜是挪走了还是删了
+    if (!r) body.innerHTML = pvNotice("circle-x", "这个文件没读出来");
     else if (looksBinary(r.text)) body.innerHTML = pvFallback("这个文件不是文本"); // 后缀没认出来，内容说了算
     else if (kind === "markdown") body.innerHTML = `<div class="pv-text a-text" translate="no">${renderMd(r.text, dirOf(name), false, pvRoot)}${r.truncated ? pvTrunc(r.total) : ""}</div>`;
     else if (kind === "csv") body.innerHTML = csvHtml(r.text, name) + (r.truncated ? pvTrunc(r.total) : "");
@@ -4838,6 +4953,8 @@ async function previewFile(name, root) {
     else body.innerHTML = `<div class="pv-text" translate="no"><pre style="white-space:pre-wrap;overflow-wrap:anywhere;tab-size:4">${esc(r.text)}</pre>${r.truncated ? pvTrunc(r.total) : ""}</div>`;
     if (r && !looksBinary(r.text) && r.text.trim()) setPvCopy(kind === "markdown" ? "markdown" : "text");
   }
+  // iframe 自己拉内容的这几种，404 只是框里一行字：另外问一句，确认没了再换（不挡着先显示）
+  if (kind === "pdf" || kind === "iframe" || kind === "svg" || kind === "binary") pvProbeGone(name, url, seq, opts);
   bindPvFallback(body, name);
   bindPvMore(body, url);
   // 异步加载替换内容后再归零一次：长 Markdown/HTML 的旧滚动位置不能把新文件带到中段。
@@ -4880,7 +4997,8 @@ async function copyPreviewImage() {
 async function copyImageFromUrl(url) {
   try {
     if (!navigator.clipboard || !window.ClipboardItem) throw new Error("no-api");
-    const src = await fetch(url).then((r) => { if (!r.ok) throw new Error("fetch"); return r.blob(); });
+    // 没取到只报状态码，跟复制文字那边一样不猜原因：404 也可能是越权、服务端不认这个名字，不一定是文件没了
+    const src = await fetch(url).then((r) => { if (!r.ok) throw Object.assign(new Error("fetch"), { status: r.status }); return r.blob(); });
     let png = src;
     if (src.type !== "image/png") {
       png = await new Promise((ok, no) => {
@@ -4912,7 +5030,7 @@ async function copyImageFromUrl(url) {
     } else if (why === "decode" || why === "encode") {
       toast("这张图无法复制，请下载后再复制", "circle-x");
     } else if (why === "fetch") {
-      toast("图片没取到，可能已经被移走或删掉了", "circle-x");
+      toast(`图片没取到（HTTP ${e.status}）`, "circle-x");
     } else {
       toast("复制失败：" + why + "。可以右键图片选「复制图片」，或者点下载", "circle-x");
     }
@@ -5088,8 +5206,12 @@ function hostOf(u) { try { return new URL(u).hostname.replace(/^www\./, ""); } c
 
 // 把本回合的产出做成卡片挂在对话里。右侧文件面板是"所有文件"，这里是"这次产出的"——
 // 用户要的是聊完直接点开，而不是回头去面板里认哪个是刚才那个。
-const OUT_CARD_MAX = 8;                                   // 一屏摆得下的量；超了只提示条数，别把对话冲垮
+// 卡片区露几张。不是「先到先得」：以前前 8 个名额被中途的草稿、下划线目录里的笔记占满，
+// 最后写出来的那几份成品一张卡都没轮上。现在每件都先画卡，按 rankOutCards 排好，排在后面的才藏
+const OUT_CARD_MAX = 12;
+const OUT_CARD_KEEP = 48;                                 // 一回合几百张图时 DOM 里最多留这么多张卡，再往后的只在清单里
 const OUT_ROW_MAX = 6;                                    // 变更清单先露这么多行，再多的收在「还有 N 个文件」后面
+const OUT_FIN_ROW_MAX = 24;                               // 没轮上卡的成品排在清单最前，这么多行以内一律露着，不折
 const FILES_LIST_CAP = 500;                               // 服务端 outputFiles() 的截断上限，见 tools.js
 
 /**
@@ -5164,15 +5286,46 @@ function reapDeletedOutputs(block, live, ev) {
     if (altLink && !alive.has(altLink.dataset.name)) { altLink.remove(); delete c.dataset.alt; }
   });
   block.querySelectorAll(".out-row").forEach((r) => {
-    if (alive.has(r.dataset.name) || r.classList.contains("gone")) return;
-    r.classList.add("gone");
-    r.querySelectorAll(".dl, .rv").forEach((el) => el.remove());
-    r.onclick = null;
-    const sz = r.querySelector(".sz");
-    if (sz) sz.textContent = "已删除";
-    n++;
+    if (!alive.has(r.dataset.name) && markRowGone(r)) n++;
   });
   return n;
+}
+// 清单里的一行盖上「已删除」：下载、定位入口摘掉，点了也不再去开。已经盖过的返回 false
+function markRowGone(r) {
+  if (r.classList.contains("gone")) return false;
+  r.classList.add("gone");
+  r.classList.remove("fin");
+  r.querySelectorAll(".dl, .rv").forEach((el) => el.remove());
+  r.onclick = null;
+  const sz = r.querySelector(".sz");
+  if (sz) sz.textContent = "已删除";
+  return true;
+}
+/**
+ * 按名字撤掉已经不在了的产出：卡片撤掉，挂在卡上的「另一种格式」摘掉，清单里那行盖「已删除」。
+ * 跟 reapDeletedOutputs 的区别是名单从哪来：那边要一份说得了话的完整清单，
+ * 这边是「确定没了」的名字——服务端报的 gone、问过 /api/files/exists 的、点开预览才发现没了的。
+ * 整包卡不在这儿动：它代表一个文件夹，由 foldBundleCards 按包里还剩几个清算。
+ */
+function dropOutputs(block, isGone) {
+  let n = 0;
+  block.querySelectorAll(".out-card").forEach((c) => {
+    if (c.dataset.bundle) return;
+    if (isGone(c.dataset.name)) { c.remove(); n++; return; }
+    const alt = c.querySelector(".oa-alt");
+    if (alt && isGone(alt.dataset.name)) { alt.remove(); delete c.dataset.alt; n++; }
+  });
+  block.querySelectorAll(".out-row").forEach((r) => { if (isGone(r.dataset.name) && markRowGone(r)) n++; });
+  return n;
+}
+// 服务端这一批报的「这回合写过、现在没了」。整份清单那条路在大工作目录里永远说不了话（截断、回放裁过），
+// 以前删掉、挪走的文件卡片一直挂着，点开才是一句「文件不存在」
+function reapGone(block, gone, ev) {
+  if (!block || !gone || !gone.length) return 0;
+  const root = (ev && ev.root) || "", had = block.dataset.root || "";
+  if (root && had && root !== had) return 0; // 换过工作目录：名字对不上同一个坐标系
+  const set = new Set(gone);
+  return dropOutputs(block, (n) => set.has(n));
 }
 
 /**
@@ -5190,9 +5343,11 @@ function outPool(ev) {
 }
 
 function renderTurnOutputs(body, changed, live, ev) {
-  if (!body || !changed || !changed.length) return;
+  const gone = ev && Array.isArray(ev.gone) ? ev.gone.map(String) : [];
+  if (!body || ((!changed || !changed.length) && !gone.length)) return;
   let block = body.querySelector(":scope > .out-block");
   if (!block) {
+    if (!changed || !changed.length) return; // 只报了删除、这回合还没有产出：没有要改的块
     block = document.createElement("div");
     block.className = "out-block";
     // 只留一层开关。以前是两层：点开「本回合产出」，里面还压着一个「查看所有变更」，
@@ -5209,6 +5364,7 @@ function renderTurnOutputs(body, changed, live, ev) {
     });
     onActivate(block.querySelector(".out-more"), () => { block.dataset.all = "1"; clipOutList(block); });
   }
+  changed = changed || [];
   const grid = block.querySelector(".out-grid");
   const list = block.querySelector(".out-list");
   // 这块产出算在哪个工作目录名下。块自己记的优先——重放到一半用户又换了目录的话，
@@ -5216,6 +5372,7 @@ function renderTurnOutputs(body, changed, live, ev) {
   const blkRoot = block.dataset.root || (ev && ev.root) || "";
   // 顺序要紧：先撤掉已删的，再派卡。反过来的话上限还是被死掉的中间文件占着，成品照样进不来
   reapDeletedOutputs(block, live, ev);
+  reapGone(block, gone, ev);
   const bundles = bundleDirs(block, changed);   // 这一回合被整包倒进东西的目录，见下面 OUT_BUNDLE_MIN
   for (const f of changed) {
     const isHtml = /\.html?$/i.test(f.name);
@@ -5248,13 +5405,22 @@ function renderTurnOutputs(body, changed, live, ev) {
         if (extOf(f.name) === "png") { const c = makeOutCard(f, false, blkRoot); attachAltFmt(c, mate.dataset.name, blkRoot); mate.replaceWith(c); }
         else attachAltFmt(mate, f.name, blkRoot);
       } else if (!twin) {
-        if (grid.querySelectorAll(".out-card").length < OUT_CARD_MAX) grid.appendChild(makeOutCard(f, isHtml, blkRoot));
+        grid.appendChild(makeOutCard(f, isHtml, blkRoot)); // 先都画上，露哪几张由收尾的 rankOutCards 定
       } else if (!same && pathDepth(f.name) < pathDepth(twin.dataset.name)) {
         // 副本留路径最浅的那份：点「所在位置」多半是想去工作目录根，而不是任务子目录
         twin.replaceWith(makeOutCard(f, isHtml, blkRoot));
       }
     }
-    if (!list.querySelector(`[data-name="${cssEsc(f.name)}"]`)) { // 同一文件改多次只记一行
+    let had = list.querySelector(`[data-name="${cssEsc(f.name)}"]`);
+    // 删了又写回来：那行「已删除」撤掉按新文件重画，下载、定位入口跟着回来
+    if (had && had.classList.contains("gone")) { had.remove(); had = null; }
+    // 同一个文件又改写了一遍：大小跟着走。以前一直挂着头一回的大小，按「文件名 + 大小」认副本也跟着认错
+    if (had && f.size && had.dataset.size !== String(f.size)) {
+      had.dataset.size = String(f.size);
+      const sz = had.querySelector(".sz");
+      if (sz) sz.textContent = fmtSize(f.size);
+    }
+    if (!had) { // 同一文件改多次只记一行
       const row = document.createElement("div");
       row.className = "out-row";
       row.dataset.name = f.name;
@@ -5279,20 +5445,17 @@ function renderTurnOutputs(body, changed, live, ev) {
   mergeFmtPairs(grid);
   foldBundleCards(grid, bundles, blkRoot);
   markDupBasenames(grid);
-  hideCardedRows(block);
   // 数不全就照实写「N+」：整树那趟撞了条数上限（scan_capped），
   // 或者服务端报了改动、清单里却没带上（turn_files 截过）。底下补一句「可能没列全」，不装作列全了；
   // 两种来由这一句都对得上，所以只说知道的，不替人讲是哪一种
   if (ev && (ev.scan_capped || (Array.isArray(ev.changed) && new Set(ev.changed).size > changed.length))) block.dataset.capped = "1";
-  const nRows = list.querySelectorAll(".out-row").length;
-  block.querySelector(".out-main .cn").textContent = `(${nRows}${block.dataset.capped ? "+" : ""})`;
   if (block.dataset.capped && !block.querySelector(".out-note")) {
     const note = document.createElement("div");
     note.className = "out-note";
     note.textContent = "这回合的产出可能没列全";
     block.querySelector(".out-body").appendChild(note);
   }
-  clipOutList(block);
+  refreshOutBlock(block);
 }
 
 // 已经出了卡的文件，下面不再原样列一遍。
@@ -5303,7 +5466,7 @@ function renderTurnOutputs(body, changed, live, ev) {
 // 不然 agent 把产出往根目录又拷一份时，那份副本会孤零零留在清单里，看着像多出来一个文件。
 function hideCardedRows(block) {
   const names = new Set(), twins = new Set();
-  block.querySelectorAll(".out-card").forEach((c) => {
+  block.querySelectorAll(".out-card:not(.over)").forEach((c) => { // 藏起来的卡不算露过面：它那行得留在清单里
     names.add(c.dataset.name);
     if (c.dataset.alt) names.add(c.dataset.alt); // 「另一种格式」挂在卡上，也算露过面了
     if (c.dataset.base && c.dataset.size) twins.add(c.dataset.base + "|" + c.dataset.size);
@@ -5324,10 +5487,144 @@ function hideCardedRows(block) {
 function clipOutList(block) {
   const rows = [...block.querySelectorAll(".out-list .out-row:not(.carded)")]; // 藏起来的不算，不然「还有 N 个文件」数的是看不见的东西
   const more = block.querySelector(".out-more");
-  const hide = block.dataset.all === "1" || rows.length <= OUT_ROW_MAX + 1 ? 0 : rows.length - OUT_ROW_MAX;
-  rows.forEach((r, i) => r.classList.toggle("hid", hide > 0 && i >= OUT_ROW_MAX));
+  // 没轮上卡的成品（.fin，orderOutRows 排在最前）一律露着：以前它们排在第 7 行往后，
+  // 跟脚本、日志一起收进「还有 N 个文件」，最后那份成品得用户自己点开才找得到
+  const fin = rows.filter((r) => r.classList.contains("fin")).length;
+  const keep = Math.max(OUT_ROW_MAX, Math.min(fin, OUT_FIN_ROW_MAX));
+  const hide = block.dataset.all === "1" || rows.length <= keep + 1 ? 0 : rows.length - keep;
+  rows.forEach((r, i) => r.classList.toggle("hid", hide > 0 && i >= keep));
   more.hidden = !hide;
   if (hide) more.textContent = `还有 ${hide} 个文件`;
+}
+
+/* ---- 哪几件露在前面 ----
+ *
+ * 卡片和清单都按同一把尺子排：成品在前、过程文件在后（isProcessOutput），
+ * 成品里网页 > PDF > 文档表格幻灯片 > 视频 > 音频 > 图 > 文本（outTier），同档里 index.html 打头，
+ * 再按路径深浅、文件名自然序。尺子跟收尾挑预览那件（rankFinishDeliverables）是同一套，
+ * 用户在卡片区看到的第一张，就是右侧预览打开的那一件。
+ */
+function outRank(name, names) {
+  return { name, proc: isProcessOutput(name, names) ? 1 : 0, tier: outTier(name), idx: /(^|\/)index\.html?$/i.test(name) ? 0 : 1, depth: pathDepth(name) };
+}
+function outRankCmp(a, b) {
+  return a.proc - b.proc || a.tier - b.tier || a.idx - b.idx || a.depth - b.depth || natCmp(a.name, b.name) || a.i - b.i;
+}
+// 按排好的顺序把节点挪到位，已经在位的不动：挪动会让视频停下、缩略图闪一下
+function placeInOrder(parent, els, isItem) {
+  const next = (el) => { let x = el ? el.nextElementSibling : null; while (x && !isItem(x)) x = x.nextElementSibling; return x; };
+  let ref = parent.firstElementChild;
+  while (ref && !isItem(ref)) ref = ref.nextElementSibling;
+  for (const el of els) {
+    if (el === ref) ref = next(ref);
+    else parent.insertBefore(el, ref);
+  }
+}
+// 卡片排队，排在 OUT_CARD_MAX 之后的打 .over 藏起来（它那行会回到清单里）。
+// 有成品时过程文件（草稿目录、调试图、跟成品同名的 md 底稿）一张卡都不露
+function rankOutCards(grid) {
+  const block = grid.closest(".out-block") || grid;
+  const names = [];
+  block.querySelectorAll(".out-row:not(.gone)").forEach((r) => names.push(r.dataset.name));
+  const cards = [...grid.querySelectorAll(":scope > .out-card")];
+  for (const c of cards) if (!c.dataset.bundle) names.push(c.dataset.name);
+  const ms = cards.map((c, i) => Object.assign(outRank(c.dataset.name || "", names), { c, i, bundle: c.dataset.bundle ? 1 : 0 }));
+  // 整包卡排最后：它代表一个被整包倒进来的文件夹，不是这一回合要交的东西
+  ms.sort((a, b) => a.bundle - b.bundle || outRankCmp(a, b));
+  const anyFinal = ms.some((m) => !m.bundle && !m.proc);
+  const kept = [];
+  let k = 0;
+  for (const m of ms) {
+    if (!m.bundle && k >= OUT_CARD_KEEP) { m.c.remove(); continue; }
+    kept.push(m.c);
+    m.c.classList.toggle("over", !m.bundle && (k >= OUT_CARD_MAX || (anyFinal && !!m.proc)));
+    if (!m.bundle) k++;
+  }
+  placeInOrder(grid, kept, (el) => el.classList.contains("out-card"));
+}
+// 清单排队：没轮上卡的成品（.fin）在最前，接着是原样顺序的其余文件，过程文件压暗沉底，已删除的垫在最后
+function orderOutRows(block) {
+  const list = block.querySelector(".out-list");
+  if (!list) return;
+  // 已删除的行不撤，只垫到最后：中途造过什么、哪份后来没了，是真实发生过的事
+  const rows = [...list.querySelectorAll(":scope > .out-row")];
+  const names = rows.filter((r) => !r.classList.contains("gone")).map((r) => r.dataset.name);
+  block.querySelectorAll(".out-card:not([data-bundle])").forEach((c) => names.push(c.dataset.name));
+  const bundles = [...block.querySelectorAll(".out-card[data-bundle]")].map((c) => c.dataset.bundle);
+  const fin = [], mid = [], sub = [], dead = [];
+  rows.forEach((r, i) => {
+    const n = r.dataset.name || "";
+    if (r.classList.contains("gone")) { dead.push(r); return; }
+    const proc = isProcessOutput(n, names);
+    r.classList.toggle("sub", proc);
+    const isFin = !proc && !r.classList.contains("carded") && cardWorthy(n) && !bundles.some((b) => n.startsWith(b));
+    r.classList.toggle("fin", isFin);
+    if (isFin) fin.push(Object.assign(outRank(n, names), { r, i }));
+    else (proc ? sub : mid).push(r);
+  });
+  fin.sort(outRankCmp);
+  placeInOrder(list, fin.map((m) => m.r).concat(mid, sub, dead), (el) => el.classList.contains("out-row"));
+  list.hidden = !list.querySelector(".out-row:not(.carded)");
+}
+// 卡片、清单、条数一起重排。每来一批文件、每撤掉一件都走这一趟
+function refreshOutBlock(block) {
+  const grid = block.querySelector(".out-grid");
+  if (grid) rankOutCards(grid);
+  hideCardedRows(block);
+  orderOutRows(block);
+  clipOutList(block);
+  const cn = block.querySelector(".out-main .cn");
+  if (cn) cn.textContent = `(${block.querySelectorAll(".out-list .out-row").length}${block.dataset.capped ? "+" : ""})`;
+}
+// 确定没了的一件（点开预览才发现的、服务端报的）：对话里所有产出块一起撤，别让用户在上一回合的卡上再撞一次
+function markOutputGone(name, root) {
+  const r = String(root || (typeof filesRoot === "string" ? filesRoot : "") || "");
+  let n = 0;
+  document.querySelectorAll(".out-block").forEach((b) => {
+    const had = b.dataset.root || "";
+    if (r && had && r !== had) return;
+    const k = dropOutputs(b, (x) => x === name);
+    if (k) { refreshOutBlock(b); n += k; }
+  });
+  return n;
+}
+/**
+ * 回合收尾、或者翻历史翻到这一块时，问一次服务端：这块里列的文件现在还在不在。
+ * 卡片是写出来那一刻画的，后来被 agent 删掉、挪走，或者用户自己在磁盘上动过，
+ * 卡片都不知道——以前要等用户点开，才在预览里看到一句「文件不存在」。
+ * 一块只问一次；问不通就什么都不改（宁可留着，也不凭猜给活文件盖章）。
+ */
+function verifyOutBlock(block) {
+  if (!block || block.dataset.checked) return Promise.resolve(0);
+  block.dataset.checked = "1";
+  const names = new Set();
+  block.querySelectorAll(".out-card:not([data-bundle])").forEach((c) => { names.add(c.dataset.name); if (c.dataset.alt) names.add(c.dataset.alt); });
+  block.querySelectorAll(".out-row:not(.gone)").forEach((r) => names.add(r.dataset.name));
+  const paths = [...names].filter(Boolean).slice(0, 200);
+  if (!paths.length) return Promise.resolve(0);
+  return fetch(withRoot("/api/files/exists", block.dataset.root || ""), {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paths }),
+  }).then((r) => (r.ok ? r.json() : null)).then((d) => {
+    const ex = d && d.exists;
+    if (!ex || !block.isConnected) return 0;
+    const n = dropOutputs(block, (x) => ex[x] === false); // 只认明说 false 的，没问到的不算没了
+    if (n) refreshOutBlock(block);
+    return n;
+  }).catch(() => 0);
+}
+// 翻历史时一块一块排队问，滚到眼前（前后 200px）才问——一个长对话几十个产出块，不一口气全打出去
+let outVerifyQ = Promise.resolve(0), outVerifyIO = null;
+function queueVerifyOut(block) {
+  outVerifyQ = outVerifyQ.then(() => (block.isConnected ? verifyOutBlock(block) : 0)).catch(() => 0);
+  return outVerifyQ;
+}
+function watchOutBlock(block) {
+  if (!block || block.dataset.checked) return;
+  if (typeof IntersectionObserver !== "function") { queueVerifyOut(block); return; }
+  if (!outVerifyIO) outVerifyIO = new IntersectionObserver((ents) => {
+    for (const e of ents) if (e.isIntersecting) { outVerifyIO.unobserve(e.target); queueVerifyOut(e.target); }
+  }, { root: document.getElementById("chat-scroll") || null, rootMargin: "200px" });
+  outVerifyIO.observe(block);
 }
 
 // 「交到用户手上的成果」：点开就能用的东西，不包括干活途中的脚手架
@@ -5510,6 +5807,7 @@ function syncOutCards(files) {
     const f = (files || []).find((x) => x && x.name === name) || { name, mtime: now };
     const c = makeOutCard(f, /\.html?$/i.test(name), root);
     if (card.dataset.alt) attachAltFmt(c, card.dataset.alt, root);
+    if (card.classList.contains("over")) c.classList.add("over");
     card.replaceWith(c);
     n++;
   }
@@ -5562,13 +5860,15 @@ function makeOutCard(f, isHtml, root) {
       <button class="oa-main" data-a="${isHtml ? "br" : "pv"}" title="${mainTx}">${isHtml ? ic("globe") : ic("file-text")}<span class="tx">${mainTx}</span></button>
       <button class="oa-ico" data-a="rv" title="打开所在位置">${ic("folder-open")}</button>
       <a class="oa-ico" href="${withRoot("/api/files/download/" + fpath(f.name), root)}" download title="下载">${ic("download")}</a></div>`;
-  // 缩略图读不出来（文件被改名、挪走、删了，或者这个格式浏览器解不了）就退回文件类型图标。
-  // 以前它只留一个空灰方框，卡片自己一个字都不说，看着就像整个功能坏了。
+  // 缩略图读不出来就退回文件类型图标。以前它只留一个空灰方框，卡片自己一个字都不说，看着就像整个功能坏了。
+  // 读不出来不等于文件没了（也可能是浏览器解不了这个格式），所以图标上只说没显示出来，
+  // 再单问一声服务端：明说不在了，才按「确定没了」收（markOutputGone：撤卡、清单那行盖「已删除」）
   const th = card.querySelector(".out-thumb img, .out-thumb video");
   if (th) th.onerror = () => {
     const box = th.closest(".out-thumb");
-    if (box) box.innerHTML = `<span class="ph" title="${isVid ? "这条片子的编码浏览器解不了，点开看还能用系统播放器" : "这张图读不出来了：可能已被改名、移走或删掉"}">${ic(fileIcon(f.name))}</span>`;
+    if (box) box.innerHTML = `<span class="ph" title="${isVid ? "浏览器放不了这段视频，点开可换系统播放器" : "缩略图没显示出来"}">${ic(fileIcon(f.name))}</span>`;
     card.classList.add("thumb-dead");
+    if (typeof pvConfirmGone === "function") pvConfirmGone(f.name, root).then((gone) => { if (gone) markOutputGone(f.name, root); });
   };
   onActivate(card, (e) => {
     if (e.target.closest("a")) return;
@@ -5854,60 +6154,140 @@ function askPreviewPlan(o) {
   return { preview: chips[0], chips, why: "ok" };
 }
 function finishPreviewPlan(o) {
-  if (o.replaying || o.otherSession) return { preview: null, why: "not-watching" };
-  if (o.userClosedPreview) return { preview: null, why: "user-closed" };
-  if (o.filesOpen) return { preview: null, why: "files-open" };
-  if (o.narrow) return { preview: null, why: "narrow" };
-  const pick = pickFinishDeliverable(o.turnOut || []);
-  if (!pick) return { preview: null, why: "no-deliverable" };
-  if (o.pvOpen && o.pvCurrent === pick) return { preview: null, why: "already-open" };
-  return { preview: pick, why: "ok" };
+  if (o.replaying || o.otherSession) return { preview: null, next: [], why: "not-watching" };
+  if (o.userClosedPreview) return { preview: null, next: [], why: "user-closed" };
+  if (o.filesOpen) return { preview: null, next: [], why: "files-open" };
+  if (o.narrow) return { preview: null, next: [], why: "narrow" };
+  const ranked = rankFinishDeliverables(o.turnOut || []);
+  const pick = ranked[0] || null;
+  if (!pick) return { preview: null, next: [], why: "no-deliverable" };
+  if (o.pvOpen && o.pvCurrent === pick) return { preview: null, next: [], why: "already-open" };
+  // 排在后面的几件：第一件点开时已经不在了（收尾前一刻被挪走、删掉），就按这个顺序往下顶，
+  // 别把用户晾在一句「不在了」上。同名的副本也留着——第一件没了，它正好是同一份东西
+  return { preview: pick, next: ranked.slice(1, 4), why: "ok" };
 }
-// 这一趟最该给用户看的那一件。排序：网页 > 图 > PDF > Office 三件套 > 音视频 > 纯文本；
-// 同一档里路径最浅的优先（任务子目录那份和根目录那份是同一件东西），再同就取最新的
-const FINISH_RANK = [/\.html?$/i, /\.(png|jpe?g|gif|webp|svg|bmp)$/i, /\.pdf$/i, /\.(pptx|docx|xlsx)$/i, /\.(mp4|mov|webm|m4v|mp3|wav|m4a)$/i, /\.(md|txt|csv)$/i];
-function pickFinishDeliverable(outs) {
-  const rank = (n) => { const i = FINISH_RANK.findIndex((re) => re.test(n)); return i < 0 ? 99 : i; };
-  const cand = [];
+// 产出的档位：网页 > PDF > Office 三件套 > 视频 > 音频 > 图 > 纯文本，认不出的排最后（99）。
+// 图排在文档后面：写文章、做报告的任务里图多半是配图，正文才是成品；纯出图的任务里也只有图，照样轮得到它。
+// 收尾开哪一件、产出卡谁排前面，都按这一张表
+const OUT_TIER = [/\.html?$/i, /\.pdf$/i, /\.(pptx?|docx?|xlsx?)$/i, /\.(mp4|mov|webm|m4v)$/i, /\.(mp3|wav|m4a)$/i, /\.(png|jpe?g|gif|webp|svg|bmp)$/i, /\.(md|markdown|txt|csv)$/i];
+function outTier(name) { const i = OUT_TIER.findIndex((re) => re.test(String(name || ""))); return i < 0 ? 99 : i; }
+// 自然序：第2章排在第10章前面
+function natCmp(a, b) { return String(a).localeCompare(String(b), undefined, { numeric: true }); }
+/**
+ * 干活途中留下的过程件。跟成品摆在一起时让位：卡片收起来、清单沉到底、收尾不开它。
+ *   · 路径里有一层以 _ 或 . 打头的目录（_drafts/、_tmp/、.cache/）：模型给自己留的草稿区；
+ *   · 文件名以 _ 或 check_ / debug_ / probe_ / diag_ / tmp_ / temp_ 打头（网页除外：_final.html 万一就是成品）；
+ *   · PROGRESS.md、TODO.md 这类过程账本；
+ *   · 跟同目录同主名的网页 / PDF / Word / PPT 配对的 md、txt：排版前的底稿。
+ * names 是同一批产出的全部路径，认底稿用。正则都写成字面量：前端测试只切这一段出去跑
+ */
+function isProcessOutput(name, names) {
+  const segs = String(name || "").split("/");
+  const base = segs.pop();
+  if (segs.some((s) => /^[_.]/.test(s))) return true;
+  if (!/\.html?$/i.test(base) && /^(?:[_.]|(?:check|debug|probe|diag|tmp|temp)[_-])/i.test(base)) return true;
+  if (/^(PROGRESS|TODO|NOTES?|README)(\.[a-z]{2}(-[A-Za-z]{2,4})?)?\.(md|txt)$/i.test(base)) return true;
+  if (/\.(md|markdown|txt)$/i.test(base) && names) {
+    // 同一份 names 会被逐个文件问一遍：成品主名表只算一次，几百行的清单不至于每来一批文件就 n² 地扫
+    let stems = procStemMemo.get(names);
+    if (!stems) {
+      stems = new Set();
+      for (const o of names) if (/\.(html?|pdf|docx?|pptx?)$/i.test(o)) stems.add(String(o).replace(/\.[^./]+$/, ""));
+      procStemMemo.set(names, stems);
+    }
+    return stems.has(String(name).replace(/\.[^./]+$/, ""));
+  }
+  return false;
+}
+const procStemMemo = new WeakMap();
+/**
+ * 收尾该摊开哪一件，排好顺序（第一件打不开就往下顶）。
+ *
+ * 以前只看「档位 + 路径深浅」，同一档里路径最浅的赢：写文章的任务先在根上落了一版草稿网页、
+ * 终稿写进任务子目录，收尾摊开的就是那份草稿；_drafts/ 里的底稿也一样排得上。现在：
+ *   · .ppt 这类老格式不开（会去拉起本机 Office，抢整个系统的焦点），PROGRESS.md 这类账本不开；
+ *   · 过程件（见 isProcessOutput）只在实在没有别的可开时才算；
+ *   · 同一档里 index.html 先（一整个网站从首页看起），再看是不是这一档最后一批写的
+ *     （最后落盘那一刻往前 5 秒内）：终稿是收尾前写的，早先那些多半是草稿；
+ *     再看路径深浅（任务子目录那份和根上那份是同一件，开浅的），最后按自然序。
+ * mtime 必须是这一趟里最后那一版的——处理 files 事件时同名文件原地换成新的那条，见 liveOutFiles
+ */
+function rankFinishDeliverables(outs) {
+  const all = (outs || []).map((f) => (f && f.name) || "").filter(Boolean);
+  let cand = [];
   for (const f of outs || []) {
     const name = (f && f.name) || "";
-    const base = name.split("/").pop();
-    if (!name || OFFICE_RE.test(name) || SCAFFOLD_RE.test(base) || rank(name) === 99) continue;
-    cand.push({ name, rank: rank(name), depth: name.split("/").length, mtime: (f && f.mtime) || "" });
+    const tier = outTier(name);
+    if (!name || OFFICE_RE.test(name) || SCAFFOLD_RE.test(name.split("/").pop()) || tier === 99) continue;
+    cand.push({ name, tier, proc: isProcessOutput(name, all), t: Date.parse((f && f.mtime) || "") || 0, depth: name.split("/").length });
   }
-  if (!cand.length) return null;
-  cand.sort((a, b) => a.rank - b.rank || a.depth - b.depth || b.mtime.localeCompare(a.mtime) || a.name.localeCompare(b.name));
-  return cand[0].name;
+  if (cand.some((c) => !c.proc)) cand = cand.filter((c) => !c.proc);
+  const last = {};
+  for (const c of cand) last[c.tier] = Math.max(last[c.tier] || 0, c.t);
+  const late = (c) => (c.t && c.t >= last[c.tier] - 5000 ? 0 : 1);
+  const idx = (c) => (/(^|\/)index\.html?$/i.test(c.name) ? 0 : 1);
+  cand.sort((a, b) => a.tier - b.tier || idx(a) - idx(b) || late(a) - late(b) || a.depth - b.depth || natCmp(a.name, b.name));
+  return cand.map((c) => c.name);
 }
+function pickFinishDeliverable(outs) { return rankFinishDeliverables(outs)[0] || null; }
 // 产出到了该怎么办。以前是「有产出就把右侧预览 / 成果文件面板弹出来」——
 // 现在默认什么都不抢：快照照推进、「成果文件」按钮上记个角标、chip 就在对话里，想看再点。
 // 唯一会碰右侧的情况：用户本来就开着预览、看的正是这回合改过的那个文件——原地刷新，布局不动。
 // 纯函数：输入是当下的状态，输出是三个动作，前端 harness 直接验
 function outputArrivalPlan(o) {
   const outs = o.turnOut || [];
-  if (o.replaying) return { snapshot: false, badge: 0, refresh: null };                 // 回放历史：快照和角标都不动
-  if (o.otherSession || !outs.length) return { snapshot: true, badge: 0, refresh: null }; // 后台回合 / 没产出：只推进基线
-  const refresh = o.pvOpen && o.pvCurrent && outs.some((f) => f.name === o.pvCurrent) ? o.pvCurrent : null;
+  if (o.replaying) return { snapshot: false, badge: 0, refresh: null, lost: null, badgeNames: [], unbadge: [] }; // 回放历史：快照和角标都不动
+  // 预览开着的那件这回合被挪走或删掉了（服务端报在 gone 里）：同名的新位置这回合刚写出来，就跟过去；
+  // 真没了就在预览里直说（lost）。以前预览原样摆着旧内容，再点一下才冒出一句「文件不存在」
+  let refresh = null, lost = null;
+  if (!o.otherSession && o.pvOpen && o.pvCurrent) {
+    if (outs.some((f) => f.name === o.pvCurrent)) refresh = o.pvCurrent;
+    else if ((o.gone || []).includes(o.pvCurrent)) {
+      const base = String(o.pvCurrent).split("/").pop();
+      const moved = outs.find((f) => String(f.name).split("/").pop() === base);
+      if (moved) refresh = moved.name; else lost = o.pvCurrent;
+    }
+  }
+  // 记过角标、这回合又没了的，角标里扣掉：点开面板找不着的不算「新产出」
+  const unbadge = o.otherSession ? [] : (o.gone || []);
+  if (o.otherSession || !outs.length) return { snapshot: true, badge: 0, refresh, lost, badgeNames: [], unbadge }; // 后台回合 / 没产出：只推进基线
   // 角标点开的是「成果文件」面板，那边只列 listed（ev.files：最深 3 层、最新 500 条）。
   // 第 4 层往下的产出在对话里有卡，面板里却没有——算进角标就成了「说有 3 件新的，点开只见 1 件」
   const inPanel = Array.isArray(o.listed) ? new Set(o.listed.map((f) => f && f.name)) : null;
-  const n = inPanel ? outs.filter((f) => inPanel.has(f.name)).length : outs.length;
-  return { snapshot: true, badge: o.filesOpen ? 0 : n, refresh };
+  const names = (inPanel ? outs.filter((f) => inPanel.has(f.name)) : outs).map((f) => f.name);
+  return { snapshot: true, badge: o.filesOpen ? 0 : names.length, refresh, lost, badgeNames: o.filesOpen ? [] : names, unbadge };
 }
 function applyOutputArrival(plan, files) {
   if (plan.snapshot) snapshotFiles(files);
-  if (plan.badge) bumpFilesBadge(plan.badge);
+  if (plan.unbadge && plan.unbadge.length) dropFilesBadge(plan.unbadge);
+  if (plan.badge) bumpFilesBadge(plan.badge, plan.badgeNames);
   if (plan.refresh) previewFile(plan.refresh); // 预览本来就开着：只换内容，不动布局
+  else if (plan.lost && typeof showPreviewGone === "function") showPreviewGone(plan.lost);
 }
-// 「成果文件」按钮上的角标：还没看过的新产出有几件。面板一打开就清零
-function bumpFilesBadge(n) {
+// 「成果文件」按钮上的角标：还没看过的新产出有几件。面板一打开就清零。
+// 数的是「几件」不是「几次」：同一个文件这回合改写八遍还是一件。以前每来一条 files 事件就把件数加上去，
+// 一份网页反复重画，角标涨到 9，点开面板只有一个新文件
+const filesBadged = new Set();
+let filesBadgeExtra = 0; // 老调用只给件数不给名字，这部分没法去重，照数加
+function bumpFilesBadge(n, names) {
   const btn = document.getElementById("toggle-files");
   if (!btn || !n) return;
+  if (Array.isArray(names) && names.length) names.forEach((x) => filesBadged.add(x)); else filesBadgeExtra += n;
   let b = btn.querySelector(".fb-badge");
   if (!b) { b = document.createElement("span"); b.className = "fb-badge"; btn.appendChild(b); }
-  b.textContent = String(Math.min(99, (parseInt(b.textContent, 10) || 0) + n));
+  b.textContent = String(Math.min(99, filesBadged.size + filesBadgeExtra));
+}
+function dropFilesBadge(names) {
+  let hit = false;
+  for (const x of names || []) if (filesBadged.delete(x)) hit = true;
+  const b = hit && document.querySelector("#toggle-files .fb-badge");
+  if (!b) return;
+  const n = Math.min(99, filesBadged.size + filesBadgeExtra);
+  if (n) b.textContent = String(n); else b.remove();
 }
 function clearFilesBadge() {
+  filesBadged.clear();
+  filesBadgeExtra = 0;
   const b = document.querySelector("#toggle-files .fb-badge");
   if (b) b.remove();
 }

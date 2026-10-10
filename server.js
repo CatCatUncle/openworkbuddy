@@ -1143,7 +1143,9 @@ function recordingEmit(send, events, sessionId, { pet = true } = {}) {
       // 全盖上「已删除」，用户看到的是四个文件全被划掉，其实一个都没删
       // 第 4 层往下、挤出最新 500 条的产出不在 files 里，在 turn_files 里（两份不重名）：并起来再裁，不然回放时那几张卡画不出来
       const pool = (ev.files || []).concat(ev.turn_files || []);
-      if (chg.length) events.push({ type: "files", changed: chg, files: pool.filter((f) => chg.includes(f.name)), partial: true, root: ev.root });
+      // gone 是服务端当场 stat 过、确实没了的那几个：回放时清单是裁过的，前端只能靠它撤卡
+      const gone = Array.isArray(ev.gone) ? ev.gone : [];
+      if (chg.length || gone.length) events.push({ type: "files", changed: chg, files: pool.filter((f) => chg.includes(f.name)), partial: true, root: ev.root, ...(gone.length ? { gone } : {}) });
     } else if (ev.type === "status") {
       // 状态播报大多是进度（重试中、思考中），过去就过去了，不存。要存的两种是这一趟的事实：
       // 本机引擎启动成功那条（谁在跑、哪个模型），和标了 notice 的（工具没挂上、连接器挂不上、
@@ -1295,7 +1297,6 @@ app.use(
         const was = dataPath("data", "library-users", prefs.keyOf(from)), now = dataPath("data", "library-users", prefs.keyOf(to));
         if (fs.existsSync(was) && !fs.existsSync(now)) fs.renameSync(was, now);
       } catch (e) { console.warn("[账号] 个人资料库没跟上改名：" + e.message); }
-      admin.forgetKeeper(); // 老主人改了名，别让两秒的缓存把他当成别人
       console.log(`[账号] 登录名 ${from} → ${to}，${files} 条会话、${mems} 条记忆的归属已迁移`);
     },
   })
@@ -4050,7 +4051,7 @@ app.get("/api/projects", (req, res) => {
   // 以前这里编了个叫「本组织工作目录」的假项目顶上，两头都出事：侧栏多一个点不动的 tab，
   // 而且这个名字跟老会话记的项目名对不上，前端按项目过滤后整排任务历史都没了。
   // 现在如实说「你这儿没有项目这回事」，前端见到 locked 就整块不画、也不按项目过滤。
-  // 不止一个账号时只有老主人有项目：项目切的是共享根，别人切会把老主人的目录挪走（admin.keepsSharedSpace）
+  // 不止一个账号时只有留在共享根上的人（默认组织的管理员）有项目：项目切的是共享根，别人切会把它挪走（admin.keepsSharedSpace）
   if (!ownsGlobalWorkspace(req.user) || !admin.keepsSharedSpace(req.user)) return res.json({ projects: [], active: "", locked: true });
   ensureProjects();
   res.json({ projects: config.projects, active: config.active_project, locked: false });

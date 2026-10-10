@@ -177,7 +177,11 @@ function realize(s) {
   return s.replace(/\$\{([\s\S]*?)\}/g, (_, expr) => {
     const e = expr.trim();
     if (/fmtSize|bytes/.test(e)) return "3.2 GB";
-    if (/\b(n|i|count|num|total|len|length|size)\b/.test(e)) return "7";   // 数目类：正则那边写的是 (\d+)
+    // 「x ? "+" : ""」这种两头都是字面量的：取问号后面那一个，跟界面上真显示出来的一样。
+    // 以前一律当名字换成 Zeta7，「里面有 7+ 个文件」就成了「里面有 Zeta7Zeta7 个文件」，正则当然配不上
+    const tern = /^[^?]*\?\s*(["'])((?:(?!\1)[^\\])*)\1\s*:\s*(["'])(?:(?!\3)[^\\])*\3$/.exec(e);
+    if (tern) return tern[2];
+    if (/\b(n|i|count|num|total|len|length|size|files)\b/.test(e)) return "7";   // 数目类：正则那边写的是 (\d+)；chk.files 是文件夹里有几个文件
     return "Zeta7";                                                        // 名字类：文件名、模型名、画布名…
   });
 }

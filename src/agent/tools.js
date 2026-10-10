@@ -5250,9 +5250,11 @@ function turnSnapshot(baseDir) {
  * 给手上已经有「本回合产出」名单的地方用（IM 回传附件、产出卡片补全）：再拿 outputFiles()
  * 过滤一遍的话，第 4 层往下、或者挤出最新 500 条的产出会被悄悄滤掉。
  * @param {Iterable<string>} names 相对工作目录的路径
+ * @param {string[]} [lost] 传了就往里记「确实已经不在了」的名字（删掉或挪走）。只认 ENOENT/ENOTDIR：
+ *   没权限、句柄耗尽这类读不了的，不等于没了——前端会照这份名单撤卡，记错一条就是把活着的成品藏起来
  * @returns {{name:string,size:number,mtime:string}[]}
  */
-function statOutputs(names) {
+function statOutputs(names, lost) {
   const out = [];
   const seen = new Set();
   for (const n of names || []) {
@@ -5260,7 +5262,10 @@ function statOutputs(names) {
     if (!name || seen.has(name)) continue;
     seen.add(name);
     let st;
-    try { st = fs.statSync(safePath(name)); } catch { continue; }
+    try { st = fs.statSync(safePath(name)); } catch (e) {
+      if (lost && e && (e.code === "ENOENT" || e.code === "ENOTDIR")) lost.push(name);
+      continue;
+    }
     if (st.isFile()) out.push({ name, size: st.size, mtime: st.mtime.toISOString() });
   }
   return out.sort((a, b) => (a.mtime < b.mtime ? 1 : a.mtime > b.mtime ? -1 : 0));

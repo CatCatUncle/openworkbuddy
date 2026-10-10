@@ -12104,11 +12104,69 @@ async function testFilesEmitter() {
         "★反向对照★ 不改键居然也没被当成产出：说明上面那条绿得不明不白，这道闸的效果没被真正量到");
       two.e.stop();
     }
+
+    // ⑨ ★报过的产出后来删了、挪了：照实报 gone★
+    //    工作目录一大，清单只有最新 500 条，前端拿「清单里找不着」根本不敢判谁没了——
+    //    草稿删了、脚本挪进子目录，卡和行照样挂着，用户一点就是「文件不存在」。
+    //    所以服务端当场 stat，确实没了的名字放进 gone，只报一次；同名再写回来要重新认成产出
+    {
+      const { evs, e } = mk(0);
+      e.push(true);
+      const DRAFT = DIR + "/草稿_第一节.md", SCRIPT = DIR + "/生成脚本.py", KEEP = DIR + "/成稿.html";
+      fs.writeFileSync(path.join(ws, DRAFT), "draft");
+      fs.writeFileSync(path.join(ws, SCRIPT), "print(1)");
+      fs.writeFileSync(path.join(ws, KEEP), "<b>final</b>");
+      e.push(true);
+      const born = evs[evs.length - 1].changed || [];
+      assert([DRAFT, SCRIPT, KEEP].every((n) => born.includes(n)), "三份都该先认成本回合产出：" + JSON.stringify(born));
+
+      fs.unlinkSync(path.join(ws, DRAFT));
+      fs.mkdirSync(path.join(ws, DIR, "_scripts"), { recursive: true });
+      fs.renameSync(path.join(ws, SCRIPT), path.join(ws, DIR, "_scripts", "生成脚本.py"));
+      const n0 = evs.length;
+      e.push(true);
+      assert(evs.length === n0 + 1, "删了、挪了却没推事件：卡和行会一直挂着，点开就是「文件不存在」");
+      const ev = evs[evs.length - 1];
+      const gone = ev.gone || [];
+      assert(gone.includes(DRAFT), "删掉的草稿没进 gone：前端在大目录里只能靠它撤卡");
+      assert(gone.includes(SCRIPT), "挪进子目录的脚本，原位置那个名字没进 gone");
+      assert(!gone.includes(KEEP), "★负向对照★ 还在的成品被报成没了：前端会把它的卡撤掉，成品反而看不见");
+      assert((ev.changed || []).includes(DIR + "/_scripts/生成脚本.py"), "挪到新位置的那份没认成产出：用户找不到它去哪了");
+
+      // 只报一次：再走一遍、盘上什么都没动，不许再带 gone
+      e.push(true);
+      assert(evs.slice(n0 + 1).every((x) => !(x.gone || []).length), "同一个名字报了两次 gone");
+
+      // 同名写回来（删了重新生成）：重新认成产出，不再是「已删除」
+      fs.writeFileSync(path.join(ws, DRAFT), "draft v2");
+      e.push(true);
+      const back = evs[evs.length - 1];
+      assert((back.changed || []).includes(DRAFT), "删了又写回来的同名文件没重新认成产出：前端那一行会永远挂着「已删除」");
+      assert(!(back.gone || []).includes(DRAFT), "写回来了还报 gone");
+      e.stop();
+    }
+
+    // ⑨' gone 只认「确实不在了」：读不了（没权限）不等于没了。记错一条就是把活着的成品藏起来
+    {
+      const lost = [];
+      fs.mkdirSync(path.join(ws, DIR, "锁住的"), { recursive: true });
+      fs.writeFileSync(path.join(ws, DIR, "锁住的", "成品.pdf"), "%PDF");
+      fs.writeFileSync(path.join(ws, DIR, "一个文件"), "x");
+      fs.chmodSync(path.join(ws, DIR, "锁住的"), 0o000);
+      let alive;
+      try {
+        alive = tools.statOutputs([DIR + "/成稿.html", DIR + "/从来没有.md", DIR + "/一个文件/子路径.md", DIR + "/锁住的/成品.pdf"], lost);
+      } finally { fs.chmodSync(path.join(ws, DIR, "锁住的"), 0o755); }
+      assert(alive.some((f) => f.name === DIR + "/成稿.html") && !lost.includes(DIR + "/成稿.html"), "还在的文件被记成没了");
+      assert(lost.includes(DIR + "/从来没有.md"), "不存在的（ENOENT）没记进 lost");
+      assert(lost.includes(DIR + "/一个文件/子路径.md"), "上一级其实是个文件（ENOTDIR）也等于不在了，没记进 lost");
+      assert(!lost.includes(DIR + "/锁住的/成品.pdf"), "没权限读的被记成「没了」：前端会把一份活着的成品撤掉");
+    }
   } finally {
     tools.setWorkspaceDir(prevWs);
     fs.rmSync(ws, { recursive: true, force: true });
   }
-  console.log("✅ 产出清单发射器：不写盘就不推（100 步只 1 条）· 写了的晚一点也一定到 · 删除照推 · 别人文件夹不记账 · 收摊后闭嘴 · 收尾同步发 · 陈年旧文件冒充不了今天的产出 · 用户粘进来问问题的图不算产出（改写过就算、搬过家也认得住，两条反向对照）");
+  console.log("✅ 产出清单发射器：不写盘就不推（100 步只 1 条）· 写了的晚一点也一定到 · 删除照推 · 删掉/挪走的报 gone 且只报一次、写回来就撤销 · 没权限读不算没了 · 别人文件夹不记账 · 收摊后闭嘴 · 收尾同步发 · 陈年旧文件冒充不了今天的产出 · 用户粘进来问问题的图不算产出（改写过就算、搬过家也认得住，两条反向对照）");
 }
 
 /**

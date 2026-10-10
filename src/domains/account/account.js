@@ -18,6 +18,7 @@
  * 会跟着历史一起涨，而且为了压住这个耗时就得给账本封顶——封掉的正是计费和审计数据。
  */
 
+const fs = require("fs");
 const path = require("path");
 const icons = require("../../platform/icons.js");
 const { dataPath } = require("../../platform/paths");
@@ -76,10 +77,41 @@ function writeStoreAtomic(file, data, pretty) {
   store.writeJsonAtomic(file, data, { pretty: !!pretty, mode: store.SECRET_MODE });
 }
 
+function fileVersion(file) {
+  try {
+    const s = fs.statSync(file);
+    return `${s.ino}:${s.size}:${s.mtimeMs}:${s.ctimeMs}`;
+  } catch { return ""; }
+}
+/** 同档的人里谁排前面：档次高的在前，同档早建的在前 */
+const ahead = (a, b) => rbac.rankOf(b) - rbac.rankOf(a) || String(a.created_at).localeCompare(String(b.created_at));
+/** 排第一的那个，跟整份 sort(ahead) 取 [0] 是同一个人（同档同时刻取先出现的） */
+function firstOf(us) {
+  let best = null;
+  for (const u of us) if (!best || ahead(u, best) < 0) best = u;
+  return best;
+}
+function keeperIn(us) {
+  const u = firstOf(us.filter((x) => org.orgIdOf(x) === org.DEFAULT_ORG));
+  return (u && u.username) || "";
+}
+let keeperMemo = { ver: /** @type {string|null} */ (null), name: "" };
 function loadUsers() {
+  const ver = fileVersion(USERS_FILE); // 先量后读：中间被人改了，下次量出来对不上就会重读，不会把旧名字当新的
   const d = readStore(USERS_FILE, { users: [], tokens: {} });
   // settings 要原样带着走：这里丢一个字段，下一次 saveUsers 就把它从盘上抹掉了。removed 同理（见 removeMember）
-  return { users: d.users || [], tokens: d.tokens || {}, settings: d.settings || {}, removed: d.removed || [] };
+  const st = { users: d.users || [], tokens: d.tokens || {}, settings: d.settings || {}, removed: d.removed || [] };
+  keeperMemo = { ver, name: keeperIn(st.users) };
+  return st;
+}
+/**
+ * 默认组织里排第一的那个人的登录名（见 defaultUser），默认组织没人就是空串。
+ * 每条请求都要问（admin.keepsSharedSpace），所以不另读账本：认人那一步刚读过，读的时候顺手记下了；
+ * 账本没动过就用记下的，动过才重读。以前是记两秒，两秒一过下一条请求就多读一遍整本 users.json。
+ */
+function keeperName() {
+  if (keeperMemo.ver === null || keeperMemo.ver !== fileVersion(USERS_FILE)) loadUsers();
+  return keeperMemo.name;
 }
 /**
  * 删掉的登录名不许再用。对话、记忆、定时任务、中转 Key 全是按登录名认主人的，
@@ -495,7 +527,7 @@ function twoFactorStatus(u) {
 function defaultUser() {
   const us = loadUsers().users;
   const home = us.filter((u) => org.orgIdOf(u) === org.DEFAULT_ORG);
-  return [...(home.length ? home : us)].sort((a, b) => rbac.rankOf(b) - rbac.rankOf(a) || String(a.created_at).localeCompare(String(b.created_at)))[0] || null;
+  return firstOf(home.length ? home : us);
 }
 
 /** 席位满了返回一句话，没满返回空串。停用的人不占席位，待审核的占（批下来就是在用的人） */
@@ -2421,6 +2453,7 @@ module.exports = {
   userCount,
   seatCount,
   defaultUser,
+  keeperName,
   userFromReq,
   creditsFor,
   creditsEnabled,

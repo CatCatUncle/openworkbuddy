@@ -219,32 +219,23 @@ function ownsGlobalWorkspace(user) {
 }
 
 /**
- * 谁还留在原来那份共享空间上：工作目录（config.workspace_dir）、项目、资料库 data/library。
+ * 谁还留在原来那份共享空间上：工作目录（config.workspace_dir）、项目和工作空间列表、资料库 data/library。
  *
- * 只有一个账号时（含个人桌面版）谁都留，一字不改。不止一个账号时只留「老主人」——
- * account.defaultUser()，跟 server.js 的 legacySessionOwner 同一个口径：老会话没写 user 就算他的，
- * 他的文件本来就在共享根里。其余所有账号（默认组织别的管理员、成员、审计员，租户里的每一个）
- * 各用各的工作目录和资料库（spaces.js / server.js libraryRootOf）。
- * 以前是「默认组织的管理员都共用」：几个管理员互相看得见对方的成果，成员之间也是同组织一个根。
+ * 只有一个账号时（含个人桌面版）谁都留，一字不改。不止一个账号时：
+ * - 默认组织的管理员（含超管）都留。他们一直在这儿建项目、换工作目录，拆开就等于把他们攒下的工作空间全藏了；
+ * - 默认组织里一个管理员都没有（老账本）时，留「老主人」account.keeperName()，
+ *   跟 server.js 的 legacySessionOwner 同一个口径：老会话没写 user 就算他的，他的文件本来就在共享根里；
+ * - 其余的（默认组织的成员、审计员，租户里的每一个）各用各的工作目录和资料库（spaces.js / server.js libraryRootOf）。
  * 没登录的入口（命令行、IM 进来的）照旧在共享根上。
+ * 别处注释里说「老主人」「老主人的根」，指的就是这里判为留下的人和那份共享根。
  */
-let keeper = { at: 0, name: "" };
-function sharedOwnerName() {
-  const now = Date.now();
-  if (now - keeper.at < 2000) return keeper.name;
-  let name = "";
-  try {
-    const u = account.defaultUser();
-    if (u && org.orgIdOf(u) === org.DEFAULT_ORG) name = u.username;
-  } catch {}
-  keeper = { at: now, name };
-  return name;
-}
-function forgetKeeper() { keeper = { at: 0, name: "" }; }
 function keepsSharedSpace(user) {
   if (!user || !multiUser()) return true;
   if (org.orgIdOf(user) !== org.DEFAULT_ORG) return false;
-  return !!user.username && user.username === sharedOwnerName();
+  if (ownsGlobalWorkspace(user)) return true;
+  let name = "";
+  try { name = account.keeperName(); } catch {}
+  return !!user.username && user.username === name;
 }
 function platformGuard(req, res, next) {
   if (isSoloDesktop()) return next(); // 个人桌面版：没有「平台」这回事，别拿服务器的规矩管一个人的机器
@@ -270,12 +261,12 @@ function platformGuard(req, res, next) {
   next();
 }
 /**
- * 共享工作目录只归老主人（keepsSharedSpace）。默认组织别的管理员过得了上面那道闸，
- * 设置里那两项照样摘掉：他自己的工作目录是 accounts/ 下那份，改全局那个等于去挪老主人的根。
+ * 共享工作目录只归留在共享根上的人（keepsSharedSpace）。别人过得了上面那道闸的（比如只改自己那几项设置），
+ * 设置里那两项照样摘掉：他的工作目录是自己那份，改全局那个等于去挪共享根。
  */
 function sharedWorkspaceGuard(req, res, next) {
   if (keepsSharedSpace(req.user)) return next();
-  // 项目切的也是共享根：别人建、切、改、删项目，动的都是老主人那份目录
+  // 项目切的也是共享根：别人建、切、改、删项目，动的都是共享根上那份目录
   const p = req.path.toLowerCase();
   if (req.method !== "GET" && (p === "/api/projects" || p.startsWith("/api/projects/")))
     return res.status(403).json({ error: "项目归这台服务器的主人管，你的文件在自己的工作目录里", personal_space: true });
@@ -1126,4 +1117,4 @@ function safeCall(fn, arg) {
   try { return fn(arg); } catch { return null; }
 }
 
-module.exports = { createAdminRouter, platformAdmin, ownsGlobalWorkspace, keepsSharedSpace, forgetKeeper, sharedWorkspaceGuard, platformGuard, redactGuard, tenantScope, ownerActor, redactSecrets, setDeployment, isSoloDesktop, multiUser, PLATFORM_WRITE, PLATFORM_READ, PERSONAL_WRITE, PERSONAL_WRITE_PREFIX, PERSONAL_READ };
+module.exports = { createAdminRouter, platformAdmin, ownsGlobalWorkspace, keepsSharedSpace, sharedWorkspaceGuard, platformGuard, redactGuard, tenantScope, ownerActor, redactSecrets, setDeployment, isSoloDesktop, multiUser, PLATFORM_WRITE, PLATFORM_READ, PERSONAL_WRITE, PERSONAL_WRITE_PREFIX, PERSONAL_READ };

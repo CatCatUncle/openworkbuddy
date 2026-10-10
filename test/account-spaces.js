@@ -5,14 +5,15 @@
  * 工作目录、成果、资料库按账号分开（src/domains/account/spaces.js、admin.js 的 keepsSharedSpace、
  * server.js 的 libraryRootOf 和 /api/files/delete）：
  *
- *   ① 不止一个账号：老主人留在原来那份共享根上，其余每人一份自己的。同组织两个成员、租户里的成员，
+ *   ① 不止一个账号：默认组织的管理员留在原来那份共享根上，项目照建照切（老账本里一个管理员都没有时，
+ *      留排第一的老主人）；其余每人一份自己的。同组织两个成员、租户里的成员，
  *      谁也列不出、打不开、搜不到别人的成果和资料
  *   ② 让 AI 去读别人的：绝对路径、../、列别人的目录、全文搜，一个字都带不回来
  *   ③ 升级前的老对话：本人凭对话 id 照样打得开留在共享根里的成果，别人凭同一个 id 打不开；
  *      管理员凭 id 看得到成员这次对话的产出，不凭 id 看不到
  *   ④ 删：只删自己根里的；..、绝对路径、别人的、应用数据、资料库一律不删；这个根里有任务在跑先不删；
  *      别人的任务在跑不挡我；删了记审计
- *   ⑤ 老主人一切照旧；只有一个账号时一切照旧，不建 accounts/、不记分配表
+ *   ⑤ 默认组织的管理员一切照旧；只有一个账号时一切照旧，不建 accounts/、不记分配表
  *
  * 客户原话：「成果文件夹现在是组织间隔离，希望做到账号间隔离」「资料库希望也做成账号隔离的，
  * 并且在本地产物下可以进行移除」。
@@ -379,34 +380,32 @@ function call(port, token, method, p, body) {
     ok(logged, "审计里记着谁删了什么（删文件夹的还记着几个文件）");
   });
 
-  await section("【10】项目只归老主人：成员开不了", async () => {
+  await section("【10】项目只归管理员：成员开不了", async () => {
     const r = await A("POST", "/api/projects", { name: "我的项目" });
     eq(r.code, 403, "amy 新建项目 → 403");
   });
 
-  await section("【10.5】默认组织里不是老主人的管理员：跟成员一样用自己那份，挪不动共享的那份", async () => {
-    const ADM = path.join(HOME, "accounts", "adm");
+  await section("【10.5】默认组织里不是老主人的管理员：跟老主人一样留在共享那份上，项目照建照切", async () => {
+    // 10-09 那一版只留了老主人一个：别的管理员被挪进 accounts/ 下一份新的空目录，
+    // 他们在共享根上建的项目、攒下的工作空间全看不见了。一个账号本来就能有好几个工作空间
     const st = await D("GET", "/api/settings");
-    eq(st.json && st.json.workspace_personal, true, "adm（管理员）：用的也是自己的工作目录");
-    eq(path.resolve(String(st.json && st.json.workspace_dir)), ADM, "adm：工作目录是 accounts/adm");
-    ok(st.json && st.json.workspace_layout === "per_chat" && st.json.workspace_layout_locked === true && st.json.workspace_per_chat === true,
-       "adm：自己那份固定每个对话一个文件夹，不给改", st.json && { layout: st.json.workspace_layout, locked: st.json.workspace_layout_locked, perChat: st.json.workspace_per_chat });
-    ok(!namesOf(await D("GET", "/api/files")).includes("老主人.md"), "adm 的文件面板里没有共享根里的");
+    eq(st.json && st.json.workspace_personal, false, "adm（管理员）：用的是共享那份，不单开一份");
+    eq(path.resolve(String(st.json && st.json.workspace_dir)), SHARED, "adm：工作目录还是原来的共享根");
+    ok(!fs.existsSync(path.join(HOME, "accounts", "adm")), "  └ 没给他另建 accounts/adm");
+    ok(namesOf(await D("GET", "/api/files")).includes("老主人.md"), "adm 的文件面板里看得到共享根里原来的东西");
     const dl = await D("GET", "/api/files/download/" + enc("老主人.md"));
-    ok(dl.code !== 200 && !dl.body.includes("KEEPER"), "adm 照名字下共享根里的 → 下不到", dl.code);
-    ok(!/共享资料/.test((await D("GET", "/api/library")).body), "adm 的资料库里没有共享那份");
-    // 设置里填共享根、勾「设为默认」：这两项对他摘掉，全局那份不动
-    await D("POST", "/api/settings", { workspace_dir: SHARED, workspace_permanent: true });
-    eq(path.resolve(String((await D("GET", "/api/settings")).json.workspace_dir)), ADM, "adm 在设置里换工作目录：还是自己那份");
-    eq(path.resolve(String((await K("GET", "/api/settings")).json.workspace_dir)), SHARED, "  └ 老主人那份也没被挪走");
-    // 改放法：他那份是应用建的，固定按对话分，不往全局的放法表里记
-    await D("POST", "/api/settings", { workspace_layout: "flat" });
-    const st2 = (await D("GET", "/api/settings")).json || {};
-    ok(st2.workspace_layout === "per_chat" && st2.workspace_per_chat === true, "adm 想把自己那份改成「直接放进去」：不变", st2.workspace_layout);
-    const layouts = (JSON.parse(fs.readFileSync(path.join(HOME, "config.json"), "utf8")).folder_layouts) || {};
-    ok(!Object.keys(layouts).some((k) => path.resolve(k).toLowerCase() === ADM.toLowerCase()), "  └ 全局的放法表里也没记他那份", Object.keys(layouts));
-    eq((await D("GET", "/api/workspace/layout?dir=" + encodeURIComponent(SHARED))).code, 403, "adm 拿「这个文件夹会怎么放」去探共享根 → 403");
-    eq((await D("POST", "/api/projects", { name: "管理员的项目" })).code, 403, "adm 新建项目 → 403（项目只归老主人）");
+    ok(dl.code === 200 && dl.body.includes("KEEPER"), "adm 打得开共享根里的文件", dl.code);
+    ok(/共享资料/.test((await D("GET", "/api/library")).body), "adm 的资料库就是共享那份");
+    const pj = (await D("GET", "/api/projects")).json;
+    ok(pj && pj.locked === false && pj.active === "默认项目", "adm 的侧栏有项目这一块，当前在默认项目", pj);
+    const mk = await D("POST", "/api/projects", { name: "管理员的项目" });
+    ok(mk.code === 200 && mk.json && mk.json.ok && mk.json.active === "管理员的项目", "adm 新建项目照常，建完就切过去", mk.json);
+    const names = (((await K("GET", "/api/projects")).json || {}).projects || []).map((/** @type {any} */ p) => p.name);
+    ok(names.includes("默认项目") && names.includes("管理员的项目"), "老主人那边的项目列表里也有这一个（两人用同一份列表）", names);
+    const back = await D("POST", "/api/projects/switch", { name: "默认项目" });
+    ok(back.code === 200 && back.json && back.json.ok, "adm 切回默认项目", back.json);
+    eq(path.resolve(String((await K("GET", "/api/settings")).json.workspace_dir)), SHARED, "  └ 切回来了，共享根原样");
+    eq((await A("POST", "/api/projects", { name: "成员的项目" })).code, 403, "成员 amy 还是建不了项目（跟 10-09 之前一样）");
   });
 
   // ---------- 只有一个账号的机器：一切照旧 ----------

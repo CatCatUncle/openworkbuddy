@@ -231,6 +231,11 @@ const TO0 = APP02X.indexOf("// 把本回合的产出做成卡片挂在对话里"
 const TO1 = APP02X.indexOf('document.getElementById("toggle-files").onclick');
 if (TO0 < 0 || TO1 <= TO0) throw new Error("app-01.js 里的本回合产出段找不到了（段标题被改过？），前端测试没法定位真源码");
 const TURNOUT_SRC = APP02X.slice(TO0, TO1);
+// 缩略图读不出来时单问一件「还在不在」，用的是预览那边的 pvConfirmGone：切真源码进来，不用替身
+const PG0 = APP02X.indexOf("async function pvConfirmGone(");
+const PG1 = APP02X.indexOf("\n}\n", PG0) + 3;
+if (PG0 < 0 || PG1 <= PG0) throw new Error("app-01.js 里 pvConfirmGone 找不到了，前端测试没法验缩略图读不出来那条路");
+const PVGONE_SRC = APP02X.slice(PG0, PG1);
 // files 事件那一支（在大 switch 里，切不进上面那段）：只验它拿 files ∪ turn_files 挑卡、判「已删除」
 const FEV0 = APP02X.indexOf('} else if (ev.type === "files") {');
 const FEV1 = APP02X.indexOf('} else if (ev.type === "sweep")', FEV0);
@@ -483,22 +488,25 @@ const TURNOUT_CHECKS = `
   const mid = ["海报.png","corner.png","tab3.png","tab2.png","tab1.png","bottom.png","海报v2.png","wm2.png"].map((n) => F(n));
   const clean = F("海报_clean.png");
 
-  // ── 负向控制：不传完整列表 = 修好之前那条代码路径，必须能把 bug 原样复现出来。
-  // 复现不出来说明测试测了个寂寞，后面全绿也不能信
+  // ── 负向控制：不传完整列表 = 判不了谁删了，中间文件的卡一张都撤不掉（撤卡靠的是下一条那份清单）。
+  // 以前这条路上卡位先到先得，8 张中间图把位子占满，成品一张卡都没有；
+  // 现在卡位按排名给（rankOutCards），撤不撤卡和成品露不露是两道闸，各管各的
   {
     const b = fresh();
     renderTurnOutputs(b, mid);
     renderTurnOutputs(b, [clean]);
-    ok("负向控制：旧行为下成品确实被挤掉了",
-      cards(b).length === 8 && !cards(b).includes("海报_clean.png"),
-      "旧行为没复现出 bug，这条测试就没有意义：" + JSON.stringify(cards(b)));
+    ok("负向控制：没有完整清单时一张卡都不撤（八张中间图还在）",
+      mid.every((f) => cards(b).includes(f.name)), JSON.stringify(cards(b)));
+    ok("  ← 但成品不再被挤掉：卡位按排名给，不是先到先得",
+      cards(b).includes("海报_clean.png") && !b.querySelector('.out-card[data-name="海报_clean.png"]').classList.contains("over"),
+      JSON.stringify(cards(b)));
   }
 
   // ── 修好之后
   {
     const b = fresh();
     renderTurnOutputs(b, mid, mid);
-    ok("八个中间文件先把卡片上限占满", cards(b).length === 8);
+    ok("八个中间文件先各出一张卡", cards(b).length === 8);
     renderTurnOutputs(b, [clean], [clean]);   // 磁盘上现在只剩成品
     ok("已从磁盘删掉的中间文件，卡片跟着撤掉", !cards(b).some((n) => n !== "海报_clean.png"), JSON.stringify(cards(b)));
     ok("腾出位置后成品补进了卡片区", cards(b).includes("海报_clean.png"));
@@ -515,7 +523,9 @@ const TURNOUT_CHECKS = `
     renderTurnOutputs(b, mid, mid);
     const capped = Array.from({ length: 500 }, (_, i) => F("x" + i + ".txt"));
     renderTurnOutputs(b, [clean], capped);
-    ok("列表被截断时一律不回收", cards(b).length === 8 && !cards(b).includes("海报_clean.png"));
+    ok("列表被截断时一律不回收：八张中间图的卡一张没撤，行也没盖「已删除」",
+      mid.every((f) => cards(b).includes(f.name)) && !b.querySelector(".out-row.gone"), JSON.stringify(cards(b)));
+    ok("  ← 成品照样补上了卡", cards(b).includes("海报_clean.png"));
   }
 
   // ── 只保留一层开关。
@@ -813,7 +823,7 @@ const TURNOUT_CHECKS = `
     // 「还有 N 个文件」数的必须是看得见的行。数进藏起来的，用户点开会发现啥也没多
     {
       const b = fresh();
-      // 用 .log 不用 .txt：.txt 算交付物、会去抢卡位（8 张卡的上限被日志占掉一半），
+      // 用 .log 不用 .txt：.txt 算交付物、会出卡，出了卡的行就不在清单里，
       // 那样测的就不是折叠计数而是卡位分配了
       const many = [...four, ...Array.from({ length: 9 }, (_, i) => F("log_" + i + ".log", 50 + i))];
       renderTurnOutputs(b, many, many);
@@ -885,7 +895,7 @@ const TURNOUT_CHECKS = `
     const bi = fresh();
     renderTurnOutputs(bi, 图, 图, { root: "r1" });
     ok("负向对照：同一目录 12 张成品图不折——它们是多数派，本来就是这一回合的产出",
-      !bi.querySelector(".out-card[data-bundle]") && cards(bi).length === 8, JSON.stringify(cards(bi)));
+      !bi.querySelector(".out-card[data-bundle]") && cards(bi).length === 12 && !bi.querySelector(".out-card.over"), JSON.stringify(cards(bi)));
 
     // ★负向对照★ 条数不到线的目录照旧一张张摆
     const 少 = [F("小任务/图.png", 100), F("小任务/a.js", 10), F("小任务/b.js", 10),
@@ -1050,6 +1060,249 @@ const TURNOUT_CHECKS = `
     const css = [...document.styleSheets].flatMap((s) => [...s.cssRules]).find((r) => r.selectorText === ".out-note");
     ok("说明那句有样式（小一号、浅一档，间距 4 的倍数）", !!css && css.style.fontSize === "12px" && parseInt(css.style.marginTop, 10) % 4 === 0, css && css.cssText);
     for (const x of [b1, b2, b0]) x.remove();
+  }
+
+  // ---- 哪几件露在前面：卡位按排名给，不是先到先得 ----
+  // 用户：很多重要产出给我藏起来了，还得自己点开。真实形状：一回合先写十几份草稿、笔记，
+  // 最后才落成品网页——卡位按到达顺序给的话，最后到的成品正好排在名额外面
+  {
+    const vis = (b) => [...b.querySelectorAll(".out-card:not(.over)")].map((c) => c.dataset.name);
+    const over = (b) => [...b.querySelectorAll(".out-card.over")].map((c) => c.dataset.name);
+    const rowsShown = (b) => [...b.querySelectorAll(".out-list .out-row")].filter((r) => getComputedStyle(r).display !== "none").map((r) => r.dataset.name);
+
+    // 1. 档位：网页（index 打头）> PDF > 文档 > 视频 > 图 > 文本
+    {
+      const b = fresh();
+      const mixed = [F("说明.md"), F("配图.png"), F("讲稿.docx"), F("报告.pdf"), F("附录.html"), F("index.html"), F("片头.mp4")];
+      renderTurnOutputs(b, mixed, mixed);
+      ok("卡片按成品档位排：网页（index 打头）> PDF > 文档 > 视频 > 图 > 文本",
+        cards(b).join() === "index.html,附录.html,报告.pdf,讲稿.docx,片头.mp4,配图.png,说明.md", cards(b).join());
+      b.remove();
+    }
+
+    // 2. 草稿先来、成品最后到
+    {
+      const drafts = Array.from({ length: 14 }, (_, i) => F("任务_X/_drafts/第" + (i + 1) + "节.md", 200 + i));
+      const fin = F("任务_X/成稿.html", 9000);
+      const b = fresh();
+      renderTurnOutputs(b, drafts, drafts);
+      ok("前提：只有草稿时草稿照样出卡（没有成品可让），名额外的收起来",
+        vis(b).length === OUT_CARD_MAX && over(b).length === 2, vis(b).length + "/" + over(b).length);
+      renderTurnOutputs(b, [fin], [...drafts, fin]);
+      ok("★最后才到的成品排第一张，露在外面★", vis(b)[0] === "任务_X/成稿.html", JSON.stringify(vis(b)));
+      ok("★有成品时草稿目录里的卡全收起来★", vis(b).length === 1 && over(b).length === 14, vis(b).length + "/" + over(b).length);
+      ok("  ← 收起来的那 14 张回到清单里、压暗沉底，名字一个不丢",
+        b.querySelectorAll(".out-list .out-row.sub:not(.carded)").length === 14, b.querySelectorAll(".out-list .out-row.sub:not(.carded)").length);
+      ok("  ← 成品那行出了卡，清单里不再重复列", b.querySelector('.out-row[data-name="任务_X/成稿.html"]').classList.contains("carded"));
+      // 反向对照：按先来后到给名额（老办法），同一批文件里成品排第 15 张、被藏——证明上面那几条不是因为输入太简单才绿
+      const realRank = rankOutCards;
+      rankOutCards = (grid) => { [...grid.querySelectorAll(":scope > .out-card")].forEach((c, i) => c.classList.toggle("over", i >= OUT_CARD_MAX)); };
+      const bOld = fresh();
+      try {
+        renderTurnOutputs(bOld, drafts, drafts);
+        renderTurnOutputs(bOld, [fin], [...drafts, fin]);
+      } finally { rankOutCards = realRank; }
+      ok("反向对照：按先来后到给名额，同一批文件里成品被藏在名额外面",
+        bOld.querySelector('.out-card[data-name="任务_X/成稿.html"]').classList.contains("over"), JSON.stringify(vis(bOld)));
+      b.remove(); bOld.remove();
+    }
+
+    // 3. 名额满了：多出来的收起来，那几行当成品排在清单最前
+    {
+      const b = fresh();
+      const pics = Array.from({ length: 15 }, (_, i) => F("出图/图" + (i + 1) + ".png", 1000 + i));
+      const logs = Array.from({ length: 9 }, (_, i) => F("出图/run_" + i + ".log", 50 + i));
+      renderTurnOutputs(b, [...logs, ...pics], [...logs, ...pics]);
+      ok("卡片区露 " + OUT_CARD_MAX + " 张，多出来的 3 张收起来", vis(b).length === OUT_CARD_MAX && over(b).length === 3, vis(b).length + "/" + over(b).length);
+      ok("  ← 露在外面的按自然序（图2 在图10 前面）", vis(b)[1] === "出图/图2.png" && vis(b)[11] === "出图/图12.png", JSON.stringify(vis(b)));
+      const shown = rowsShown(b);
+      ok("★没轮上卡的 3 张成品排在清单最前★（以前排在 9 行日志后面、被折进「还有 N 个」）",
+        shown.slice(0, 3).join() === "出图/图13.png,出图/图14.png,出图/图15.png", JSON.stringify(shown));
+      ok("  ← 它们带着成品记号", ["出图/图13.png", "出图/图14.png", "出图/图15.png"].every((n) => b.querySelector('.out-row[data-name="' + n + '"]').classList.contains("fin")));
+      const o = b.querySelector(".out-card.over");
+      ok("收起来的卡真的看不见（浏览器算出来的 display，不是有没有类名）", getComputedStyle(o).display === "none", getComputedStyle(o).display);
+      b.remove();
+    }
+
+    // 4. 成品行再多（24 行以内）也不折进「还有 N 个文件」
+    {
+      const b = fresh();
+      const pics = Array.from({ length: 32 }, (_, i) => F("相册/" + String(i + 1).padStart(2, "0") + ".png", 2000 + i));
+      const logs = Array.from({ length: 10 }, (_, i) => F("相册/step_" + i + ".log", 60 + i));
+      renderTurnOutputs(b, [...pics, ...logs], [...pics, ...logs]);
+      const finRows = [...b.querySelectorAll(".out-row.fin")];
+      ok("20 张没轮上卡的成品图在清单里都标成成品", finRows.length === 20, finRows.length);
+      ok("★一张都没被折进「还有 N 个文件」★", finRows.every((r) => getComputedStyle(r).display !== "none"),
+        finRows.filter((r) => getComputedStyle(r).display === "none").length + " 行被折");
+      const more = b.querySelector(".out-more");
+      ok("  ← 折起来的是日志那 10 行", !more.hidden && more.textContent === "还有 10 个文件", more.textContent);
+      b.remove();
+    }
+
+    // 5. 一回合几百张图：DOM 里留的卡有上限，清单一行不少
+    {
+      const b = fresh();
+      const pics = Array.from({ length: 60 }, (_, i) => F("批量/p" + (i + 1) + ".png", 3000 + i));
+      renderTurnOutputs(b, pics, pics);
+      ok("60 张图：DOM 里只留 " + OUT_CARD_KEEP + " 张卡、露 " + OUT_CARD_MAX + " 张",
+        b.querySelectorAll(".out-card").length === OUT_CARD_KEEP && vis(b).length === OUT_CARD_MAX, b.querySelectorAll(".out-card").length + "/" + vis(b).length);
+      ok("  ← 清单 60 行一行不少，计数照实报", b.querySelectorAll(".out-row").length === 60 && b.querySelector(".out-main .cn").textContent === "(60)",
+        b.querySelector(".out-main .cn").textContent);
+      ok("  ← 没卡的成品先露 " + OUT_FIN_ROW_MAX + " 行，其余收在「还有 24 个文件」里", b.querySelector(".out-more").textContent === "还有 24 个文件",
+        b.querySelector(".out-more").textContent);
+      b.remove();
+    }
+
+    // 6. 服务端报的「这回合写过、现在没了」（ev.gone）。整份清单那条路在大工作目录里说不了话（截断、回放裁过），
+    //    以前删掉、挪走的文件卡一直挂着，点开才是一句「文件不存在」
+    {
+      const two = [F("稿/甲.png", 500), F("稿/乙.png", 600)];
+      const b = fresh();
+      renderTurnOutputs(b, two, two, { root: "r1" });
+      renderTurnOutputs(b, [], two, { root: "r2", gone: ["稿/甲.png"] });
+      ok("别的工作目录报的 gone 不算数（名字不在同一个坐标系里）", cards(b).length === 2 && !b.querySelector(".out-row.gone"), JSON.stringify(cards(b)));
+      renderTurnOutputs(b, [], [two[1]], { root: "r1", gone: ["稿/甲.png"], full: false });
+      const g = b.querySelector('.out-row[data-name="稿/甲.png"]');
+      ok("★服务端报了没了：卡撤掉、那行盖「已删除」★（清单截断、判不了生死时也照样撤）",
+        !cards(b).includes("稿/甲.png") && !!g && g.classList.contains("gone") && g.querySelector(".sz").textContent === "已删除", JSON.stringify(cards(b)));
+      ok("  ← 没被点名的那张不动", cards(b).includes("稿/乙.png"));
+      ok("  ← 已删除那行摘掉了下载和定位，点它也不再去开", !g.querySelector(".dl") && !g.querySelector(".rv") && g.onclick === null);
+      ok("  ← 已删除的行看得见，垫在最后", getComputedStyle(g).display !== "none" && b.querySelector(".out-list .out-row:last-child") === g);
+      const empty = fresh();
+      renderTurnOutputs(empty, [], [], { gone: ["稿/甲.png"] });
+      ok("只报了删除、这里还没有产出块：不凭空建一块", !empty.querySelector(".out-block"));
+      // 删了又写回来
+      const back = F("稿/甲.png", 700);
+      renderTurnOutputs(b, [back], [back, two[1]], { root: "r1" });
+      const r = b.querySelector('.out-row[data-name="稿/甲.png"]');
+      ok("★删了又写回来：卡回来，那行不再是「已删除」，下载入口也回来了★",
+        cards(b).includes("稿/甲.png") && !!r && !r.classList.contains("gone") && !!r.querySelector(".dl"), r && r.className);
+      ok("  ← 清单里还是一行", b.querySelectorAll('.out-row[data-name="稿/甲.png"]').length === 1);
+      b.remove(); empty.remove();
+    }
+
+    // 7. 清单那行的大小跟着改写走（以前一直挂着头一回的大小）
+    {
+      const b = fresh();
+      renderTurnOutputs(b, [F("日志/run.log", 50)], [F("日志/run.log", 50)]);
+      renderTurnOutputs(b, [F("日志/run.log", 70)], [F("日志/run.log", 70)]);
+      const r = b.querySelector('.out-row[data-name="日志/run.log"]');
+      ok("同一个文件又改写一遍：清单那行的大小跟着变", r.dataset.size === "70" && r.querySelector(".sz").textContent === "70 B",
+        r.dataset.size + " / " + r.querySelector(".sz").textContent);
+      b.remove();
+    }
+
+    // 8. 确定没了的一件：前几回合的产出块一起撤，别让用户在上一回合的卡上再撞一次
+    {
+      const one = [F("共用/封面.png", 800)];
+      const b1 = fresh(), b2 = fresh(), b3 = fresh();
+      renderTurnOutputs(b1, one, one, { root: "r1" });
+      renderTurnOutputs(b2, one, one, { root: "r1" });
+      renderTurnOutputs(b3, one, one, { root: "r2" });
+      markOutputGone("共用/封面.png", "r1");
+      const dead = (b) => !b.querySelector(".out-card") && b.querySelector(".out-row").classList.contains("gone");
+      ok("★同一个工作目录下，几个回合的产出块一起撤★", dead(b1) && dead(b2), cards(b1).join() + " | " + cards(b2).join());
+      ok("  ← 别的工作目录里同名的那件不动", !!b3.querySelector(".out-card") && !b3.querySelector(".out-row.gone"));
+      ok("  ← 块的计数照旧（行还在，只是盖了章）", b1.querySelector(".out-main .cn").textContent === "(1)", b1.querySelector(".out-main .cn").textContent);
+      for (const x of [b1, b2, b3]) x.remove();
+    }
+
+    // 9. 收尾、翻历史时问一次服务端「这块里的还在不在」（/api/files/exists）
+    {
+      const realFetch = window.fetch;
+      const asked = [];
+      const three = [F("核对/在的.png", 10), F("核对/没了.png", 20), F("核对/run.log", 30)];
+      window.fetch = (url, opt) => {
+        asked.push({ url, body: JSON.parse(opt.body) });
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ exists: { "核对/在的.png": true, "核对/没了.png": false } }) });
+      };
+      try {
+        const b = fresh();
+        renderTurnOutputs(b, three, three, { root: "r1" });
+        const blk = b.querySelector(".out-block");
+        const n = await verifyOutBlock(blk);
+        ok("问的是 /api/files/exists，带着这块自己的工作目录", asked.length === 1 && asked[0].url.indexOf("/api/files/exists?root=r1") === 0, JSON.stringify(asked));
+        ok("  ← 这块里列的每一件都问到了", three.every((f) => asked[0].body.paths.includes(f.name)), JSON.stringify(asked[0] && asked[0].body));
+        ok("★明说没了的那件：卡撤、行盖「已删除」★",
+          n > 0 && !cards(b).includes("核对/没了.png") && b.querySelector('.out-row[data-name="核对/没了.png"]').classList.contains("gone"), JSON.stringify(cards(b)));
+        ok("  ← 在的、回包里没提的都不动", cards(b).includes("核对/在的.png") && !b.querySelector('.out-row[data-name="核对/run.log"]').classList.contains("gone"));
+        await verifyOutBlock(blk);
+        ok("一块只问一次", asked.length === 1, asked.length);
+        window.fetch = () => Promise.reject(new Error("断了"));
+        const b2 = fresh();
+        renderTurnOutputs(b2, three, three, { root: "r1" });
+        ok("问不通就什么都不改（宁可留着，也不凭猜盖章）",
+          (await verifyOutBlock(b2.querySelector(".out-block"))) === 0 && cards(b2).length === 2 && !b2.querySelector(".out-row.gone"), JSON.stringify(cards(b2)));
+        window.fetch = () => Promise.resolve({ ok: false, json: () => Promise.resolve({ exists: { "核对/在的.png": false } }) });
+        const b3 = fresh();
+        renderTurnOutputs(b3, three, three, { root: "r1" });
+        ok("服务端回了错误码也不改", (await verifyOutBlock(b3.querySelector(".out-block"))) === 0 && !b3.querySelector(".out-row.gone"));
+        for (const x of [b, b2, b3]) x.remove();
+      } finally { window.fetch = realFetch; }
+    }
+
+    // 9.5 缩略图读不出来：图标上只说没显示出来，不替人猜「改名、挪走还是删了」。
+    // 再单问服务端这一件：明说没了才撤卡、清单那行盖「已删除」；还在的（浏览器解不了而已）卡留着。
+    // 测试页里的 <img> 自己也会真报错（地址在 data: 页里解析不了），所以只数问到这几件的那几次
+    {
+      const realFetch = window.fetch;
+      const asked = [];
+      let answer = {};
+      window.fetch = (url, opt) => {
+        asked.push({ url, paths: JSON.parse(opt.body).paths });
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ exists: answer }) });
+      };
+      const askedFor = (n) => asked.filter((a) => a.paths.length === 1 && a.paths[0] === n);
+      const settle = () => new Promise((r) => setTimeout(r, 0));
+      try {
+        const two = [F("缩图/没了.png", 10), F("缩图/坏图.png", 20)];
+        // 渲染完立刻把 <img> 拿住：等一拍之后它可能已经自己报过错、被换成图标了
+        const imgOf = (blk, n) => blk.querySelector('.out-card[data-name="' + n + '"] .out-thumb img');
+        const b = fresh();
+        renderTurnOutputs(b, two, two, { root: "r1" });
+        const goneImg = imgOf(b, "缩图/没了.png"), badImg = imgOf(b, "缩图/坏图.png");
+        ok("测试自检：两张卡起先都摆着缩略图", !!goneImg && !!badImg);
+        answer = { "缩图/没了.png": false };
+        if (goneImg) goneImg.onerror();
+        const tip = (b.querySelector('.out-card[data-name="缩图/没了.png"] .out-thumb .ph') || {}).title || "";
+        ok("图标上只说没显示出来，不猜是改名、挪走还是删了", tip === "缩略图没显示出来", tip);
+        await settle(); await settle();
+        const q = askedFor("缩图/没了.png");
+        ok("单问这一件，带着这块的工作目录", q.length >= 1 && q.every((a) => a.url.indexOf("/api/files/exists?root=r1") === 0), JSON.stringify(asked));
+        ok("★服务端明说没了：卡撤、清单那行盖「已删除」★",
+          !cards(b).includes("缩图/没了.png") && b.querySelector('.out-row[data-name="缩图/没了.png"]').classList.contains("gone"), JSON.stringify(cards(b)));
+        answer = { "缩图/坏图.png": true };
+        if (badImg) badImg.onerror();
+        await settle(); await settle();
+        ok("  ← 文件还在（只是显示不了）：卡留着、退回图标，清单那行不盖章",
+          askedFor("缩图/坏图.png").length >= 1 && cards(b).includes("缩图/坏图.png") && !!b.querySelector('.out-card[data-name="缩图/坏图.png"] .out-thumb .ph') &&
+          !b.querySelector('.out-row[data-name="缩图/坏图.png"]').classList.contains("gone"), JSON.stringify(cards(b)));
+        window.fetch = () => Promise.reject(new Error("断了"));
+        const b2 = fresh();
+        renderTurnOutputs(b2, two, two, { root: "r1" });
+        const img2 = imgOf(b2, "缩图/没了.png");
+        if (img2) img2.onerror();
+        await settle(); await settle();
+        ok("  ← 问不通就不改（宁可留着，也不凭猜盖章）", cards(b2).includes("缩图/没了.png") && !b2.querySelector(".out-row.gone"), JSON.stringify(cards(b2)));
+        for (const x of [b, b2]) x.remove();
+      } finally { window.fetch = realFetch; }
+    }
+
+    // 10. 右侧清单刷新重画卡片时，收起来的卡还是收着（不然刷一次，藏起来的全冒出来）
+    {
+      filesCache = []; filesRoot = "";
+      const b = fresh();
+      const pics = Array.from({ length: 13 }, (_, i) => F("同步/图" + (i + 1) + ".png", 100 + i));
+      renderTurnOutputs(b, pics, pics);
+      const hid = b.querySelector(".out-card.over");
+      ok("前提：第 13 张收起来了", !!hid && hid.dataset.name === "同步/图13.png", hid && hid.dataset.name);
+      filesCache = pics.map((f) => (f.name === "同步/图13.png" ? { name: f.name, size: f.size, mtime: "2026-09-30T00:00:00.000Z" } : f));
+      ok("清单刷新，重画了落后的那一张", syncOutCards(filesCache) === 1);
+      const re = b.querySelector('.out-card[data-name="同步/图13.png"]');
+      ok("★重画出来的卡还是收着的★", re !== hid && re.classList.contains("over"), re && re.className);
+      filesCache = [];
+      b.remove();
+    }
   }
 
   return names;
@@ -9184,6 +9437,13 @@ const HL_SRC = (() => {
   if (a0 < 0 || a1 <= a0) throw new Error("输入框高亮切片锚点丢了");
   return APP02X.slice(a0, a1);
 })();
+// 输入框长高后的渐隐、对话区跟着贴底：真源码切进来，跟高亮同一扇窗验
+const HL_GROW_SRC = (() => {
+  const a0 = APP02X.indexOf("// ---------- 输入框写长了");
+  const a1 = APP02X.indexOf("// ================= 成果文件 =================", a0);
+  if (a0 < 0 || a1 <= a0) throw new Error("输入框长高切片锚点丢了");
+  return APP02X.slice(a0, a1);
+})();
 const HL_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style><body>"
   + "<div style='width:360px;padding:12px'><div id='input-box'><div id='input-hl' aria-hidden='true'></div>"
   + "<textarea id='input' rows='2'></textarea></div></div></body>";
@@ -9191,6 +9451,11 @@ const HL_STUBS = `
   function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
   const inputEl = document.getElementById("input");
   const skillsCache = [{ name: "写周报" }, { name: "archify" }];
+  let chatStick = false;
+  const chatScroll = document.createElement("div");
+  chatScroll.style.cssText = "overflow:auto;height:200px;width:200px";
+  chatScroll.innerHTML = "<div style='height:1000px'></div>";
+  document.body.appendChild(chatScroll);
 `;
 const HL_CHECKS = FLUSH_SRC + `
   const names = []; window.__hlNames = 0;
@@ -9207,17 +9472,20 @@ const HL_CHECKS = FLUSH_SRC + `
   // 探针：完整复刻 textarea 的 computed style，用来量「这段字真正占了哪块地方」
   const probe = document.createElement("div");
   const mkProbe = () => {
+    // 先把 textarea 的样式整份抄下来，再去动探针。getComputedStyle 给的是活对象：探针一摘掉 style 就回到
+    // 文档流里（position 还没设回 absolute），整页排版跟着变，textarea 被挤窄，边抄边读到的宽度
+    // 就是被挤过的——以前探针抄成了 261px 宽，真输入框是 336px，量出来的折行位置当然对不上
     const cs = getComputedStyle(ta);
+    const copied = [...cs].map((k) => [k, cs.getPropertyValue(k)]);
     probe.removeAttribute("style");
-    for (const k of cs) probe.style.setProperty(k, cs.getPropertyValue(k));
-    probe.style.boxSizing = "content-box";
-    probe.style.width = cs.width;
+    for (const [k, v] of copied) probe.style.setProperty(k, v);
+    // 盒子模型、overflow、滚动条那条槽都照 textarea 原样留着。以前这里改成 content-box + overflow: visible，
+    // 等于把那条槽抠掉了：探针比真输入框宽一条槽，量出来的折行位置本身就是错的
     probe.style.position = "absolute";
     probe.style.left = "-9999px";
     probe.style.top = "0";
     probe.style.height = "auto";
     probe.style.maxHeight = "none";
-    probe.style.overflow = "visible";
     probe.style.visibility = "hidden";
   };
   document.body.appendChild(probe);
@@ -9268,6 +9536,44 @@ const HL_CHECKS = FLUSH_SRC + `
   ok("长文折行后：框还跟着真文字走（" + say(g2) + "）", fit(g2));
   ok("折行这一条真的折了行（技能名不在第一行）", g2.got && g2.got.y > g2.got.h * 0.9, JSON.stringify(g2.got));
 
+  // 探针终究是照抄样式做的复刻品：抄漏一项，它就跟着错，自己看不出来。所以再问真输入框本身——
+  // caretPositionFromPoint 在 textarea 上能直接答「这一点落在第几个字」。
+  // 在镜像层那个框的左缘、右缘各点一下，真输入框里得正好落在技能名的头和尾
+  if (!document.caretPositionFromPoint) throw new Error("输入框高亮：这版 Chromium 没有 caretPositionFromPoint，量不了真输入框");
+  const caretAt = (x, y) => { const cp = document.caretPositionFromPoint(x, y); return cp && cp.offsetNode === ta ? cp.offset : -1; };
+  const onReal = (text, tok) => {
+    const sp = hl.querySelector(".tk");
+    if (!sp) return { miss: "镜像层没画出 .tk" };
+    const b = sp.getBoundingClientRect(), y = b.top + b.height / 2, at = text.indexOf(tok);
+    const head = caretAt(b.left + 1, y), tail = caretAt(b.right - 1, y);
+    return { head, tail, want: [at, at + tok.length], ok: head === at && tail === at + tok.length };
+  };
+  // 镜像层自己在哪几个字换行（只看镜像层，不经过上面任何一把尺子）
+  const hlBreaks = () => {
+    const tw = document.createTreeWalker(hl, NodeFilter.SHOW_TEXT), out = [];
+    let off = 0, top = null, n;
+    while ((n = tw.nextNode())) {
+      for (let i = 0; i < n.data.length; i++) {
+        const r = document.createRange(); r.setStart(n, i); r.setEnd(n, i + 1);
+        const b = r.getBoundingClientRect();
+        if (b.width > 0 && top !== null && b.top > top + 2) out.push(off + i);
+        if (b.width > 0 && (top === null || b.top > top + 2)) top = b.top;
+      }
+      off += n.data.length;
+    }
+    return out.join(",");
+  };
+  const r2 = onReal(long, "/写周报");
+  ok("长文折行后：在镜像层的框上点一下，真输入框里正落在技能名的头和尾（" + JSON.stringify(r2) + "）", r2.ok);
+  // 负对照：镜像层不留滚动条那条槽。滚动条浮在字上、不占宽度的机器上这一改不改变折行，没东西可量；
+  // 改变了折行，这把尺子就必须当场判不合格
+  const brk0 = hlBreaks();
+  hl.style.scrollbarGutter = "auto"; flush();
+  const brk1 = hlBreaks(), r2bad = onReal(long, "/写周报");
+  hl.style.scrollbarGutter = ""; flush();
+  if (brk0 !== brk1) ok("负对照：镜像层不留滚动条那条槽、折行变了（" + brk0 + " → " + brk1 + "），尺子当场判不合格", !r2bad.ok, JSON.stringify(r2bad));
+  else names.push("（本机滚动条不占宽度，「镜像层不留槽」这条负对照折行没变，跳过）");
+
   // 字号改大：这正是当年抄一次就不更新那个 bug 的现场
   document.documentElement.dataset.fs = "xl"; flush();
   const g3 = gap("帮我 /写周报 这个月的", "/写周报");
@@ -9295,6 +9601,69 @@ const HL_CHECKS = FLUSH_SRC + `
   ok("@文件 一律画框，整个文件名都在框里", (hl.querySelector(".tk") || {}).textContent === "@report.md");
   ta.value = ""; ta.dispatchEvent(new Event("input"));
   ok("清空输入框：镜像层跟着清干净，不留上一条的底色", hl.innerHTML === "");
+
+  // ---- 字多就长高：最少两行，到顶停在整行上，框里还有没露出来的字，那一边渐隐 ----
+  const lhPx = parseFloat(getComputedStyle(ta).lineHeight);
+  const rows = () => ta.clientHeight / lhPx;
+  const whole = (v) => Math.abs(v - Math.round(v)) < 0.05;
+  const fades = () => (inputBox.classList.contains("fade-t") ? "上" : "") + (inputBox.classList.contains("fade-b") ? "下" : "");
+  ok("空框两行高（量到 " + rows().toFixed(2) + " 行）", Math.abs(rows() - 2) < 0.05);
+  ta.value = ["一", "二", "三", "四"].join("\\n"); ta.dispatchEvent(new Event("input")); flush();
+  ok("写到四行：框跟着长成四行，字一行不藏（" + rows().toFixed(2) + " 行，渐隐「" + fades() + "」）",
+    Math.abs(rows() - 4) < 0.05 && ta.scrollHeight <= ta.clientHeight + 1 && fades() === "");
+  const many = Array.from({ length: 30 }, (_, i) => "第" + (i + 1) + "行先把数据汇总一遍").join("\\n") + "\\n最后 /写周报 收尾";
+  ta.value = many; ta.dispatchEvent(new Event("input")); flush();
+  const capRows = rows();
+  ok("写到三十多行：长到顶就停，不把对话区挤没（" + capRows.toFixed(2) + " 行，窗高 " + innerHeight + "）",
+    capRows >= 5.95 && capRows <= 12.05 && ta.clientHeight <= Math.max(6 * lhPx, innerHeight * 0.36) + 0.5 && ta.scrollHeight > ta.clientHeight + 40);
+  ok("  ← 停在整行上，最底下那行没被横着切掉半截", whole(capRows));
+  const raw = Math.min(Math.max(6 * lhPx, innerHeight * 0.36), 12 * lhPx);
+  if (!whole(raw / lhPx)) {
+    ta.style.maxHeight = "clamp(6lh, 36vh, 12lh)"; flush();
+    const half = rows();
+    ta.style.maxHeight = ""; flush();
+    ok("负对照：不取整的写法在这扇窗里切出半行（" + half.toFixed(2) + " 行），尺子能红", !whole(half));
+  }
+
+  // 框里出了滚动条：滚到底，最后一行那个技能名的框还得压在真字上——镜像层要跟着滚
+  ta.scrollTop = ta.scrollHeight; ta.dispatchEvent(new Event("scroll")); flush();
+  const r4 = onReal(many, "/写周报");
+  ok("滚到底：镜像层跟着滚，框还压在真输入框那几个字上（" + JSON.stringify(r4) + "）", r4.ok);
+  hl.scrollTop = 0;
+  const r4bad = onReal(many, "/写周报");
+  ok("负对照：镜像层没跟着滚，尺子当场判不合格（" + JSON.stringify(r4bad) + "）", !r4bad.ok);
+  ta.dispatchEvent(new Event("scroll"));
+
+  ta.scrollTop = 0; ta.dispatchEvent(new Event("scroll"));
+  ok("停在最上面：只有下沿渐隐（「" + fades() + "」）", fades() === "下");
+  ok("  ← 渐隐真画出来了，不是只挂了个类名", getComputedStyle(inputBox).maskImage !== "none");
+  ta.scrollTop = (ta.scrollHeight - ta.clientHeight) / 2; ta.dispatchEvent(new Event("scroll"));
+  ok("滚到中间：上下两头都渐隐（「" + fades() + "」）", fades() === "上下");
+  ta.scrollTop = ta.scrollHeight; ta.dispatchEvent(new Event("scroll"));
+  ok("滚到底：只剩上沿渐隐（「" + fades() + "」）", fades() === "上");
+  // 发完消息那一下是直接改值、不发 input 事件：靠框的尺寸变了来撤渐隐
+  ta.value = "";
+  for (let i = 0; i < 50 && fades(); i++) await new Promise((r) => setTimeout(r, 20));
+  ok("直接清空（不发 input 事件，跟发完消息一样）：框缩回两行，渐隐跟着撤（「" + fades() + "」，" + rows().toFixed(2) + " 行）",
+    fades() === "" && Math.abs(rows() - 2) < 0.05);
+
+  // 框长高时对话区跟着变矮：原来贴着底看最新回复的，接着贴底；翻到上面看旧消息的，不去拽
+  const stickTo = async (stick) => {
+    chatStick = stick;
+    chatScroll.style.height = "200px"; flush();
+    chatScroll.scrollTop = stick ? chatScroll.scrollHeight : 100;
+    const before = chatScroll.scrollTop;
+    chatScroll.style.height = "120px";
+    for (let i = 0; i < 50; i++) {
+      await new Promise((r) => setTimeout(r, 20));
+      if (stick ? chatScroll.scrollHeight - chatScroll.scrollTop - chatScroll.clientHeight < 1 : i > 5) break;
+    }
+    return { gap: chatScroll.scrollHeight - chatScroll.scrollTop - chatScroll.clientHeight, before, after: chatScroll.scrollTop };
+  };
+  const st = await stickTo(true);
+  ok("贴着底的：对话区变矮后还贴着底，最后几行没被挤到输入框后面（离底 " + st.gap + "px）", st.gap < 1);
+  const nst = await stickTo(false);
+  ok("翻到上面看旧消息的：对话区变矮也不把人拽到底（" + nst.before + " → " + nst.after + "）", nst.after === nst.before);
 
   probe.remove();
   return names;
@@ -10606,14 +10975,24 @@ const PREVIEW_HTML =
 const PREVIEW_STUBS = [
   IC_STUB,
   "window.reqs = []; window.opened = []; window.PV_FILES = {}; window.PV_DATA = {};",
+  // 文件不在了：PV_GONE 里的名字 view/preview 回 404、问在不在答 false；
+  // PV_404 只回 404、问在不在答还在（越权、服务端不认的名字也是 404，不能一律当没了）
+  "window.PV_GONE = {}; window.PV_404 = {}; window.existsAsked = []; window.PV_EXISTS_DOWN = false;",
   "window.fetch = async (url, init) => {",
   "  window.reqs.push({ url, init });",
   "  if (url.startsWith('/api/files/open/')) { window.opened.push(decodeURIComponent(url.slice(16))); return { ok: true, json: async () => ({}) }; }",
+  "  if (url.startsWith('/api/files/exists')) {",
+  "    const ps = JSON.parse(init.body).paths; window.existsAsked.push({ url, paths: ps });",
+  "    if (window.PV_EXISTS_DOWN) return { ok: false, status: 500, json: async () => ({}) };",
+  "    return { ok: true, status: 200, json: async () => ({ exists: Object.fromEntries(ps.map((p) => [p, !window.PV_GONE[p]])) }) };",
+  "  }",
   "  if (url.startsWith('/api/files/preview/')) {",
   "    const n2 = decodeURIComponent(url.slice(19).split('?')[0]);",
+  "    if (window.PV_GONE[n2] || window.PV_404[n2]) return { ok: false, status: 404, json: async () => ({ error: '文件不存在' }) };",
   "    return { ok: true, json: async () => window.PV_DATA[n2] || { error: '没这个替身' } };",
   "  }",
   "  const name = decodeURIComponent((url.split('/api/files/view/')[1] || '').split('?')[0]);",
+  "  if (window.PV_GONE[name] || window.PV_404[name]) return { ok: false, status: 404, headers: { get: () => null }, text: async () => '文件不存在' };",
   "  const f = window.PV_FILES[name] || { body: '', total: 0 };",
   "  return { ok: window.PV_FETCH_OK !== false, status: 206, headers: { get: (h) => (h.toLowerCase() === 'content-range' ? 'bytes 0-1/' + f.total : null) }, text: async () => f.body,",
   "           blob: async () => window.PV_BLOB || new Blob([window.PNG1X1], { type: 'image/png' }) };",
@@ -11027,6 +11406,8 @@ const PREVIEW_CHECKS = `
     window.PV_FETCH_OK = true;
     ok("图取不到时不会默默地什么都不发生", window.toasts.length === 1 && window.copied.length === 0, JSON.stringify(window.toasts));
     ok("而且说的是图没取到，不是一句复制失败", window.toasts[0][0].indexOf("没取到") >= 0, JSON.stringify(window.toasts));
+    ok("  ← 带上状态码，不猜是挪走了还是删了（404 也可能是越权）",
+      /HTTP 206/.test(window.toasts[0][0]) && !/可能|移走|删掉/.test(window.toasts[0][0]), JSON.stringify(window.toasts));
     ok("按钮又放开了，不是卡死在灰色", btn.disabled === false);
 
     const saveCI = window.ClipboardItem;
@@ -11405,10 +11786,16 @@ const PREVIEW_CHECKS = `
     headMode = "ok";
     ok("问不到（老服务端 404、断网）：退回原来的地址，照样打得开", !!f1 && f1 === f2 && /[?&]v=/.test(f1) && !/&e=/.test(f1), f1 + " / " + f2);
 
+    // 网页整页导航，本来就每次回去核对，不拿版本拼地址；但另问一句「还在不在」——
+    // iframe 里的 404 只是框里一行小字，外面看不见（见下面「点开的文件已经不在了」）。
+    // 文本自己 fetch，状态码当场拿得到，一句不多问
     const h1 = heads().length;
     await previewFile("小游戏.html");
+    const fr = body.querySelector("iframe"), frSrc = fr ? fr.getAttribute("src") : "";
+    const h2 = heads().length;
     await previewFile("说明.txt");
-    ok("网页、文本不问：它们本来就每次回去核对", heads().length === h1 && !!body.textContent);
+    ok("网页：地址不拼版本，只另问一句在不在；文本一句不问", h2 === h1 + 1 && !!frSrc && !/&e=/.test(frSrc) && heads().length === h2 && !!body.textContent,
+      h1 + "/" + h2 + "/" + heads().length + " " + frSrc);
 
     // 问的这一下慢，用户已经点了别的：慢回来的那张图不许盖掉现在这份
     tags["封面.png"] = 'W/"a-5"';
@@ -11430,6 +11817,109 @@ const PREVIEW_CHECKS = `
     window.fetch = realFetch;
     delete window.filesCache; delete window.filesRoot;
     closePreview();
+  }
+
+  // ---- 点开的文件已经不在了（挪走 / 删掉）----
+  // 以前：文本说一句带猜测的「可能刚刚被移走或删掉了」，网页框里一行小字「文件不存在」，图片一张裂图；
+  // 下载、定位几颗按钮照样亮着，点了还是 404。收尾自动打开的那件要是恰好没了，面板就停在这一屏上。
+  // 现在 404 之后再问服务端一句在不在，它明说没了才算没了：
+  //   有后备（收尾自动打开排的 next）就顶上下一件；没有就直说，工作目录里恰好一份同名的给颗按钮去开；
+  //   对着这个文件的下载、系统打开、定位收起来；对话里挂着它的卡片、清单行一起撤
+  {
+    const until = async (fn, ms = 2000) => { const t0 = Date.now(); while (!fn()) { if (Date.now() - t0 > ms) return false; await new Promise((r) => setTimeout(r, 10)); } return true; };
+    const disp = (id) => document.getElementById(id).style.display;
+    const pvName = () => document.getElementById("pv-name").textContent;
+    const GONE_TXT = "这个文件已经不在了";
+    const marked = [];
+    window.markOutputGone = (n, r) => marked.push([n, r]);
+    window.PV_FILES["在的.md"] = { body: "还在的那份", total: 15 };
+    window.PV_FILES["备用.txt"] = { body: "备用的正文", total: 15 };
+
+    // ① 文本：404，服务端也说没了
+    window.PV_GONE["旧稿.md"] = true;
+    const ask0 = window.existsAsked.length;
+    await previewFile("旧稿.md");
+    ok("文本没了：直说「这个文件已经不在了」，不猜是挪了还是删了", body.textContent.includes(GONE_TXT) && !/可能/.test(body.textContent), body.textContent);
+    ok("  └ 先问过服务端，问的就是这一个名字", window.existsAsked.length === ask0 + 1 && JSON.stringify(window.existsAsked.at(-1).paths) === '["旧稿.md"]',
+      JSON.stringify(window.existsAsked.slice(ask0)));
+    ok("  └ 下载、系统打开、定位三颗收起来（对着的是个不存在的文件）", ["pv-dl", "pv-sys", "pv-rv"].every((id) => disp(id) === "none"), ["pv-dl", "pv-sys", "pv-rv"].map(disp).join(","));
+    ok("  └ 复制按钮也不亮", document.getElementById("pv-copy").hidden === true);
+    ok("  └ 对话里挂着它的卡片、清单行跟着撤", JSON.stringify(marked) === '[["旧稿.md",""]]', JSON.stringify(marked));
+
+    // ② 换一件在的：下载那颗放回来
+    await previewFile("在的.md");
+    ok("换一件在的：下载那颗放回来，内容照常", disp("pv-dl") === "" && body.textContent.includes("还在的那份"), disp("pv-dl") + " / " + body.textContent);
+
+    // ③ 404 但服务端说还在（越权、服务端不认的名字）：不许下「没了」的结论
+    window.PV_404["怪名.md"] = true;
+    await previewFile("怪名.md");
+    ok("404 但服务端说还在：只说没读出来", body.textContent.includes("这个文件没读出来") && !body.textContent.includes(GONE_TXT) && disp("pv-dl") === "", body.textContent);
+    // ④ 问不通（老服务端没这个接口、断网）：同样不下结论
+    window.PV_EXISTS_DOWN = true;
+    await previewFile("旧稿.md");
+    ok("问在不在问不通：也只说没读出来，卡片不撤", body.textContent.includes("这个文件没读出来") && !body.textContent.includes(GONE_TXT) && marked.length === 1, body.textContent + " " + JSON.stringify(marked));
+    window.PV_EXISTS_DOWN = false;
+
+    // ⑤ 收尾自动打开排了后备：没了的一件件跳过（网页那件要等另问的那一句），停在第一件在的上面
+    window.PV_GONE["没了的网页.html"] = true; window.PV_GONE["也没了.md"] = true;
+    await previewFile("也没了.md", undefined, { next: ["也没了.md", "没了的网页.html", "备用.txt"] });
+    const adv = await until(() => pvName() === "备用.txt" && body.textContent.includes("备用的正文"));
+    ok("★排着后备：没了的跳过，顶上第一件在的★", adv, pvName() + " / " + body.textContent.slice(0, 40));
+    ok("  └ 跳过的两件都撤了卡片，自己不会排进自己的后备", ["也没了.md", "没了的网页.html"].every((n) => marked.filter((m) => m[0] === n).length === 1), JSON.stringify(marked));
+    ok("  └ 顶上来那件的按钮都在", disp("pv-dl") === "", disp("pv-dl"));
+
+    // ⑥ 没有后备、工作目录里恰好一份同名：给一颗按钮去开它
+    window.filesRoot = "";
+    window.filesCache = [{ name: "成品/图表.svg", mtime: "x", size: 1 }, { name: "别的.md", mtime: "x", size: 1 }];
+    window.PV_GONE["图表.svg"] = true;
+    await previewFile("图表.svg");
+    const gotNote = await until(() => body.textContent.includes(GONE_TXT));
+    const mv = body.querySelector(".pv-moved");
+    ok("SVG、网页这种框自己拉的：另问一句，确认没了换成说明", gotNote, body.innerHTML.slice(0, 160));
+    ok("  └ 工作目录里恰好一份同名的：给一颗「打开同名的那份」", !!mv && mv.textContent === "打开同名的那份" && mv.title === "成品/图表.svg", body.innerHTML.slice(0, 240));
+    if (mv) mv.click();
+    ok("  └ 点了就开那份", await until(() => pvName() === "成品/图表.svg" && !!body.querySelector("iframe")), pvName());
+    window.filesCache.push({ name: "备份/图表.svg", mtime: "x", size: 1 });
+    await previewFile("图表.svg");
+    await until(() => body.textContent.includes(GONE_TXT));
+    ok("同名的不止一份：猜不准是哪份，不给按钮", body.textContent.includes(GONE_TXT) && !body.querySelector(".pv-moved"), body.innerHTML.slice(0, 200));
+    window.filesRoot = "/别的工作目录";
+    window.filesCache = [{ name: "成品/图表.svg", mtime: "x", size: 1 }];
+    await previewFile("图表.svg", "/这个工作目录");
+    await until(() => body.textContent.includes(GONE_TXT));
+    ok("清单是别的工作目录的：不拿它猜", body.textContent.includes(GONE_TXT) && !body.querySelector(".pv-moved"), body.innerHTML.slice(0, 200));
+    ok("  └ 问在不在带着这份预览的工作目录", /[?&]root=/.test(window.existsAsked.at(-1).url) && decodeURIComponent(window.existsAsked.at(-1).url).includes("/这个工作目录"), window.existsAsked.at(-1).url);
+    delete window.filesCache; delete window.filesRoot;
+
+    // ⑦ 另问的那一句还没回来，人已经点了别的：不许把别人的屏换掉
+    const p1 = previewFile("没了的网页.html");
+    await previewFile("在的.md");
+    await p1; await new Promise((r) => setTimeout(r, 60));
+    ok("问的时候已经换了别的文件：慢回来的「没了」不上屏", pvName() === "在的.md" && body.textContent.includes("还在的那份") && !body.textContent.includes(GONE_TXT), pvName() + " / " + body.textContent.slice(0, 60));
+    await previewFile("没了的网页.html");
+    ok("★反向对照★ 同一件没换：确认没了就上说明", await until(() => body.textContent.includes(GONE_TXT)), body.innerHTML.slice(0, 120));
+
+    // ⑧ 图片：问版本那一下就是 404——不摆裂图
+    window.PV_GONE["旧图.png"] = true;
+    await previewFile("旧图.png");
+    ok("图片没了：不摆裂图，直说", !body.querySelector("img") && body.textContent.includes(GONE_TXT), body.innerHTML.slice(0, 120));
+    // ⑨ 走解析接口的文档：同理，不把「文件不存在」当解析错误摆出来
+    window.PV_GONE["方案二.docx"] = true;
+    await previewFile("方案二.docx");
+    ok("文档没了：同样直说", body.textContent.includes(GONE_TXT) && !body.textContent.includes("文件不存在"), body.textContent);
+
+    // ⑩ 文件事件报了正开着的这件没了：是这件才换
+    await previewFile("在的.md");
+    showPreviewGone("别的.md");
+    ok("事件报的不是正开着的这件：不动", body.textContent.includes("还在的那份"), body.textContent);
+    showPreviewGone("在的.md");
+    ok("报的就是这件：换成说明", body.textContent.includes(GONE_TXT) && disp("pv-dl") === "none", body.textContent);
+    closePreview();
+    showPreviewGone("在的.md");
+    ok("面板已经关了：不再往里画", !document.getElementById("preview-panel").classList.contains("show"));
+
+    window.PV_GONE = {}; window.PV_404 = {};
+    delete window.markOutputGone;
   }
 
   return names;
@@ -12147,6 +12637,9 @@ var filesCache = [], filesRoot = ""; // 右侧清单：「盘上本来就有的�
 const pvPanel = document.getElementById("preview-panel");
 let pvCurrent = null;
 function previewFile(name){ CALLS.pv.push(name); pvPanel.classList.add("show"); pvCurrent = name; }
+// 预览开着的那件没了：真源在预览那一段（不在这次切的范围里），这里记下被叫了几次、叫的谁
+var GONE_SHOWN = [];
+function showPreviewGone(name){ GONE_SHOWN.push(name); }
 // 这两条跟 app-01.js 里的真源必须一字不差（e2e 的 testOutputArrivalStatic 会比对字面量）
 const OFFICE_RE = /\.(doc|ppt|xls)$/i;
 const SCAFFOLD_RE = /^(PROGRESS|TODO|NOTES?|README)\.(md|txt)$/i;
@@ -12217,6 +12710,40 @@ const ARRIVAL_CHECKS = `
   ok("角标封顶 99", badge().textContent === "99");
   clearFilesBadge();
   ok("清空后按钮上没有角标残留", !badge());
+
+  // 角标数的是「几件」不是「几次」：以前每来一条 files 事件就加一次，
+  // 一份网页这回合重画了好几遍，角标涨到 9，点开面板只有一个新文件
+  for (let i = 0; i < 4; i++) applyOutputArrival(outputArrivalPlan({ ...base, turnOut: [F("报告.html")] }), []);
+  ok("★同一件改写四遍：角标还是 1★", !!badge() && badge().textContent === "1", badge() && badge().textContent);
+  applyOutputArrival(outputArrivalPlan({ ...base, turnOut: [F("报告.html"), F("图.png")] }), []);
+  ok("  └ 来了另一件才加：2", badge().textContent === "2", badge().textContent);
+  // 记过角标、后来又没了的（服务端报在 gone 里）：扣掉，点开面板找不着的不算新产出
+  applyOutputArrival(outputArrivalPlan({ ...base, turnOut: [], gone: ["图.png"] }), []);
+  ok("记过角标的那件没了：扣掉", badge().textContent === "1", badge().textContent);
+  applyOutputArrival(outputArrivalPlan({ ...base, turnOut: [], gone: ["报告.html", "没记过的.md"] }), []);
+  ok("  └ 扣到 0 角标摘掉；没记过的名字不影响", !badge());
+  applyOutputArrival(outputArrivalPlan({ ...base, turnOut: [F("a.md")] }), []);
+  applyOutputArrival(outputArrivalPlan({ ...base, otherSession: true, turnOut: [], gone: ["a.md"] }), []);
+  applyOutputArrival(outputArrivalPlan({ ...base, replaying: true, turnOut: [], gone: ["a.md"] }), []);
+  ok("  └ 别的对话、回放里报的没了：不碰这边的角标", !!badge() && badge().textContent === "1", badge() && badge().textContent);
+  clearFilesBadge();
+
+  // 预览开着的那件这回合被挪走或删掉了。以前预览原样摆着旧内容，再点一下才冒出一句「文件不存在」
+  CALLS.pv.length = 0; GONE_SHOWN.length = 0;
+  pvPanel.classList.add("show"); pvCurrent = "旧/报告.html";
+  const atPv = { ...base, pvOpen: true, pvCurrent: "旧/报告.html", gone: ["旧/报告.html"] };
+  const pm = outputArrivalPlan({ ...atPv, turnOut: [F("新/报告.html")] });
+  ok("预览开着的那件挪了地方（同名的这回合刚写出来）：跟过去", pm.refresh === "新/报告.html" && pm.lost === null, JSON.stringify(pm));
+  const pg = outputArrivalPlan({ ...atPv, turnOut: [F("别的.md")] });
+  ok("真没了：报 lost，不刷新", pg.refresh === null && pg.lost === "旧/报告.html", JSON.stringify(pg));
+  applyOutputArrival(pg, []);
+  ok("  └ 套用：在预览里直说，不去开一个不存在的文件", JSON.stringify(GONE_SHOWN) === '["旧/报告.html"]' && CALLS.pv.length === 0, JSON.stringify(GONE_SHOWN) + JSON.stringify(CALLS.pv));
+  ok("  └ 这回合别的什么都没写、只报了没了：照样报 lost", outputArrivalPlan({ ...atPv, turnOut: [] }).lost === "旧/报告.html");
+  ok("  └ 预览关着、别的对话、回放：都不报",
+    [{ pvOpen: false }, { otherSession: true }, { replaying: true }].every((x) => !outputArrivalPlan({ ...atPv, turnOut: [], ...x }).lost));
+  ok("  └ 没了的不是正看着的这件：不报", !outputArrivalPlan({ ...atPv, turnOut: [], gone: ["别的.md"] }).lost);
+  pvPanel.classList.remove("show"); pvCurrent = null; CALLS.pv.length = 0;
+  clearFilesBadge();
 
   // ---------- 正文里提到的文件名 → 可点开的链接 ----------
   const OUTS = [F("任务_0910/张三_简历.html"), F("任务_0910/张三_简历.docx"), F("任务_0910/PROGRESS.md"), F("张三_简历.html")];
@@ -15366,8 +15893,8 @@ const BUBBLE_CHECKS = `
     img.onerror();
     ok("两档都读不出来才退成名字条（空灰方框谁也认不出那是哪份素材）",
        btn.classList.contains("gone") && btn.querySelector(".bpic-nm").textContent.includes("截图.png"), btn.outerHTML.slice(0, 200));
-    ok("退成名字条时把话说清楚，别让人以为整个功能坏了",
-       /改名|移走|删掉/.test(btn.title) && !btn.title.includes("点击预览"), btn.title);
+    ok("退成名字条时只说看到的：没显示出来，不猜是改名、挪走还是删了（点开预览会再问服务端）",
+       btn.title.includes("没显示出来") && !/可能|改名|移走|挪走|删掉/.test(btn.title) && !btn.title.includes("点击预览"), btn.title);
   }
   {
     // 对话中途换了文件夹：成果区那格清空了（新根下还没有这条对话的文件夹），可素材是在老文件夹里传的
@@ -16148,7 +16675,7 @@ app.whenReady().then(async () => {
     const win7 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await win7.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(TURNOUT_HTML));
-      const names7 = await win7.webContents.executeJavaScript(IC_BOOT + TURNOUT_STUBS + "\n" + PATHHELP_SRC + "\n" + TURNOUT_SRC + "\n" + TURNOUT_CHECKS, true);
+      const names7 = await win7.webContents.executeJavaScript(IC_BOOT + TURNOUT_STUBS + "\n" + PATHHELP_SRC + "\n" + PVGONE_SRC + "\n" + TURNOUT_SRC + "\n" + TURNOUT_CHECKS, true);
       for (const n of names7) console.log("  ✓ " + n);
       console.log(`✅ 前端：本回合产出（删掉的中间文件跟着撤·成品不被挤掉·截断不误杀·并卡只摘链接·整块可收起·同名改写卡片重画·卡片认盘上现在这一版）${names7.length} 项通过`);
     } finally {
@@ -16252,7 +16779,7 @@ app.whenReady().then(async () => {
     const winHl = mkWin({ show: false, width: 700, height: 500, webPreferences: { offscreen: true } });
     try {
       await winHl.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(HL_HTML));
-      const namesHl = await winHl.webContents.executeJavaScript(IC_BOOT + "(async function(){\n" + HL_STUBS + "\n" + HL_SRC + "\n" + HL_CHECKS + "\n})()", true)
+      const namesHl = await winHl.webContents.executeJavaScript(IC_BOOT + "(async function(){\n" + HL_STUBS + "\n" + HL_SRC + "\n" + HL_GROW_SRC + "\n" + HL_CHECKS + "\n})()", true)
         .catch(async (e) => { throw new Error("[输入框高亮] " + ((e && (e.stack || e.message)) || String(e)) + " | 已过 " + (await winHl.webContents.executeJavaScript("window.__hlNames||0").catch(() => "?"))); });
       for (const n of namesHl) console.log("  ✓ " + n);
       console.log(`✅ 前端：输入框 token 高亮（镜像层逐字对齐·折行不错位·改字号跟着走·路径不误框）${namesHl.length} 项通过`);
@@ -17136,6 +17663,67 @@ app.whenReady().then(async () => {
           m.dense.more[1] === 24 && m.dense.projAdd[1] === "24px" && m.dense.chipx[1] === 18, JSON.stringify(m.dense));
         okTP("\u9f20\u6807\u6863\u4e5f\u6ca1\u6a2a\u5411\u6eda\u52a8", m.ovf === 0, m.ovf);
       } finally { if (!winTF.isDestroyed()) winTF.destroy(); }
+
+      // ---- 输入框字多长高：两颗滚动按钮跟着让，超长网址不撑出横向滚动 ----
+      // 片段里那组（输入框 token 高亮）量的是输入框自己；这一组量它跟真页面上别的东西怎么相处。
+      // 「回到最新 / 回到最前」两颗按钮靠 anchor() 挂在对话区底边上：输入框长高、对话区变矮，按钮跟着往上让。
+      // 以前写死离窗口底 150 / 190：390 宽时输入框跟按钮横向是叠着的，空框就压住输入框右上角，写长了直接盖在字上。
+      // 页面自己的滚动引导会按「人在不在底部」摘掉 .show，这里只量摆位，所以强制露出来量。
+      {
+        const LAY_PROBE = async function (undo) {
+          const raf = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+          const q = (sel) => document.querySelector(sel);
+          const R = (el) => { const r = el.getBoundingClientRect(); return { t: r.top, b: r.bottom, l: r.left, r: r.right, h: r.height }; };
+          // 横竖都叠上才算压住：1280 宽时输入框居中、按钮贴右边，竖着叠上也碰不着
+          const hit = (a, b) => a.l < b.r && b.l < a.r && a.t < b.b && b.t < a.b;
+          const f = document.createElement("style");
+          f.textContent = "#to-bottom,#to-top{display:block !important}" + (undo ? "#to-bottom{bottom:150px !important}#to-top{bottom:190px !important}" : "");
+          document.head.appendChild(f);
+          const ta = q("#input"), de = document.documentElement;
+          const snap = () => {
+            const chat = R(q("#chat-scroll")), tb = R(q("#to-bottom")), tt = R(q("#to-top")), card = R(q(".input-card")), t = R(ta);
+            return {
+              chatB: Math.round(chat.b), gapB: Math.round(chat.b - tb.b), gapT: Math.round(chat.b - tt.b),
+              btnH: [Math.round(tb.h), Math.round(tt.h)], onCard: hit(tb, card) || hit(tt, card), taH: Math.round(t.h),
+              taOvf: ta.scrollWidth - ta.clientWidth, cardOut: Math.round(card.r - de.clientWidth),
+              docOvf: de.scrollWidth - de.clientWidth, mainOvf: q(".main").scrollWidth - q(".main").clientWidth,
+            };
+          };
+          const set = async (v) => { ta.value = v; ta.dispatchEvent(new Event("input", { bubbles: true })); await raf(); };
+          const out = {};
+          await raf(); out.empty = snap();
+          await set(Array.from({ length: 30 }, (_, i) => "第" + (i + 1) + "行").join("\n")); out.tall = snap();
+          await set("https://example.com/" + "a".repeat(900)); out.long = snap();
+          await set(""); out.cleared = snap();
+          f.remove();
+          return out;
+        }.toString();
+        const namesLY = [];
+        const okLY = (n, cond, extra) => { if (cond) { namesLY.push(n); return; } throw new Error("[输入框长高] " + n + (extra !== undefined ? " ｜ " + JSON.stringify(extra) : "")); };
+        const near = (a, b) => Math.abs(a - b) <= 1;
+        const sits = (m) => near(m.gapB, 12) && near(m.gapT, 52) && !m.onCard;
+        for (const wide of [true, false]) {
+          const tag = wide ? "1280 宽" : "390 宽";
+          const winLY = await openReal(false, wide);
+          try {
+            const m = await winLY.webContents.executeJavaScript("(" + LAY_PROBE + ")(false)", true);
+            okLY(tag + "：先验料：两颗按钮都量得到", m.empty.btnH[0] > 0 && m.empty.btnH[1] > 0, m.empty.btnH);
+            okLY(tag + "：空框时两颗按钮停在对话区底边上方 12 / 52px，不压输入框", sits(m.empty), m.empty);
+            const grow = m.tall.taH - m.empty.taH, gave = m.empty.chatB - m.tall.chatB;
+            okLY(tag + "：写到三十行：输入框长高 " + grow + "px，对话区底边正好让出这么多", grow > 100 && near(gave, grow), { grow, gave });
+            okLY(tag + "：按钮跟着往上让，还是离对话区底边 12 / 52px，不盖在正在写的字上", sits(m.tall), m.tall);
+            okLY(tag + "：900 字不断行的长网址：框里折行不横滚，整页和主区都不出横向滚动",
+              m.long.taOvf <= 0 && m.long.docOvf === 0 && m.long.mainOvf === 0 && m.long.cardOut <= 0, m.long);
+            okLY(tag + "：清空后框和按钮都回到原位", m.cleared.chatB === m.empty.chatB && m.cleared.taH === m.empty.taH && sits(m.cleared), m.cleared);
+            if (!wide) {
+              const u = await winLY.webContents.executeJavaScript("(" + LAY_PROBE + ")(true)", true);
+              okLY("★反向对照★ 390 宽：按钮写回固定离底 150 / 190 的老位置，写到三十行时当场压在输入框上", u.tall.onCard === true, u.tall);
+            }
+          } finally { if (!winLY.isDestroyed()) winLY.destroy(); }
+        }
+        for (const n of namesLY) console.log("  ✓ " + n);
+        console.log("✅ 前端：输入框字多长高（真页面 1280 / 390 两档·滚动按钮跟着对话区底边往上让、不压输入框·900 字长网址不撑出横向滚动·写死位置的老写法当场变红）" + namesLY.length + " 项通过");
+      }
       const PJ_N1 = "\u5148\u9a8c\u6599\uff1a\u8fd9\u9897 \uff0b \u786e\u5b9e\u957f\u5728\u300c\u9879\u76ee\u300d\u90a3\u4e00\u884c\u91cc\u9762\uff08\u884c\u81ea\u5df1\u662f\u300c\u6253\u5f00\u9879\u76ee\u7ba1\u7406\u9875\u300d\uff09";
       const PJ_N2 = "\u5148\u9a8c\u6599\uff1a\u8d77\u624b\u5f39\u7a97\u6ca1\u5f00\u3001\u4e3b\u533a\u4e5f\u6ca1\u5728\u9879\u76ee\u9875";
       const PJ_N3 = "\u70b9 \uff0b \u5f00\u7684\u662f\u300c\u65b0\u5efa\u9879\u76ee\u300d\u90a3\u4e2a\u7f16\u8f91\u5668\uff08\u540d\u5b57 / \u5de5\u4f5c\u76ee\u5f55 / \u9879\u76ee\u6307\u4ee4 / \u6302\u54ea\u5757\u8d44\u6599\u5e93\u90fd\u5728\u91cc\u9762\uff09";

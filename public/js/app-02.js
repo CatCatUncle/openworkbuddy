@@ -127,7 +127,7 @@ function toastWsLayout() {
   toast(`已换到「${name}」，${flat ? "对话直接在里面读写" : "每个对话各开一个文件夹"}，点这里改`, "folder", () => openModal("settings", "data"));
 }
 function renderWsMenu() {
-  // 用的是自己那份工作目录（不止一个账号、又不是老主人）：服务端不认换文件夹（admin.js sharedWorkspaceGuard），
+  // 用的是自己那份工作目录（不止一个账号、又不在共享根上）：服务端不认换文件夹（admin.js sharedWorkspaceGuard），
   // 选文件夹、改放法这几行就不摆——摆着就是按了没用的钮
   const personal = !!settingsCache.workspace_personal;
   const owner = amPlatformOwner() && !personal;

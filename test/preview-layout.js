@@ -530,8 +530,9 @@ app.whenReady().then(async () => {
     ok(r && Math.abs(r.wrapH - Math.ceil(1600 * sc)) <= 2, "外层撑到缩放后的高度，整张卡片滚得到底", r && { wrapH: r.wrapH, want: Math.ceil(1600 * sc) });
     ok(r && !r.zoomHidden, "比框宽的页面才摆「适应宽度 / 实际大小」那颗切换钮", r && r.zoomHidden);
 
-    const nav = seen.find((x) => /^\/api\/files\/view\/宽卡片\.html/.test(x.url));
-    ok(nav && nav.status === 302 && nav.dest === "iframe", "框的那一次导航被 302 到带令牌的预览地址（相对路径的图、样式才有地方取）", nav);
+    // 应用自己还会发一个 HEAD 问这份文件在不在（pvProbeGone），常常比框的导航先到；框的导航是 GET 那一条
+    const nav = seen.find((x) => /^\/api\/files\/view\/宽卡片\.html/.test(x.url) && x.method === "GET");
+    ok(nav && nav.status === 302 && nav.dest === "iframe", "框的那一次导航被 302 到带令牌的预览地址（相对路径的图、样式才有地方取）", nav || seen.map((x) => x.method + " " + x.url));
     const pv = seen.find((x) => /^\/pv\/[0-9a-f]+\/宽卡片\.html\?fit=1$/.test(x.url));
     ok(pv && pv.status === 200, "跳过去的是 /pv/<令牌>/宽卡片.html?fit=1，服务端照发", pv || seen.map((x) => x.url));
 

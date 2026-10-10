@@ -272,12 +272,14 @@
   #toggle-files { border: 1px solid var(--owb-border); background: var(--owb-bg); border-radius: var(--radius-md); padding: 5px 12px; font-size: 13px; color: var(--owb-text-2); cursor: pointer; position: relative; }
   /* 「成果文件」角标：这回合来了几件还没看过的新产出。面板一开就摘掉 */
   #toggle-files .fb-badge { position: absolute; top: -7px; right: -7px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: var(--radius-lg); background: var(--owb-brand); color: #fff; font-size: 11px; font-weight: 600; line-height: 18px; text-align: center; box-sizing: border-box; }
-  #chat-scroll { flex: 1; overflow-y: auto; min-height: 0; scrollbar-gutter: stable both-edges; }
-  #to-bottom { position: absolute; right: 24px; bottom: 150px; width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--owb-border); background: var(--owb-bg); color: var(--owb-text-2); font-size: 15px; cursor: pointer; box-shadow: var(--shadow-menu); display: none; z-index: 5; }
+  #chat-scroll { flex: 1; overflow-y: auto; min-height: 0; scrollbar-gutter: stable both-edges; anchor-name: --owb-chat; }
+  /* 两颗滚动按钮浮在对话区右下角，跟着对话区的底边走：输入框字多长高时，按钮跟着往上让，不压在正在写的字上。
+     anchor() 不认的环境退回老位置（150 / 190 是默认两行输入框时量出来的） */
+  #to-bottom { position: absolute; right: 24px; bottom: 150px; bottom: calc(anchor(--owb-chat bottom, 138px) + 12px); width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--owb-border); background: var(--owb-bg); color: var(--owb-text-2); font-size: 15px; cursor: pointer; box-shadow: var(--shadow-menu); display: none; z-index: 5; }
   #to-bottom.show { display: block; }
   #to-bottom:hover { color: var(--owb-brand-text); border-color: var(--owb-brand-text); }
   /* 长对话滚动引导：往上翻远了出「回到最前」；人在上面时下面来了新内容，「回到最新」挂红点 */
-  #to-top { position: absolute; right: 24px; bottom: 190px; width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--owb-border); background: var(--owb-bg); color: var(--owb-text-2); font-size: 15px; cursor: pointer; box-shadow: var(--shadow-menu); display: none; z-index: 5; }
+  #to-top { position: absolute; right: 24px; bottom: 190px; bottom: calc(anchor(--owb-chat bottom, 138px) + 52px); width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--owb-border); background: var(--owb-bg); color: var(--owb-text-2); font-size: 15px; cursor: pointer; box-shadow: var(--shadow-menu); display: none; z-index: 5; }
   #to-top.show { display: flex; align-items: center; justify-content: center; }
   #to-top:hover { color: var(--owb-brand-text); border-color: var(--owb-brand-text); }
   #to-bottom.new::after { content: ""; position: absolute; top: -3px; right: -3px; width: 10px; height: 10px; border-radius: 50%; background: var(--destructive, #e5484d); border: 2px solid var(--owb-bg); }
@@ -664,6 +666,8 @@
   .out-row .nm .dim { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .out-row .nm .bs { flex: 0 0 auto; overflow: hidden; text-overflow: ellipsis; }
   .out-row.hid, .out-row.carded { display: none; }
+  /* 卡片按重要程度排：排不进前 12 张的、有成品时的过程稿，收起不占位，名字仍在下面的列表里 */
+  .out-card.over { display: none; }
   /* PROGRESS.md 这类过程账本：压暗、缩一号，排在真正的产出后面 */
   .out-row.sub { font-size: 12px; opacity: .68; }
   .out-row .sz { color: var(--owb-text-3); flex: none; }
@@ -792,7 +796,7 @@
   .input-inner { max-width: var(--owb-content-w); margin: 0 auto; }
   .input-card { border: 1.5px solid var(--owb-border); border-radius: var(--radius-2xl); background: var(--owb-bg); padding: 14px 16px 10px; box-shadow: var(--shadow-menu); transition: border-color var(--owb-t-fast) var(--owb-ease); }
   .input-card:focus-within { border-color: var(--owb-brand-text); }
-  textarea#input { width: 100%; border: none; outline: none; resize: none; max-height: 160px; background: transparent; color: var(--owb-text); }
+  textarea#input { width: 100%; border: none; outline: none; resize: none; background: transparent; color: var(--owb-text); }
   textarea#input::placeholder { color: var(--owb-text-3); }
   .card-toolbar { display: flex; align-items: center; margin-top: 8px; gap: 8px; }
   /* 几何统一到桥接层，这里只留颜色 */
@@ -1276,12 +1280,22 @@
      写死 15px 的后果：设置里把字号调到 16 或 18，只有 textarea 跟着变，底色停在旧尺寸上，
      一个技能名只遮住半个词。折行同理——textarea 走的是 overflow-wrap: break-word，
      镜像层若写 word-break: break-word 就是另一套断词规则，行尾那个词两层断的位置对不上。 */
-  #input-hl, textarea#input { font-size: var(--owb-fs); line-height: 1.6; white-space: pre-wrap; overflow-wrap: break-word; word-break: normal; }
+  #input-hl, textarea#input { font-size: var(--owb-fs); line-height: 1.6; white-space: pre-wrap; overflow-wrap: break-word; word-break: normal; scrollbar-gutter: stable; }
   #input-hl { position: absolute; inset: 0; pointer-events: none; overflow: hidden; color: transparent; z-index: 0; }
   #input-hl .tk { background: var(--owb-brand-weak); box-shadow: 0 0 0 2px var(--owb-brand-weak), 0 0 0 3px rgba(91,95,247,.28); border-radius: var(--radius-sm); }
   /* 素材锚点用实线边 + 更高一点的底色：让“第一张/第二张”一眼不是普通文本，但仍与 @引用同一套语言。 */
   #input-hl .tk-ref { background: color-mix(in srgb, var(--owb-brand) 17%, transparent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--owb-brand-text) 65%, transparent); border-radius: var(--radius-sm); }
   textarea#input { position: relative; z-index: 1; display: block; }
+  /* 字多就跟着长高：最少两行，最高约窗口三分之一（6～12 行），再多才在框里滚。
+     以前固定两行，写长一点只能看见上下各切掉半行的两行字。高度全交给 field-sizing，JS 不量不设。
+     滚动条那条槽两层都常留（上一条的 scrollbar-gutter）：框到顶冒出滚动条时，字的折行不会突然变、底色也不会错位。
+     到顶的高度往下取整到整行：窗口高度随便多少，最底下那行都不会被横着切掉半截 */
+  textarea#input { field-sizing: content; min-height: 2lh; max-height: clamp(6lh, 36vh, 12lh); max-height: round(down, clamp(6lh, 36vh, 12lh), 1lh); overflow-y: auto; }
+  /* 框里上面 / 下面还有没露出来的字，那一边渐隐一行高，一眼看出还能往哪滚（类名由 app-01 按滚动位置挂） */
+  #input-box { --in-fade: calc(var(--owb-fs) * 1.6); }
+  #input-box.fade-t { mask-image: linear-gradient(to bottom, transparent, #000 var(--in-fade)); }
+  #input-box.fade-b { mask-image: linear-gradient(to top, transparent, #000 var(--in-fade)); }
+  #input-box.fade-t.fade-b { mask-image: linear-gradient(to bottom, transparent, #000 var(--in-fade), #000 calc(100% - var(--in-fade)), transparent); }
   .u-msg .bubble .tk-b { background: rgba(255,255,255,.24); border: 1px solid rgba(255,255,255,.3); border-radius: var(--radius-sm); padding: 0 4px; font-weight: 500; }
   .u-msg .bubble .tk-b-ref { background: rgba(255,255,255,.34); border-style: solid; }
   .u-msg .u-copy { opacity: 0; pointer-events: none; align-self: flex-end; border: none; background: transparent; cursor: pointer; color: var(--owb-text-3); font-size: 14px; padding: 4px 6px; border-radius: var(--radius-sm); transition: opacity var(--owb-t-fast) var(--owb-ease); }
