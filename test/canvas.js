@@ -402,6 +402,9 @@ const STUB4 = `
 app.whenReady().then(async () => {
   const srv = await serve();
   const win = new BrowserWindow({ show: false, width: 1440, height: 900, webPreferences: { contextIsolation: false, nodeIntegration: false } });
+  // 建窗时 macOS 会把窗口压进屏幕的可用区（藏着也压）：CI 那台 Mac 屏幕小，压完拖线要指的卡落到底下被盖住。
+  // 建完再定一次尺寸就不压了，哪台机器上都是 1440×900
+  win.setSize(1440, 900);
   await win.loadURL(`http://127.0.0.1:${srv.address().port}/index.html`);
   await new Promise((r) => setTimeout(r, 900));
   const run = (code) => win.webContents.executeJavaScript(code);
