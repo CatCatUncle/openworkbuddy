@@ -205,6 +205,7 @@ const SUITES = [
   ["eval", "评测题库：每道题的判分在空目录上一条都不许绿（不调模型，不花钱）"],
   ["search-providers", "联网搜索八家：请求发得对不对、200 里写着错认不认得出来（不联网，不花钱）"],
   ["model-probe", "一行一测：生图/生视频/对话每一行后面那颗「测」（不联网，也不真生成）"],
+  ["media-apis", "渠道上的生图/视频/配音接口：存得下读得回按选的走；「测」不拿生图型号发对话；同步异步被明说拒了才换一次（假上游，不联网）"],
   ["media-probe", "音频量时长：按 PCM 采样数算、句间留白按采样拼、WAV 头解析（没 ffmpeg 就跳过真跑那段）"],
   ["library-ws", "资料库工作区：逐层浏览、全量计数、越界与链接"],
   ["library-cover", "资料库封面与摘录：一次只出一张、租约过期就扔、机器忙就让、坏的记 .fail、越界和别人的一律拒"],
@@ -230,8 +231,8 @@ const SUITES = [
 // 这几个套件自己起临时家（单独 `node test/xxx.js` 也不碰真目录）。挂着护栏时 all.js 故意不给它们
 // 临时家和 trace 账本，照单独跑的样子跑：哪天谁删了那一行，护栏当场拦下判红。
 // 给了的话整轮的临时家会替它兜住，漏洞只在单独跑时现身——写真账本的错还被吞掉，谁也看不见。
-// 前八个是实测来的：不设 OPENWORKBUDDY_HOME / TRACE_FILE 单独跑、护栏拦到过的就是它们；后面几个（win-*、engine-bridge、engine-approve、engine-tool-relay）是写的时候就自己起临时家的。
-const SELF_ISOLATED = new Set(["hooks", "decide-tool", "relay", "cli-approve", "agent-loop", "continue-gate", "ask-gate", "engine-resilience", "win-paths", "win-tools", "win-env", "engine-bridge", "engine-approve", "engine-tool-relay"]);
+// 前八个是实测来的：不设 OPENWORKBUDDY_HOME / TRACE_FILE 单独跑、护栏拦到过的就是它们；后面几个（win-*、engine-bridge、engine-approve、engine-tool-relay、media-apis）是写的时候就自己起临时家的。
+const SELF_ISOLATED = new Set(["hooks", "decide-tool", "relay", "cli-approve", "agent-loop", "continue-gate", "ask-gate", "engine-resilience", "win-paths", "win-tools", "win-env", "engine-bridge", "engine-approve", "engine-tool-relay", "media-apis"]);
 const ISOLATION_ENV = ["OPENWORKBUDDY_HOME", "OPENWORKBUDDY_DATA_DIR", "OPENWORKBUDDY_TRACE_FILE"];
 {
   const typo = [...SELF_ISOLATED].filter((n) => !SUITES.some(([s]) => s === n));

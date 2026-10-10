@@ -766,11 +766,11 @@ const MEDIA_CAPS = [
   { cap: "vision", icon: "eye", title: "看图", tool: "look_at_image",
     hint: "看你粘贴或拖进来的图。主模型能看图就不用配；主模型是纯文本（如 deepseek-chat）时才需要加。" },
   { cap: "image", icon: "image", title: "画图", tool: "generate_image",
-    hint: "说「画一张…」时用它，成图存进工作空间。OpenAI 兼容接口；dashscope 自动走通义协议。" },
+    hint: "说「画一张…」时用它，成图存进工作空间。接口在渠道的「生图接口」里选。" },
   { cap: "video", icon: "clapperboard", title: "视频", tool: "generate_video",
-    hint: "一段约 1~5 分钟。支持通义万相、火山 Seedance、智谱、MiniMax、硅基流动；走中转时把「渠道类型」选成实际那家。" },
+    hint: "一段约 1~5 分钟。走中转时，在渠道的「视频接口」里选实际那家。" },
   { cap: "tts", icon: "mic", title: "配音", tool: "text_to_speech",
-    hint: "文字转语音，用于配音、旁白。OpenAI 兼容接口；dashscope 自动走通义 qwen-tts。" },
+    hint: "文字转语音，用于配音、旁白。接口在渠道的「配音接口」里选。" },
   { cap: "asr", icon: "file-audio", title: "转写", tool: "transcribe_audio",
     hint: "录音转文字，可出 .srt 字幕。OpenAI 兼容接口，单文件 ≤25MB；暂不支持通义百炼转写。" },
 ];
@@ -1151,6 +1151,23 @@ function mmGuessKind(base) {
   for (const [src, kind] of hosts) if (new RegExp(src).test(b)) return kind;
   return "custom";
 }
+/** 渠道表单上生图 / 视频 / 配音三个下拉的名字和悬停说明 */
+const MM_API_CN = { image: "生图接口", video: "视频接口", tts: "配音接口" };
+const MM_API_TITLE = { image: "这条渠道出图走哪种接口", video: "这条渠道出视频走哪种接口", tts: "这条渠道配音走哪种接口" };
+/**
+ * 三个下拉的「自动」会走哪种。跟服务端 mediaApiOf 同一套表（渠道类型 → 地址 → 默认），表随目录下发，
+ * 两边不各抄一份。生图认到百炼只知道是这一家：同步还是异步看型号，服务端按型号再分。
+ */
+function mmAutoApi(cap, kind, base) {
+  const c = mediaCatalog || {};
+  let v = ((c.media_api_kinds || {})[String(kind || "").trim().toLowerCase()] || {})[cap] || "";
+  const b = String(base || "").toLowerCase();
+  if (!v) for (const [src, apis] of c.media_api_hosts || []) if (apis[cap] && new RegExp(src).test(b)) { v = apis[cap]; break; }
+  if (!v) v = (c.media_api_default || {})[cap] || "";
+  if (cap === "image" && v === "dashscope") return "百炼，按型号分同步/异步";
+  const f = (((c.media_apis || {})[cap]) || []).find((x) => x.id === v);
+  return f ? f.short : "认不出，要选一个";
+}
 /** 跟服务端 judgeKind 一样：选了官方那家、地址却是别家的就按别家判，是认不出的域名就当中转不判 */
 function mmJudgeKind(kind, base) {
   const k = String(kind || "").trim();
@@ -1397,6 +1414,12 @@ function paintModels(pane, s) {
         <option value="">接口格式：跟着类型走</option>
         ${((mediaCatalog || {}).api_formats || []).map((f) => `<option value="${esc(f.id)}">${esc(f.label)}</option>`).join("")}
       </select>
+      <div id="pf-media-apis">${["image", "video", "tts"].map((cap) => `
+        <select id="pf-${cap}-api" title="${esc(MM_API_TITLE[cap])}">
+          <option value="">${esc(MM_API_CN[cap])}：自动</option>
+          ${((((mediaCatalog || {}).media_apis || {})[cap]) || []).map((f) => `<option value="${esc(f.id)}">${esc(f.label)}</option>`).join("")}
+        </select>`).join("")}
+      </div>
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
         <input id="pf-key" type="password" placeholder="API Key" autocomplete="off" style="flex:1;min-width:0;margin:0">
         <span id="pf-key-src"></span>
@@ -1555,6 +1578,7 @@ function chanTestPill(p) {
   const t = chanTest.get(p.id);
   if (!t) return "";
   if (t.running) return `<span class="ch-pill is-run">测活中…</span>`;
+  if (t.ok && t.partial) return `<span class="ch-pill is-half" title="${esc(t.note)}">${ic("circle-help", "i-sm")}只验了一半</span>`;
   return t.ok
     ? `<span class="ch-pill is-ok" title="拿模型 ${esc(t.model)} 真发了一次请求">${ic("circle-check", "i-sm")}通 · ${t.ms} 毫秒</span>`
     : `<span class="ch-pill is-bad" title="${esc(t.error)}">${ic("circle-x", "i-sm")}不通</span>`;
@@ -1564,6 +1588,8 @@ function chanTestPill(p) {
 function chanTestNote(p) {
   const t = chanTest.get(p.id);
   if (!t || t.running) return "";
+  // 媒体型号走的是不花钱的清单测活，没真发请求：照服务端那句话说，别套用对话那句「真发了一次请求」
+  if (t.ok && (t.partial || t.note)) return `<div class="ch-res ${t.partial ? "is-half" : "is-ok"}">${ic(t.partial ? "circle-help" : "circle-check")}<span>${esc(t.note)}（${t.ms} 毫秒）</span></div>`;
   return t.ok
     ? `<div class="ch-res is-ok">${ic("circle-check")}<span>通了（${t.ms} 毫秒）。刚才拿 <code>${esc(t.model)}</code> 真发了一次请求，Key、地址、模型名三样都对。</span></div>`
     : `<div class="ch-res is-bad">${ic("triangle-alert")}<span>${esc(t.error)}</span></div>`;
@@ -1848,7 +1874,7 @@ function bindModels(pane, s, po) {
     } catch (e) {
       d = { ok: false, error: "请求没发出去：" + String((e && e.message) || e) };
     }
-    chanTest.set(id, { ok: !!d.ok, ms: d.ms || 0, model: d.model || "", error: d.error || "没说原因" });
+    chanTest.set(id, { ok: !!d.ok, ms: d.ms || 0, model: d.model || "", partial: !!d.partial, note: d.note || "", error: d.error || "没说原因" });
     openChans.add(id);
     paintModels(pane, s);
   }));
@@ -1891,7 +1917,19 @@ function bindModels(pane, s, po) {
     keyEl.value = "";
     keyEl.placeholder = p && p.key_hint ? `已装 ${p.key_hint}，留空就不动它` : "API Key";
     pane.querySelector("#pf-key-src").innerHTML = kindKeyLink((p && p.kind) || "", (p && p.base_url) || "");
+    for (const cap of ["image", "video", "tts"]) pane.querySelector(`#pf-${cap}-api`).value = (p && p[cap + "_api"]) || "";
     relayTip();
+    fillMediaApis();
+  };
+  // 三个下拉的「自动」那一项写明这会儿会走哪种；对话专用的渠道（DeepSeek、Kimi…）不出图，整组藏起来
+  const fillMediaApis = () => {
+    const k = pane.querySelector("#pf-kind").value, b = pane.querySelector("#pf-base").value.trim();
+    const row = kinds.find((x) => x.kind === k) || {};
+    pane.querySelector("#pf-media-apis").style.display = row.chat_only || row.decide_only ? "none" : "";
+    for (const cap of ["image", "video", "tts"]) {
+      const first = pane.querySelector(`#pf-${cap}-api`).options[0];
+      if (first) first.textContent = `${MM_API_CN[cap]}：自动（${mmAutoApi(cap, k, b)}）`;
+    }
   };
   // 类型选了官方那家、地址却是认不出的域名：多半是中转站。不拦，提一句——
   // 这种组合判「型号挂错家」时会当中转放行，类型选对了，下拉里的型号和报错才对得上
@@ -1901,13 +1939,14 @@ function bindModels(pane, s, po) {
     const k = pane.querySelector("#pf-kind").value, b = pane.querySelector("#pf-base").value.trim();
     tip.style.display = k && b && k !== "ollama" && !mmRelay(k) && mmRelay(mmGuessKind(b)) ? "" : "none";
   };
-  pane.querySelector("#pf-base").oninput = relayTip;
+  pane.querySelector("#pf-base").oninput = () => { relayTip(); fillMediaApis(); };
   pane.querySelector("#pf-kind").onchange = (e) => {
     const k = kinds.find((x) => x.kind === e.target.value) || {};
     pane.querySelector("#pf-base").value = k.base_url || "";
     pane.querySelector("#pf-key-src").innerHTML = kindKeyLink(k.kind || "", k.base_url || "");
     if (!pane.querySelector("#pf-name").value) pane.querySelector("#pf-name").value = String(k.label || "").replace(/（.*/, "");
     relayTip();
+    fillMediaApis();
   };
   pane.querySelector("#pf-new").onclick = () => { editP = -1; showProvForm(null); pane.querySelector("#pf-kind").onchange({ target: pane.querySelector("#pf-kind") }); };
   pane.querySelector("#pf-cancel").onclick = () => (form.style.display = "none");
@@ -1956,7 +1995,11 @@ function bindModels(pane, s, po) {
     const typed = v("pf-key");
     const had = editP >= 0 && s.providers[editP].has_key;
     const key = typed || (had ? "********" : "");
-    const entry = { id: editP >= 0 ? s.providers[editP].id : "", name: v("pf-name"), kind, api: v("pf-api"), base_url: v("pf-base"), api_key: key, has_key: !!key };
+    // 三个下拉藏着（对话专用的渠道）就存空 = 自动；服务端那头也不收这种渠道上的值
+    const mediaOn = pane.querySelector("#pf-media-apis").style.display !== "none";
+    const apis = {};
+    for (const cap of ["image", "video", "tts"]) apis[cap + "_api"] = mediaOn ? v(`pf-${cap}-api`) : "";
+    const entry = { id: editP >= 0 ? s.providers[editP].id : "", name: v("pf-name"), kind, api: v("pf-api"), ...apis, base_url: v("pf-base"), api_key: key, has_key: !!key };
     if (editP >= 0) s.providers[editP] = { ...s.providers[editP], ...entry }; else s.providers.push(entry);
     liveModels.clear(); // 换了地址或 Key，之前拉回来的清单就不作数了
     if (await saveAllModelTables(s, msg)) { form.style.display = "none"; paintModels(pane, s); }

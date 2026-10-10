@@ -130,11 +130,17 @@ const LIST = { data: [{ id: "doubao-seedream-4" }, { id: "doubao-seedance-1" }, 
   }
 
   console.log("\n【二】这把 Key 到底认不认");
-  for (const code of [401, 403]) {
-    const r = await probe(ARGS, code, { error: "invalid api key" });
-    ok(/上游不认/.test(r.error || "") && r.error.includes(String(code)),
-      `HTTP ${code} → 直说「这个 Key 上游不认」，并带上状态码`, r);
-    ok(/复制全|这家/.test(r.error || ""), `HTTP ${code} 那句话说了下一步该查什么，不是只甩一个码`, r);
+  {
+    const r = await probe(ARGS, 401, { error: "invalid api key" });
+    ok(/上游不认/.test(r.error || "") && r.error.includes("401"), "HTTP 401 → 直说「这个 Key 上游不认」，并带上状态码", r);
+    ok(/复制全|这家/.test(r.error || ""), "HTTP 401 那句话说了下一步该查什么，不是只甩一个码", r);
+    ok(/上游原文：.*invalid api key/.test(r.error || ""), "并且把上游回的原文带上", r);
+  }
+  {
+    // 百炼错误码表（https://help.aliyun.com/zh/model-studio/error-code）：403 Model.AccessDenied 是工作空间没开这个型号，Key 本身是好的
+    const r = await probe(ARGS, 403, { code: "Model.AccessDenied", message: "Model access denied." });
+    ok(/HTTP 403/.test(r.error || "") && /上游原文：.*Model access denied\./.test(r.error || ""), "HTTP 403 → 状态码和上游原文照搬", r);
+    ok(!/上游不认|复制全/.test(r.error || ""), "反向对照：403 不替人下结论说 Key 错了（401 才说）", r);
   }
   {
     const r = await probe(ARGS, 429, {});
@@ -175,6 +181,22 @@ const LIST = { data: [{ id: "doubao-seedream-4" }, { id: "doubao-seedance-1" }, 
     ok(!r2.error, "清单里直接是字符串也认得出来", r2);
     const r3 = await probe(ARGS, 200, { data: [{ name: "doubao-seedream-4" }] });
     ok(!r3.error, "只有 name 没有 id 的条目也认（不少国产网关这么给）", r3);
+  }
+  {
+    // 百炼原生清单（https://help.aliyun.com/zh/model-studio/list-models）：output.models[].model，分页，name 是中文显示名
+    const DS = { base_url: "https://dashscope.aliyuncs.com/api/v1", api_key: "TESTKEY-0000", model: "qwen-image", capCn: "图像模型", kind: "dashscope" };
+    const r = await probe(DS, 200, { output: { total: 1, page_no: 1, page_size: 20, models: [{ model: "qwen-image", name: "通义千问-文生图" }] } });
+    ok(lastReq().url === "https://dashscope.aliyuncs.com/api/v1/models?model=qwen-image", "百炼原生地址：带 model 参数按型号精确查（文档给的参数）", lastReq().url);
+    ok(!r.error && r.partial !== true && /查到了「qwen-image」/.test(r.note || ""), "回包是 output.models[].model 也认得出，不拿中文显示名去比", r);
+    const r2 = await probe(DS, 200, { output: { total: 0, page_no: 1, page_size: 20, models: [] } });
+    ok(!r2.error && r2.partial === true && /没查到/.test(r2.note || ""), "按型号查回空：只给半格、照实说没查到，不判死", r2);
+    await probe(ARGS, 200, LIST);
+    ok(!/\?model=/.test(lastReq().url), "（反向对照）不是百炼原生地址：不加这个参数", lastReq().url);
+    const page = { output: { total: 168, page_no: 1, page_size: 20, models: Array.from({ length: 20 }, (_, i) => ({ model: "qwen-m" + i })) } };
+    const r4 = await probe(ARGS, 200, page);
+    ok(!r4.error && r4.partial === true && /分了页/.test(r4.note || ""), "清单分了页、这一页里没有：只给半格，不报「没有这个模型」", r4);
+    const r5 = await probe(ARGS, 200, { output: { models: page.output.models } });
+    ok(/没有「doubao-seedream-4」/.test(r5.error || ""), "（反向对照）没说分页的清单里没有：照旧判出来", r5);
   }
 
   console.log("\n【五】成功那句话不许含糊");

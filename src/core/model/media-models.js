@@ -23,7 +23,8 @@ const CAPS = ["vision", "image", "video", "tts", "asr"];
 
 /**
  * 渠道类型。kind 决定三件事：接口地址长什么样、目录里有哪些模型、协议按哪家走。
- * 视频那一路的协议判断见下面的 videoProtoOf——认 kind，认不出才退回按地址猜。
+ * 生图 / 视频 / 配音走哪种接口见下面的 mediaApiOf——渠道上手选的最大，其次模型条目上的 protocol，
+ * 再认 kind，认不出才退回按地址猜。
  */
 const PROVIDER_KINDS = [
   { kind: "ark", label: "火山方舟（豆包 / 即梦 / Seedance）", base_url: "https://ark.cn-beijing.volces.com/api/v3", key_url: "https://console.volcengine.com/ark" },
@@ -348,12 +349,8 @@ function guessKind(baseUrl) {
  * 视频这一路，这条渠道说的是哪门话。
  *
  * 聊天有 OpenAI 兼容这个最大公约数，视频没有：五家的路径、字段名、轮询方式、结果取法
- * 没一处对得上，只能一家一条分支。所以先得知道是哪家。判断顺序是有讲究的——
- *   ① 渠道卡片上选的「渠道类型」：用户自己指的，最准，也是唯一能覆盖前两条的口子；
- *   ② 接口地址里的域名：直连官方的人什么都不用配，开箱就对；
- *   ③ 模型条目上手写的 protocol：中转和自建网关（国内用的人是多数）地址里什么都看不出来，
- *      得留一个地方能直说「我这台后面接的是万相」。
- * 三条都认不出就返回 ""，由调用方把支持的几家摆出来——而不是闷头发一个必然失败的请求，
+ * 没一处对得上，只能一家一条分支。所以先得知道是哪家，按什么认见下面的 mediaApiOf。
+ * 都认不出就返回 ""，由调用方把支持的几家摆出来——而不是闷头发一个必然失败的请求，
  * 视频是按条计费的异步任务，白发一趟要等好几分钟才看得到错。
  */
 const VIDEO_PROTOS = ["dashscope", "ark", "zhipu", "minimax", "siliconflow"];
@@ -364,20 +361,120 @@ const VIDEO_PROTO_CN = {
   minimax: "MiniMax · 海螺 Hailuo",
   siliconflow: "硅基流动 SiliconFlow",
 };
-function videoProtoOf(cfg) {
+
+/**
+ * 生图 / 视频 / 配音三路各有哪几种接口——渠道表单上那三个下拉的选项，也是生成时走哪条分支的依据。
+ *
+ * 只列 src/tools/media.js 里真接了、官方文档里也写着的：
+ *   生图  OpenAI 兼容 /images/generations；百炼同步 multimodal-generation（千问 qwen-image 系）；
+ *         百炼异步 text2image/image-synthesis（万相老几代，外加 qwen-image / qwen-image-plus）。
+ *   视频  五家各一套，id 跟上面 VIDEO_PROTOS 一字不差——老配置里模型条目上手写的 protocol 照样认。
+ *   配音  OpenAI 兼容 /audio/speech；千问 TTS（multimodal-generation，回一个音频地址）。
+ * 选了存在渠道上：image_api / video_api / tts_api，跟对话那一路的 api 字段并排。
+ */
+const MEDIA_APIS = {
+  image: [
+    { id: "openai", label: "OpenAI 兼容（/images/generations）", short: "OpenAI 兼容" },
+    { id: "dashscope-sync", label: "百炼同步（multimodal-generation）", short: "百炼同步" },
+    { id: "dashscope-async", label: "百炼异步（image-synthesis）", short: "百炼异步" },
+  ],
+  video: [
+    { id: "dashscope", label: "百炼万相（video-synthesis）", short: "百炼万相" },
+    { id: "ark", label: "火山方舟（/contents/generations/tasks）", short: "火山方舟" },
+    { id: "zhipu", label: "智谱（/videos/generations）", short: "智谱" },
+    { id: "minimax", label: "MiniMax 海螺（/video_generation）", short: "MiniMax 海螺" },
+    { id: "siliconflow", label: "硅基流动（/video/submit）", short: "硅基流动" },
+  ],
+  tts: [
+    { id: "openai", label: "OpenAI 兼容（/audio/speech）", short: "OpenAI 兼容" },
+    { id: "dashscope", label: "千问 TTS（multimodal-generation）", short: "千问 TTS" },
+  ],
+};
+/** 渠道上存这三路选择的字段名 */
+const MEDIA_API_FIELD = { image: "image_api", video: "video_api", tts: "tts_api" };
+const isMediaApi = (cap, v) => !!MEDIA_APIS[cap] && MEDIA_APIS[cap].some((f) => f.id === v);
+/**
+ * 没手选时按渠道类型、再按地址认。生图写的 "dashscope" 不是某一种接口，是「百炼这一家」——
+ * 同步还是异步得看型号，见 mediaApiOf。两张表随 /api/model-catalog 下发，表单上「自动」那一项照同一张表说会走哪种。
+ * `\/ark\b` 那半截不能省：自建网关常把上游挂在 /ark 这样的路径下（https://gw.mycorp.com/ark/api/v3），
+ * 只认 ark. 域名的话这类地址会掉到「认不出」，而它以前是认得的。
+ */
+const MEDIA_API_KINDS = {
+  dashscope: { image: "dashscope", video: "dashscope", tts: "dashscope" },
+  ark: { video: "ark" }, zhipu: { video: "zhipu" }, minimax: { video: "minimax" }, siliconflow: { video: "siliconflow" },
+};
+/** @type {Array<[string, Record<string, string>]>} 每行：地址正则的源码、认出来后各路走哪种 */
+const MEDIA_API_HOSTS = [
+  ["dashscope|\\.maas\\.aliyuncs\\.com", { image: "dashscope", video: "dashscope", tts: "dashscope" }],
+  ["volces|\\/ark\\b|ark\\.", { video: "ark" }],
+  ["bigmodel|zhipu", { video: "zhipu" }],
+  ["minimax", { video: "minimax" }],
+  ["siliconflow", { video: "siliconflow" }],
+];
+/** 都认不出时：生图、配音按最通用的 OpenAI 兼容发；视频没有通用的那一种，宁可不发 */
+const MEDIA_API_DEFAULT = { image: "openai", video: "", tts: "openai" };
+
+/**
+ * 万相的老几代文生图（wanx-v1、wanx2.x / wan2.0–2.5 的 *-t2i-*）只有异步任务接口：
+ * text2image/image-synthesis 带 X-DashScope-Async 提交，拿 task_id 去 /tasks 轮询。
+ * 拿 qwen-image 那条同步的 multimodal-generation 去发，上游直接回「模型不存在」——
+ * 精选目录里摆着这两个型号，选了却一张都出不来。2.6 起换了新接口，不在这一路。
+ */
+const WAN_ASYNC_T2I = /^wanx?(?:[01]|2\.[0-5])\b.*-t2i|^wanx-v1$/i;
+
+/**
+ * 生图 / 视频 / 配音这一路这次走哪种接口，以及是按什么定的。判断顺序是有讲究的——
+ *   ① 渠道上手选的（image_api / video_api / tts_api）：人自己指的，最大；
+ *   ② 模型条目上手写的 protocol：中转和自建网关（国内用的人是多数）地址里什么都看不出来，
+ *      老配置靠它直说「我这台后面接的是万相」；
+ *   ③ 渠道类型（kind）：用户在卡上选的，比按地址猜准；
+ *   ④ 接口地址里的域名：直连官方的人什么都不用配，开箱就对；
+ *   ⑤ 这一路的默认（视频没有，返回 ""）。
+ * 返回 { api, from }，from 是 channel / model / kind / host / default。只有 channel 算「人选定了」：
+ * 生图被上游明说「这种调用方式不支持」时，选定了的照选的报错，别的才自动换一种（src/tools/media.js 的 generateImage）。
+ * @param {string} cap
+ * @param {any} cfg
+ * @returns {{ api: string, from: string }}
+ */
+function mediaApiOf(cap, cfg) {
   const c = cfg || {};
-  const kind = String(c.kind || "").trim().toLowerCase();
-  if (VIDEO_PROTOS.includes(kind)) return kind;
+  if (!MEDIA_APIS[cap]) return { api: "", from: "" };
+  const own = String(c[MEDIA_API_FIELD[cap]] || "").trim();
+  if (isMediaApi(cap, own)) return { api: own, from: "channel" };
+  // 百炼生图只认到「这一家」时按型号分：万相老几代走异步，其余（千问 qwen-image 系）走同步
+  const fam = (/** @type {string} */ v, /** @type {string} */ from) => ({
+    api: cap === "image" && v === "dashscope" ? (WAN_ASYNC_T2I.test(String(c.model || "").trim()) ? "dashscope-async" : "dashscope-sync") : v, from });
+  for (const h of [c.protocol, cap === "video" ? c.video_protocol : ""]) {
+    const v = String(h || "").trim().toLowerCase();
+    if (isMediaApi(cap, v) || (cap === "image" && v === "dashscope")) return fam(v, "model");
+  }
+  const byKind = (/** @type {any} */ (MEDIA_API_KINDS)[String(c.kind || "").trim().toLowerCase()] || {})[cap];
+  if (byKind) return fam(byKind, "kind");
   const b = String(c.base_url || "").toLowerCase();
-  if (/dashscope/.test(b) || isDashscopeBase(b)) return "dashscope";
-  // `\/ark\b` 那半截不能省：自建网关常把上游挂在 /ark 这样的路径下（https://gw.mycorp.com/ark/api/v3），
-  // 只认 ark. 域名的话这类地址会掉到「认不出」，而它以前是认得的
-  if (/volces|\/ark\b|ark\./.test(b)) return "ark";
-  if (/bigmodel|zhipu/.test(b)) return "zhipu";
-  if (/minimax/.test(b)) return "minimax";
-  if (/siliconflow/.test(b)) return "siliconflow";
-  const hint = String(c.protocol || c.video_protocol || "").trim().toLowerCase();
-  return VIDEO_PROTOS.includes(hint) ? hint : "";
+  for (const [src, apis] of MEDIA_API_HOSTS) {
+    const v = /** @type {any} */ (apis)[cap];
+    if (v && new RegExp(src).test(b)) return fam(v, "host");
+  }
+  return { api: /** @type {any} */ (MEDIA_API_DEFAULT)[cap] || "", from: "default" };
+}
+function videoProtoOf(cfg) {
+  return mediaApiOf("video", cfg).api;
+}
+/** 渠道上手选的那一路接口，原样带进压平 / 解析出来的配置里；没选或选了不认识的就一个字段都不加 */
+function chosenApi(cap, p) {
+  const f = /** @type {any} */ (MEDIA_API_FIELD)[cap];
+  const v = f && p ? String(p[f] || "").trim() : "";
+  return f && isMediaApi(cap, v) ? { [f]: v } : {};
+}
+/** 保存渠道时收哪几个媒体接口字段：只认表里有的；只聊天 / 只判断的渠道画不了图，一个都不收 */
+function mediaApisOf(p) {
+  if (!p || !canHost(p.kind, "image")) return {};
+  return { ...chosenApi("image", p), ...chosenApi("video", p), ...chosenApi("tts", p) };
+}
+/** 一个型号名看着是不是生图 / 视频 / 配音的——测活那边靠它决定别拿它去发对话请求 */
+function mediaCapOf(modelId) {
+  const cap = guessCap(modelId);
+  return cap === "image" || cap === "video" || cap === "tts" ? cap : "";
 }
 
 /**
@@ -858,10 +955,11 @@ function flatten(providers, models, prev) {
     // 以前这里只留地址和 Key，走到 src/tools/media.js 就只剩一个地址可猜了，中转地址一律认不出
     // 看图走的是对话接口（/chat/completions 或 /v1/messages），地址按对话那一路换；
     // proto 是这条渠道说哪门话，看图要靠它决定发 OpenAI 格式还是 Anthropic 格式，
-    // 以前只认渠道 id 叫不叫 anthropic，自建网关选了 Anthropic 格式的照样发错门
+    // 以前只认渠道 id 叫不叫 anthropic，自建网关选了 Anthropic 格式的照样发错门。
+    // 渠道上手选的生图 / 视频 / 配音接口（image_api 这几个）也跟着下来；没选就不出这个字段，老配置压平出来逐字节不变
     out[cap] = m && p
       ? { base_url: baseForUse(p.base_url, useOf(cap), p.kind), api_key: p.api_key, model: m.model, kind: p.kind || "", protocol: m.protocol || "",
-        proto: protoOfChannel(p), provider: m.provider, ...(cap === "tts" ? { voice: m.voice || "" } : {}) }
+        proto: protoOfChannel(p), provider: m.provider, ...(cap === "tts" ? { voice: m.voice || "" } : {}), ...chosenApi(cap, p) }
       : { base_url: "", api_key: "", model: "", kind: "", protocol: "", proto: "", provider: "", ...(cap === "tts" ? { voice: "" } : {}) };
     // 老配置里**手填了地址、却没填模型名**的：上面那个迁移循环要求 base 和 model 都在，
     // 所以它迁不成条目，但也不该在保存时被抹掉——人下次打开 config.json 还指望地址还在。
@@ -886,7 +984,7 @@ function resolve(config) {
     return {
       id: m.id, cap: m.cap, name: m.name, model: m.model, voice: m.voice || "",
       base_url: baseForUse(p.base_url || "", useOf(m.cap), p.kind), api_key: p.api_key || "", kind: p.kind || "", protocol: m.protocol || "",
-      proto: protoOfChannel(p), provider: m.provider, channel: p.name || m.provider || "", default: !!m.default,
+      proto: protoOfChannel(p), provider: m.provider, channel: p.name || m.provider || "", default: !!m.default, ...chosenApi(m.cap, p),
     };
   });
   return { ...(config.media || {}), list };
@@ -1159,12 +1257,14 @@ function clientCatalog() {
   return {
     kinds: PROVIDER_KINDS, catalog: CATALOG, caps: CAPS, cap_cn: CAP_CN, api_formats: API_FORMATS,
     brand_hints: BRAND_HINTS, kind_hosts: KIND_HOSTS,
+    media_apis: MEDIA_APIS, media_api_kinds: MEDIA_API_KINDS, media_api_hosts: MEDIA_API_HOSTS, media_api_default: MEDIA_API_DEFAULT,
   };
 }
 
 module.exports = {
   CAPS, CAP_CN, PROVIDER_KINDS, CATALOG,
   guessCap, capOfModel, guessKind, baseOfKind, catalogFor, protoOfKind, API_FORMATS, isApiFormat, normApi, protoOfChannel, videoProtoOf, VIDEO_PROTOS, VIDEO_PROTO_CN,
+  MEDIA_APIS, MEDIA_API_FIELD, MEDIA_API_KINDS, MEDIA_API_HOSTS, MEDIA_API_DEFAULT, isMediaApi, mediaApiOf, chosenApi, mediaApisOf, mediaCapOf, WAN_ASYNC_T2I,
   VIDEO_SPECS, videoSpecOf, videoPlan,
   providerKeyOf, uniqueId, normalizeProviders, baseForUse, isDashscopeBase, dedupeProviders,
   normalize, flatten, resolve, pick, MediaPickError, upsertLegacy,

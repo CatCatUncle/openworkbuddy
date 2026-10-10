@@ -1742,19 +1742,27 @@ app.post("/api/provider-test", async (req, res) => {
   if (!model) {
     // 专门挂生图 / 生视频的渠道底下本来就一个对话模型都没有。以前这儿直接甩一句
     // 「还没有对话模型」，等于告诉人「你这条渠道没法测」——可它明明配好了、也在用。
-    // 这种渠道改走不花钱的清单测活：Key 认不认、模型名在不在，一样能测出来
+    // 这种渠道改走不花钱的清单测活：Key 认不认、模型名在不在，一样能测出来。
+    // 挂在对话列表里、看名字却是生图 / 视频 / 配音的型号（testPlan 的 skipped）同样走这条，
+    // 绝不拿它发对话请求：上游回的 400 只会让人以为 Key 或地址坏了
     const media = (config.media_models || []).filter((m) => m.provider === known.id);
-    if (media.length) {
+    const odd = (plan.skipped || [])[0];
+    if (odd || media.length) {
       const t = Date.now();
-      const hit = (mediaModels.resolve(config).list || []).find((x) => x.id === media[0].id) || {};
-      const capCn = mediaModels.CAP_CN[media[0].cap] || media[0].cap;
-      const r = await probeMediaModel({ base_url: hit.base_url || base, api_key: hit.api_key || key, model: media[0].model, capCn });
-      return res.json({ ok: !r.error, ms: Date.now() - t, model: media[0].model, partial: !!r.partial, note: r.note || "", error: r.error || "" });
+      const hit = odd ? {} : (mediaModels.resolve(config).list || []).find((x) => x.id === media[0].id) || {};
+      const name = odd || media[0].model;
+      const cap = odd ? mediaModels.mediaCapOf(odd) : media[0].cap;
+      const capCn = mediaModels.CAP_CN[cap] || cap;
+      const r = await probeMediaModel({ base_url: hit.base_url || mediaModels.baseForUse(base, "media", kind), api_key: hit.api_key || key, model: name, capCn, kind });
+      const pre = odd ? `「${odd}」看名字是${capCn}，没拿它发对话请求。` : "";
+      return res.json({ ok: !r.error, ms: Date.now() - t, model: name, partial: !!r.partial || !!odd, note: r.note ? pre + r.note : "", error: r.error ? pre + r.error : "" });
     }
     return res.json({ ok: false, error: "这个渠道下面还没挂任何模型。加一个再测——测活要拿一个真模型去打一次招呼，瞎猜一个名字测出来的 404 会让人误以为 Key 坏了" });
   }
   const t0 = Date.now();
-  const why = await probeModel({ provider: api, base_url: base, api_key: key, model }, { custom: ownBase(kind, base) });
+  // 地址换算跟真跑对话同一份（baseForUse）：百炼渠道存的是原生 /api/v1，对话在 /compatible-mode/v1。
+  // 拿原地址直接拼 /chat/completions，测的就不是真跑时那个地址
+  const why = await probeModel({ provider: api, base_url: mediaModels.baseForUse(base, "chat", kind), api_key: key, model }, { custom: ownBase(kind, base) });
   res.json({ ok: !why, ms: Date.now() - t0, model, error: why || "" });
 });
 
@@ -1769,12 +1777,15 @@ app.post("/api/provider-test", async (req, res) => {
  * 验不到的那件必须说出来，不许拿「✓ 通了」糊过去：余额够不够、这个模型让不让你调，
  * 只有真生成一次才知道。含糊其辞的绿勾比红叉更坑人——人会拿它当「已经能用」。
  */
-async function probeMediaModel({ base_url, api_key, model, capCn }) {
+async function probeMediaModel({ base_url, api_key, model, capCn, kind }) {
   const base = String(base_url || "").trim().replace(/\/+$/, "");
   if (!/^https?:\/\//i.test(base)) return { error: "这条渠道的接口地址不是 http(s) 开头的完整地址" };
+  // 百炼原生的清单（GET /api/v1/models）是分页的：一页 20 个、一共一百多个，要测的型号多半不在第一页。
+  // 官方给了按型号 ID 精确查的参数 model（https://help.aliyun.com/zh/model-studio/list-models），原生地址上带上它
+  const byId = !!model && /\/api\/v1$/i.test(base) && (kind === "dashscope" || /dashscope|\.maas\.aliyuncs\.com/i.test(base));
   let r;
   try {
-    r = await fetch(`${base}/models`, {
+    r = await fetch(`${base}/models${byId ? "?model=" + encodeURIComponent(model) : ""}`, {
       headers: api_key ? { Authorization: `Bearer ${api_key}` } : {},
       signal: AbortSignal.timeout(15000),
     });
@@ -1783,18 +1794,32 @@ async function probeMediaModel({ base_url, api_key, model, capCn }) {
     if (/timeout|abort/i.test(msg)) return { error: "连不上（15 秒超时）。国外服务商在国内直连经常打不通，挂代理或换国产渠道" };
     return { error: "连不上：" + msg.slice(0, 160) };
   }
-  if (r.status === 401 || r.status === 403) return { error: `这个 Key 上游不认（HTTP ${r.status}），检查有没有复制全、是不是这家服务商的 Key` };
-  if (r.status === 429) return { error: "被限流了（429），等一会儿再试" };
+  // 不是 2xx：状态码和上游原文照搬。403 不替人下结论——百炼上它常是「这把 Key 没开这个型号 / 这条路」，不等于 Key 错了
+  const said = r.ok ? "" : String(await r.text().catch(() => "")).replace(/\s+/g, " ").trim().slice(0, 200);
+  const orig = said ? `。上游原文：${said}` : "";
+  if (r.status === 401) return { error: `这个 Key 上游不认（HTTP 401），检查有没有复制全、是不是这家服务商的 Key${orig}` };
+  if (r.status === 403) return { error: `上游拒绝了这次请求（HTTP 403）${orig}` };
+  if (r.status === 429) return { error: `被限流了（429），等一会儿再试${orig}` };
   // 给不出清单不等于坏了：不少专做生图/生视频的接口根本没有 /models 这条路。
   // 这种情况老老实实说「只验到这儿」，不编一个绿勾出来
-  if (!r.ok) return { partial: true, note: `这条渠道不给模型清单（HTTP ${r.status}），只验到「地址是通的」。Key 对不对、${capCn}「${model}」在不在，得真生成一次才知道` };
+  if (!r.ok) return { partial: true, note: `这条渠道不给模型清单（HTTP ${r.status}），只验到「地址是通的」。Key 对不对、${capCn}「${model}」在不在，得真生成一次才知道${orig}` };
   const j = await r.json().catch(() => null);
-  const raw = (j && (Array.isArray(j.data) ? j.data : Array.isArray(j.models) ? j.models : [])) || [];
-  const ids = raw.map((m) => (typeof m === "string" ? m : String((m || {}).id || (m || {}).name || ""))).filter(Boolean);
-  if (!ids.length) return { partial: true, note: `Key 这一关过了（清单接口没拒绝我们），但这条渠道一个模型都没列出来，没法核对${capCn}「${model}」这个名字` };
+  // 清单的形状：OpenAI 兼容是 data[].id；百炼原生是 output.models[].model（那里的 name 是中文显示名，不是型号）
+  const out = (j && j.output) || {};
+  const raw = (j && (Array.isArray(j.data) ? j.data : Array.isArray(j.models) ? j.models : Array.isArray(out.models) ? out.models : [])) || [];
+  const ids = raw.map((m) => (typeof m === "string" ? m : String((m || {}).id || (m || {}).model || (m || {}).name || ""))).filter(Boolean);
+  if (!ids.length) {
+    return { partial: true, note: byId
+      ? `Key 这一关过了，按型号查清单没查到${capCn}「${model}」。名字对不对，得真生成一次才知道`
+      : `Key 这一关过了（清单接口没拒绝我们），但这条渠道一个模型都没列出来，没法核对${capCn}「${model}」这个名字` };
+  }
   if (!ids.includes(model)) {
+    // 分了页的清单只回了一页：这一页里没有，不等于这条渠道没有
+    const total = Number(out.total);
+    if (total > ids.length) return { partial: true, note: `Key 这一关过了。清单分了页（这一页 ${ids.length} 个、一共 ${total} 个），这一页里没有${capCn}「${model}」，没法下结论` };
     return { error: `Key 是好的，但这条渠道列出来的 ${ids.length} 个模型里没有「${model}」。去 设置 → 模型 把它改成清单里的名字（在模型下拉框里挑，别手打）` };
   }
+  if (byId) return { note: `Key 认了，按型号查清单查到了「${model}」。这一步不花钱所以没真生成——余额够不够，得生成一次才知道` };
   return { note: `Key 认了，「${model}」在这条渠道的清单里（一共 ${ids.length} 个）。这一步不花钱所以没真生成——余额够不够，得生成一次才知道` };
 }
 
@@ -1825,10 +1850,18 @@ app.post("/api/model-test", async (req, res) => {
       // 换算规则只有 media-models 那一份，这儿抄一遍迟早跟真跑的时候对不上
       const hit = (mediaModels.resolve(config).list || []).find((x) => x.id === m.id) || {};
       const capCn = mediaModels.CAP_CN[m.cap] || m.cap;
-      const r = await probeMediaModel({ base_url: hit.base_url || p.base_url, api_key: hit.api_key || p.api_key, model: m.model, capCn });
+      const r = await probeMediaModel({ base_url: hit.base_url || p.base_url, api_key: hit.api_key || p.api_key, model: m.model, capCn, kind: p.kind });
       return res.json({ ok: !r.error, ms: Date.now() - t0, model: m.model, partial: !!r.partial, note: r.note || "", error: r.error || "" });
     }
-    const why = await probeModel({ provider: mediaModels.protoOfChannel(p), base_url: p.base_url, api_key: p.api_key, model: m.model }, { custom: ownBase(p.kind, p.base_url) });
+    // 对话列表里混进了生图 / 视频 / 配音的型号：不拿它发对话请求，改走不花钱的清单测活，结论只给半格
+    const odd = mediaModels.mediaCapOf(m.model);
+    if (odd) {
+      const capCn = mediaModels.CAP_CN[odd] || odd;
+      const r = await probeMediaModel({ base_url: mediaModels.baseForUse(p.base_url, "media", p.kind), api_key: p.api_key, model: m.model, capCn, kind: p.kind });
+      const pre = `「${m.model}」看名字是${capCn}，没拿它发对话请求。`;
+      return res.json({ ok: !r.error, ms: Date.now() - t0, model: m.model, partial: true, note: r.note ? pre + r.note : "", error: r.error ? pre + r.error : "" });
+    }
+    const why = await probeModel({ provider: mediaModels.protoOfChannel(p), base_url: mediaModels.baseForUse(p.base_url, "chat", p.kind), api_key: p.api_key, model: m.model }, { custom: ownBase(p.kind, p.base_url) });
     res.json({
       ok: !why, ms: Date.now() - t0, model: m.model, error: why || "",
       note: why ? "" : `「${m.model}」在渠道「${p.name}」上答得上话`,
@@ -2061,6 +2094,7 @@ app.get("/api/settings", (req, res) => {
     // 那是整台服务器的账单凭证，他既改不了也不该拿到手
     providers: (config.providers || []).map((p) => ({
       id: p.id, name: p.name, kind: p.kind, base_url: p.base_url, api: p.api || "",
+      image_api: p.image_api || "", video_api: p.video_api || "", tts_api: p.tts_api || "",
       api_key: p.api_key ? "********" : "",
       key_hint: isPlatformOwner(req) ? keyHint(p.api_key) : "",
       has_key: !!p.api_key,
@@ -2488,6 +2522,8 @@ app.post("/api/settings", (req, res) => {
           api_key: /^\*+$/.test(key) ? prev.api_key || "" : key,
           // 接口格式：空 = 按渠道类型；认不出的值不落盘，免得一个拼错的字把整条渠道带去走最通用那种还不自知
           ...(mediaModels.isApiFormat(p.api) ? { api: p.api } : {}),
+          // 生图 / 视频 / 配音接口同理：空 = 自动，认不出的值和对话专用渠道上的都不落盘
+          ...mediaModels.mediaApisOf(p),
           // 中转站「放行任意型号」只能在中转站页由平台超级管理员开关（admin.js 那条路由会记审计）。
           // 这里只从旧值抄过来、不认表单里的：设置页的保存权限比那个开关宽，不能变成一条绕过去的路
           ...(prev.relay_any_model === true ? { relay_any_model: true } : {}),
@@ -2824,13 +2860,17 @@ async function probeModelRaw(m, { custom = false } = {}) {
     if (r.ok) return { status: r.status, error: null };
     const txt = (await r.text()).slice(0, 300);
     const out = (error) => ({ status: r.status, error });
-    if (r.status === 401 || r.status === 403) return out("这个 Key 上游不认（HTTP " + r.status + "），检查有没有复制全、是不是这家服务商的 Key");
-    if (r.status === 402) return out("Key 有效但余额不足 / 未开通付费，去服务商控制台充值后再试");
+    // 每一句都带上状态码和上游原文。403 不替人下结论：百炼上它常是「这把 Key 没开这个型号」，不等于 Key 错了
+    const said = txt.replace(/\s+/g, " ").trim().slice(0, 200);
+    const orig = said ? `。上游原文：${said}` : "";
+    if (r.status === 401) return out("这个 Key 上游不认（HTTP 401），检查有没有复制全、是不是这家服务商的 Key" + orig);
+    if (r.status === 403) return out("上游拒绝了这次请求（HTTP 403）" + orig);
+    if (r.status === 402) return out("Key 有效但余额不足 / 未开通付费（HTTP 402），去服务商控制台充值后再试" + orig);
     // 目录里的服务商地址是我们填的，404 只能是模型名；自己填的地址两样都可能错，不替他挑一个
     if (r.status === 404) return out(custom
-      ? `HTTP 404：地址或模型名有一处对不上（打的是 ${url}），对照接口文档再看一眼`
-      : `模型名「${m.model}」在这家服务商不存在（HTTP 404），去 设置 → 模型 改成它支持的名字`);
-    if (r.status === 429) return out("被限流了（429），等一会儿再试，或换个渠道");
+      ? `HTTP 404：地址或模型名有一处对不上（打的是 ${url}），对照接口文档再看一眼${orig}`
+      : `模型名「${m.model}」在这家服务商不存在（HTTP 404），去 设置 → 模型 改成它支持的名字${orig}`);
+    if (r.status === 429) return out("被限流了（429），等一会儿再试，或换个渠道" + orig);
     return out(`上游返回 HTTP ${r.status}：${txt}`);
   } catch (e) {
     const msg = String((e && e.message) || e);

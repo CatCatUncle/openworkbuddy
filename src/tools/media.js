@@ -666,13 +666,33 @@ async function refImageUris(v, resolveFile) {
 const I2V_RE = /(^|[-_/.])(i2v|kf2v|s2v|image-?to-?video|img-?2-?video)([-_/.\d]|$)/i;
 const T2V_RE = /(^|[-_/.])(t2v|text-?to-?video)([-_/.\d]|$)/i;
 
+/** 万相老几代文生图只有异步任务接口。名单搬到了 media-models.js：表单上「自动」那一项要照同一份说会走哪种 */
+const WAN_ASYNC_T2I = mediaModels.WAN_ASYNC_T2I;
+
 /**
- * 万相的老几代文生图（wanx-v1、wanx2.x / wan2.0–2.5 的 *-t2i-*）只有异步任务接口：
- * text2image/image-synthesis 带 X-DashScope-Async 提交，拿 task_id 去 /tasks 轮询。
- * 拿 qwen-image 那条同步的 multimodal-generation 去发，上游直接回「模型不存在」——
- * 精选目录里摆着这两个型号，选了却一张都出不来。2.6 起换了新接口，不在这一路。
+ * 百炼生图「这种调用方式不支持」：提交那一下被上游明说拒了，才改走另一种，一次。
+ * 判据照官方错误码表（https://help.aliyun.com/zh/model-studio/error-code）的原文，只认这两句：
+ *   403 AccessDenied「current user api does not support synchronous calls.」  → 这个型号要走异步
+ *   403 AccessDenied「Current user api does not support asynchronous calls.」 → 这个型号要走同步
+ * 400「url error」那类原因不止一种，「模型不存在」也不一定是方式不对，换了只是平白多下一单。
+ * 回包里带着 task_id 就是收了单，不管说什么都不换：花钱的任务收单后不能自动重发。
+ * 返回该改走的那一种（dashscope-async / dashscope-sync），不该换回空串。
  */
-const WAN_ASYNC_T2I = /^wanx?(?:[01]|2\.[0-5])\b.*-t2i|^wanx-v1$/i;
+function wrongWayOf(status, j) {
+  const o = j || {};
+  if (status !== 403 || String(o.code || "") !== "AccessDenied" || (o.output || {}).task_id) return "";
+  const msg = String(o.message || "");
+  if (/does not support synchronous calls/i.test(msg)) return "dashscope-async";
+  if (/does not support asynchronous calls/i.test(msg)) return "dashscope-sync";
+  return "";
+}
+/**
+ * 这个进程里试出来的走法：渠道 + 型号 → dashscope-sync / dashscope-async。
+ * 只记在内存里：换过一次、上游收了单才记，下次直接走对的，不再先挨一次拒。重启就忘——
+ * 上游哪天改了规矩，最多再挨一次拒、再换一次。渠道上手选了接口的不查也不记，照选的走。
+ */
+const imageWays = new Map();
+const imageApiShort = (a) => (mediaModels.MEDIA_APIS.image.find((f) => f.id === a) || {}).short || a;
 
 /**
  * 万相异步文生图：提交一次，轮询到出结果。
@@ -687,7 +707,8 @@ async function wanAsyncImage(cfg, base, headers, prompt, size, deadlineMs, stop,
     { ...headers, "X-DashScope-Async": "enable" }, signal,
     (wm) => ({ model: cfg.model, input: { prompt }, parameters: { n: 1, ...(size ? { size } : {}), ...(wm ? { watermark: false } : {}) } }), "图像接口", 1));
   const taskId = ((j || {}).output || {}).task_id;
-  if (!r.ok || !taskId) return { err: `图像接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}`, ...refused(r.ok) };
+  // refusal：上游没收单时的原样回包，外面凭它判「是不是该换另一种方式」
+  if (!r.ok || !taskId) return { err: `图像接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}`, ...refused(r.ok), refusal: { status: r.status, j: j || {} } };
   const billed = `\n上游已经收下这一单（任务号 ${taskId}），多半照样出图、照样扣费。先到百炼控制台按任务号查，别直接重跑——重跑是再下一单。`;
   const t0 = Date.now();
   let lastErr = "";
@@ -715,6 +736,13 @@ async function wanAsyncImage(cfg, base, headers, prompt, size, deadlineMs, stop,
   return { err: `图像任务等了 ${Math.round(deadlineMs / 1000)} 秒还没出结果${lastErr ? `（最后一次查询：${lastErr}）` : ""}。${billed}`, submitted: String(taskId) };
 }
 
+/** 回执里那句「这次走的是…」：同步还是异步一眼看得出 */
+const MEDIA_API_LONG = {
+  "openai": "OpenAI 兼容接口（/images/generations，同步）",
+  "dashscope-sync": "百炼同步接口（multimodal-generation）",
+  "dashscope-async": "百炼异步接口（image-synthesis，先提交任务再轮询）",
+};
+
 async function generateImage(media, input, timeoutMs, saveDir, resolveFile, stop) {
   let cfg;
   try { cfg = mediaModels.pick(media, "image", input.model); } catch (e) { return { content: e.message, isError: true, retryable: true }; }
@@ -739,28 +767,53 @@ async function generateImage(media, input, timeoutMs, saveDir, resolveFile, stop
   const signal = anySignal(stop, AbortSignal.timeout(Math.max(timeoutMs || 0, 300000)));
   const fname = safeOutName(input.filename, ".png", "image");
   let imgUrl = null, b64 = null, watermarked = false;
-  if (speaksDashscope(cfg) && WAN_ASYNC_T2I.test(String(cfg.model).trim())) {
-    // 这几代只做文生图，接口里没有参考图这一项。悄悄丢掉参考图出一张不相干的图，比报错更糟
-    if (refs.length) return { content: `${cfg.model} 只做文生图，不收参考图。要照着参考图出，换 qwen-image-edit 这类图生图型号（设置 → 模型 → 图像模型）；或者去掉 reference_images。`, isError: true };
-    // 尺寸写法是「宽*高」，模型常照 OpenAI 的习惯写 1024x1024，顺手换过来
-    const size = input.size ? String(input.size).trim().replace(/\s*[x×]\s*/i, "*") : "";
-    const got = await wanAsyncImage(cfg, base, headers, prompt, size, Math.max(timeoutMs || 0, 300000), stop);
-    if (got.err) return { content: got.err, isError: true, ...(got.submitted ? { submitted: got.submitted } : {}), ...(got.retryable ? { retryable: true } : {}) };
+  // 走哪种接口：渠道上手选的 > 模型条目的 protocol > 渠道类型 > 地址，规则只在 media-models 的 mediaApiOf 一处。
+  // 没手选时，这个进程里试出来的那种比猜的准（见 imageWays）
+  const way = mediaModels.mediaApiOf("image", cfg);
+  const chosen = way.from === "channel";
+  const wayKey = `${cfg.provider || base}\n${cfg.model}`;
+  let api = !chosen && imageWays.has(wayKey) ? imageWays.get(wayKey) : way.api;
+  const remembered = api !== way.api;
+  let switchNote = "";
+  if (api === "dashscope-sync" || api === "dashscope-async") {
+    const dsAsync = async () => {
+      // 这几代只做文生图，接口里没有参考图这一项。悄悄丢掉参考图出一张不相干的图，比报错更糟
+      if (refs.length) return { err: `${cfg.model} 只做文生图，不收参考图。要照着参考图出，换 qwen-image-edit 这类图生图型号（设置 → 模型 → 图像模型）；或者去掉 reference_images。` };
+      // 尺寸写法是「宽*高」，模型常照 OpenAI 的习惯写 1024x1024，顺手换过来
+      const size = input.size ? String(input.size).trim().replace(/\s*[x×]\s*/i, "*") : "";
+      return wanAsyncImage(cfg, base, headers, prompt, size, Math.max(timeoutMs || 0, 300000), stop);
+    };
+    const dsSync = async () => {
+      // DashScope 原生（qwen-image 系）：multimodal-generation，同步返回图片 URL
+      // 生图慢又贵，上游一抖整轮就白跑：真实数据里 15 次调用失败 9 次，其中 8 次是
+      // 上游 500 InternalServiceError，纯属临时故障。模型拿到失败通常不会重来，而是
+      // 改用别的方案交差，用户就永远拿不到那张图。所以重试这件事得工具自己扛。
+      const { r, j, stripped } = await postWantClean(`${base}/services/aigc/multimodal-generation/generation`, headers, signal,
+        // 参考图排在文字前面：多模态这边约定俗成是「先看图，再读要求」，顺序反了有些模型会只当描述看
+        (wm) => ({ model: cfg.model, input: { messages: [{ role: "user", content: [...refs.map((u) => ({ image: u })), { text: prompt }] }] }, parameters: wm ? { watermark: false } : {} }), "图像接口");
+      if (!r.ok) return { err: `图像接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}${refFailHint}`, retryable: true, refusal: { status: r.status, j: j || {} } };
+      const parts = ((((j.output || {}).choices || [])[0] || {}).message || {}).content || [];
+      const url = (parts.find((c) => c.image) || {}).image;
+      return url ? { url, stripped } : { err: "图像接口没有返回图片：" + JSON.stringify(j).slice(0, 300) };
+    };
+    const tryWay = (a) => (a === "dashscope-async" ? dsAsync() : dsSync());
+    let got = await tryWay(api);
+    const other = got.refusal ? wrongWayOf(got.refusal.status, got.refusal.j) : "";
+    if (other && other !== api) {
+      const said = `${imageApiShort(api)}提交被上游拒了（HTTP ${got.refusal.status} ${got.refusal.j.code}：${String(got.refusal.j.message || "").slice(0, 120)}），没收单`;
+      if (chosen) got = { ...got, err: `${got.err}\n${said}。渠道上选定了「${imageApiShort(api)}」，照选的走，没有自动改走另一种；要换就到 设置 → 模型 改这条渠道的生图接口。` };
+      else if (other === "dashscope-async" && refs.length) got = { ...got, err: `${got.err}\n${said}。这个型号只能异步提交，异步那条不收参考图，所以没有改走异步；去掉 reference_images 再试。` };
+      else {
+        api = other;
+        got = await tryWay(api);
+        // 换过去那次上游收了单才记（同步回了 200、异步给了任务号）：又被拒说明换了也不对，不该记成「下次就这么走」
+        if (!got.refusal) imageWays.set(wayKey, api);
+        switchNote = `\n${said}；已自动改走${imageApiShort(api)}重新提交一次${got.refusal ? "，也没收单" : `。这个进程里这条渠道的「${cfg.model}」以后直接走${imageApiShort(api)}`}。`;
+      }
+    }
+    if (got.err) return { content: got.err + switchNote, isError: true, ...(got.submitted ? { submitted: got.submitted } : {}), ...(got.retryable ? { retryable: true } : {}) };
     imgUrl = got.url;
     watermarked = got.stripped;
-  } else if (speaksDashscope(cfg)) {
-    // DashScope 原生（qwen-image 系）：multimodal-generation，同步返回图片 URL
-    // 生图慢又贵，上游一抖整轮就白跑：真实数据里 15 次调用失败 9 次，其中 8 次是
-    // 上游 500 InternalServiceError，纯属临时故障。模型拿到失败通常不会重来，而是
-    // 改用别的方案交差，用户就永远拿不到那张图。所以重试这件事得工具自己扛。
-    const { r, j, stripped } = await postWantClean(`${base}/services/aigc/multimodal-generation/generation`, headers, signal,
-      // 参考图排在文字前面：多模态这边约定俗成是「先看图，再读要求」，顺序反了有些模型会只当描述看
-      (wm) => ({ model: cfg.model, input: { messages: [{ role: "user", content: [...refs.map((u) => ({ image: u })), { text: prompt }] }] }, parameters: wm ? { watermark: false } : {} }), "图像接口");
-    watermarked = stripped;
-    if (!r.ok) return { content: `图像接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}${refFailHint}`, isError: true, retryable: true };
-    const parts = ((((j.output || {}).choices || [])[0] || {}).message || {}).content || [];
-    imgUrl = (parts.find((c) => c.image) || {}).image;
-    if (!imgUrl) return { content: "图像接口没有返回图片：" + JSON.stringify(j).slice(0, 300), isError: true };
   } else {
     // OpenAI 兼容 /images/generations（OpenAI、new-api 等聚合网关通用）
     const { r, j, stripped } = await postWantClean(`${base}/images/generations`, headers, signal,
@@ -789,7 +842,9 @@ async function generateImage(media, input, timeoutMs, saveDir, resolveFile, stop
   // 参考图到底有没有被这条渠道吃进去，回执里必须说一声。说了模型才知道
   // 「像不像」该拿谁去比；不说的话它只能再开一轮 look_at_image 自己对照。
   const refNote = refs.length ? `\n已带 ${refs.length} 张参考图出图；出来的东西像不像，以参考图为准。` : "";
-  return { content: `图片已生成：${savedRef(saveDir, fname)}，模型 ${cfg.model}）${refNote}${wmNote}`, isError: false, file: fname };
+  // 这次走的是哪种接口、换没换过，照实写：同步异步的报错长得不一样，模型和人回头查都得知道是哪一种
+  const wayNote = `\n这次走的是${MEDIA_API_LONG[api] || api}${remembered && !switchNote ? "（这个进程里先前试出来这个型号要这么走）" : ""}。`;
+  return { content: `图片已生成：${savedRef(saveDir, fname)}，模型 ${cfg.model}）${refNote}${wmNote}${wayNote}${switchNote}`, isError: false, file: fname };
 }
 
 async function generateVideo(media, input, opts = {}) {
@@ -987,14 +1042,14 @@ async function generateVideo(media, input, opts = {}) {
       vWm = "unasked";
     } else {
       // 认不出是哪家。把「按什么认的、这次认到了什么」摊开说——中转和自建网关地址里看不出上游，
-      // 只说一句「不支持」的话，人会去改地址，而实际该改的是渠道类型那一栏。
+      // 只说一句「不支持」的话，人会去改地址，而实际该改的是渠道上「视频接口」那一栏。
       const names = mediaModels.VIDEO_PROTOS.map((p) => mediaModels.VIDEO_PROTO_CN[p]).join("、");
       return {
         content: `认不出这条视频渠道说的是哪门话，所以没敢发——视频按条计费，发错一趟要等好几分钟才看得到错。\n`
           + `现在支持这五家：${names}。\n`
-          + `认的顺序是：先看渠道卡上选的「渠道类型」，再看接口地址里的域名（dashscope / volces·ark / bigmodel / minimax / siliconflow）。`
-          + `这次地址是 ${base || "(空)"}，渠道类型是「${cfg.kind || "没选"}」，两头都没认出来。\n`
-          + `走中转或自建网关的话，地址里本来就看不出上游是谁。到 设置 → 模型 里把这条渠道的「渠道类型」选成它实际接的那一家就行。`,
+          + `认的顺序是：先看渠道上选的「视频接口」，再看渠道类型，最后看接口地址里的域名（dashscope / volces·ark / bigmodel / minimax / siliconflow）。`
+          + `这次地址是 ${base || "(空)"}，渠道类型是「${cfg.kind || "没选"}」，视频接口没选，都没认出来。\n`
+          + `走中转或自建网关的话，地址里本来就看不出上游是谁。到 设置 → 模型 编辑这条渠道，在「视频接口」里选它实际接的那一家就行。`,
         isError: true,
       };
     }
@@ -1146,9 +1201,14 @@ function speaksDashscope(cfg) {
   return c.kind === "dashscope" || /dashscope/i.test(b) || mediaModels.isDashscopeBase(b);
 }
 
+/** 配音走哪种接口：渠道上手选的「配音接口」最大，没选按渠道类型和地址认（mediaApiOf 一处说了算） */
+function ttsApiOf(cfg) {
+  return mediaModels.mediaApiOf("tts", cfg).api;
+}
+
 /** 这条渠道落盘的音频后缀：DashScope 回的是 wav 的下载地址，OpenAI 兼容那一路直接回 mp3 字节 */
 function ttsExtOf(cfg) {
-  return speaksDashscope(cfg) ? ".wav" : ".mp3";
+  return ttsApiOf(cfg) === "dashscope" ? ".wav" : ".mp3";
 }
 
 /** 文字 → 语音（渠道协议：OpenAI 兼容 /audio/speech、DashScope 原生 qwen-tts） */
@@ -1166,7 +1226,7 @@ async function textToSpeech(media, input, timeoutMs, saveDir, stop) {
   const headers = { "Content-Type": "application/json", Authorization: `Bearer ${mediaKey(cfg)}` };
   const signal = anySignal(stop, AbortSignal.timeout(Math.max(timeoutMs || 0, 300000)));
   let fname;
-  if (speaksDashscope(cfg)) {
+  if (ttsApiOf(cfg) === "dashscope") {
     // DashScope 原生（qwen-tts / qwen3-tts-flash 系）：multimodal-generation，返回音频 URL（wav）
     fname = safeOutName(input.filename, ttsExtOf(cfg), "speech");
     const r = await fetch(`${base}/services/aigc/multimodal-generation/generation`, {
@@ -1435,5 +1495,5 @@ module.exports = {
   refImageUris, I2V_RE, T2V_RE, WAN_ASYNC_T2I, wanAsyncImage, generateImage, generateVideo, htmlToImage, textToSpeech, AUDIO_EXT, ASR_MAX_BYTES,
   videoTaskCheck, videoTaskFailed, minimaxFileUrl, videoChanKey, cancelVideoTask,
   srtTime, transcribeAudio, withGenCache, unitsFor, mediaProviderOf, asrModelOf, speaksDashscope,
-  TTS_UNSET, ttsExtOf
+  TTS_UNSET, ttsExtOf, ttsApiOf, wrongWayOf, imageWays
 };

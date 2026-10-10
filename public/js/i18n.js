@@ -1141,6 +1141,33 @@
       "保存模型": "Save model",
       "保存渠道": "Save channel",
       "接口格式：跟着类型走": "API format: follow the type",
+      "生图接口：自动": "Image API: auto",
+      "视频接口：自动": "Video API: auto",
+      "配音接口：自动": "Voice API: auto",
+      "这条渠道出图走哪种接口": "Which API this channel uses for images",
+      "这条渠道出视频走哪种接口": "Which API this channel uses for video",
+      "这条渠道配音走哪种接口": "Which API this channel uses for voice",
+      "OpenAI 兼容（/images/generations）": "OpenAI-compatible (/images/generations)",
+      "百炼同步（multimodal-generation）": "Model Studio sync (multimodal-generation)",
+      "百炼异步（image-synthesis）": "Model Studio async (image-synthesis)",
+      "百炼万相（video-synthesis）": "Model Studio Wan (video-synthesis)",
+      "火山方舟（/contents/generations/tasks）": "Volcengine Ark (/contents/generations/tasks)",
+      "智谱（/videos/generations）": "Zhipu (/videos/generations)",
+      "MiniMax 海螺（/video_generation）": "MiniMax Hailuo (/video_generation)",
+      "硅基流动（/video/submit）": "SiliconFlow (/video/submit)",
+      "OpenAI 兼容（/audio/speech）": "OpenAI-compatible (/audio/speech)",
+      "千问 TTS（multimodal-generation）": "Qwen TTS (multimodal-generation)",
+      "百炼同步": "Model Studio sync",
+      "百炼异步": "Model Studio async",
+      "百炼万相": "Model Studio Wan",
+      "火山方舟": "Volcengine Ark",
+      "智谱": "Zhipu",
+      "MiniMax 海螺": "MiniMax Hailuo",
+      "硅基流动": "SiliconFlow",
+      "千问 TTS": "Qwen TTS",
+      "百炼，按型号分同步/异步": "Model Studio, sync or async by model",
+      "认不出，要选一个": "Unknown, pick one",
+      "只验了一半": "Partly checked",
       "本地部署或自建网关说的是哪种话，就选哪种": "Pick whatever protocol your local deployment or gateway speaks",
       "OpenAI Chat Completions（/chat/completions，最通用）": "OpenAI Chat Completions (/chat/completions, most common)",
       "Ollama 原生（/api/chat）": "Ollama native (/api/chat)",
@@ -2402,9 +2429,9 @@
       "（toolward 扫描提醒，未拦截）：": "(flagged by toolward; nothing blocked):",
       "Key 和令牌已打码，没交给它。": "Keys and tokens were masked before scanning.",
       "看你粘贴或拖进来的图。主模型能看图就不用配；主模型是纯文本（如 deepseek-chat）时才需要加。": "Reads images you paste or drop. Not needed if the main model can see images; add one only for text-only models (e.g. deepseek-chat).",
-      "说「画一张…」时用它，成图存进工作空间。OpenAI 兼容接口；dashscope 自动走通义协议。": "Used when you say \"draw…\"; images go to the workspace. OpenAI-compatible; dashscope uses Tongyi's native protocol.",
-      "一段约 1~5 分钟。支持通义万相、火山 Seedance、智谱、MiniMax、硅基流动；走中转时把「渠道类型」选成实际那家。": "Takes 1–5 min per clip. Supports Wan, Seedance, CogVideoX, MiniMax, SiliconFlow; behind a relay, set \"Channel type\" to the real vendor.",
-      "文字转语音，用于配音、旁白。OpenAI 兼容接口；dashscope 自动走通义 qwen-tts。": "Text to speech for voice-overs. OpenAI-compatible; dashscope uses Tongyi qwen-tts.",
+      "说「画一张…」时用它，成图存进工作空间。接口在渠道的「生图接口」里选。": "Used when you say \"draw…\"; images go to the workspace. Pick the API in the channel's Image API.",
+      "一段约 1~5 分钟。走中转时，在渠道的「视频接口」里选实际那家。": "Takes 1–5 min per clip. Behind a relay, pick the real vendor in the channel's Video API.",
+      "文字转语音，用于配音、旁白。接口在渠道的「配音接口」里选。": "Text to speech for voice-overs. Pick the API in the channel's Voice API.",
       "录音转文字，可出 .srt 字幕。OpenAI 兼容接口，单文件 ≤25MB；暂不支持通义百炼转写。": "Audio to text, with optional .srt. OpenAI-compatible, ≤25MB per file; Bailian transcription not supported yet.",
       "归平台管理员配置，你在对话里直接用即可。": "Configured by the platform admin; just use them in chat.",
       "已连上，但本机还没装模型。终端运行 ollama pull qwen3:8b（约 5GB）后重开下拉框。": "Connected, but no models installed. Run ollama pull qwen3:8b (~5GB), then reopen this list.",
@@ -2913,6 +2940,11 @@
     }],
     // 升级提示是「升级整理：」+ 迁移那句话拼的：前缀翻了，后半句照词典再查一次，查不到就整句留中文
     [/^升级整理：([\s\S]+)$/, (m) => { const v = lookup(m[1], "en"); return v == null ? null : "Upgrade: " + v; }],
+    // 渠道表单上三个下拉的「自动」那一项（app-05.js 的 fillMediaApis）：括号里是这会儿会走哪种，再查一次词典
+    [/^(生图|视频|配音)接口：自动（(.+)）$/, (m) => {
+      const v = lookup(m[2], "en");
+      return v == null ? null : `${{ 生图: "Image", 视频: "Video", 配音: "Voice" }[m[1]]} API: auto (${v})`;
+    }],
   );
   // 长工具跑着时的进度（app-01.js 的 PROG_STAGE）：「渲染 432/900」「编码 40%」。
   // 折叠条那行是光秃秃的一句，卡上那格前头带「· 」；渲染 / 配音 / 截图 光秃秃那句上面的动词表已经翻了，

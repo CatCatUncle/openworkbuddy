@@ -30,7 +30,7 @@
 
 const {
   PROVIDER_KINDS, CATALOG, guessKind, baseOfKind, protoOfKind, protoOfChannel, normApi, isApiFormat,
-  providerKeyOf, uniqueId, normalizeProviders, baseForUse, dedupeProviders,
+  providerKeyOf, uniqueId, normalizeProviders, baseForUse, dedupeProviders, mediaCapOf,
 } = require("./media-models");
 
 /** 本机地址：Ollama / LM Studio 这类压根不要 Key，没 Key 也算配过了 */
@@ -346,8 +346,12 @@ function modelsOf(config, channelId) {
  *   2. 用存着的那把 Key 时，地址、渠道类型、协议都得是存着的那一套。要换地址就连 Key 一起重填：
  *      存着的 Key 跟着一个改过的地址走，等于把它送到了一个没人核对过的门口。
  *
- * 返回 { known, kind, base, api, key, model } 或 { error }。
- * model 为空 = 这条渠道底下一个对话模型都没有，走不走媒体清单那条不花钱的测活由调用方定。
+ *   3. 看名字是生图 / 视频 / 配音的型号（qwen-image、wan2.2-t2v…）不拿来发对话请求：
+ *      挂错在对话列表里也一样。上游对它回的 400 只会让人以为 Key 或地址坏了。
+ *
+ * 返回 { known, kind, base, api, key, model, skipped } 或 { error }。
+ * model 为空 = 这条渠道底下一个能发对话的模型都没有，走不走媒体清单那条不花钱的测活由调用方定；
+ * skipped = 因为看名字是媒体型号而没挑的（点名的那个、或列表里的），调用方拿它走清单测活。
  * @param {any} config
  * @param {any} body
  */
@@ -371,7 +375,9 @@ function testPlan(config, body) {
   const mine = modelsOf(config || {}, known.id).map((m) => String(m.model || "").trim()).filter(Boolean);
   const want = String(b.model || "").trim();
   if (want && !mine.includes(want)) return { error: "「" + want.slice(0, 60) + "」没登记在这条渠道下。先到 设置 → 模型 加上再测" };
-  return { known, kind, base, api, key, model: want || mine[0] || "" };
+  const talk = mine.filter((id) => !mediaCapOf(id));
+  const skipped = (want ? [want] : mine).filter((id) => !!mediaCapOf(id));
+  return { known, kind, base, api, key, model: want ? (skipped.length ? "" : want) : talk[0] || "", skipped };
 }
 
 module.exports = {

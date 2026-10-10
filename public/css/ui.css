@@ -1410,6 +1410,7 @@ html[data-theme="dark"] .ui-select {
 .ch-pill.is-ok { background: var(--owb-ok-bg); color: var(--owb-ok-text); }
 .ch-pill.is-bad { background: color-mix(in srgb, var(--owb-err) 14%, transparent); color: var(--owb-err-text); }
 .ch-pill.is-run { background: var(--owb-bg-side); color: var(--owb-text-3); }
+.ch-pill.is-half { background: var(--owb-bg-side); color: var(--owb-text-2); }
 .ch-res { display: flex; align-items: flex-start; gap: 7px; margin: 0 0 10px; padding: 9px 12px; border-radius: var(--radius-lg); font-size: 12px; line-height: 1.75; }
 .ch-res .i { flex: none; width: 14px; height: 14px; margin-top: 3px; }
 .ch-res code { padding: 1px 5px; border-radius: var(--radius-xs); background: color-mix(in srgb, currentColor 10%, transparent); font-family: var(--mono); font-size: 11px; }
