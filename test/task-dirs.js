@@ -58,6 +58,23 @@ const has = (p) => fs.existsSync(p);
     ok(taskDirs.appRoot(path.join(projects, "还没建出来的项目"), anchors), "项目目录还没建出来时也照样判（不存在的尾巴原样接上）");
     ok(!taskDirs.appRoot("", anchors) && !taskDirs.appRoot(ws, {}), "空参数不炸，一律不算");
 
+    // 不止一个账号时各人自己的工作目录，和他在里面建的项目（<工作目录>/projects/<名>，见 spaces.js）
+    const own = path.join(HOME, "accounts", "amy");
+    const ownProj = path.join(own, "projects", "客户A");
+    fs.mkdirSync(ownProj, { recursive: true });
+    const withHomes = { ...anchors, homes: [own] };
+    ok(taskDirs.appRoot(own, withHomes) && taskDirs.appRoot(ownProj, withHomes), "个人工作目录、他在里面建的项目：应用自己建的根");
+    ok(!taskDirs.appRoot(path.join(own, "projects"), withHomes) && !taskDirs.appRoot(path.join(ownProj, "子目录"), withHomes)
+      && !taskDirs.appRoot(path.join(own, "别的"), withHomes), "★反向对照★ projects/ 本身、项目再往下一层、工作目录里别的文件夹：不算");
+    ok(!taskDirs.appRoot(ownProj, anchors), "★反向对照★ 没告诉它哪些是个人目录：不算");
+    // 开发时数据根在代码仓库里：往上找得到 .git。不认这一条，项目会被当成代码仓库，成果全摊在根上
+    const repoHome = path.join(mine, "accounts", "bob");
+    const repoProj = path.join(repoHome, "projects", "x");
+    fs.mkdirSync(repoProj, { recursive: true });
+    const lay = taskDirs.folderLayout(repoProj, { ...anchors, homes: [repoHome] });
+    ok(lay.layout === "per_chat" && lay.locked, "数据根在代码仓库里：个人目录里的项目照样按对话分、不给改", lay);
+    ok(!taskDirs.perChatRoot(repoProj, anchors), "★反向对照★ 不认个人目录时，它会被当成代码仓库");
+
     ok(taskDirs.perChatRoot(ws, anchors) && taskDirs.perChatRoot(path.join(projects, "小红书"), anchors) && taskDirs.perChatRoot(path.join(tenants, "org_a"), anchors),
       "应用自己建的根：分");
     ok(taskDirs.perChatRoot(docs, anchors),

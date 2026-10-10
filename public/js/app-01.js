@@ -8,7 +8,8 @@ let settingsCache = null;
 let bootMoved = []; // 服务端启动时替用户改挂过的媒体模型（GET /api/settings 只回一次），进模型页时说一声
 let projects = [];
 let activeProject = "默认项目"; // 必须在任何 renderHistory() 调用前声明（初始化就会用到）
-let projectsLocked = false;    // 服务端说「你这边没有项目这回事」（租户成员）：整块项目区不画，任务历史也不按项目过滤
+let projectsLocked = false;    // 服务端说「你这边没有项目这回事」：整块项目区不画，任务历史也不按项目过滤
+let projectsOwn = false;       // 项目是他自己那份（成员、审计员、分公司的人）：都建在他自己的工作目录里，不给选文件夹
 /**
  * 两条工作线（lane）：侧栏上面那两个标签，管的是「这次是哪一种活儿」。
  *   办公（office）→ 做表、写稿、出图、发消息。鼠标流，跑在这台机器的桌面办公 agent 上。

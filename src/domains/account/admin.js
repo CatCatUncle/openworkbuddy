@@ -254,6 +254,9 @@ function platformGuard(req, res, next) {
     if (req.method === "GET"
       ? PERSONAL_READ.has(p)
       : PERSONAL_WRITE.has(p) || PERSONAL_WRITE_PREFIX.some((x) => p.startsWith(x))) return next();
+    // 项目：用自己工作目录的人建、切、改、删的是他自己那份清单（server.js 的 projectScope），
+    // 文件夹全在他自己的工作目录里，碰不到共享根。留在共享根上却不是管理员的（老账本）照旧拦
+    if ((p === "/api/projects" || p.startsWith("/api/projects/")) && !keepsSharedSpace(req.user)) return next();
     return res.status(403).json({ error: "这块是服务器级设置，归平台管理员管", platform_only: true });
   }
   // 剩下的照常放行，只把这一个字段摘掉：别让它捎带着把全局工作目录改了
@@ -263,13 +266,10 @@ function platformGuard(req, res, next) {
 /**
  * 共享工作目录只归留在共享根上的人（keepsSharedSpace）。别人过得了上面那道闸的（比如只改自己那几项设置），
  * 设置里那两项照样摘掉：他的工作目录是自己那份，改全局那个等于去挪共享根。
+ * 项目不在这儿拦：他们建、切、改、删的是自己那份清单（server.js 的 projectScope），碰不到共享根上那份。
  */
 function sharedWorkspaceGuard(req, res, next) {
   if (keepsSharedSpace(req.user)) return next();
-  // 项目切的也是共享根：别人建、切、改、删项目，动的都是共享根上那份目录
-  const p = req.path.toLowerCase();
-  if (req.method !== "GET" && (p === "/api/projects" || p.startsWith("/api/projects/")))
-    return res.status(403).json({ error: "项目归这台服务器的主人管，你的文件在自己的工作目录里", personal_space: true });
   const b = req.body;
   if (b && typeof b === "object") { delete b.workspace_dir; delete b.workspace_permanent; }
   next();
@@ -407,8 +407,19 @@ function tenantScope({ withWorkspace, withPolicy, getWorkspaceDir, readConfig, w
         return stop("你的工作目录建不出来，稍后再试或找管理员");
       }
       if (libraryRootOf && !libBase) return stop("你的资料库找不到，稍后再试或找管理员");
-      // 项目只挂资料库某一块，是老主人那个项目的设置：别人的资料库里碰巧有同名文件夹，也别把他收窄到那一块
-      if (withLibraryDir) then = () => withLibraryDir("", next);
+      // 他自己建了项目的，绑到当前那个项目的文件夹（在他工作目录里面，见 spaces.js），挂的那块资料库也照他项目的来。
+      // 共享根上那份项目的挂载不带过来：别人的资料库里碰巧有同名文件夹，也别把他收窄到那一块。
+      // 项目文件夹打不开（被换成了指出去的软链接、盘上建不出来）就用工作目录本身：还是他自己那份，不会跨到别人那儿
+      let libDir = "";
+      try {
+        const { projects, active } = spaces.projectsOf(req.user.username);
+        const cur = projects.find((x) => x.name === active);
+        if (cur && cur.folder) root = spaces.openProject(root, cur.folder);
+        libDir = (cur && cur.library_dir) || "";
+      } catch (e) {
+        console.warn("[个人项目] 当前项目的文件夹打不开，这次用工作目录本身：" + e.message);
+      }
+      if (withLibraryDir) then = () => withLibraryDir(libDir, next);
     }
     const inner = () => withWorkspace(root, () => withPolicy(policy, () => quota.withActor(actor, () => prefs.withPrefs(mine, then))));
     if (withLibraryBase) withLibraryBase(libBase, inner);

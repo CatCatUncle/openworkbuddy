@@ -13309,6 +13309,7 @@ const LANE_STUBS = [
   "var sessions = [];",
   "var activeProject = '默认项目';",
   "var projectsLocked = false;",
+  "var projects = [];",
   "var __SAVED = 0;",
   "var saveSessions = () => { __SAVED++; };",
   "var __DONE_AWAY = [];",
@@ -13976,6 +13977,7 @@ const PROJ_STUBS = [
   "var activeProject = '默认项目';",
   "var projectsLocked = false;",
   "var projects = [];",
+  "var projectsOwn = false;",
   "var refreshSettingsCache = () => {};",
   "var renderFiles = () => {};",
   "var syncTitleCount = () => {};",
@@ -14002,6 +14004,7 @@ const PROJ_CHECKS = `
   await refreshProjects();
   ok("管理员看得见「项目」这一栏", getComputedStyle(head).display !== "none" && getComputedStyle(box).display !== "none");
   ok("项目列表照常画出来", box.querySelectorAll(".proj-item").length === 2);
+  ok("  └ 两个都能移除", box.querySelectorAll(".proj-item .del").length === 2);
   ok("当前项目高亮的是服务端说的那个", box.querySelector(".proj-item.active").dataset.name === "默认项目");
   ok("任务历史按项目过滤：没记项目的算「默认项目」", [...hist.querySelectorAll(".hist-item")].map(e => e.dataset.id).join(",") === "s1,s2", hist.textContent);
   ok("空的时候说清楚是「这个项目」没任务", (() => { sessions = []; renderHistory(); const t = hist.textContent; sessions = SESS.slice(); return /该项目在这条线上还没有任务/.test(t); })());
@@ -14016,12 +14019,32 @@ const PROJ_CHECKS = `
   ok("三条任务历史一条不少地回来了", [...hist.querySelectorAll(".hist-item")].map(e => e.dataset.id).join(",") === "s1,s2,s3", hist.textContent);
   ok("空的时候不提「项目」两个字", (() => { sessions = []; renderHistory(); const t = hist.textContent; sessions = SESS.slice(); return /还没有任务/.test(t) && !/该项目/.test(t); })());
 
-  // ---- 负向控制：服务端要是再编一个假项目顶上，就又会把历史滤空 ----
-  // 这条不是在测「假项目还在」，是把当年的事故钉在这儿：只要 locked 这条路被绕开、
-  // 拿一个跟老会话对不上的名字当 active，用户就又看不到历史了。
+  // ---- 当年那次事故：服务端编了个假项目顶上，名字跟老会话记的全对不上 ----
+  // 以前这一下历史当场滤空；现在对不上的归到第一个项目，一条不少。
+  // 光看「一条不少」证明不了过滤还在干活，所以先钉一条：切到「客户 A」就只剩它自己那条。
+  const ids = () => [...hist.querySelectorAll(".hist-item")].map(e => e.dataset.id).join(",");
+  __PROJ_REPLY = { projects: [{ name: "默认项目", dir: "/w" }, { name: "客户 A", dir: "/w/a" }], active: "客户 A", locked: false };
+  await refreshProjects();
+  ok("过滤真在干活：切到「客户 A」只剩它那条", ids() === "s3", hist.textContent);
   __PROJ_REPLY = { projects: [{ name: "本组织工作目录", dir: "/w" }], active: "本组织工作目录", locked: false };
   await refreshProjects();
-  ok("当年的事故复现得出来：假项目一顶上，历史当场空", hist.querySelectorAll(".hist-item").length === 0 && projectsLocked === false);
+  ok("假项目一顶上，对不上的老任务归到第一个项目，历史不再滤空", ids() === "s1,s2,s3" && projectsLocked === false, hist.textContent);
+
+  // ---- 项目改过名：老任务记的是旧名字，按 old_names 认回来 ----
+  __PROJ_REPLY = { projects: [{ name: "默认项目", dir: "/w" }, { name: "客户甲", dir: "/w/a", old_names: ["客户 A"] }], active: "客户甲", locked: false };
+  await refreshProjects();
+  ok("「客户 A」改名「客户甲」，它名下的老任务跟过去", ids() === "s3", hist.textContent);
+  ok("  └ 不会混进默认项目", (() => { activeProject = "默认项目"; renderHistory(); return ids() === "s1,s2"; })(), hist.textContent);
+  // ---- 项目从列表移除了：它名下的老任务归到第一个项目，不凭空消失 ----
+  __PROJ_REPLY = { projects: [{ name: "默认项目", dir: "/w" }, { name: "客户 B", dir: "/w/b" }], active: "默认项目", locked: false };
+  await refreshProjects();
+  ok("「客户 A」移除后，它那条归到第一个项目", ids() === "s1,s2,s3", hist.textContent);
+  ok("  └ 别的项目里不冒出来", (() => { activeProject = "客户 B"; renderHistory(); return ids() === ""; })(), hist.textContent);
+
+  // ---- 用自己工作目录的人：工作目录本身那个项目没有「移除」（点了也只会报错） ----
+  __PROJ_REPLY = { projects: [{ name: "默认项目", folder: "", dir: "/h" }, { name: "客户 A", folder: "客户_A", dir: "/h/projects/客户_A" }], active: "默认项目", locked: false, own: true };
+  await refreshProjects();
+  ok("工作目录本身那个项目没有移除键，新建的有", [...box.querySelectorAll(".proj-item")].map(e => e.dataset.name + ":" + !!e.querySelector(".del")).join(",") === "默认项目:false,客户 A:true", box.innerHTML);
 
   // ---- 回到 locked：状态能来回切，不是只在首次加载对 ----
   __PROJ_REPLY = { projects: [], active: "", locked: true };

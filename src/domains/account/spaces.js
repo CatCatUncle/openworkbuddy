@@ -140,6 +140,74 @@ function knownRootOf(username) {
   } catch { return ""; }
 }
 
+/**
+ * 用自己工作目录的人也能建多个项目（工作空间），一个项目一个文件夹，全在他自己那份工作目录里：
+ *   - 默认项目就是工作目录本身（folder 为空）：以前的成果都摊在那儿，换个根等于把它们藏了；
+ *   - 新建的放在 <工作目录>/projects/<文件夹>，文件夹名照项目名来（规则同 folderName），项目改名文件夹不动；
+ *   - 不能另选文件夹：服务器上的路径不归他，选进别人那份就是串台。
+ * 清单记在这张表他那一条里（projects / active），跟着账号改名走。不放进工作目录：那儿 agent 写得动，
+ * 一句话就能把项目改指到别处去。
+ */
+const PROJECTS = "projects"; // task-dirs.js 的 appRoot 认同一个名字：这下面一层固定按对话分文件夹
+const DEFAULT_PROJECT = "默认项目"; // 跟前端「没记项目的老会话算默认项目」同一个名字
+
+/** 表里记的文件夹名信得过才用：一层、不带路径分隔符、不以点开头 */
+function okFolder(f) {
+  return typeof f === "string" && f.length > 0 && f.length <= 64 && !/[/\\:*?"<>|\0]/.test(f) && !f.startsWith(".") && f === path.basename(f);
+}
+function cleanProject(p) {
+  if (!p || typeof p !== "object" || typeof p.name !== "string" || !p.name.trim()) return null;
+  const folder = p.folder ? String(p.folder) : "";
+  if (folder && !okFolder(folder)) return null;
+  return { ...p, folder };
+}
+
+/** 这个账号自己的项目清单和当前项目。一个都没记过就是只有一个默认项目（就是他的工作目录） */
+function projectsOf(username) {
+  const e = table().users[username];
+  let list = (e && Array.isArray(e.projects) ? e.projects : []).map(cleanProject).filter(Boolean);
+  if (!list.length) list = [{ name: DEFAULT_PROJECT, folder: "" }];
+  const active = e && list.some((p) => p.name === e.active) ? e.active : list[0].name;
+  return { projects: list.map((p) => ({ ...p })), active };
+}
+function saveProjects(username, projects, active) {
+  const db = load();
+  const e = db.users[username];
+  if (!e || !e.dir) throw new Error("你的工作目录还没分好，稍后再试");
+  e.projects = projects;
+  e.active = active;
+  save(db);
+  forget();
+}
+/** 新项目的文件夹名：照项目名来，跟清单里已有的撞了（不分大小写）就加 _2 */
+function newFolder(projects, name) {
+  const base = folderName(name);
+  const used = new Set(projects.map((p) => String(p.folder || "").toLowerCase()).filter(Boolean));
+  let f = base;
+  for (let i = 2; used.has(f.toLowerCase()); i++) f = `${base}_${i}`;
+  return f;
+}
+/**
+ * 项目文件夹的绝对路径，建好并核实还在 home 里面；不在就抛。
+ * 工作目录里的东西 agent 改得动：projects 或项目文件夹被换成指向别处的软链接，建之前先看一眼、建完再按真实路径核一遍
+ */
+function openProject(home, folder) {
+  if (!folder) return home;
+  if (!okFolder(folder)) throw new Error("项目文件夹名不合法");
+  const parent = path.join(home, PROJECTS);
+  const abs = path.join(parent, folder);
+  for (const p of [parent, abs]) {
+    let st = null;
+    try { st = fs.lstatSync(p); } catch {}
+    if (st && !st.isDirectory()) throw new Error("项目文件夹不是普通文件夹");
+  }
+  fs.mkdirSync(abs, { recursive: true });
+  const realHome = fs.realpathSync.native(home);
+  const real = fs.realpathSync.native(abs);
+  if (!real.startsWith(realHome + path.sep)) throw new Error("项目文件夹不在你的工作目录里");
+  return abs;
+}
+
 /** 账号改名：表里换键，文件夹名不动 */
 function rename(oldName, newName) {
   const db = load();
@@ -150,4 +218,4 @@ function rename(oldName, newName) {
   forget();
 }
 
-module.exports = { rootOf, homes, knownRootOf, accountsDir, rename, folderName, _internals: { FILE, forget } };
+module.exports = { rootOf, homes, knownRootOf, accountsDir, rename, folderName, projectsOf, saveProjects, newFolder, openProject, PROJECTS, DEFAULT_PROJECT, _internals: { FILE, forget } };

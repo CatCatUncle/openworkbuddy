@@ -1951,7 +1951,7 @@ app.get("/api/settings", (req, res) => {
   const lay = taskDirs.folderLayout(getWorkspaceDir(), layoutAnchors());
   res.json({
     workspace_dir: getWorkspaceDir(),
-    // 用的是自己那份工作目录（不止一个账号、又不是老主人）：界面上不给换文件夹、不给项目
+    // 用的是自己那份工作目录（不止一个账号、又不是老主人）：界面上不给换文件夹；项目是他自己那份（/api/projects 回 own）
     workspace_personal: !admin.keepsSharedSpace(req.user),
     // 默认工作空间里每个对话各有一个成果文件夹：成果区据此默认只摆「本对话」那一格
     workspace_is_default: path.resolve(getWorkspaceDir()) === dataPath("workspace"),
@@ -3845,8 +3845,7 @@ function activeProject() {
  * 挂载在弹窗里勾了才有；勾过但后来被删掉的专家/技能/连接器要过滤掉，不然提示词里指着空气让 agent 用。
  */
 function projectContextOf(p) {
-  if (!p) return "";
-  if (!sharedRootHere()) return ""; // 项目只有老主人有：别人那一趟跑在自己的根里，不带他项目的说明和规范
+  if (!p) return ""; // 带谁的项目由 projectFor 定：跑在别人根里的那趟拿到的是 null，不带共享根项目的说明和规范
   const parts = [];
   if (p.instructions) parts.push(p.instructions);
   // 挂载了资料库的某一块就说出来。不说的话模型只会看见一个小得可疑的文件清单，
@@ -4046,19 +4045,84 @@ async function pollConfig() {
 }
 
 
+/**
+ * 这个人用的是哪份项目清单：
+ *   "shared" 留在共享根上的平台管理员：config.projects，切的是共享根（老行为）；
+ *   "own"    用自己工作目录的人（成员、审计员、分公司的人）：他自己那份，全在自己的工作目录里（spaces.js）；
+ *   "none"   剩下的（共享根上的老主人却不是管理员，老账本才有）：没有项目这回事。
+ */
+function projectScope(user) {
+  if (user && !admin.keepsSharedSpace(user)) return "own";
+  return ownsGlobalWorkspace(user) ? "shared" : "none";
+}
+/** 他自己的项目清单，每项补上绝对路径给界面显示（他自己那份，设置页本来就显示）。存盘时不带 dir */
+function ownProjects(user) {
+  const home = spaces.rootOf(user);
+  const { projects, active } = spaces.projectsOf(user.username);
+  const dirOf = (p) => (p.folder ? path.join(home, spaces.PROJECTS, p.folder) : home);
+  return { home, active, projects: projects.map((p) => ({ ...p, dir: dirOf(p) })) };
+}
+const ownStored = (list) => list.map(({ dir, ...p }) => p);
+/** 项目名：去空白、必填、30 字以内、清单里不重名 */
+function projectName(raw, list, self) {
+  const name = String(raw || "").trim();
+  if (!name) throw new Error("缺少项目名");
+  if (name.length > 30) throw new Error("项目名太长（最多 30 字）");
+  if (list.some((p) => p !== self && p.name === name)) throw new Error("同名项目已存在");
+  return name;
+}
+const OWN_DIR_FIXED = "你的项目都建在自己的工作目录里，不能另选文件夹";
+/** 改名时把旧名字记进 old_names：老对话记的是当时的项目名，侧栏靠它把它们认回这个项目（不去改一条条对话） */
+function renameProject(p, to) {
+  const old = Array.isArray(p.old_names) ? p.old_names : [];
+  p.old_names = [p.name, ...old].filter((n, i, a) => typeof n === "string" && n && n !== to && a.indexOf(n) === i).slice(0, 20);
+  p.name = to;
+}
+/** 用自己工作目录的人这一趟带哪个项目的说明；留在共享根上的带当前项目（跑在别人根里的那趟不带） */
+function projectFor(user) {
+  if (projectScope(user) === "own") {
+    try {
+      const { projects, active } = ownProjects(user);
+      return projects.find((p) => p.name === active) || null;
+    } catch { return null; }
+  }
+  return sharedRootHere() ? activeProject() : null;
+}
+
 app.get("/api/projects", (req, res) => {
   // 租户看到的是自己那一个根，不是总部的项目清单——后者连目录名都是信息。
   // 以前这里编了个叫「本组织工作目录」的假项目顶上，两头都出事：侧栏多一个点不动的 tab，
   // 而且这个名字跟老会话记的项目名对不上，前端按项目过滤后整排任务历史都没了。
-  // 现在如实说「你这儿没有项目这回事」，前端见到 locked 就整块不画、也不按项目过滤。
-  // 不止一个账号时只有留在共享根上的人（默认组织的管理员）有项目：项目切的是共享根，别人切会把它挪走（admin.keepsSharedSpace）
-  if (!ownsGlobalWorkspace(req.user) || !admin.keepsSharedSpace(req.user)) return res.json({ projects: [], active: "", locked: true });
+  // 没有项目这回事的如实说 locked，前端见到就整块不画、也不按项目过滤；
+  // 用自己工作目录的人回他自己那份清单（own: true，前端不给选文件夹）
+  const scope = projectScope(req.user);
+  if (scope === "none") return res.json({ projects: [], active: "", locked: true });
+  if (scope === "own") {
+    try {
+      const { projects, active } = ownProjects(req.user);
+      return res.json({ projects, active, locked: false, own: true });
+    } catch (e) {
+      return res.status(503).json({ error: "你的工作目录建不出来，稍后再试或找管理员" });
+    }
+  }
   ensureProjects();
   res.json({ projects: config.projects, active: config.active_project, locked: false });
 });
 
 app.post("/api/projects", (req, res) => {
   try {
+    if (projectScope(req.user) === "own") {
+      // 只动他自己那份清单，config 里共享根的项目、工作目录一个字不碰
+      const b = req.body || {};
+      const { home, projects } = ownProjects(req.user);
+      const name = projectName(b.name, projects);
+      if (String(b.dir || "").trim()) throw new Error(OWN_DIR_FIXED);
+      const folder = spaces.newFolder(projects, name);
+      spaces.openProject(home, folder); // 先把文件夹建好：软链接指出去的、建不出来的，当场报错，不留一条打不开的项目
+      spaces.saveProjects(req.user.username, [...ownStored(projects), { name, folder, ...projectMeta(b), created_at: new Date().toISOString() }], name);
+      const now = ownProjects(req.user);
+      return res.json({ ok: true, projects: now.projects, active: now.active });
+    }
     ensureProjects();
     const name = String((req.body || {}).name || "").trim();
     if (!name) throw new Error("缺少项目名");
@@ -4082,6 +4146,15 @@ app.post("/api/projects", (req, res) => {
 
 app.post("/api/projects/switch", (req, res) => {
   try {
+    if (projectScope(req.user) === "own") {
+      // 只记「他现在在哪个项目」；下一条请求起 tenantScope 就把他绑到那个项目的文件夹上
+      const { home, projects } = ownProjects(req.user);
+      const p = projects.find((x) => x.name === (req.body || {}).name);
+      if (!p) return res.status(404).json({ error: "项目不存在" });
+      const dir = spaces.openProject(home, p.folder);
+      spaces.saveProjects(req.user.username, ownStored(projects), p.name);
+      return res.json({ ok: true, active: p.name, dir, library_dir: p.library_dir || "" });
+    }
     ensureProjects();
     const p = config.projects.find((x) => x.name === (req.body || {}).name);
     if (!p) return res.status(404).json({ error: "项目不存在" });
@@ -4128,6 +4201,30 @@ app.get("/api/workspace/layout", (req, res) => {
 
 // 改项目：名字之外的东西（指令、挂载的专家/技能/连接器）都能改，改完立即对新任务生效
 app.patch("/api/projects/:name", (req, res) => {
+  if (projectScope(req.user) === "own") {
+    try {
+      const b = req.body || {};
+      const { projects, active } = ownProjects(req.user);
+      const p = projects.find((x) => x.name === req.params.name);
+      if (!p) return res.status(404).json({ error: "项目不存在" });
+      // 弹窗把原来的路径原样带回来不算改；真换成别处的不行
+      const nd = String(b.dir || "").trim();
+      if (nd && !taskDirs.samePlace(nd, p.dir)) return res.status(400).json({ error: OWN_DIR_FIXED });
+      Object.assign(p, projectMeta({ ...p, ...b }));
+      let now = active;
+      const rename = String(b.name || "").trim();
+      if (rename && rename !== p.name) {
+        projectName(rename, projects, p);
+        if (active === p.name) now = rename;
+        renameProject(p, rename); // 文件夹名不跟着改：改了就是搬家，跑着的任务和老对话都指着原来那个
+      }
+      spaces.saveProjects(req.user.username, ownStored(projects), now);
+      const out = ownProjects(req.user);
+      return res.json({ ok: true, project: out.projects.find((x) => x.name === p.name), projects: out.projects, active: out.active });
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
+    }
+  }
   ensureProjects();
   const p = config.projects.find((x) => x.name === req.params.name);
   if (!p) return res.status(404).json({ error: "项目不存在" });
@@ -4154,7 +4251,7 @@ app.patch("/api/projects/:name", (req, res) => {
   if (rename && rename !== p.name) {
     if (config.projects.some((x) => x.name === rename)) return res.status(400).json({ error: "同名项目已存在" });
     if (config.active_project === p.name) config.active_project = rename;
-    p.name = rename;
+    renameProject(p, rename);
   }
   if (config.active_project === p.name) applyProjectSpaces(p);
   saveConfig();
@@ -4163,6 +4260,23 @@ app.patch("/api/projects/:name", (req, res) => {
 
 // 只从列表移除，不删磁盘文件
 app.delete("/api/projects/:name", (req, res) => {
+  if (projectScope(req.user) === "own") {
+    try {
+      const { projects, active } = ownProjects(req.user);
+      if (projects.length <= 1) return res.status(400).json({ error: "至少保留一个项目" });
+      const i = projects.findIndex((p) => p.name === req.params.name);
+      if (i < 0) return res.status(404).json({ error: "项目不存在" });
+      // 默认项目就是工作目录本身：移掉它，摊在工作目录里的老成果就没有哪个项目能打开了
+      if (!projects[i].folder) return res.status(400).json({ error: "这个项目就是你的工作目录本身，不能移除" });
+      projects.splice(i, 1);
+      const now = active === req.params.name ? projects[0].name : active;
+      spaces.saveProjects(req.user.username, ownStored(projects), now);
+      const out = ownProjects(req.user);
+      return res.json({ ok: true, projects: out.projects, active: out.active });
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
+    }
+  }
   ensureProjects();
   if (config.projects.length <= 1) return res.status(400).json({ error: "至少保留一个项目" });
   const i = config.projects.findIndex((p) => p.name === req.params.name);
@@ -4184,9 +4298,9 @@ const LIB_DIR = dataPath("data", "library");
 /**
  * 资料库的根：一人一个。
  *
- * 老库 data/library 原地不动，仍旧是「这台机器的主人」那一份：只有一个账号时就是他，不止一个时只认
- * 老主人（admin.keepsSharedSpace，跟工作目录、项目同一个判据）。别人一人一个 data/library-users/<账号>/，
- * 头一次用的时候才建。以前默认组织的管理员全算主人，几个管理员共用一份，互相看得见对方传的东西。
+ * 老库 data/library 原地不动，归留在共享根上的人：只有一个账号时就是他，不止一个时是默认组织的管理员
+ * （admin.keepsSharedSpace，跟工作目录、项目同一个判据）。别人一人一个 data/library-users/<账号>/，
+ * 头一次用的时候才建。
  *
  * 为什么非改不可：资料库以前是整台机器**共用的一份**，而且 admin.js 那张读表还特地把
  * /api/library 放行了（理由是拦了也白拦，agent 的 library_list 照样念得出来）。两件事叠在一起，
@@ -6570,9 +6684,9 @@ function rememberRoot(dir) {
   let abs;
   try { abs = path.resolve(dir); } catch { return; }
   if (seenRoots.has(abs)) return;
-  // 各账号自己的工作目录 spaces.homes() 里都有，不往这张表里记：人一多，老主人用过的根就被挤出去了
+  // 各账号自己的工作目录（连同里面他们自己建的项目）spaces.homes() 里都有，不往这张表里记：人一多，老主人用过的根就被挤出去了
   const c = taskDirs.canonDir(abs);
-  if (insideDir(c, taskDirs.canonDir(spaces.accountsDir())) || spaces.homes().some((h) => taskDirs.samePlace(h, abs))) return;
+  if (insideDir(c, taskDirs.canonDir(spaces.accountsDir())) || spaces.homes().some((h) => insideDir(c, taskDirs.canonDir(h)))) return;
   seenRoots.add(abs);
   while (seenRoots.size > SEEN_ROOTS_MAX) seenRoots.delete(seenRoots.values().next().value); // Set 按插入序，先进先出
   config.workspace_roots = [...seenRoots];
@@ -6611,7 +6725,8 @@ function sharedRootHere() {
 /**
  * 不止一个账号时，这条请求能在哪些地方找文件。null = 不设限（只有一个账号，个人桌面版一字不改）。
  *
- * 用自己工作目录的账号（admin.keepsSharedSpace 为假）：只认自己那份。以前租户只收紧到组织根，
+ * 用自己工作目录的账号（admin.keepsSharedSpace 为假）：只认自己那份（连同里面他自己建的各个项目，
+ * 切到别的项目也还翻得到老对话的文件）。以前租户只收紧到组织根，
  * 同组织的人照着相对路径请求一次，兜底扫描就从同事的目录里把同名文件翻出来了。
  * 留在共享根上的老主人：别人的工作目录、租户的根不算他的，兜底扫描不进去；他的根要是把别人的包在里面
  * （工作目录设成了整个用户目录），照路径走进去也不行。
@@ -6624,7 +6739,7 @@ function rootFence(req) {
   if (req && fenceOfReq.has(req)) return fenceOfReq.get(req);
   let fence;
   if (!admin.keepsSharedSpace(req && req.user)) {
-    const own = taskDirs.canonDir(getWorkspaceDir());
+    const own = taskDirs.canonDir((req && req.user && spaces.knownRootOf(req.user.username)) || getWorkspaceDir());
     fence = (d) => !!d && insideDir(taskDirs.canonDir(d), own);
   } else {
     const off = othersRoots();
@@ -7543,8 +7658,12 @@ app.post("/api/chat", async (req, res) => {
   const sess = getSession(sessionId);
   if (user && !sess.user) sess.user = user.username;
   // 任务属于哪个项目，以前只记在浏览器里。第一轮就在服务端定死，缓存清了也还分得清组。
-  // 只有拥有全局工作目录的人才有「项目」这个概念，租户端记了反而是假信息。
-  if (!sess.project && ownsGlobalWorkspace(user) && admin.keepsSharedSpace(user)) sess.project = config.active_project || "";
+  // 共享根上的记共享那份清单的当前项目，用自己工作目录的记他自己的；没有项目的人不记，记了反而是假信息
+  if (!sess.project) {
+    const scope = projectScope(user);
+    if (scope === "shared") sess.project = config.active_project || "";
+    else if (scope === "own") { try { sess.project = spaces.projectsOf(user.username).active; } catch {} }
+  }
   // 这一轮走哪条工作线。前端每次都把当前标签带上来，所以用户把一条对话从一个标签拖到另一个
   // 标签底下是允许的（共用同一份文件和历史，本来就是一回事）；没带就按会话上记过的、再按配置回落。
   sess.lane = lanes.normalize(lane) || lanes.laneOf(sess);
@@ -7730,7 +7849,7 @@ app.post("/api/chat", async (req, res) => {
           emit: emitFn,
           mode: modes.agentMode(mode), // goal 是套在 craft 外面的壳，agent 只认识 ask/plan/craft
           user: user ? user.username : undefined,
-          projectContext: (projectContextOf(activeProject()) || "") + goalCtx,
+          projectContext: (projectContextOf(projectFor(user)) || "") + goalCtx,
           stopSignal: runState.ctrl.signal,
           // 底层 CLI 引擎自己的会话 id：存在本项目的会话文件里，桌面端和 openworkbuddy 命令行
           // 打开同一个会话时接着同一根线程跑，不用把历史再贴一遍
@@ -8800,7 +8919,7 @@ function accountedRuntime(baseRuntime, source) {
           ...(reopened.length ? { mediaReopened: reopened } : {}),
           taskLabel: source === "im" ? "IM 对话" : source === "schedule" ? SCHEDULE_LABEL : source,
           baseDir: runDir,
-          projectContext: projectContextOf(activeProject()),
+          projectContext: projectContextOf(projectFor(runner)),
           ...rest,
           ...(want ? { llmOverride: runLLM } : {}),
         }));

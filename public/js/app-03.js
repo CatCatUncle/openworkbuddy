@@ -1593,7 +1593,7 @@ async function renderProjPage() {
         <div class="ops">
           <a class="link" data-act="open" href="#">${p.name === activeProject ? "去新建任务" : "切换到此项目"}</a>
           <a class="link" data-act="edit" href="#">编辑</a>
-          ${projects.length > 1 ? '<a class="link danger" data-act="del" href="#">移除</a>' : ""}
+          ${projRemovable(p) ? '<a class="link danger" data-act="del" href="#">移除</a>' : ""}
         </div>
       </div>`).join("") || '<div class="hub-empty">没有匹配的项目</div>'}
     </div>
@@ -1617,13 +1617,22 @@ async function renderProjPage() {
     if (act === "edit") return openProjEditor(proj);
     if (act === "del") {
       if (!(await askConfirm({ title: `把项目「${name}」从列表移除？`, hint: "只从列表移除，不删硬盘上的文件。", ok: "移除" }))) return;
-      await fetch("/api/projects/" + encodeURIComponent(name), { method: "DELETE" });
+      const r = await fetch("/api/projects/" + encodeURIComponent(name), { method: "DELETE" }).catch(() => null);
+      if (!r || !r.ok) {
+        const d = r ? await r.json().catch(() => ({})) : {};
+        toast(d.error || "没移除成，再试一次", "circle-x");
+      }
       refreshProjects().then(refreshSettingsCache);
       renderProjPage();
       return;
     }
     if (name !== activeProject) {
-      await fetch("/api/projects/switch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+      const r = await fetch("/api/projects/switch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) }).catch(() => null);
+      if (!r || !r.ok) {
+        const d = r ? await r.json().catch(() => ({})) : {};
+        toast(d.error || "没切过去，再试一次", "circle-x");
+        return renderProjPage();
+      }
       activeProject = name;
       refreshSettingsCache();
       fetch("/api/files").then(r => r.json()).then(renderFiles);
@@ -1678,10 +1687,12 @@ async function openProjEditor(proj, tpl) {
     </label>
     <textarea id="pj-ins" rows="5" placeholder="提供当前项目的背景信息和规范，让 AI 的回复更精准、更符合要求。比如：项目目标、团队习惯、风格偏好、输出约束等">${esc((proj || {}).instructions || (tpl || {}).ins || "")}</textarea>
     <label>工作空间目录 <span class="cnt">这个项目的任务产出都落在这儿</span></label>
-    <div class="proj-dir">
+    ${projectsOwn
+      ? `<div class="proj-hint">${proj ? esc(proj.dir || "") : "在你自己的工作目录里单独建一个文件夹"}</div>`
+      : `<div class="proj-dir">
       <input id="pj-dir" placeholder="${proj ? "留空＝不改" : "留空＝自动建一个（藏在应用数据目录里，不好找）"}" value="${esc((proj || {}).dir || "")}">
       <button type="button" class="btn-plain" id="pj-pick">选择文件夹</button>
-    </div>
+    </div>`}
     <label>挂载资料库 <span class="cnt">只让这个项目的 AI 看见其中一块</span></label>
     <select id="pj-lib">
       <option value="">整个资料库（默认）</option>
@@ -1760,7 +1771,8 @@ async function openProjEditor(proj, tpl) {
     copyEl.value = "";
   };
   // 桌面版能开系统的文件夹选择框；Web 版没有这个东西，接口回 501，就老老实实让用户敲路径
-  mBody.querySelector("#pj-pick").onclick = async () => {
+  const pickEl = mBody.querySelector("#pj-pick");
+  if (pickEl) pickEl.onclick = async () => {
     const r = await fetch("/api/pick-folder", { method: "POST" }).then(x => x.json()).catch(() => ({ error: "网络异常" }));
     if (r && r.path) mBody.querySelector("#pj-dir").value = r.path;
     else if (r && r.error) toast(r.error, "circle-x");
@@ -1774,7 +1786,7 @@ async function openProjEditor(proj, tpl) {
     const body = {
       name,
       instructions: mBody.querySelector("#pj-ins").value.trim(),
-      dir: mBody.querySelector("#pj-dir").value.trim(),
+      dir: projectsOwn ? "" : mBody.querySelector("#pj-dir").value.trim(),
       library_dir: mBody.querySelector("#pj-lib").value,
       connectors: [...sel.connectors], experts: [...sel.experts], skills: [...sel.skills],
     };

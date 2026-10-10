@@ -14,6 +14,8 @@
  *   ④ 删：只删自己根里的；..、绝对路径、别人的、应用数据、资料库一律不删；这个根里有任务在跑先不删；
  *      别人的任务在跑不挡我；删了记审计
  *   ⑤ 默认组织的管理员一切照旧；只有一个账号时一切照旧，不建 accounts/、不记分配表
+ *   ⑥ 成员、分公司的人也能建多个项目：一个项目一个文件夹，全在自己的工作目录里，不能另选文件夹；
+ *      共享那份项目列表、共享根一个字不动；项目文件夹被换成软链接也不跟过去
  *
  * 客户原话：「成果文件夹现在是组织间隔离，希望做到账号间隔离」「资料库希望也做成账号隔离的，
  * 并且在本地产物下可以进行移除」。
@@ -83,6 +85,7 @@ let READS = [];
 /** @type {Record<string, string>} */
 const toolOut = {};
 let holding = false;
+let lastAsk = ""; // 最近一趟带工具的请求里模型看到的全部文字：查项目指令有没有带进去
 /** @type {null | (() => void)} */
 let releaseHold = null;
 const llm = http.createServer((req, res) => {
@@ -98,6 +101,7 @@ const llm = http.createServer((req, res) => {
     const msgs = Array.isArray(body.messages) ? body.messages : [];
     if (!Array.isArray(body.tools) || !body.tools.length) return say("标题");
     const text = (m) => (typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.map((p) => (p && p.text) || "").join("") : "");
+    lastAsk = msgs.map(text).join("\n");
     if (msgs.some((m) => m.role === "tool")) {
       for (const m of msgs) if (m.role === "tool") toolOut[m.tool_call_id] = text(m);
       return say("看完了");
@@ -380,9 +384,103 @@ function call(port, token, method, p, body) {
     ok(logged, "审计里记着谁删了什么（删文件夹的还记着几个文件）");
   });
 
-  await section("【10】项目只归管理员：成员开不了", async () => {
-    const r = await A("POST", "/api/projects", { name: "我的项目" });
-    eq(r.code, 403, "amy 新建项目 → 403");
+  await section("【10】成员、分公司的人也能建多个项目：一个项目一个文件夹，全在自己的工作目录里", async () => {
+    const shared0 = JSON.stringify((await K("GET", "/api/projects")).json);
+    const ws0 = (await K("GET", "/api/settings")).json.workspace_dir;
+    const mine = async (f) => (((await f("GET", "/api/projects")).json || {}).projects || []).map((/** @type {any} */ p) => p.name);
+    const wsOf = async (f) => path.resolve(String(((await f("GET", "/api/settings")).json || {}).workspace_dir));
+
+    const g0 = (await A("GET", "/api/projects")).json;
+    ok(g0 && g0.own === true && g0.locked === false && g0.active === "默认项目" && g0.projects.length === 1 && path.resolve(g0.projects[0].dir) === ROOT.amy,
+      "amy 一开始只有一个默认项目，就是她的工作目录（以前的成果都在这儿）", g0);
+
+    const PA = path.join(ROOT.amy, "projects", "客户A");
+    const mk = await A("POST", "/api/projects", { name: "客户A", instructions: "PROJ-INS 只写中文" });
+    ok(mk.code === 200 && mk.json && mk.json.ok && mk.json.active === "客户A", "amy 新建「客户A」，建完就切过去", mk.json);
+    ok(fs.existsSync(PA) && fs.statSync(PA).isDirectory(), "  └ 文件夹建在她自己的工作目录里：projects/客户A");
+    eq((await mine(A)).join(), "默认项目,客户A", "amy 的项目列表：默认项目、客户A");
+    eq(await wsOf(A), PA, "amy 现在的工作目录就是这个项目的文件夹");
+    eq(JSON.stringify((await K("GET", "/api/projects")).json), shared0, "★共享那份项目列表一个字没变");
+    eq((await K("GET", "/api/settings")).json.workspace_dir, ws0, "★共享根没被挪");
+    const spaces = JSON.parse(fs.readFileSync(path.join(HOME, "data", "account-spaces.json"), "utf8"));
+    ok(spaces.users.amy && Array.isArray(spaces.users.amy.projects) && spaces.users.amy.projects.length === 2, "  └ 清单记在她自己那条分配记录里", spaces.users.amy);
+
+    // 别人看不到、动不了她的项目
+    eq((await mine(B)).join(), "默认项目", "bob 的列表里只有他自己的默认项目");
+    eq((await B("POST", "/api/projects/switch", { name: "客户A" })).code, 404, "bob 切到「客户A」→ 404（不是他的）");
+    eq((await B("PATCH", "/api/projects/" + encodeURIComponent("客户A"), { instructions: "x" })).code, 404, "bob 改「客户A」→ 404");
+    const bd = await B("DELETE", "/api/projects/" + encodeURIComponent("客户A"));
+    ok(bd.code === 400 || bd.code === 404, "bob 删「客户A」→ 删不了", bd.code);
+    ok((await mine(A)).includes("客户A"), "  └ amy 的还在");
+
+    // 不能另选文件夹：服务器上的路径不归她
+    const pick = await A("POST", "/api/projects", { name: "客户B", dir: SHARED });
+    ok(pick.code === 400 && /不能另选文件夹/.test(String(pick.json && pick.json.error)), "amy 新建时自己指定文件夹（指到共享根）→ 400", pick.json);
+    ok(!(await mine(A)).includes("客户B"), "  └ 没建出来");
+    eq((await A("POST", "/api/projects", { name: "客户A" })).code, 400, "重名 → 400");
+    eq((await A("PATCH", "/api/projects/" + encodeURIComponent("客户A"), { dir: ROOT.bob })).code, 400, "改项目时把文件夹换成 bob 的 → 400");
+    const same = await A("PATCH", "/api/projects/" + encodeURIComponent("客户A"), { dir: PA, instructions: "PROJ-INS 只写中文" });
+    ok(same.code === 200 && same.json && same.json.ok, "★反向对照★ 弹窗原样带回原来的文件夹：照常保存", same.json);
+
+    // 在项目里跑一趟：产出落在项目文件夹里，项目指令带进去，别人的照样读不到
+    READS = [
+      { id: "p_write", name: "write_file", args: { path: "项目产出.md", content: "PROJ-MADE" } },
+      { id: "p_keeper", name: "read_file", args: { path: FILE.keeper } },
+      { id: "p_bob", name: "read_file", args: { path: FILE.bob } },
+    ];
+    const go = await A("POST", "/api/chat", { sessionId: "s_amy_proj", message: "【读】在客户A里写个东西", mode: "craft", detach: true });
+    ok(go.code === 200 && go.json && go.json.accepted, "amy 在「客户A」里发起一条对话", go.body.slice(0, 200));
+    ok(await waitFor(async () => "p_write" in toolOut && !((await A("GET", "/api/chat/running")).json || []).includes("s_amy_proj"), 60000, 200), "那条对话跑完了", toolOut);
+    const made = namesOf(await A("GET", "/api/files")).find((n) => n.endsWith("项目产出.md")) || "";
+    ok(!!made && made.includes("/") && fs.existsSync(path.join(PA, made)), "AI 写的文件落在「客户A」的文件夹里，每个对话一格", made);
+    ok(lastAsk.includes("PROJ-INS"), "这个项目的指令带进了 AI 看到的提示词");
+    for (const [id, secret] of [["p_keeper", "KEEPER-SECRET"], ["p_bob", "BOB-SECRET"]]) {
+      ok(id in toolOut && !String(toolOut[id]).includes(secret), `在项目里读 ${secret}：读不到`, toolOut[id]);
+    }
+
+    const back = await A("POST", "/api/projects/switch", { name: "默认项目" });
+    ok(back.code === 200 && back.json && path.resolve(String(back.json.dir)) === ROOT.amy, "amy 切回默认项目", back.json);
+    eq(await wsOf(A), ROOT.amy, "  └ 工作目录回到她的工作目录本身");
+    const old = await A("GET", "/api/files/download/" + enc(made) + "?sid=s_amy_proj");
+    ok(old.code === 200 && old.body === "PROJ-MADE", "在默认项目里点开「客户A」那条老对话的成果 → 打得开", { code: old.code, body: old.body.slice(0, 80) });
+
+    await A("POST", "/api/projects/switch", { name: "客户A" });
+    const rn = await A("PATCH", "/api/projects/" + encodeURIComponent("客户A"), { name: "客户甲" });
+    ok(rn.code === 200 && rn.json && rn.json.active === "客户甲", "改名「客户甲」：当前项目跟着改名", rn.json);
+    ok(rn.json && rn.json.project && path.resolve(String(rn.json.project.dir)) === PA, "  └ 文件夹不跟着改（跑过的对话都指着它）", rn.json && rn.json.project);
+    ok(rn.json && rn.json.project && (rn.json.project.old_names || [])[0] === "客户A", "  └ 旧名字记下了：老对话记的是「客户A」，侧栏靠它认回来", rn.json && rn.json.project);
+    const keepHome = await A("DELETE", "/api/projects/" + encodeURIComponent("默认项目"));
+    ok(keepHome.code === 400 && /工作目录/.test(String(keepHome.json && keepHome.json.error)), "默认项目就是她的工作目录本身：还有别的项目也不让移除", keepHome.json);
+    const del = await A("DELETE", "/api/projects/" + encodeURIComponent("客户甲"));
+    ok(del.code === 200 && del.json && del.json.active === "默认项目" && del.json.projects.length === 1, "移除当前项目：回到默认项目", del.json);
+    ok(fs.existsSync(path.join(PA, made)), "  └ 只从列表移除，文件夹和成果都还在");
+    eq((await A("DELETE", "/api/projects/" + encodeURIComponent("默认项目"))).code, 400, "只剩一个时不让移除");
+
+    // 工作目录里的东西 AI 改得动：项目文件夹被换成指到共享根的软链接，也别把她带过去
+    const mk2 = await A("POST", "/api/projects", { name: "换过的" });
+    ok(mk2.code === 200, "amy 再建一个「换过的」", mk2.json);
+    const PB = path.join(ROOT.amy, "projects", "换过的");
+    eq(await wsOf(A), PB, "对照：这会儿工作目录是它的文件夹");
+    fs.rmSync(PB, { recursive: true, force: true });
+    let linked = false;
+    try { fs.symlinkSync(SHARED, PB, process.platform === "win32" ? "junction" : "dir"); linked = true; } catch (e) { console.log("  （这台机器建不了软链接，跳过这一段）"); }
+    if (linked) {
+      eq(await wsOf(A), ROOT.amy, "文件夹被换成软链接：这一趟退回她的工作目录本身，不跟过去");
+      ok(!namesOf(await A("GET", "/api/files")).some((n) => n.endsWith("老主人.md")), "  └ 文件面板里没有共享根的东西");
+      const sw = await A("POST", "/api/projects/switch", { name: "换过的" });
+      ok(sw.code === 400, "  └ 再切过去 → 400", sw.json);
+      fs.unlinkSync(PB);
+    }
+    eq((await A("DELETE", "/api/projects/" + encodeURIComponent("换过的"))).code, 200, "移除「换过的」");
+
+    // 分公司的人也一样
+    const fp = await F("POST", "/api/projects", { name: "分公司项目" });
+    ok(fp.code === 200 && fp.json && fp.json.active === "分公司项目", "分公司的 fen 也能建项目", fp.json);
+    eq(await wsOf(F), path.join(ROOT.fen, "projects", "分公司项目"), "  └ 建在 fen 自己的工作目录里，现在就在那儿");
+    ok(!(await mine(A)).includes("分公司项目"), "amy 的列表里没有 fen 的项目");
+    eq((await F("POST", "/api/projects/switch", { name: "默认项目" })).code, 200, "fen 切回默认项目");
+    eq(await wsOf(F), ROOT.fen, "  └ 回到 fen 的工作目录本身");
+    eq(JSON.stringify((await K("GET", "/api/projects")).json), shared0, "★折腾完，共享那份项目列表还是一个字没变");
   });
 
   await section("【10.5】默认组织里不是老主人的管理员：跟老主人一样留在共享那份上，项目照建照切", async () => {
@@ -405,7 +503,13 @@ function call(port, token, method, p, body) {
     const back = await D("POST", "/api/projects/switch", { name: "默认项目" });
     ok(back.code === 200 && back.json && back.json.ok, "adm 切回默认项目", back.json);
     eq(path.resolve(String((await K("GET", "/api/settings")).json.workspace_dir)), SHARED, "  └ 切回来了，共享根原样");
-    eq((await A("POST", "/api/projects", { name: "成员的项目" })).code, 403, "成员 amy 还是建不了项目（跟 10-09 之前一样）");
+    const rn = await D("PATCH", "/api/projects/" + encodeURIComponent("管理员的项目"), { name: "管理员项目二" });
+    ok(rn.code === 200 && rn.json && rn.json.project && (rn.json.project.old_names || [])[0] === "管理员的项目", "adm 改项目名：旧名字一样记下", rn.json && rn.json.project);
+    const am = await A("POST", "/api/projects", { name: "成员的项目" });
+    ok(am.code === 200 && am.json && am.json.ok, "成员 amy 建项目：建在她自己那份清单里", am.json);
+    const after = (((await K("GET", "/api/projects")).json || {}).projects || []).map((/** @type {any} */ p) => p.name);
+    ok(!after.includes("成员的项目"), "  └ 共享那份列表里没有它", after);
+    eq((await A("DELETE", "/api/projects/" + encodeURIComponent("成员的项目"))).code, 200, "  └ 移掉，后面照旧");
   });
 
   // ---------- 只有一个账号的机器：一切照旧 ----------

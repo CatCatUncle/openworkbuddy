@@ -996,10 +996,18 @@ function projectSessions() {
   // 工程线不按项目过滤：终端里 `openworkbuddy` 起的任务没有「项目」这个概念（命令行不问这个），
   // 一过滤就整条线空着，看起来像功能坏了。这条线本来就是「这台机器的终端干过的活儿」。
   if (activeLane === "cli") return sessions.filter(s => laneOfSession(s) === "cli");
-  const inProject = projectsLocked ? sessions : sessions.filter(s => (s.project || "默认项目") === activeProject);
+  const inProject = projectsLocked ? sessions : sessions.filter(s => projectOfSession(s) === activeProject);
   // 再按工作线分栏：办公那条线的历史不该混进工程标签里（反过来也一样）。
   // 老会话没记过 lane，按服务端算的回落值归位——不会整批「消失」到另一个标签底下
   return inProject.filter(s => laneOfSession(s) === activeLane);
+}
+/** 这条任务算哪个项目的。记的是建任务那会儿的项目名：项目后来改了名，按 old_names 认回来；
+ *  项目已经从列表移除、名字谁也对不上的，归到第一个项目——不能就这么从侧栏消失 */
+function projectOfSession(s) {
+  const name = s.project || "默认项目";
+  if (!projects.length || projects.some(p => p.name === name)) return name;
+  const renamed = projects.find(p => Array.isArray(p.old_names) && p.old_names.includes(name));
+  return renamed ? renamed.name : projects[0].name;
 }
 /* 侧栏历史的检索。任务攒到几十条的时候翻列表不如打字——标题栏那个放大镜展开的就是它。
    只过滤显示，不动 sessions 本身，所以清空输入框立刻全回来。
@@ -1533,35 +1541,50 @@ async function refreshProjects() {
     const data = await fetch("/api/projects").then(r => r.json());
     projects = data.projects || [];
     projectsLocked = !!data.locked;
+    projectsOwn = !!data.own;
     activeProject = data.active || (projectsLocked ? "" : "默认项目");
   } catch {}
   renderProjects();
   renderHistory();
 }
+/** 能不能从列表移除：至少得留一个；用自己工作目录的人，工作目录本身那个项目（folder 为空）移不掉 */
+function projRemovable(p) {
+  return projects.length > 1 && !(projectsOwn && !p.folder);
+}
 function renderProjects() {
   const box = document.getElementById("proj-list");
   if (!box) return;
-  // 租户成员没有项目可管（后端对 /api/projects 的写操作一律 403），侧栏连「项目」这一栏都不该出现，
-  // 更不该出现一个点不动的 tab。用 style.display 而不是 hidden：.side-nav .item 自带 display，hidden 压不住。
+  // 服务端说 locked 的没有项目可管（留在共享根上却不是管理员，老账本才有；写操作一律 403），
+  // 侧栏连「项目」这一栏都不该出现，更不该出现一个点不动的 tab。用 style.display 而不是 hidden：.side-nav .item 自带 display，hidden 压不住。
   const head = document.querySelector('.side-nav [data-view="proj"]');
   if (head) head.style.display = projectsLocked ? "none" : "";
   box.style.display = projectsLocked ? "none" : "";
   if (projectsLocked) { box.innerHTML = ""; return; }
   box.innerHTML = projects.map(p =>
-    `<div class="proj-item ${p.name === activeProject ? "active" : ""}" data-name="${esc(p.name)}" title="${esc(p.dir)}">${ic("folder-open")}<span class="pn">${esc(p.name)}</span>${projects.length > 1 ? `<button type="button" class="del" title="移除项目（不删文件）" aria-label="移除项目（不删文件）">${ic("x")}</button>` : ""}</div>`).join("");
+    `<div class="proj-item ${p.name === activeProject ? "active" : ""}" data-name="${esc(p.name)}" title="${esc(p.dir)}">${ic("folder-open")}<span class="pn">${esc(p.name)}</span>${projRemovable(p) ? `<button type="button" class="del" title="移除项目（不删文件）" aria-label="移除项目（不删文件）">${ic("x")}</button>` : ""}</div>`).join("");
   box.querySelectorAll(".proj-item").forEach(el => el.onclick = async (e) => {
     const name = el.dataset.name;
     if (e.target.closest(".del")) {
       if (!(await askConfirm({ title: `把项目「${name}」从列表移除？`, hint: "只从列表移除，不删硬盘上的文件。", ok: "移除" }))) return;
-      await fetch("/api/projects/" + encodeURIComponent(name), { method: "DELETE" });
+      const r = await fetch("/api/projects/" + encodeURIComponent(name), { method: "DELETE" }).catch(() => null);
+      if (!r || !r.ok) {
+        const d = r ? await r.json().catch(() => ({})) : {};
+        toast(d.error || "没移除成，再试一次", "circle-x");
+      }
       refreshProjects().then(refreshSettingsCache);
       return;
     }
     if (name === activeProject) return;
-    await fetch("/api/projects/switch", {
+    const r = await fetch("/api/projects/switch", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name }),
-    });
+    }).catch(() => null);
+    // 没切成就别当切过去了：界面换了名字，任务却还落在原来那个项目里
+    if (!r || !r.ok) {
+      const d = r ? await r.json().catch(() => ({})) : {};
+      toast(d.error || "没切过去，再试一次", "circle-x");
+      return refreshProjects();
+    }
     activeProject = name;
     document.getElementById("new-task").click();
     renderProjects();

@@ -48,7 +48,8 @@ function samePlace(a, b) {
 }
 
 /**
- * 是不是应用自己建的根：默认工作空间、projects/ 下一层、tenants/ 下一层、分给各账号的工作目录。这几个固定按对话分，不给改。
+ * 是不是应用自己建的根：默认工作空间、projects/ 下一层、tenants/ 下一层、分给各账号的工作目录
+ * 和他们在里面建的项目（<工作目录>/projects/ 下一层，见 spaces.js）。这几个固定按对话分，不给改。
  * @param {string} dir
  * @param {{ workspace: string, projects?: string, tenants?: string, homes?: string[] }} anchors
  *   workspace = 默认工作空间；projects / tenants = 应用替人建目录的那两个父目录（其下一层才算）；
@@ -59,8 +60,8 @@ function appRoot(dir, anchors) {
   if (!dir || !anchors || !anchors.workspace) return false;
   const d = canonDir(dir);
   if (d === canonDir(anchors.workspace)) return true;
-  if ((anchors.homes || []).some((h) => !!h && d === canonDir(h))) return true;
   const parent = path.dirname(d);
+  if ((anchors.homes || []).some((h) => !!h && (d === canonDir(h) || parent === canonDir(path.join(h, "projects"))))) return true;
   return [anchors.projects, anchors.tenants].some((p) => !!p && parent === canonDir(p));
 }
 
