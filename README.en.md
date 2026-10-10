@@ -282,6 +282,9 @@ The diagram doubles as a reading order: start at `server.js`, then see how `src/
 
 ## What's new
 
+- **Oct 10** Members, auditors and branch-org accounts can create multiple projects too: each gets its own folder inside their own working folder, and earlier outputs stay in the default project
+- **Oct 10** Drag from a canvas card's port onto another card to link them; cards that can't take the link turn red and say why. "+" adds a card that's already linked, and titles and prompts can be edited right on the card
+- **Oct 10** Channels can pick which API images, video and voice use, relays included; Test on Qwen image models no longer shows a false 400, and Model Studio image calls switch sync/async once when refused
 - **Oct 10** Turn outputs are ranked by importance: finished deliverables come first and the final one opens in the preview by itself; deleted files are marked "Deleted" and sink, and opening a file checks it's still there
 - **Oct 10** The input box grows with your text up to about a third of the window; an edge fades when there's more text out of view, and the scroll buttons no longer cover what you're typing
 - **Oct 10** With more than one account, members and branch-org accounts each get their own working folder, outputs and library, while admins keep the original shared one; files in Local output can now be deleted, though not while a task is running
