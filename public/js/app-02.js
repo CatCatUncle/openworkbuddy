@@ -1444,7 +1444,6 @@ function histMenuHtml(s, view) {
   const st = sessionAttn.get(s.id);
   return [
     runningSessions.has(s.id) ? ["stop", "square", histStopping.has(s.id) ? "正在停…" : "停下这个任务", ""] : null,
-    ["win", "app-window", "在新窗口打开", ""],
     ["pin", "pin", s.pinned_at ? "取消置顶" : "置顶", "P"],
     ["unread", "circle-dot", st && st.unseen ? "标为已读" : "标为未读", "U"],
     ["rename", "pencil", "重命名", "R"],
@@ -1588,16 +1587,11 @@ function onHistMenuClick(e) {
   // 先收菜单、焦点回到「⋯」，再弹改名框 / 确认框：框收起来时还焦点，还的是弹出那一刻的焦点
   closeHistMenu(true);
   if (act === "stop") stopRowRun(sid);
-  else if (act === "win") openSessionWindow(sid);
   else if (act === "pin") togglePin(sid, ".hmore");
   else if (act === "unread") toggleUnread(sid);
   else if (act === "rename") renameSessionRow(sid);
   else if (act === "to") { if (b.getAttribute("aria-checked") !== "true") moveSessionRow(sid, b.dataset.name); }
   else if (act === "del") deleteSessionRow(sid);
-}
-/** 新窗口里开这一条：桌面版开一个应用里的窗口（同一份登录），网页版开一个新标签页。地址上只带会话号 */
-function openSessionWindow(sid) {
-  window.open(location.pathname + "?s=" + encodeURIComponent(sid), "_blank", "noopener");
 }
 /**
  * 标为未读 / 已读。人亲手标的未读记在侧栏那份本地列表上（unread），刷新页面也还亮着；

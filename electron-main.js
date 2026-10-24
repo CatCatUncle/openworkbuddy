@@ -10,6 +10,7 @@ const fs = require("fs");
 const os = require("os");
 const { dataPath, seedDataDir, resolvePort } = require("./src/platform/paths");
 const { throttleWhenAway } = require("./src/desktop/win-away");
+const { workbenchLink } = require("./src/desktop/window-links");
 
 // ---------- 桌面壳这一层的文案 ----------
 /**
@@ -720,7 +721,22 @@ app.whenReady().then(async () => {
   const sameOrigin = (u) => {
     try { return new URL(u).origin === `http://127.0.0.1:${PORT}`; } catch { return false; }
   };
+  const showWorkbench = (url) => {
+    const target = workbenchLink(url, `http://127.0.0.1:${PORT}`);
+    if (!target) return false;
+    if (win && !win.isDestroyed()) {
+      if (win.isMinimized()) win.restore();
+      win.show();
+      win.focus();
+      // 只切任务，不重载页面：保留未发送的输入和正在运行的任务连接。
+      if (target.sessionId) win.webContents.executeJavaScript(
+        `window.dispatchEvent(new CustomEvent("owb-open-session", { detail: ${JSON.stringify(target.sessionId)} }));`, false
+      ).catch(() => bootLog("▲ 任务链接未能交回主窗口"));
+    }
+    return true;
+  };
   const openHandler = ({ url }) => {
+    if (showWorkbench(url)) return { action: "deny" };
     if (sameOrigin(url)) {
       // 同一个 session，cookie 跟着走；父窗口关了它还能留着，所以不设 parent
       const child = new BrowserWindow({
@@ -729,6 +745,10 @@ app.whenReady().then(async () => {
       });
       throttleWhenAway(child); // 子窗口收起来一样降频
       child.webContents.setWindowOpenHandler(openHandler); // 子窗口里再点链接，同一套规矩
+      // 预览中的链接和重定向也不能把预览窗口变成第二个工作台。
+      for (const event of ["will-navigate", "will-redirect"]) {
+        child.webContents.on(event, (e, nextURL) => { if (showWorkbench(nextURL)) e.preventDefault(); });
+      }
       attachContextMenu(child.webContents);
       // Windows：主题换了子窗口底色跟着换，缩放 / 开发者工具的按键跟主窗口一样（见 attachShellKeys）
       if (process.platform === "win32") {

@@ -57,6 +57,53 @@ const M = new Function("path", "bootLog", NAMES.map(cut).join("\n") + `\nreturn 
 const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 
 (async () => {
+  await section("【窗口】任务链接复用工作台，成果预览独立打开", async () => {
+    const { workbenchLink } = require("../src/desktop/window-links");
+    const origin = "http://127.0.0.1:3800";
+    for (const pathname of ["/", "/index.html", "/%69ndex.html", "/%2f", "//"]) {
+      eq(workbenchLink(origin + pathname + "?s=abc_1", origin)?.sessionId, "abc_1", "工作台路径复用主窗口：" + pathname);
+    }
+    for (const url of [origin + "/api/files/view/report.html", origin + "/shared.html", "https://example.com/?s=abc_1", "http://127.0.0.1:3801/?s=abc_1", "file:///index.html", "bad url"]) {
+      eq(workbenchLink(url, origin), null, "文件、不同来源和无效地址不冒充工作台：" + url);
+    }
+    eq(workbenchLink(origin + "/?s=%3Cscript%3E", origin)?.sessionId, "", "无效任务号不进入页面脚本");
+    const a = EM.indexOf("  const sameOrigin = (u) => {");
+    const b = EM.indexOf("  win.webContents.setWindowOpenHandler(openHandler);", a);
+    ok(a >= 0 && b > a, "使用真实的窗口打开逻辑");
+    const calls = { focus: 0, show: 0, restore: 0, scripts: [], children: [], external: [] };
+    const win = { isDestroyed: () => false, isMinimized: () => true, restore: () => calls.restore++, show: () => calls.show++, focus: () => calls.focus++, webContents: { executeJavaScript: (code) => { calls.scripts.push(code); return Promise.resolve(); } } };
+    class Child extends EventEmitter {
+      constructor() { super(); this.webContents = new EventEmitter(); this.webContents.setWindowOpenHandler = (fn) => { this.openHandler = fn; }; calls.children.push(this); }
+      loadURL(url) { this.url = url; }
+    }
+    const open = new Function("workbenchLink", "PORT", "win", "BrowserWindow", "themeBg", "SHELL_THEME", "nativeTheme", "process", "throttleWhenAway", "attachContextMenu", "attachShellKeys", "shell", "bootLog", EM.slice(a, b) + "\nreturn openHandler;")(
+      workbenchLink, 3800, win, Child, () => "white", {}, {}, { platform: "darwin" }, () => {}, () => {}, () => {}, { openExternal: (url) => calls.external.push(url) }, () => {});
+    eq(open({ url: origin + "/?s=abc_1" }).action, "deny", "任务链接阻止创建窗口");
+    eq(calls.children.length, 0, "任务链接没有创建工作台副本");
+    ok(calls.focus === 1 && calls.restore === 1 && calls.show === 1, "恢复并聚焦主窗口");
+    ok(calls.scripts[0].includes('"owb-open-session"') && calls.scripts[0].includes('"abc_1"') && !calls.scripts[0].includes("loadURL"), "任务号交给页面切换，主窗口不重载");
+    open({ url: origin + "/" });
+    eq(calls.scripts.length, 1, "主页链接只聚焦，不切换任务");
+    open({ url: origin + "/api/files/view/report.html" });
+    eq(calls.children.length, 1, "成果文件仍能创建独立预览");
+    const child = calls.children[0];
+    eq(child.url, origin + "/api/files/view/report.html", "预览打开准确的文件地址");
+    for (const event of ["will-navigate", "will-redirect"]) {
+      let prevented = false;
+      child.webContents.emit(event, { preventDefault: () => { prevented = true; } }, origin + "/?s=xyz");
+      ok(prevented, "预览不能通过 " + event + " 变成第二个工作台");
+    }
+    let prevented = false;
+    child.webContents.emit("will-navigate", { preventDefault: () => { prevented = true; } }, origin + "/api/files/view/other.html");
+    ok(!prevented, "预览里的文件链接保持可用");
+    child.openHandler({ url: origin + "/?s=xyz" });
+    eq(calls.children.length, 1, "预览弹出的任务链接仍复用主窗口");
+    open({ url: "https://example.com/" });
+    eq(calls.external[0], "https://example.com/", "外部网站交给系统浏览器");
+    open({ url: "file:///private.txt" });
+    eq(calls.external.length, 1, "文件协议没有交给外部程序");
+  });
+
   await section("【1】默认菜单：Windows 上拿掉，按键由主进程接", () => {
     const fakeMenu = () => { const calls = []; return { calls, setApplicationMenu: (m) => calls.push(m) }; };
     const w = fakeMenu();

@@ -266,6 +266,8 @@ Entry points are `server.js`, `cli.js` and `src/im/`; the Agent is in `src/agent
 
 ## What's new
 
+- **Oct 24** Keep task navigation in one desktop workbench. Remove the session menu’s new-window action, reuse the main window for task links and preview redirects, and retain separate file previews.
+
 - **Oct 23** Remove three dependency cycles; share workspace context across tools and connectors, and avoid loading the tool executor just to locate connector files
 
 - **Oct 23** Edit text models directly; disconnect the local Feishu user identity; prevent scheduled Feishu results from being sent again through another bot after a delivery receipt

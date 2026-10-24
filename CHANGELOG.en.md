@@ -9,6 +9,8 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 ## 2026
 
+- **Oct 24** Keep task navigation in one desktop workbench. Remove the session menu’s new-window action, reuse the main window for task links and preview redirects, and retain separate file previews.
+
 - **Oct 23** Remove three dependency cycles; share workspace context across tools and connectors, and avoid loading the tool executor just to locate connector files. Skills and plugins share a pure metadata parser while keeping the existing skill export. Admin routes inject live seat counts into license facts; dependency-cycle exceptions are locked at zero. Regression checks cover concurrent media isolation, nested context restoration, independent loading and account counts.
 
 - **Oct 23** Open text-model edit/duplicate forms in their current overview, handle legacy models without channels, and preserve drafts during catalog refresh. Add confirmed local Feishu logout with pending sign-in cleanup and explicit server-authorization limits. Track scheduled Feishu delivery receipts in built-in tools and relayed CLI calls to prevent another bot/profile from resending the result; uncertain outcomes require verification and each scheduled run has independent state.

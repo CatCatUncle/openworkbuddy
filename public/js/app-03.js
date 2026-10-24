@@ -540,7 +540,16 @@ async function initAuth() {
   await openLinkedSession();
   maybeOnboard();
 }
-/** 行菜单「在新窗口打开」带过来的 ?s=会话号：侧栏并好了就打开它，随即从地址栏擦掉，刷新不再跳一次 */
+// 桌面壳把任务链接交回已有窗口，不刷新整个工作台。
+window.addEventListener("owb-open-session", async (event) => {
+  const sid = typeof event.detail === "string" ? event.detail : "";
+  if (!/^[\w-]{1,80}$/.test(sid) || sessionId === sid) return;
+  if (!sessions.some((s) => s.id === sid)) await mergeServerSessions();
+  if (sessionId === sid) return;
+  if (!sessions.some((s) => s.id === sid)) { toast("这个任务已经不在了", "circle-x"); return; }
+  await openSession(sid);
+});
+/** 兼容任务链接里的 ?s=会话号：打开后擦掉参数，刷新不再跳一次。 */
 async function openLinkedSession() {
   let sid = "";
   try {

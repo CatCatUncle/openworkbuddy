@@ -4176,7 +4176,7 @@ function testHistI18n() {
   for (const frag of ["\"已置顶\"", "`${d.getMonth() + 1}月${d.getDate()}日`", "产出过 ${s.files} 个文件", "`${on ? \"没置顶上\" : \"没取消掉\"}：${err}`"]) {
     ok("源码里真有：" + frag.slice(0, 18), app02.includes(frag), "app-02.js 里找不到 " + frag + "——措辞改过？词典跟着改");
   }
-  for (const frag of ['title="更多操作"', "`更多操作「${t}」`", "}」的操作`", '"在新窗口打开"', '"标为未读"', '"标为已读"', '"重命名"', '"移到项目…"', ">移到哪个项目<",
+  for (const frag of ['title="更多操作"', "`更多操作「${t}」`", "}」的操作`", '"标为未读"', '"标为已读"', '"重命名"', '"移到项目…"', ">移到哪个项目<",
     'title: "重命名任务"', 'ok: "保存"', "`最多 ${HIST_TITLE_MAX} 个字`", "`重命名失败：${err}`", "`没挪成：${err}`", "`已移到「${project}」，之前的文件还在原处`",
     '"<span>拖到这里置顶</span>"', 'toast("下回直接把任务拖进「已置顶」也行"']) {
     ok("源码里真有：" + frag.slice(0, 18), app02.includes(frag), "app-02.js 里找不到 " + frag + "——措辞改过？词典跟着改");
@@ -14812,7 +14812,7 @@ const HMENU_CHECKS = `
   await tap("b");
   ok("点「⋯」弹出菜单，挂在 body 上", !!menu() && menu().parentElement === document.body && menu().getAttribute("role") === "menu");
   ok("菜单念得出是哪条的", !!menu() && menu().getAttribute("aria-label") === "「整理发票」的操作", menu() ? menu().getAttribute("aria-label") : "");
-  ok("六样按顺序：新窗口 / 置顶 / 未读 / 改名 / 移到项目 / 删除", labels() === "在新窗口打开|置顶|标为未读|重命名|移到项目…|删除", labels());
+  ok("五样按顺序：置顶 / 未读 / 改名 / 移到项目 / 删除", labels() === "置顶|标为未读|重命名|移到项目…|删除", labels());
   ok("五样带着自己的字母键", items().map((b) => b.getAttribute("aria-keyshortcuts") || "").join("") === "PURMD" && items().filter((b) => b.querySelector("kbd")).length === 5);
   ok("删除标成危险色", !!act("del") && act("del").classList.contains("danger") && !!act("rename") && getComputedStyle(act("del")).color !== getComputedStyle(act("rename")).color);
   ok("「⋯」标上开着", !!B && B.getAttribute("aria-expanded") === "true" && B.classList.contains("on"));
@@ -14859,13 +14859,11 @@ const HMENU_CHECKS = `
   const mk = key("k", { metaKey: true });
   ok("带 ⌘ 的组合键收起菜单、照常传给全局快捷键", !menu() && leaked.join() === "k" && !mk.defaultPrevented, leaked.join());
 
-  // ⑤ 在新窗口打开
+  // 会话只在当前工作台切换，菜单不再创建完整工作台副本。
   await tap("b");
-  if (act("win")) act("win").click();
-  await flush();
-  ok("在新窗口打开：开的是这一条的地址、新窗口、不带 opener", __WIN.length === 1 && __WIN[0][0] === location.pathname + "?s=b" && __WIN[0][1] === "_blank" && __WIN[0][2] === "noopener",
-    JSON.stringify(__WIN).slice(-120));
-  ok("点完一项菜单就收", !menu());
+  ok("会话菜单没有新窗口入口", !act("win") && __WIN.length === 0);
+  key("Escape");
+  ok("收起菜单后没有创建窗口", !menu() && __WIN.length === 0);
 
   // ⑥ 置顶（字母键）
   await tap("b"); posts.length = 0;
@@ -14955,7 +14953,7 @@ const HMENU_CHECKS = `
   ok("没挪成照实说原因", __TOASTS.join() === "没挪成：没有这个项目", __TOASTS.join(" ／ "));
   projects = [{ name: "默认项目" }];
   await tap("b");
-  ok("只有一个项目：菜单里没有「移到项目…」", !act("move") && labels() === "在新窗口打开|置顶|标为未读|重命名|删除", labels());
+  ok("只有一个项目：菜单里没有「移到项目…」", !act("move") && labels() === "置顶|标为未读|重命名|删除", labels());
   key("m"); await flush();
   ok("  └ 按 M 也不进", !act("back") && !!menu());
   key("Escape");
