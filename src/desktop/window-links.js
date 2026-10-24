@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 OpenWorkBuddy Contributors
 "use strict";
 
 /** 工作台链接交回主窗口；成果预览和外部链接仍走各自的打开方式。 */
