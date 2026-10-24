@@ -73,8 +73,7 @@ const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
     const calls = { focus: 0, show: 0, restore: 0, scripts: [], children: [], external: [] };
     const win = { isDestroyed: () => false, isMinimized: () => true, restore: () => calls.restore++, show: () => calls.show++, focus: () => calls.focus++, webContents: { executeJavaScript: (code) => { calls.scripts.push(code); return Promise.resolve(); } } };
     class Child extends EventEmitter {
-      constructor() { super(); this.webContents = new EventEmitter(); this.webContents.setWindowOpenHandler = (fn) => { this.openHandler = fn; }; calls.children.push(this); }
-      loadURL(url) { this.url = url; }
+      constructor() { super(); this.webContents = new EventEmitter(); this.webContents.setWindowOpenHandler = (fn) => { this.openHandler = fn; }; this.loadURL = (url) => { this.url = url; }; calls.children.push(this); }
     }
     const open = new Function("workbenchLink", "PORT", "win", "BrowserWindow", "themeBg", "SHELL_THEME", "nativeTheme", "process", "throttleWhenAway", "attachContextMenu", "attachShellKeys", "shell", "bootLog", EM.slice(a, b) + "\nreturn openHandler;")(
       workbenchLink, 3800, win, Child, () => "white", {}, {}, { platform: "darwin" }, () => {}, () => {}, () => {}, { openExternal: (url) => calls.external.push(url) }, () => {});
