@@ -239,7 +239,7 @@ function cronMatches(cron, date) {
  *   - done 在这一趟收尾时调一次，成败都调，负责把会话落盘
  *   没插 recorder（CLI、测试）就跟以前一模一样：不录、不留 session_id、不影响执行本身。
  */
-const PUSH_NOTE = "\n\n（这是定时任务。你最后的回复会原样推给用户——连好的微信、企业微信/钉钉群机器人都会收到，不用自己再找工具去发。）";
+const PUSH_NOTE = "\n\n（这是定时任务。最后的回复由应用推送到已配置接收目标的通知通道，包括飞书机器人、微信、企业微信/钉钉群机器人。除非任务明确指定独立发送方式，否则完成正文即可，不要再找工具或命令重复发送。未配置不代表送达，不要声称已经发送。应用会依据本轮可核对的飞书回执去重；本机引擎独立执行且未交回应用的发送命令不在应用记录范围内。）";
 
 function createScheduler({ runtime, onResult, storePath, recorder, secondOpinion, newsGate, doubtTimeoutMs, ownerProblem, orgOf }) {
   /**
@@ -534,6 +534,30 @@ function createScheduler({ runtime, onResult, storePath, recorder, secondOpinion
       item.last_push = String(text == null ? "" : text).slice(0, pushGate.BASE_CHARS);
       saveStore(store, file);
     };
+    const deliveryState = {};
+    // 通知失败不能把已经完成的任务再执行一次；送达结果单独落盘，也不能当成已推送基线。
+    const publish = async (text) => {
+      if (!onResult) return;
+      try {
+        const out = await delivery.withDelivery(deliveryState, () => onResult(item, text));
+        if (out && Array.isArray(out.sent)) {
+          const sent = [...new Set([...out.sent, ...(deliveryState.feishu === "sent" ? ["feishu"] : [])])];
+          run.notification = { sent, failed: out.failed || [] };
+          if (["pending", "unknown"].includes(deliveryState.feishu)) run.notification.unconfirmed = ["feishu"];
+          if (!sent.length && !run.notification.failed.length) run.notification.reason = "未配置可用通知通道或接收目标";
+          if (sent.length) rebase(text);
+        } else {
+          // 兼容旧的 onResult 回调；服务器端使用带送达结果的新返回值。
+          if (!Array.isArray(out) || out.length) rebase(text);
+          run.notification = Array.isArray(out) ? { sent: out, failed: [] } : { state: "unknown" };
+        }
+      } catch {
+        run.notification = { sent: deliveryState.feishu === "sent" ? ["feishu"] : [], failed: [], reason: "通知发送未完成，请核对通道日志；任务未重复执行" };
+        if (["pending", "unknown"].includes(deliveryState.feishu)) run.notification.unconfirmed = ["feishu"];
+      }
+      if (deliveryState.feishu) run.feishu_delivery = deliveryState.feishu;
+      saveStore(store, file);
+    };
     const finish = (ok, text) => {
       run.ok = ok;
       run.ended_at = new Date().toISOString();
@@ -574,7 +598,8 @@ function createScheduler({ runtime, onResult, storePath, recorder, secondOpinion
       // 于是一个跑满 25 步被强制收尾的任务，运行记录里照样是个 ✅——活没干完却显示干成了。
       // 替谁跑就报谁的名字：身份、账单、工作目录、命令行开关都跟着他走（见 server.js accountedRuntime）。
       // 原来不报，一律顶着平台管理员跑——别家组织的成员排一条任务，到点就在总部的工作目录里执行
-      const { finalText, stopped } = await delivery.withDelivery({}, () => runtime.runTask({ history, ...(item.user ? { user: item.user } : {}), ...((rec && rec.opts) || {}) }));
+      const { finalText, stopped } = await delivery.withDelivery(deliveryState, () => runtime.runTask({ history, ...(item.user ? { user: item.user } : {}), ...((rec && rec.opts) || {}) }));
+      if (deliveryState.feishu) run.feishu_delivery = deliveryState.feishu;
       const v = judgeRun({ result: finalText, stopped });
       if (v.ok) {
         // 判据放行了，但它从来没回答过「这件事到底办了没有」——正文一长它就主动让路。
@@ -593,8 +618,7 @@ function createScheduler({ runtime, onResult, storePath, recorder, secondOpinion
         saveStore(store, file);
         // 通知里把疑问缀在后面。缀在后面而不是替换掉正文：用户要的是结果，疑问是加注
         if (onResult && !run.push_skipped) {
-          await onResult(item, run.doubt ? (finalText || "完成") + "\n\n" + run.doubt : finalText);
-          rebase(finalText || "完成");
+          await publish(run.doubt ? (finalText || "完成") + "\n\n" + run.doubt : finalText || "完成");
         }
         return finalText;
       }
@@ -609,7 +633,7 @@ function createScheduler({ runtime, onResult, storePath, recorder, secondOpinion
       finish(false, msg);
       closeRec(false, msg);
       saveStore(store, file);
-      if (onResult) { await onResult(item, msg); rebase(msg); }
+      await publish(msg);
       verdictErr = Object.assign(new Error(msg), { verdict: v });
     } catch (e) {
       // 同一个根因从 error 这个口子上来时也得有药方。不然「连不上上游」这类坑
@@ -619,7 +643,7 @@ function createScheduler({ runtime, onResult, storePath, recorder, secondOpinion
       finish(false, "出错: " + why);
       closeRec(false, "出错: " + why);
       saveStore(store, file);
-      if (onResult) { await onResult(item, "执行出错: " + why); rebase("出错: " + why); }
+      await publish("执行出错: " + why);
       throw e;
     } finally {
       running.delete(item.id);

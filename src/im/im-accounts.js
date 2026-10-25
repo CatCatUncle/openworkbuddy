@@ -146,7 +146,9 @@ function createImAccounts({ makeInstance, problemOf = () => "", canOwn = () => t
   router.post("/im/my/config", json, async (req, res) => {
     const me = req.user.username;
     const ent = ensure(me);
-    const touched = mergeImPatch(ent.rec.im, (req.body || {}).im, { own: true });
+    let touched;
+    try { touched = mergeImPatch(ent.rec.im, (req.body || {}).im, { own: true }); }
+    catch (e) { return res.status(400).json({ ok: false, error: e.message }); }
     try { save(ent.rec); } catch (e) { return res.status(500).json({ ok: false, error: `没存上：${e.message}` }); }
     // 飞书/QQ 改了凭证就重建长连接；没填全的会自己停在「还差哪一项」
     if (touched.has("feishu")) ent.inst.startFeishuWs(true).catch((e) => console.warn("[我的通道] 飞书长连接重启失败:", e.message));

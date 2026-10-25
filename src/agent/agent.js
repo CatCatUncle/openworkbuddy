@@ -196,7 +196,7 @@ const DECIDE_TOOL = {
 const NOTIFY_TOOL = {
   name: "notify_user",
   description:
-    "把一条消息推给用户：配好的群机器人（企业微信 / 钉钉），以及助理模式里连好的个人微信。用户说「发到群里」「推给我」「发我微信」「跑完通知我」「叫我起床」时用它。" +
+    "把一条消息推给用户：配好接收目标的飞书机器人、群机器人（企业微信 / 钉钉），以及助理模式里连好的个人微信。用户说「发到群里」「推给我」「发我微信」「跑完通知我」「叫我起床」时用它。" +
     "纯文本，2000 字以内，太长就先自己缩成摘要——群消息不是交付物，链接和文件名要写全，别让人回头再找你要。",
   input_schema: {
     type: "object",
@@ -1225,7 +1225,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
     }
     p += chromeSystemNote(user);
     if (botWebhookOn()) {
-      p += `\n- notify_user：把一条消息推给用户（企业微信/钉钉群机器人、连好的个人微信）。用户说"发到群里/推给我/发我微信/跑完通知我"时用它，别在回复里写"请你手动转发"`;
+      p += `\n- notify_user：推送到已配置接收目标的飞书、企业微信/钉钉或微信。用户要求发消息或通知时使用，按工具回执报告送达。`;
     }
 
     if (skills.length) {
@@ -1701,9 +1701,9 @@ function modePrompt(mode) {
       // pushBots 单通道失败只写一行 console.warn 就咽了，返回的数组才是真凭据。
       // 不看它就会出现「工具说成功、群里什么都没有」——比报错更难查
       if (!sent.length) {
-        return { content: "一个通道都没推成（webhook 可能填错了或已失效，或微信那头发送失败）。去 设置 → 通知 核对企业微信/钉钉的地址，或在微信里给机器人发一句再试。", isError: true };
+        return { content: "一个通道都没推成。去 设置 → 助理设置 核对飞书机器人凭证及通知接收 ID、企业微信/钉钉地址，或微信连接；长连接在线不代表通知已有接收目标。", isError: true };
       }
-      return { content: `已推送到：${sent.map((s) => ({ wecom: "企业微信", dingtalk: "钉钉", wechat_ilink: "微信" }[s] || s)).join("、")}（${text.length} 字）`, isError: false };
+      return { content: `已推送到：${sent.map((s) => ({ feishu: "飞书", wecom: "企业微信", dingtalk: "钉钉", wechat_ilink: "微信" }[s] || s)).join("、")}（${text.length} 字）`, isError: false };
     }
     if (tc.name === "decide") {
       const state = String(tc.input.state == null ? "" : tc.input.state);

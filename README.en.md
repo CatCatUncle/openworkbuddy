@@ -5,7 +5,7 @@ For people who prepare reports, decks, spreadsheets and documents, and teams tha
 Choose your model, inspect execution, and review the delivered files.</p>
 <p align="center"><a href="#quick-start"><b>▶ Make a project update deck</b></a> · <a href="https://github.com/CatCatUncle/openworkbuddy/releases/latest">Download</a> · <a href="https://catcatuncle.github.io/openworkbuddy/?utm_source=github&amp;utm_medium=readme&amp;utm_campaign=first_result">Project website</a> · <a href="#docs">Docs</a> · <a href="README.md">中文</a></p>
 <p align="center"><a href="https://github.com/CatCatUncle/openworkbuddy/releases/latest"><img src="https://img.shields.io/github/v/release/CatCatUncle/openworkbuddy?style=flat-square" alt="Published release"></a> <a href="LICENSE"><img src="https://img.shields.io/badge/License-PolyForm%20NC-5b5ff7?style=flat-square" alt="PolyForm Noncommercial license"></a> <a href="https://github.com/CatCatUncle/openworkbuddy/stargazers"><img src="https://img.shields.io/github/stars/CatCatUncle/openworkbuddy?style=flat-square&label=Star&color=5b5ff7" alt="Bookmark the project"></a></p>
-<p align="center"><sub>Free for personal non-commercial use, schools and non-profits. Company and personal commercial use require a <a href="COMMERCIAL-LICENSE.md">commercial license</a>. Model and media services have their own costs.</sub></p>
+<p align="center"><sub>Free for personal non-commercial use, schools and non-profits. Company and personal commercial use require a <a href="COMMERCIAL-LICENSE.md">commercial license</a>. To purchase: <a href="mailto:contact@aijentra.com">contact@aijentra.com</a> · WeChat: <b>agi_smith</b>. Model and media services have their own costs.</sub></p>
 <p align="center"><img src="docs/images/demo.gif" width="720" alt="OpenWorkBuddy workflow: submit a task, inspect execution and open delivered files"><br><sub>Workflow demonstration. Measure first success with the task below.</sub></p>
 
 ---
@@ -189,7 +189,7 @@ The itinerary in the answer becomes a trip card: switch between days, every stop
  <img src="docs/images/case-schedule-feishu.jpg" width="820" alt="A scheduled OpenWorkBuddy task pushing a morning briefing to Feishu: today's weather and UV, tomorrow's rain, plus two things worth doing today">
 </p>
 
-One sentence set this up. It runs whether or not anyone is at the machine, and every run keeps its full transcript under Automation → Run history. Feishu / WeCom / DingTalk / Telegram all take the same path.
+Scheduled tasks run while the application is running. Automation → Run history shows execution and notification delivery separately. Feishu notifications require bot credentials and an explicit recipient ID in Assistant settings; see [IM and scheduled tasks](docs/IM与定时任务.md).
 
 How it pulled those off → **[三个案例，拆开讲](docs/案例.md)** (Chinese, but the screenshots speak for themselves)
 
@@ -374,7 +374,7 @@ Online guides: **[User guide](https://catcatuncle.github.io/openworkbuddy/guides
 > [!IMPORTANT]
 > **Free for personal non-commercial use, schools and non-profits. Company use (even internal only) and personal commercial use require a paid commercial license.**
 > Companies may evaluate it free for up to 30 days, as long as it isn't used in real business yet; long-term use requires a license.
-> **[Contact the maintainer](https://github.com/CatCatUncle)** with your company, how you plan to use it and roughly how many users; we'll get back to you soon. Terms: [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md).
+> **To purchase a commercial license, email [contact@aijentra.com](mailto:contact@aijentra.com) or add WeChat `agi_smith`.** Include your company, use case and expected user count; mention “OpenWorkBuddy commercial license” in your WeChat request. Terms: [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md).
 
 | Your situation | License needed? |
 |---|---|
@@ -398,11 +398,11 @@ Beyond licensing, we take on enterprise AI work:
 
 The author is a former big-tech Agent engineer who has delivered AI solutions for cross-border e-commerce, manufacturing, AI startups, private funds, major consumer brands and state-owned enterprises. Based in Shenzhen — visits welcome.
 
-📮 **[contact the maintainer](https://github.com/CatCatUncle)**
+📮 Licensing and business inquiries: **[contact@aijentra.com](mailto:contact@aijentra.com)** · WeChat: **`agi_smith`**
 
 ## License
 
-**Free for personal non-commercial use, schools and non-profits; company use (even internal only) and personal commercial use need a commercial license.** Companies may evaluate free for 30 days. To buy one, [contact the maintainer](https://github.com/CatCatUncle).
+**Free for personal non-commercial use, schools and non-profits; company use (even internal only) and personal commercial use need a commercial license.** Companies may evaluate free for 30 days. To purchase a commercial license, email **[contact@aijentra.com](mailto:contact@aijentra.com)** or add WeChat **`agi_smith`** (mention “OpenWorkBuddy commercial license”).
 
 [PolyForm Noncommercial 1.0.0](LICENSE); terms and what unlicensed commercial use leads to are in [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md). Deploy configs, scripts and skill templates are also MIT ([the list](COMMERCIAL-LICENSE.md#按-mit-授权的部分)); the name and logo aren't licensed.
 

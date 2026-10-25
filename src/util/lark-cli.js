@@ -56,6 +56,7 @@ function explainLarkError(raw) {
   if (!String(raw || "").trim()) return "lark-cli 没有返回内容";
   const s = stripLarkNoise(raw);
   if (!s) return "lark-cli 停了，没配好应用。再点一次";
+  if (/keychain not initialized|keychain.*(?:denied|not available)/i.test(s)) return "当前执行环境无法访问飞书系统钥匙串。若终端里可正常登录，请在助理设置配置机器人通知接收 ID，由应用发送；不要反复扫码或关闭安全沙箱";
   if (/OPENCLAW_HOME|HERMES_HOME|Agent workspace/i.test(s)) return "lark-cli 认为自己在 Agent 环境里，拒绝新建应用；重启 OpenWorkBuddy 再试一次";
   if (/config init|app.?id.*(missing|empty)|no apps/i.test(s)) return "lark-cli 还没绑定应用：先「扫码新建应用」，或自己跑 lark-cli config init";
   if (/app registration failed/i.test(s)) return "飞书那边没能把应用建出来（多半是你的账号没有创建应用的权限，需要企业管理员开）";

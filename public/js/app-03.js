@@ -2172,12 +2172,18 @@ async function renderAutomRuns(page) {
       : r.push_gate_failed
         ? `<div class="at-hint">这一条没问成变没变化（照旧推了）：${esc(r.push_gate_failed)}</div>`
         : "";
-    if (!r.label) return esc(raw.slice(0, 90)) + (raw.length > 90 ? "…" : "") + doubt + skipped;
+    const n = r.notification;
+    const channels = { feishu: "飞书", wechat_ilink: "微信", wecom: "企业微信", dingtalk: "钉钉" };
+    const notice = n ? `<div class="at-hint">${n.state === "unknown" ? "通知送达未确认" : [
+      (n.sent || []).length ? "通知已送达：" + n.sent.map(k => channels[k] || k).join("、") : (n.unconfirmed || []).length ? "通知送达未确认" : "通知未送达",
+      ...(n.failed || []).map(f => (channels[f.channel] || f.channel) + "：" + f.error), n.reason || "",
+    ].filter(Boolean).map(s => `<span>${esc(s)}</span>`).join("；")}</div>` : "";
+    if (!r.label) return esc(raw.slice(0, 90)) + (raw.length > 90 ? "…" : "") + doubt + skipped + notice;
     const i = raw.indexOf("上游原话：");
     const quoted = i >= 0 ? raw.slice(i) : "";
     return `<b>${esc(r.label)}</b>`
       + (r.hint ? `<div class="at-hint">${bold(r.hint)}</div>` : "")
-      + (quoted ? `<div class="at-raw">${esc(quoted.slice(0, 200))}${quoted.length > 200 ? "…" : ""}</div>` : "");
+      + (quoted ? `<div class="at-raw">${esc(quoted.slice(0, 200))}${quoted.length > 200 ? "…" : ""}</div>` : "") + notice;
   };
   page.innerHTML = `
     <div class="hub-head">

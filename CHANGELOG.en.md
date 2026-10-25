@@ -9,6 +9,8 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 ## 2026
 
+- **10-25** Feishu bot notifications support an explicit recipient and verify message receipts through the app, without requiring a local engine to access the system keychain. Scheduled runs record execution and delivery separately; notification failures do not rerun tasks or advance the delivery baseline, and uncertain sends are not retried automatically.
+
 - **Oct 24** Keep task navigation in one desktop workbench. Remove the session menu’s new-window action, reuse the main window for task links and preview redirects, and retain separate file previews.
 
 - **Oct 23** Remove three dependency cycles; share workspace context across tools and connectors, and avoid loading the tool executor just to locate connector files. Skills and plugins share a pure metadata parser while keeping the existing skill export. Admin routes inject live seat counts into license facts; dependency-cycle exceptions are locked at zero. Regression checks cover concurrent media isolation, nested context restoration, independent loading and account counts.

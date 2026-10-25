@@ -20,6 +20,11 @@ for (const [file, label, why, commercial] of [["README.md", "## 快速开始："
  assert.ok(quick.includes("Craft")); assert.ok(quick.includes("examples/quick-start/"));
  assert.match(text, /utm_source=github&amp;utm_medium=readme&amp;utm_campaign=first_result/);
  assert.ok(!text.includes('width="120"')); assert.ok(text.includes('src="docs/images/demo.gif"'));
+ const mail = "contact@aijentra.com", wechat = "agi_smith";
+ for (const [area, section] of [["first screen", text.slice(0, start)], ["commercial licensing", text.slice(text.indexOf(commercial))]]) {
+  assert.ok(section.includes("mailto:" + mail) && section.includes(wechat), file + ": " + area + " must retain public licensing email and WeChat");
+ }
+ assert.ok(!/\[(?:联系维护者|[Cc]ontact the maintainer)\]\(https:\/\/github\.com\/CatCatUncle\)/.test(text), file + ": a profile link cannot replace public purchase contacts");
  count++; console.log("✓ " + file + ": clear first task, prerequisites, verified-output criteria and early start link");
 }
 assert.ok(brokenStrong.test("**计时方式：**从开始安装") && !brokenStrong.test("**计时方式**：从开始安装"), "Bold label rendering guard must detect the broken form and accept the rendered form");

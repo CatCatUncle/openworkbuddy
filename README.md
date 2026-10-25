@@ -5,7 +5,7 @@
 使用你选择的模型，查看执行过程，在成果区核对交付文件。</p>
 <p align="center"><a href="#quick-start"><b>▶ 做一份项目汇报 PPT</b></a> · <a href="https://github.com/CatCatUncle/openworkbuddy/releases/latest">下载安装包</a> · <a href="https://catcatuncle.github.io/openworkbuddy/zh/?utm_source=github&amp;utm_medium=readme&amp;utm_campaign=first_result">项目网站</a> · <a href="#文档">文档</a> · <a href="README.en.md">English</a></p>
 <p align="center"><a href="https://github.com/CatCatUncle/openworkbuddy/releases/latest"><img src="https://img.shields.io/github/v/release/CatCatUncle/openworkbuddy?style=flat-square" alt="正式发布版本"></a> <a href="LICENSE"><img src="https://img.shields.io/badge/License-PolyForm%20NC-5b5ff7?style=flat-square" alt="PolyForm Noncommercial 许可证"></a> <a href="https://github.com/CatCatUncle/openworkbuddy/stargazers"><img src="https://img.shields.io/github/stars/CatCatUncle/openworkbuddy?style=flat-square&label=Star&color=5b5ff7" alt="收藏项目"></a></p>
-<p align="center"><sub>个人非商用、学校和公益机构免费；公司及个人商用须获 <a href="COMMERCIAL-LICENSE.md">商业授权</a>。模型与媒体服务的费用由所选服务商决定。</sub></p>
+<p align="center"><sub>个人非商用、学校和公益机构免费；公司及个人商用须获 <a href="COMMERCIAL-LICENSE.md">商业授权</a>。购买授权：<a href="mailto:contact@aijentra.com">contact@aijentra.com</a> · 微信：<b>agi_smith</b>。模型与媒体服务的费用由所选服务商决定。</sub></p>
 <p align="center"><img src="docs/images/demo.gif" width="720" alt="OpenWorkBuddy 操作演示：输入任务、查看执行过程、打开成果文件"><br><sub>界面流程演示；首次成功耗时按下面的任务实测。</sub></p>
 
 ---
@@ -188,7 +188,7 @@ OpenWorkBuddy：开源的 AI 办公助理，跑在自己电脑上。
  <img src="docs/images/case-schedule-feishu.jpg" width="820" alt="OpenWorkBuddy 的定时任务每天早上推到飞书的早报：今天的天气、紫外线、明天的雨，外加两句今天该干什么">
 </p>
 
-一句话排出来的定时任务，人不在电脑前也照跑；每趟调了哪些工具、为什么这么说，都在「自动化 → 运行记录」里点得开。飞书 / 企微 / 钉钉 / Telegram 同一条路。
+应用运行时，定时任务可自动执行；每趟过程和通知送达状态都在「自动化 → 运行记录」。飞书主动通知需在助理设置保存机器人凭证和接收 ID；详见 [IM 与定时任务](docs/IM与定时任务.md)。
 
 怎么做到的、本机 Claude Code 当发动机长什么样 → **[三个案例，拆开讲](docs/案例.md)**
 
@@ -349,7 +349,7 @@ openworkbuddy engines use claude-code # 换执行引擎：跑在你已经付过�
 > [!IMPORTANT]
 > **个人非商用、学校公益免费；公司使用（哪怕只在内部用）和个人商用，必须买商业授权。**
 > 公司可以免费试用 30 天（前提是还没用在实际业务上），长期用必须买。
-> **[联系维护者](https://github.com/CatCatUncle)**，写清楚公司、怎么用、大概多少人用，我们尽快回你。细则见 [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)。
+> **购买商业授权：发邮件至 [contact@aijentra.com](mailto:contact@aijentra.com)，或添加微信 `agi_smith`。** 请说明公司、使用场景和预计人数，微信备注「OpenWorkBuddy 商业授权」。细则见 [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)。
 
 | 你的情况 | 要不要买授权 |
 |---|---|
@@ -373,7 +373,7 @@ openworkbuddy engines use claude-code # 换执行引擎：跑在你已经付过�
 
 作者是前大厂 Agent 工程师，服务过跨境电商、制造业、AI 初创、私募金融机构、消费品巨头、国央企等客户。常驻深圳，欢迎来交流和考察。
 
-📮 合作联系：**[联系维护者](https://github.com/CatCatUncle)**
+📮 商业授权与合作：邮箱 **[contact@aijentra.com](mailto:contact@aijentra.com)** · 微信 **`agi_smith`**
 
 ## 从别家换过来：Claude Cowork、Codex、豆包办公的开源替代
 
@@ -414,7 +414,7 @@ OpenWorkBuddy 是独立开源项目，跟上面这些公司都没有关联。
 
 ## 协议
 
-**个人非商用、学校公益免费；公司使用（哪怕只在内部）和个人商用要买商业授权**，公司可先免费试用 30 天。购买请[联系维护者](https://github.com/CatCatUncle)。
+**个人非商用、学校公益免费；公司使用（哪怕只在内部）和个人商用要买商业授权**，公司可先免费试用 30 天。购买商业授权请发邮件至 **[contact@aijentra.com](mailto:contact@aijentra.com)**，或添加微信 **`agi_smith`**（备注「OpenWorkBuddy 商业授权」）。
 
 协议 [PolyForm Noncommercial 1.0.0](LICENSE)，细则和没授权商用的后果见 [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)。部署配置、脚本、技能模板另按 MIT（[清单](COMMERCIAL-LICENSE.md#按-mit-授权的部分)）；名称和图标不在授权范围内。
 

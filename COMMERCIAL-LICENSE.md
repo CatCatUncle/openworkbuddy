@@ -2,7 +2,7 @@
 
 > **Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle)**
 > 协议：[PolyForm Noncommercial License 1.0.0](./LICENSE)（全文：<https://github.com/CatCatUncle/openworkbuddy/blob/main/LICENSE>）
-> 商业授权联系：[contact@aijentra.com](mailto:contact@aijentra.com)
+> **购买商业授权 / Purchase a commercial license**：邮箱 / Email [contact@aijentra.com](mailto:contact@aijentra.com) · 微信 / WeChat **`agi_smith`**（备注「OpenWorkBuddy 商业授权」）。
 
 一句话：**个人非商用、学校公益免费；公司使用（哪怕只在内部用）和个人商用，必须付费买商业授权。
 公司可以免费试用 30 天（前提是还没用在实际业务上），长期用必须买。**
@@ -84,7 +84,7 @@ Agent 主循环、40+ 工具、短剧无限画布、IM 远程指挥、执行追�
 
 ## 怎么谈
 
-发邮件到 **[contact@aijentra.com](mailto:contact@aijentra.com)**，说清楚三件事就行：
+发邮件到 **[contact@aijentra.com](mailto:contact@aijentra.com)**，或添加微信 **`agi_smith`**（备注「OpenWorkBuddy 商业授权」），说清楚三件事就行：
 
 1. 你是谁（公司 / 团队 / 个人）
 2. 打算怎么用（内部提效？对外产品？给客户交付？个人接单？）

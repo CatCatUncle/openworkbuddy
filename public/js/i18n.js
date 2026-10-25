@@ -28,6 +28,12 @@
   // ---------- 词典：中文原句 → 英文 ----------
   const DICT = {
     en: {
+      "通知接收 ID（可选，ou_ 用户 / oc_ 会话）": "Notification recipient ID (optional: ou_ user / oc_ chat)",
+      "定时任务通知：填写这个应用下的 ou_ 用户 ID 或 oc_ 会话 ID；留空不主动推送，不会自动群发。长连接在线仅表示可以收消息": "Scheduled notifications: enter a user open ID (ou_) or chat ID (oc_) for this app. Leave blank to disable outbound notifications. A connected socket only confirms incoming messaging.",
+      "通知送达未确认": "Notification delivery unconfirmed",
+      "通知未送达": "Notification not delivered",
+      "未配置可用通知通道或接收目标": "No available notification channel or recipient configured",
+      "通知发送未完成，请核对通道日志；任务未重复执行": "Notification delivery did not complete. Check channel logs; the task was not rerun.",
       "尾帧引用还没有可用图片，请先生成或替换它。": "The last-frame reference has no available image. Generate or replace it first.",
       "参考图请使用项目内的 PNG、JPEG、WebP、GIF 或 BMP 文件。": "Use a local project PNG, JPEG, WebP, GIF or BMP as a reference image.",
       "其他参考": "Reference",
@@ -4067,6 +4073,14 @@
     [/^有新版 (\S+)，新型号要升级后才看得到：$/, "Version $1 is out. New models show up only after you update:"],
     [/^跟属主钉的那个（(.+)）$/, "Follow the owner's pin ($1)"],
     [/^(.+)（属主没放行）$/, "$1 (not allowed by the owner)"],
+  );
+
+  PATTERNS.en.push(
+    [/^通知已送达：(.+)$/, m => "Notification delivered: " + m[1].split("、").map(engName).join(", ")],
+    [/^飞书：飞书拒绝通知（code (\d+)），请核对机器人发送权限、应用可用范围及接收 ID$/, "Feishu: notification rejected (code $1). Check bot messaging permissions, app availability and recipient ID."],
+    [/^飞书：飞书机器人认证失败（code (\d+)），请核对应用凭证$/, "Feishu: bot authentication failed (code $1). Check app credentials."],
+    [/^飞书：飞书没有返回消息回执，请核对原消息，勿重复发送$/, "Feishu: no message receipt returned. Check the original message before retrying."],
+    [/^飞书：飞书发送结果尚未确认，未重复发送；请先核对原消息$/, "Feishu: delivery is unconfirmed. No duplicate was sent; check the original message."],
   );
 
   // 界面上开头那些表情（❌ ⚠️ ✅ 🪪 ⚙️ 🌐 …）正在一处处换成 SVG 图标。图标是 <svg>，

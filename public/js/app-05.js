@@ -4482,10 +4482,10 @@ const IM_CHANNELS = [
   { key: "feishu", grp: "chat", icon: "bird", name: "飞书", sub: "长连接 · 无需公网", path: "feishu", src: "feishu",
     newapp: true, // 一键新建应用：连 App ID / Secret 都不用手打
     paste: { hint: "从飞书开放平台「凭证与基础信息」整页复制粘过来就行，不用一个字段一个字段抠", parse: parseFeishuCreds },
-    fields: [["app_id", "App ID"], ["app_secret", "App Secret", "password"], ["verification_token", "Verification Token（可选，仅旧回调模式）", "", "opt"]],
+    fields: [["app_id", "App ID"], ["app_secret", "App Secret", "password"], ["notify_target", "通知接收 ID（可选，ou_ 用户 / oc_ 会话）", "", "opt"], ["verification_token", "Verification Token（可选，仅旧回调模式）", "", "opt"]],
     groupPolicy: true,
     test: { url: "/im/feishu/test", ok: (d) => `凭证有效${d.bot_name ? `，机器人「${d.bot_name}」` : ""}，长连接：${WS_STATE_TXT[(d.ws || {}).state] || (d.ws || {}).state || "启动中"}` },
-    help: ["飞书开放平台建自建应用，加「机器人」能力", "开通权限 im:message、im:message:send_as_bot", "事件订阅选「长连接」，加 im.message.receive_v1；拉进群后 @ 它下任务", "要在文档评论里 @ 它：再加 drive.notice.comment_add_v1 事件和 docs:document.comment:read 权限", "发布版本，回来填 App ID / App Secret（可整页粘贴自动识别）", "或点「扫码新建或选已有应用」：本机有 lark-cli 时，扫完自动填入 App ID"],
+    help: ["飞书开放平台建自建应用，加「机器人」能力", "开通权限 im:message、im:message:send_as_bot", "事件订阅选「长连接」，加 im.message.receive_v1；拉进群后 @ 它下任务", "定时任务通知：填写这个应用下的 ou_ 用户 ID 或 oc_ 会话 ID；留空不主动推送，不会自动群发。长连接在线仅表示可以收消息", "要在文档评论里 @ 它：再加 drive.notice.comment_add_v1 事件和 docs:document.comment:read 权限", "发布版本，回来填 App ID / App Secret（可整页粘贴自动识别）", "或点「扫码新建或选已有应用」：本机有 lark-cli 时，扫完自动填入 App ID"],
     // 缺哪一半就写哪一半：以前只写「未连接」，用户看不出是没填、填错、还是没联网
     status: (st) => { const f = st.feishu || {}; const m = f.missing || [];
       if (m.length === 1) return ["warn", "还差 " + m[0]];

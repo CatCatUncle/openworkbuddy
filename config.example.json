@@ -89,6 +89,7 @@
     "feishu": {
       "app_id": "",
       "app_secret": "",
+      "notify_target": "",
       "verification_token": ""
     },
     "wecom_bot_webhook": "",

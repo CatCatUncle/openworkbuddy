@@ -9906,9 +9906,12 @@ async function main() {
       const u = account._internals.loadUsers().users.find((x) => x.username === name);
       return u ? org.orgIdOf(u) : account.removedOrgOf(name);
     },
-    onResult: (item, text) =>
+    onResult: async (item, text) => {
       // 机器人那头不渲染 markdown，正文里的提示条记号先换成文字标签
-      notify.pushBots(config, `【OpenWorkBuddy·定时任务】${item.name}\n${callout.strip(text || "").slice(0, 800)}`, { user: (item && item.user) || "" }),
+      const report = {};
+      await notify.pushBots(config, `【OpenWorkBuddy·定时任务】${item.name}\n${callout.strip(text || "").slice(0, 800)}`, { user: (item && item.user) || "", report });
+      return report;
+    },
   });
   // 插上插座：agent 的 schedule_task / list_schedules 是靠这一句才看得见排期表的。
   // 纯 CLI 里没人调它，那两个工具就不会出现——而不是出现了再报「用不了」。

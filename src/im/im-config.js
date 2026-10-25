@@ -32,9 +32,15 @@ function mergeImPatch(im, b, { own = false } = {}) {
   const touched = new Set();
   if (!b || typeof b !== "object") return touched;
   const clear = new Set(Array.isArray(b.clear) ? b.clear.map(String) : []);
+  if (b.feishu && b.feishu.notify_target !== undefined) {
+    const target = String(b.feishu.notify_target || "").trim();
+    if (target && !/^(?:ou|oc)_[A-Za-z0-9]{8,128}$/.test(target)) throw new Error("飞书通知接收 ID 须为 ou_ 用户 ID 或 oc_ 会话 ID");
+  }
   if (b.feishu) {
     const feishu = im.feishu = im.feishu || {};
     imAssign(feishu, b.feishu, own ? ["app_id", "app_secret", "verification_token"] : ["app_id", "app_secret", "verification_token", "doc_app_id", "doc_app_secret"], clear, "feishu.");
+    // 接收目标不是凭证，清空即停止主动推送，不能套用「空值保留旧凭证」。
+    if (b.feishu.notify_target !== undefined) feishu.notify_target = String(b.feishu.notify_target || "").trim();
     if (b.feishu.group_reply_mode !== undefined) {
       feishu.group_reply_mode = b.feishu.group_reply_mode === "all" ? "all" : "mention";
     }
