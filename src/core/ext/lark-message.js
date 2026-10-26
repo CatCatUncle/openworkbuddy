@@ -17,7 +17,7 @@ const DEF = {
 };
 function binary() { return which.findIn(which.augmentedPath().split(path.delimiter), "lark-cli"); }
 function invoke(bin, args, options) {
-  return new Promise(resolve => execFile(bin, args, options, (error, stdout, stderr) => resolve({ error, stdout, stderr })));
+  return new Promise(resolve => execFile(bin, args, { ...options, windowsHide: true }, (error, stdout, stderr) => resolve({ error, stdout, stderr })));
 }
 async function send(input, { signal, cwd, bin = binary(), run = invoke } = {}) {
   const to = String(input.recipient || ""), text = String(input.text || "").trim();
