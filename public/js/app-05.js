@@ -2813,6 +2813,7 @@ let traceCache = [];
 let traceSel = "";
 let traceQuery = "";
 let traceOnlyBad = false;
+let traceRefreshTimer = null;
 /** 搜索匹配到任务名、工具名，也匹配路径——「我上次写的那个报告在哪一趟任务里」靠这个找 */
 function traceHit(t, q) {
   if (!q) return true;
@@ -2840,7 +2841,10 @@ async function renderTracePage() {
   page.querySelector("#tp-clear").onclick = async (e) => {
     if (!(await askConfirm({ title: "清空本机保存的执行记录？", hint: "工作区文件和 Langfuse 上的副本都不受影响。", ok: "清空", danger: true }))) return;
     e.currentTarget.disabled = true;
-    await fetch("/api/traces", { method: "DELETE" }).catch(() => {});
+    try {
+      const r = await fetch("/api/traces", { method: "DELETE" });
+      if (!r.ok) throw new Error((await r.json()).error || "清空失败");
+    } catch (err) { e.currentTarget.disabled = false; return toast(err.message || "清空失败", "triangle-alert"); }
     traceSel = "";
     await loadTracePage();
     e.currentTarget.disabled = false;
@@ -2849,13 +2853,22 @@ async function renderTracePage() {
   await loadTracePage();
 }
 async function loadTracePage() {
+  if (traceRefreshTimer) clearTimeout(traceRefreshTimer);
   const [data, s] = await Promise.all([
-    fetch("/api/traces?limit=200").then((r) => r.json()).catch(() => ({ traces: [] })),
+    fetch("/api/traces?limit=200").then(async r => { const d = await r.json(); if (!r.ok || d.error) throw new Error(d.error || "读取执行记录失败"); return d; }).catch(err => ({ error: err.message || "读取执行记录失败" })),
     settingsCache ? Promise.resolve(settingsCache) : fetch("/api/settings").then((r) => r.json()).catch(() => null),
   ]);
   // 这一趟可能正好领走了启动时改挂的那几条，先记下，等进模型页再说
   if (s && Array.isArray(s.moved_on_boot) && s.moved_on_boot.length) bootMoved = s.moved_on_boot;
   if (pageKind !== "trace") return;
+  traceRefreshTimer = setTimeout(() => { if (pageKind === "trace" && document.visibilityState !== "hidden") loadTracePage(); }, 5000);
+  if (data.error) {
+    document.getElementById("tp-stats").textContent = "";
+    document.getElementById("tp-note").textContent = "";
+    document.getElementById("tp-detail").textContent = "";
+    document.getElementById("tp-list").innerHTML = `<div class="tp-empty">读取执行记录失败：${esc(data.error)}。请点击刷新重试。</div>`;
+    return;
+  }
   traceCache = Array.isArray(data.traces) ? data.traces : [];
   const stats = document.getElementById("tp-stats");
   const done = traceCache.filter((t) => t.status === "completed"), bad = traceCache.filter((t) => t.status === "error");
@@ -2881,12 +2894,17 @@ async function loadTracePage() {
     const txt = st.bad_host ? "Langfuse 开着，但地址不像个网址，一条都没往外发（本地这份不受影响）"
       : lf.enabled && !st.ready ? "Langfuse 开着，但钥匙没填全，一条都没往外发（本地这份不受影响）"
         : lf.enabled ? `同时上报到 Langfuse · 已发出 ${st.sent || 0} 条${st.failed ? ` · 失败 ${st.failed} 条` : ""}`
-          : "只存在这台机器上（当前工作区的 .openworkbuddy/traces.jsonl），没有往任何外部服务发";
+          : "只存在这台机器上，汇总本应用已知项目与工作目录的执行记录，没有往外部服务发";
     note.innerHTML = `<div class="tp-note ${cls}">${ic(cls === "is-warn" ? "triangle-alert" : cls === "is-on" ? "cloud" : "hard-drive")}<span>${esc(txt)}</span>${amPlatformOwner() ? '<a href="#" class="link" id="tp-cfg">去设置里配 Langfuse</a>' : ""}</div>`;
     const cfg = note.querySelector("#tp-cfg");
     if (cfg) cfg.onclick = (e) => { e.preventDefault(); openModal("settings", "trace"); };
   }
   paintTraceList();
+  if (traceSel && traceCache.some(t => t.id === traceSel)) {
+    const selected = traceSel;
+    const d = await fetch("/api/traces/" + encodeURIComponent(selected)).then(r => r.json()).catch(() => null);
+    if (pageKind === "trace" && traceSel === selected) renderTraceDetail(document.getElementById("tp-detail"), d && d.trace);
+  } else if (traceSel) { traceSel = ""; renderTraceDetail(document.getElementById("tp-detail"), null); }
 }
 /** 这一趟是谁跑的、在哪个工作区跑的——两趟任务长得一样时，就靠这两样分开 */
 function traceWho(t) {

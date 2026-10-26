@@ -9,9 +9,12 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 ## 2026
 
-- **10-26** Recover historical artifact root fingerprints after verified directory moves. Assistant API/local engine selection now matches execution without changing scheduled task engines. A dedicated Feishu message channel accesses the keychain through the app while preserving sandbox settings and receipt deduplication; explicitly unsent reminders are no longer reported as completed.
+- **Oct 26** Fix missing traces across projects, split ledgers when switching directories during a run, missing local-engine tool events, and duplicated usage totals. Show read failures explicitly, refresh the trace page automatically, and restore the full Experts · Skills · Connectors sidebar label.
+- **Oct 26** Library search preserves the input and caret, waits for IME confirmation, and ignores stale responses to prevent reordered text.
 
-- **10-25** Feishu bot notifications support an explicit recipient and verify message receipts through the app, without requiring a local engine to access the system keychain. Scheduled runs record execution and delivery separately; notification failures do not rerun tasks or advance the delivery baseline, and uncertain sends are not retried automatically.
+- **Oct 26** Recover historical artifact root fingerprints after verified directory moves. Assistant API/local engine selection now matches execution without changing scheduled task engines. A dedicated Feishu message channel accesses the keychain through the app while preserving sandbox settings and receipt deduplication; explicitly unsent reminders are no longer reported as completed.
+
+- **Oct 25** Feishu bot notifications support an explicit recipient and verify message receipts through the app, without requiring a local engine to access the system keychain. Scheduled runs record execution and delivery separately; notification failures do not rerun tasks or advance the delivery baseline, and uncertain sends are not retried automatically.
 
 - **Oct 24** Keep task navigation in one desktop workbench. Remove the session menu’s new-window action, reuse the main window for task links and preview redirects, and retain separate file previews.
 

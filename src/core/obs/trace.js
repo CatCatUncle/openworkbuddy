@@ -112,7 +112,21 @@ function archiveName(file, at) {
   return path.join(path.dirname(file), path.basename(file, ".jsonl") + "-" + stamp + ".jsonl");
 }
 /** 这个工作空间里的所有 trace 账本，**新的在前**（当前正在写的那本永远排第一） */
-function localFiles(config) {
+function localFiles(config, { roots = [], legacyDirs = [] } = {}) {
+  if (roots.length || legacyDirs.length) {
+    const configs = [config, ...roots.filter(d => typeof d === "string" && path.isAbsolute(d)).map(workspace_dir => ({ workspace_dir }))];
+    const files = configs.flatMap(c => localFiles(c));
+    for (const c of configs) {
+      const live = localTraceFile(c);
+      for (const dir of legacyDirs.filter(d => /^\.[\w-]+$/.test(d))) {
+        const old = path.join(path.dirname(path.dirname(live)), dir, "traces.jsonl");
+        if (old === live) continue;
+        files.push(old);
+        try { files.push(...fs.readdirSync(path.dirname(old)).filter(f => /^traces-.+\.jsonl$/.test(f)).map(f => path.join(path.dirname(old), f))); } catch {}
+      }
+    }
+    return [...new Set(files)];
+  }
   const live = localTraceFile(config);
   let olds = [];
   try {
@@ -148,9 +162,8 @@ function ledgerTag(file) {
   try { const st = fs.statSync(file); return st.ino + ":" + st.birthtimeMs; } catch { return ""; }
 }
 /** 写一行。返回刚写进的那本账是谁（ledgerTag）；这一行把它写满滚走了就返回空串 */
-function localRecord(config, event) {
+function localRecord(config, event, file = localTraceFile(config)) {
   try {
-    const file = localTraceFile(config);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     // 只有这一行在热路径上，而它跟账本里已经躺了多少条完全无关
     fs.appendFileSync(file, JSON.stringify({ schema: 1, recordedAt: Date.now(), ...event }) + "\n", "utf8");
@@ -184,7 +197,8 @@ function readEventsOf(file) {
       .map((line) => { try { return JSON.parse(line); } catch { return null; } })
       .filter((event) => event && event.traceId);
   } catch { return []; }
-  parsedCache.clear();      // 一个工作空间同时只会热一本账，留着老 key 只是占内存
+  for (const k of parsedCache.keys()) if (k.startsWith(file + "|")) parsedCache.delete(k);
+  while (parsedCache.size >= 12) parsedCache.delete(parsedCache.keys().next().value);
   parsedCache.set(key, out);
   return out;
 }
@@ -193,10 +207,13 @@ function readEventsOf(file) {
  * 从新账本往老里翻，读够 budget 就停：Trace 页面只看最近的一批，
  * 没必要为了它把半年前封存的几本全解析一遍。
  */
-function localReadEvents(config, { budgetBytes = 48 * 1024 * 1024 } = {}) {
+function localReadEvents(config, { budgetBytes = 48 * 1024 * 1024, roots = [], legacyDirs = [] } = {}) {
   const picked = [];
   let used = 0;
-  for (const f of localFiles(config)) {       // 新的在前
+  const files = localFiles(config, { roots, legacyDirs }).map(file => {
+    try { const s = fs.statSync(file); return { file, at: s.mtimeMs }; } catch { return { file, at: 0 }; }
+  }).sort((a, b) => b.at - a.at);
+  for (const { file: f } of files) {       // 多项目共用一份读取预算，按最近写入排序
     let size = 0;
     try { size = fs.statSync(f).size; } catch { continue; }
     picked.push(f);
@@ -207,7 +224,7 @@ function localReadEvents(config, { budgetBytes = 48 * 1024 * 1024 } = {}) {
   for (const f of picked.reverse()) out.push(...readEventsOf(f));  // 翻回「老的在前」
   return out;
 }
-function localTraceList(config, { limit = 50, traceId = "" } = {}) {
+function localTraceList(config, { limit = 50, traceId = "", roots = [], legacyDirs = [] } = {}) {
   const traces = new Map();
   const ensure = (id) => {
     // 名字先留空。默认成「任务」的话，下面「名字是不是空的」就永远判不出来，
@@ -218,7 +235,7 @@ function localTraceList(config, { limit = 50, traceId = "" } = {}) {
   // 提示词在账本里是「全文记一次 + 之后只记编号」（见 createTracer 里的 localInputOf），这儿按编号拼回原样。
   // 拼出来的是新对象：缓存里那份事件还要给下一次刷新用，改了它下次就拼不回来了
   const msgDict = new Map();
-  for (let event of localReadEvents(config)) {
+  for (let event of localReadEvents(config, { roots, legacyDirs })) {
     if (traceId && event.traceId !== traceId) continue;
     if (event.input && Array.isArray(event.input.$msgs)) {
       let d = msgDict.get(event.traceId);
@@ -260,7 +277,9 @@ function localTraceList(config, { limit = 50, traceId = "" } = {}) {
     // 老记录 metadata 里没有 turn，就按输入里的用户消息条数数一遍，数得出来就还是准的。
     trace.turn = Number(md.turn) || (Array.isArray(trace.input) ? trace.input.filter((m) => m && m.role === "user").length : 0);
     let tin = Number(md.tokens_in) || 0, tout = Number(md.tokens_out) || 0, seen = md.tokens_in !== undefined || md.tokens_out !== undefined;
+    const rootUsage = seen;
     for (const o of trace.observations) {
+      if (rootUsage) break; // 根节点已有整轮汇总，不能再把子节点用量加一遍。
       const u = o.usage;
       if (!u) continue;
       if (u.prompt || u.completion || u.total) { seen = true; tin += Number(u.prompt) || 0; tout += Number(u.completion) || 0; }
@@ -269,7 +288,7 @@ function localTraceList(config, { limit = 50, traceId = "" } = {}) {
     // 工具/模型各调了几次，列表里要用来做区分，在这儿算一次比前端每行再遍历一遍便宜
     trace.tool_count = trace.observations.filter((o) => o.kind === "span" && o.name && !/^外部引擎/.test(o.name)).length;
     trace.model_count = new Set(trace.observations.filter((o) => o.kind === "generation" && o.model).map((o) => o.model)).size;
-    trace.models = [...new Set(trace.observations.filter((o) => o.kind === "generation" && o.model).map((o) => o.model))].slice(0, 4);
+    trace.models = [...new Set(trace.observations.map(o => o.model || (o.metadata || {}).model).filter(Boolean))].slice(0, 4);
     trace.tools = [...new Set(trace.observations.filter((o) => o.kind === "span" && o.name).map((o) => o.name))].slice(0, 6);
     const stale = !trace.endTime && trace.startTime && now - new Date(trace.startTime).getTime() > STALE_MS;
     trace.status = trace.error || trace.observations.some((item) => item.error)
@@ -299,10 +318,10 @@ function localTraceList(config, { limit = 50, traceId = "" } = {}) {
   return out.slice(0, Math.max(1, Math.min(200, Number(limit) || 50)))
     .map((t) => ({ ...slim(t), observations: t.observations.map(slim) }));
 }
-function localTraceClear(config) {
+function localTraceClear(config, options) {
   // 「清空」就得真清空：归档的那几本也是 trace，留着的话用户点完清空
   // 一刷新还是满屏记录，会以为这个按钮坏了（更要紧的是，他可能正想删掉里面的提示词原文）
-  for (const f of localFiles(config)) { try { fs.rmSync(f, { force: true }); } catch {} }
+  for (const f of localFiles(config, options)) { try { fs.rmSync(f, { force: true }); } catch {} }
   parsedCache.clear();
 }
 
@@ -456,6 +475,8 @@ async function post(cfg, batch) {
 }
 
 function createTracer(config) {
+  // 一轮开工后固定账本。切换项目或修改默认目录不能把 start/end 拆进两处。
+  const ledgerFiles = new Map();
   const ctx = {
     queue: [],
     timer: null,
@@ -547,7 +568,7 @@ function createTracer(config) {
   const isMessages = (v) => Array.isArray(v) && v.length > 0 && v.every((m) => m && typeof m === "object" && !Array.isArray(m) && typeof m.role === "string");
   function localInputOf(traceId, input) {
     if (!isMessages(input)) return input;
-    const tag = ledgerTag(localTraceFile(config));
+    const tag = ledgerTag(ledgerFiles.get(traceId) || localTraceFile(config));
     if (!tag || tag !== packedIn) { packed.clear(); packedIn = tag; }
     const now = Date.now();
     for (const [k, v] of packed) if (now - v.at > PACK_IDLE_MS) packed.delete(k);
@@ -566,7 +587,7 @@ function createTracer(config) {
   }
   /** 带提示词的那几行走这儿：写完记住落在哪本账里，下一行才知道能不能接着只记编号 */
   function recordPacked(event) {
-    const tag = localRecord(config, event);
+    const tag = localRecord(config, event, ledgerFiles.get(event.traceId) || localTraceFile(config));
     // 空串 = 这一行刚把账本写满滚走了；前后两个 tag 对不上 = 中间被别的进程滚过。两种都从头记全文。
     // 前一个是空串（这本账是这一行新建的）不算：清过才写的这一行，本身就是全文
     if (!tag || (packedIn && tag !== packedIn)) packed.clear();
@@ -603,8 +624,9 @@ function createTracer(config) {
       end(o) {
         if (ended) return; // 收尾路径有好几条（正常结束、超时、抛异常），重复 end 会在 Langfuse 上留两条互相覆盖的记录
         ended = true;
-        localRecord(config, { traceId, kind, phase: "end", ...(kind === "trace" ? {} : { observationId: id }), endTime: nowIso(), ...localBodyOf(o) });
+        localRecord(config, { traceId, kind, phase: "end", ...(kind === "trace" ? {} : { observationId: id }), endTime: nowIso(), ...localBodyOf(o) }, ledgerFiles.get(traceId) || localTraceFile(config));
         if (kind === "trace") {
+          ledgerFiles.delete(traceId);
           packed.delete(traceId);
           // 根节点认的字段跟 observation 不是一套：没有 endTime，也没有 traceId / usage / level。
           // 多塞字段轻则被忽略、重则整条被拒收，所以这儿另拼一份，token 账和出没出错折进 metadata
@@ -688,6 +710,7 @@ function createTracer(config) {
      */
     trace(o = {}) {
       const id = uid();
+      ledgerFiles.set(id, localTraceFile(config));
       const body = {
         id,
         name: String(o.name || "task").slice(0, 200),
@@ -750,7 +773,7 @@ function createTracer(config) {
       };
     },
     localTraces(options) { return localTraceList(config, options); },
-    clearLocalTraces() { localTraceClear(config); packed.clear(); packedIn = ""; },
+    clearLocalTraces(options) { localTraceClear(config, options); packed.clear(); packedIn = ""; },
     flush,
   };
 }

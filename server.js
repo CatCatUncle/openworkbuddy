@@ -2881,24 +2881,28 @@ const traceOwnerOnly = (req, res) => {
   res.status(403).json({ error: "执行记录是整台服务器一份的，归平台管理员看", platform_only: true, traces: [] });
   return true;
 };
+// 执行记录跨项目可见；只查本应用记住的根，不扫描磁盘、不接受请求传入任意目录。
+function traceReadOptions() {
+  return { roots: [...new Set([...allRoots(), dataPath("workspace"), dataPath()])] };
+}
 app.get("/api/traces", (req, res) => {
   if (traceOwnerOnly(req, res)) return;
   try {
     const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 50));
-    res.json({ traces: tracing.getTracer(config).localTraces({ limit }) });
+    res.json({ traces: tracing.getTracer(config).localTraces({ ...traceReadOptions(), limit }) });
   } catch (e) { res.status(500).json({ error: e.message, traces: [] }); }
 });
 app.get("/api/traces/:id", (req, res) => {
   if (traceOwnerOnly(req, res)) return;
   try {
-    const trace = tracing.getTracer(config).localTraces({ traceId: String(req.params.id || "") });
+    const trace = tracing.getTracer(config).localTraces({ ...traceReadOptions(), traceId: String(req.params.id || "") });
     if (!trace) return res.status(404).json({ error: "找不到这条 Trace" });
     res.json({ trace });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 app.delete("/api/traces", (req, res) => {
   if (traceOwnerOnly(req, res)) return;
-  try { tracing.getTracer(config).clearLocalTraces(); res.json({ ok: true }); }
+  try { tracing.getTracer(config).clearLocalTraces(traceReadOptions()); res.json({ ok: true }); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 

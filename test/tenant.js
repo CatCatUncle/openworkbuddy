@@ -662,7 +662,9 @@ async function login(username, password) {
   ok(openNames.includes("run_shell") && openNames.includes("run_node"), "反向对照：不配策略时两个工具都在", openNames.length);
   ok(!shutNames.includes("run_shell"), "关掉命令行后工具定义里没有 run_shell");
   ok(!shutNames.includes("run_node"), "关掉命令行后工具定义里没有 run_node");
-  eq(openNames.length - shutNames.length, 2, "只摘掉这两个，别的工具一个没少");
+  ok(!shutNames.includes("send_feishu_message"), "关掉命令行后也不借依赖本机 CLI 的飞书消息工具");
+  const shellTools = new Set(["run_shell", "run_node", "send_feishu_message"]);
+  eq(openNames.filter(n => !shellTools.has(n)).join(","), shutNames.join(","), "只移除依赖命令行的工具，其余工具完整保留");
 
   // ---- 17.3 网络名单：点边界不能错 ----
   const H = (p, u) => tools.hostAllowed(p, u).ok;

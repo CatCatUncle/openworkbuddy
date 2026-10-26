@@ -5395,6 +5395,44 @@ const DEAD_CHECKS = `
   ok("反向对照：空库的文案不再说「归平台管理员放」",
      !html().includes("这一块归平台管理员放"), html().slice(0, 200));
 
+  // 搜索返回期间继续打字、移动选区或用输入法组词，原输入节点和光标都必须保留。
+  const searchFetch = window.fetch, searchHits = [], heldSearch = [];
+  let holdSearch = false;
+  window.fetch = (url, opt) => {
+    if (!url.startsWith("/api/library/search?")) return searchFetch(url, opt);
+    searchHits.push(new URLSearchParams(url.split("?")[1]).get("q"));
+    return holdSearch ? new Promise(resolve => heldSearch.push(() => resolve(searchFetch(url, opt)))) : searchFetch(url, opt);
+  };
+  const searchInput = page.querySelector("#lb-q"), pauseSearch = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const typeSearch = value => { searchInput.value = value; searchInput.dispatchEvent(new InputEvent("input", { bubbles: true })); };
+  searchInput.focus();
+  typeSearch("p"); clearTimeout(page._t); holdSearch = true;
+  const oldSearch = renderLibPage();
+  typeSearch("pp"); searchInput.setSelectionRange(2, 2); clearTimeout(page._t);
+  heldSearch.shift()(); await oldSearch;
+  ok("资料库搜索：慢请求返回不能覆盖新输入或移动光标", page.querySelector("#lb-q") === searchInput && searchInput.value === "pp" && searchInput.selectionStart === 2);
+  typeSearch("ppt"); clearTimeout(page._t);
+  const latestSearch = renderLibPage();
+  searchInput.setSelectionRange(1, 2, "backward");
+  heldSearch.shift()(); await latestSearch;
+  ok("资料库搜索：刷新保留原输入节点、焦点和双向选区", page.querySelector("#lb-q") === searchInput && document.activeElement === searchInput && searchInput.value === "ppt" && searchInput.selectionStart === 1 && searchInput.selectionEnd === 2 && searchInput.selectionDirection === "backward");
+  holdSearch = false;
+  const beforeComposition = searchHits.length;
+  typeSearch("pin");
+  searchInput.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+  searchInput.dispatchEvent(new InputEvent("input", { bubbles: true, isComposing: true }));
+  await pauseSearch(330);
+  ok("资料库搜索：输入法未确认时不发送搜索，包括取消已排队的搜索", searchHits.length === beforeComposition && page.querySelector("#lb-q") === searchInput);
+  searchInput.value = "拼音";
+  searchInput.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "拼音" }));
+  searchInput.dispatchEvent(new InputEvent("input", { bubbles: true }));
+  await pauseSearch(330);
+  ok("资料库搜索：确认组词后只搜索一次最终文字", searchHits.length === beforeComposition + 1 && searchHits.at(-1) === "拼音" && searchInput.value === "拼音");
+  typeSearch("ppt"); await pauseSearch(330);
+  ok("资料库搜索：英文 ppt 顺序不变且光标仍在末尾", searchInput.value === "ppt" && searchInput.selectionStart === 3 && document.activeElement === searchInput);
+  window.fetch = searchFetch;
+  window.libState.q = ""; await renderLibPage();
+
   // 真读不成的时候（服务器出错、盘挂了），别说「还没有参考资料」——那是句瞎话，
   // 用户会当成自己没传过东西，而真相是这一趟根本没读成
   denyRead = true;

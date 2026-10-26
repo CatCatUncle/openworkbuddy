@@ -538,7 +538,11 @@ const serverOf = (att) => JSON.parse(fs.readFileSync(att.runOpts.mcpConfigPath, 
       return { finalText: "好", usage: {}, stopped: null, sessionId: null };
     };
     // 拿 claude-code / codex 这两个名字起桩：提示词按引擎分叉（看图、止血那句），得用真名。原来那个先摘下来，跑完放回去
-    const withStub = async (id, cfg, fn) => {
+    const withStub = async (id, cfg, fn, messageInstalled = false) => {
+      // 工具清单不能依赖开发机恰好装着 CLI；两种安装状态都用固定夹具核对。
+      const messages = require("../src/core/ext/lark-message");
+      const realBinary = messages.binary;
+      messages.binary = () => messageInstalled ? "lark-cli" : "";
       const i = engines.BACKENDS.findIndex((b) => b.id === id);
       const real = i >= 0 ? engines.BACKENDS.splice(i, 1)[0] : null;
       const stub = { id, label: "桩", bin: null, note: "", install: "", launchHeader: "", supportsResume: false, models: [],
@@ -551,6 +555,7 @@ const serverOf = (att) => JSON.parse(fs.readFileSync(att.runOpts.mcpConfigPath, 
         await rt.runTask({ history: [{ role: "user", content: "干活" }], emit() {} });
         return await fn(seen || {});
       } finally {
+        messages.binary = realBinary;
         engines.BACKENDS.splice(engines.BACKENDS.indexOf(stub), 1);
         if (real) engines.BACKENDS.splice(i, 0, real);
       }
@@ -559,7 +564,7 @@ const serverOf = (att) => JSON.parse(fs.readFileSync(att.runOpts.mcpConfigPath, 
     const skillLines = (p) => { const k = p.indexOf("## 你会的技能"); return k < 0 ? [] : p.slice(k).split("\n").filter((l) => /^- .+ → /.test(l)); };
 
     await withStub("claude-code", {}, async (s) => {
-      const want = lendable.lentFor({ renderer: false });
+      const want = lendable.lentFor({ renderer: false }).filter(n => n !== "send_feishu_message");
       const listed = promptTools(s.prompt);
       ok(sorted(listed) === sorted(want) && listed.length === want.length, "★提示词里列的工具 = 借出名单★（一个不多一个不少，不重复）", { listed, want });
       ok(s.mcp && sorted(s.mcp) === sorted(want), "MCP 挂上的 = 借出名单", s.mcp);
@@ -584,6 +589,12 @@ const serverOf = (att) => JSON.parse(fs.readFileSync(att.runOpts.mcpConfigPath, 
       ok(/Read 读图片文件/.test(s.prompt) && !/view_image/.test(s.prompt), "claude：看图用它自己的 Read，look_at_image 只兜底");
       ok(/require\("pptxgenjs"\)/.test(s.prompt) && /import 写法找不到/.test(s.prompt), "告诉它 node 脚本直接 require 自带的 pptxgenjs / docx / exceljs");
     });
+    await withStub("claude-code", {}, async (s) => {
+      const want = lendable.lentFor({ renderer: false });
+      ok(sorted(promptTools(s.prompt)) === sorted(want) && sorted(s.mcp || []) === sorted(want),
+        "装有消息 CLI 时提示词和 MCP 都提供飞书发送工具");
+      if (SH) ok(sorted(s.owb || []) === sorted(want), "装有消息 CLI 时命令行工具表也保持一致");
+    }, true);
     // 反向对照：「全自动」档 claude 不审批命令，那句止血的话不该出现；engine_options 里手填的档位也认
     await withStub("claude-code", { security: { permission_mode: "full" } }, async (s) => {
       ok(s.prompt && !/被拒一次就别换个写法再试/.test(s.prompt), "反向对照：「全自动」档不说命令会被拒");

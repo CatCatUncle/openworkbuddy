@@ -768,6 +768,7 @@
       "请先填写生成提示词。": "Fill in a generation prompt first.",
       "把任务、素材和结果放到这里。\n拖空白处平移，拖节点移动，滚轮缩放。": "Put tasks, materials, and results here.\nDrag empty space to pan, drag nodes to move, and scroll to zoom.",
       "专家": "Experts",
+      "专家 · 技能 · 连接器": "Experts · Skills · Connectors",
       "关闭": "Close",
       "发送": "Send",
       "插队": "Interject",

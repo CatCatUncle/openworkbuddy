@@ -162,6 +162,27 @@ async function main() {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 
+  {
+    const a = fs.mkdtempSync(path.join(os.tmpdir(), "owb-trace-project-a-"));
+    const b = fs.mkdtempSync(path.join(os.tmpdir(), "owb-trace-project-b-"));
+    try {
+      const config = { workspace_dir: a };
+      const t = tracing.createTracer(config);
+      const tr = t.trace({ name: "切换目录中的任务" });
+      const g = tr.generation({ name: "模型调用", model: "fixture-model" });
+      config.workspace_dir = b;
+      g.end({ output: "done", usage: { prompt: 100, completion: 20 } });
+      tr.end({ output: "done", usage: { prompt: 100, completion: 20 } });
+      const old = t.localTraces({ roots: [a] }).find(x => x.id === tr.id);
+      ok(old && old.status === "completed" && old.observations[0].endTime, "切换项目不会把同轮任务开头、步骤和收尾拆到不同账本");
+      eq(old.tokens.total, 120, "整轮用量与子节点不能重复累计");
+      t.trace({ name: "另一个项目" }).end({ output: "done" });
+      eq(t.localTraces({ roots: [a, b, a] }).length, 2, "汇总已知项目，重复根不会重复显示记录");
+      t.clearLocalTraces({ roots: [a, b] });
+      eq(t.localTraces({ roots: [a, b] }).length, 0, "清空覆盖已知项目账本，不会刷新后又出现");
+    } finally { fs.rmSync(a, { recursive: true, force: true }); fs.rmSync(b, { recursive: true, force: true }); }
+  }
+
   // ===================================================================
   console.log("\n【1·续续】任务名：同一个会话聊十轮，不能是十行一模一样的名字");
   // ===================================================================

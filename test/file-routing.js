@@ -39,6 +39,22 @@ async function check(label, fn) { await fn(); count++; console.log("✓ " + labe
     const poll = setInterval(() => { const m = /已启动: http:\/\/localhost:(\d+)/.exec(output); if (m || child.exitCode !== null) { clearTimeout(timeout); clearInterval(poll); if (m) resolve(Number(m[1])); else reject(new Error("isolated server exited")); } }, 100);
   });
   const call = (method, route, body, token = owner) => request(port, method, route, token, body);
+  await check("trace APIs aggregate known projects and keep owner-only access", async () => {
+    const write = (root, id) => {
+      const dir = path.join(root, ".openworkbuddy"); fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, "traces.jsonl"), [
+        { schema: 1, traceId: id, kind: "trace", phase: "start", name: id, startTime: new Date().toISOString() },
+        { schema: 1, traceId: id, kind: "trace", phase: "end", output: "fixture result", endTime: new Date().toISOString() },
+      ].map(x => JSON.stringify(x)).join("\n") + "\n");
+    };
+    write(A, "fixture-trace-a"); write(B, "fixture-trace-b"); write(HOME, "fixture-trace-root");
+    const r = await call("GET", "/api/traces");
+    assert.equal(r.status, 200); assert.equal(r.json.traces.length, 3);
+    assert.equal((await call("GET", "/api/traces/fixture-trace-b")).json.trace.output, "fixture result");
+    assert.equal((await call("GET", "/api/traces", undefined, member)).status, 403);
+    assert.equal((await call("DELETE", "/api/traces")).status, 200);
+    assert.equal((await call("GET", "/api/traces")).json.traces.length, 0);
+  });
   await check("assistant engine choice is saved separately and accepts API or local engines", async () => {
     assert.equal((await call("GET", "/api/settings")).json.assist_engine, "codex", "旧 API 标签不能把现有本机引擎切成付费 API");
     const api = await call("POST", "/api/assist/model", { engine: "builtin", model: null });

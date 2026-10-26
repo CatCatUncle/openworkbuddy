@@ -433,7 +433,8 @@ async function partStaleResume() {
     async run(o) { calls.push({ prompt: o.prompt, resumeId: o.resumeId, systemPrompt: o.systemPrompt }); return script(o, calls.length); },
   };
   engines.BACKENDS.push(stub);
-  const rt = createAgentRuntime({ config: { agent: { engine: "t-stale", max_steps: 3, engine_options: { "t-stale": { model: "m1" } } } }, llm, mcpManager: new McpManager(), experts: [] });
+  const traceConfig = { agent: { engine: "t-stale", max_steps: 3, engine_options: { "t-stale": { model: "m1" } } } };
+  const rt = createAgentRuntime({ config: traceConfig, llm, mcpManager: new McpManager(), experts: [] });
   const history = () => [
     { role: "user", content: "先查一下 ALPHA" },
     { role: "assistant", text: "查完了" },
@@ -450,6 +451,19 @@ async function partStaleResume() {
   const gone = new Error("No conversation found with session ID: dead-1");
 
   try {
+    {
+      const A = await go(null, o => {
+        o.emit({ type: "tool_use", id: "trace-tool-fixture", name: "Bash", purpose: "printf trace-fixture", depth: 0 });
+        o.emit({ type: "tool_result", id: "trace-tool-fixture", name: "Bash", preview: "trace-fixture-result", isError: true, depth: 0 });
+        return { finalText: "追踪夹具已结束", usage: { prompt: 10, completion: 2 } };
+      });
+      ok(!A.err, "本机引擎追踪不会影响任务返回");
+      const rows = require(mod("trace")).getTracer(traceConfig).localTraces({ limit: 200 });
+      const row = rows.find(t => t.output === "追踪夹具已结束");
+      const tool = row && row.observations.find(o => o.metadata.call_id === "trace-tool-fixture");
+      ok(tool && tool.input === "printf trace-fixture" && tool.output === "trace-fixture-result" && tool.error, "本机引擎实际发出的工具、参数摘要、结果和失败状态进入 Trace");
+      ok(row.tokens.total === 12, "本机引擎汇总用量不因父子节点重复计算");
+    }
     {
       const A = await go("dead-1", (o, n) => { if (n === 1) throw gone; return { finalText: "接上了", sessionId: "new-2" }; });
       ok(!A.err && A.r.finalText === "接上了", "★续跑 id 失效 → 重开一根跑完了★ 以前这条会话之后每一轮都报同一个错", A.err ? A.err.message : A.r);

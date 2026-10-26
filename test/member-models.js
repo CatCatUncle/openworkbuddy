@@ -103,7 +103,9 @@ ok(/llmForSession\(sess, user\)|llmForSession\([^)]*,\s*user\)/.test(S), "/api/c
 const modelRouteAt = S.indexOf('app.post("/api/session/:id/model"');
 const modelRoute = S.slice(modelRouteAt, S.indexOf("\n});", modelRouteAt));
 ok(modelRouteAt >= 0 && /memberModels\.find\(config, modelWho\(req\.user\)/.test(modelRoute), "★给会话换模型：核他能不能用★");
-ok(/app\.post\("\/api\/assist\/model"[\s\S]{0,400}memberModels\.find\(config, modelWho\(req\.user\)/.test(S), "★助理页换模型：同一道核★");
+const assistRouteAt = S.indexOf('app.post("/api/assist/model"');
+const assistRoute = S.slice(assistRouteAt, S.indexOf("\n});", assistRouteAt));
+ok(assistRouteAt >= 0 && /memberModels\.find\(config, modelWho\(req\.user\)/.test(assistRoute), "★助理页换模型：同一道核★");
 ok(/models: memberModels\.listFor\(config, isPlatformOwner\(req\) \? \{ owner: true \} : modelWho\(req\.user\)\)/.test(S), "设置页的模型列表按人给");
 const my = S.slice(S.indexOf('app.post("/api/my-models"'), S.indexOf('app.post("/api/models/share"'));
 ok(/byokAllowed\(config\)\) return res\.status\(403\)/.test(my), "★关掉之后存不进去★");

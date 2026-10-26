@@ -620,11 +620,17 @@ function libCollectionHtml(data, more) {
 async function renderLibPage() {
   const page = document.getElementById("assist-page");
   if (!page) return;
+  const request = page._libRequest = (page._libRequest || 0) + 1;
+  const initialContent = page.firstElementChild;
+  clearTimeout(page._t);
+  if (page.querySelector("#lb-q")?._composing) return;
   if (!settingsCache) await refreshSettingsCache().catch(() => {});
+  if (request !== page._libRequest || !page.isConnected || page.firstElementChild !== initialContent) return;
   // 资料库一人一份（server.js 的 libraryRootOf），所以这一页不再分两副面孔。
   // 以前普通成员看到的是「共享资料 · 只读」，里面还摆着别人传的合同——
   // 这正是「资料库怎么数据还是通用的吗」那句话的来处。根分开之后，他进来看见的就是自己那份，写也写得进去。
   const q = (libState.q || "").trim();
+  const queryValue = libState.q;
   // libState 是页面级的一份状态，别的入口（深链、老的调用点、测试）可能只塞了一半字段。
   // 在这儿兜一次底：认不出来的值一律退回默认，否则 mode=undefined 会让列表挂上
   // .as-undefined 这种谁也没写过样式的类名，整页就散了。
@@ -660,6 +666,9 @@ async function renderLibPage() {
     libState.view === "fav" && !q ? fetch("/api/library/favorites").then(r => r.json()).catch(() => ({ error: "收藏读取失败" })) : Promise.resolve(null),
     libState.view === "rec" && !q && recents.length ? fetch("/api/library/stat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ items: recents.map((f, i) => ({ id: String(i), src: f.src, path: f.name })) }) }).then(r => r.json()).catch(() => null) : Promise.resolve(null),
   ]);
+  // 输入已变、开始组词或已切换页面时，旧请求不能覆盖当前结果和输入状态。
+  if (request !== page._libRequest || !page.isConnected || page.firstElementChild !== initialContent
+    || page.querySelector("#lb-q")?._composing || libState.q !== queryValue) return;
   // 服务端把越界/不存在的 dir 规整成了 ""，界面跟着回到根，否则面包屑指着一个进不去的地方
   libState.dir = (lib && typeof lib.dir === "string") ? lib.dir : "";
   // 工作区那一栏同理：那一层刚被任务清掉的话，libTreeOf 已经退回了根，这儿跟着记下来
@@ -668,10 +677,6 @@ async function renderLibPage() {
   if (tree && tree.moved) toast("那个文件夹已经不在了，回到了工作区最外层", "circle-alert");
   // 接口回的是 { error } 而不是资料清单时别装作「还没有参考资料」——那是句瞎话，
   // 用户会当成自己没传过东西，而真相是这一趟根本没读成
-  if (lib && lib.error) {
-    page.innerHTML = `<div class="hub-empty">${ic("book-open-text")} 资料库<br><br>${esc(lib.error)}</div>`;
-    return;
-  }
   if (out && out.tasks) libOutCache = out;
 
   const libRow = (src, f, o) => libRowHtml(src, f, { q, ...(o || {}) });
@@ -735,11 +740,13 @@ async function renderLibPage() {
     </div>
     ${wsFiles.length ? groupedRows(wsFiles, "ws", (f) => ({ delOut: f.name })) : '<div class="lib-none">工作目录还没有成果文件</div>'}`;
 
+  if (lib && lib.error) body = `<div class="hub-empty">${esc(lib.error)}</div>`;
+
   // 预览栏什么时候占位置：选了东西才占（列表/图标），画廊里永远占——它就是主角。
   // 画廊里还没选东西也照占：底下几行会替用户挑第一个，位置得先留出来。
   const prevOn = libState.mode === "gallery" || !!libState.pick;
 
-  page.innerHTML = `
+  const markup = `
     <div class="lib-page" data-mode="${libState.mode}" data-prev="${prevOn ? "on" : "off"}">
       <div class="lib-side">
         <div class="hub-search">${ic("search")}<input id="lb-q" placeholder="搜文件名、正文、任务名…" value="${esc(libState.q)}">${q ? `<a href="#" id="lb-qx" class="lb-qx" title="清空搜索">${ic("x")}</a>` : ""}</div>
@@ -775,6 +782,25 @@ async function renderLibPage() {
       <div class="lib-prev" id="lb-prev"><div class="ph">左边挑一个文件看内容<br><br>${ic("file-pen-line")} Markdown 直接排版 · ${ic("file-spreadsheet")} CSV 变表格 · ${ic("globe")} HTML 真渲染<br>画廊视图里按 ← → 一张张翻</div></div>
     </div>`;
 
+  // 搜索框留在原来的 DOM 位置：搜索返回不能重建它或回填旧光标，避免英文乱序和输入法断词。
+  const current = page.querySelector(".lib-page"), search = page.querySelector("#lb-q");
+  if (current && search) {
+    const next = document.createElement("template");
+    next.innerHTML = markup;
+    const updated = next.content.querySelector(".lib-page");
+    current.dataset.mode = updated.dataset.mode;
+    current.dataset.prev = updated.dataset.prev;
+    const side = current.querySelector(".lib-side"), searchBox = search.parentElement;
+    for (const child of [...side.children]) if (child !== searchBox) child.remove();
+    side.append(...[...updated.querySelector(".lib-side").children].slice(1));
+    searchBox.querySelector("#lb-qx")?.remove();
+    const clear = updated.querySelector("#lb-qx");
+    if (clear) searchBox.append(clear);
+    if (search.value !== (libState.q || "")) search.value = libState.q || "";
+    current.querySelector(".lib-main").replaceWith(updated.querySelector(".lib-main"));
+    current.querySelector(".lib-prev").replaceWith(updated.querySelector(".lib-prev"));
+  } else page.innerHTML = markup;
+
   // 没选中东西的画廊是一整块空白——替用户挑第一个。访达的画廊视图也是这么干的。
   // 从渲染好的 DOM 里挑，不从 body 字符串里正则抠：三种视图拼出来的 HTML 长得不一样，
   // 正则抠第一个 data-name 早晚会抠到隔壁那个属性上去。
@@ -787,15 +813,22 @@ async function renderLibPage() {
   }
 
   const qEl = page.querySelector("#lb-q");
-  // 搜索要打到服务端（跨目录、翻正文），所以节流放宽到 260ms，并且重画后把光标和选区放回去，
-  // 不然每敲一个字焦点就掉回页面，根本打不完一个词
-  qEl.oninput = () => {
+  const searchChanged = (event) => {
     libState.q = qEl.value;
+    page._libRequest = (page._libRequest || 0) + 1;
     clearTimeout(page._t);
-    page._t = setTimeout(async () => { const at = qEl.selectionStart; await renderLibPage(); const el2 = document.getElementById("lb-q"); if (el2) { el2.focus(); try { el2.setSelectionRange(at, at); } catch {} } }, 260);
+    if (qEl._composing || event?.isComposing) return;
+    page._t = setTimeout(() => { if (qEl.isConnected && !qEl._composing) renderLibPage(); }, 260);
   };
+  qEl.oninput = searchChanged;
+  qEl.oncompositionstart = () => {
+    qEl._composing = true;
+    page._libRequest = (page._libRequest || 0) + 1;
+    clearTimeout(page._t);
+  };
+  qEl.oncompositionend = () => { qEl._composing = false; searchChanged(); };
   const qx = page.querySelector("#lb-qx");
-  if (qx) qx.onclick = (e) => { e.preventDefault(); libState.q = ""; renderLibPage(); };
+  if (qx) qx.onclick = (e) => { e.preventDefault(); qEl.value = ""; qEl._composing = false; libState.q = ""; renderLibPage(); qEl.focus(); };
   page.querySelectorAll(".lib-tab[data-view]").forEach(b => b.onclick = () => {
     libState.view = b.dataset.view;
     if (["dir", "task", "ws"].includes(libState.view)) libState.fold = libState.view;

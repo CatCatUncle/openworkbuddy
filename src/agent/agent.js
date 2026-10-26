@@ -2509,7 +2509,7 @@ function modePrompt(mode) {
    * 「已达最大步数 / 已达最大运行时间 / 已手动停止」这三种收尾原样报出去——
    * task-verdict 那层认的就是这几个词，翻译对了，假绿判定在 CLI 引擎上照样生效。
    */
-  async function runViaEngine({ backend, opts = {}, history, emit = () => {}, mode, deadline, stopSignal, baseDir, engineSession, user, projectContext, lang, sessionId, sec, taskLabel, engineImport }) {
+  async function runViaEngine({ backend, opts = {}, history, emit = () => {}, mode, deadline, stopSignal, baseDir, engineSession, user, projectContext, lang, sessionId, sec, taskLabel, engineImport, traceNode = tracing.noop }) {
     const delivery = require("../core/automation/schedule-delivery");
     const deliveryState = delivery.current();
     // 从本机导入的会话接着聊：在它原来的文件夹里跑（server 那边核过属主、核过文件夹还在）。
@@ -2552,6 +2552,7 @@ function modePrompt(mode) {
     const renamed = new Map();
     // 交回主进程跑的那一单（见下面的 relayExec）要对上这张卡，进度条才挂得上：按工具名排队，结果来了就划掉
     const openCards = toolRelay.cards();
+    const traceTools = new Map();
     const wrapped = (raw) => {
       let ev = raw;
       if (ev && ev.type === "tool_use") {
@@ -2567,6 +2568,15 @@ function modePrompt(mode) {
         if (ev.id) openCards.close(n.name, ev.id);
       }
       if (beat) beat.touch();
+      // CLI 已经提供的工具事件也落本地，不把「拿不到完整模型内部过程」等同于全部黑盒。
+      try {
+        if (ev && ev.type === "tool_use" && ev.id && !traceTools.has(ev.id)) {
+          traceTools.set(ev.id, traceNode.span({ name: `工具 ${ev.name || "tool"}`, input: ev.input || ev.purpose || "", metadata: { tool: ev.name || "tool", engine: backend.id, call_id: ev.id } }));
+        } else if (ev && ev.type === "tool_result" && ev.id && traceTools.has(ev.id)) {
+          traceTools.get(ev.id).end({ output: ev.preview || ev.content || ev.result || "", metadata: { truncated: !!ev.cut }, ...(ev.isError || ev.is_error || ev.error ? { error: String(ev.error || ev.preview || ev.content || "工具执行失败") } : {}) });
+          traceTools.delete(ev.id);
+        }
+      } catch { /* 追踪失败不能影响实际执行。 */ }
       emit(ev);
       if (ev && ev.type === "tool_use") toolUses++;
       if (ev && ev.type === "tool_result") { try { filesOut.push(); } catch {} }
@@ -2792,6 +2802,7 @@ function modePrompt(mode) {
       // model/provider 一并带回：记账那边以前拿 config 里的模型名记这笔（跑的是 Claude Code，账本却写 deepseek-chat）
       return { finalText, usage, stopped: r.stopped || null, sessionId: r.sessionId || null, engine: backend.id, model: opts.model || backend.label, provider: backend.id };
     } finally {
+      for (const sp of traceTools.values()) sp.end({ metadata: { interrupted: true }, error: "未收到工具结束事件，任务已收尾" });
       if (beat) beat.stop();
       filesOut.stop(); // 尾随的那次要是烧到 SSE 关掉之后才响，就是往已经断掉的连接里写
       if (bridged) bridged.cleanup();
@@ -3148,7 +3159,7 @@ function modePrompt(mode) {
           picked = engines.resolve(engineOverride ? { ...view, agent: { ...view.agent, engine: engineOverride } } : view, { user });
         }
       } // 引擎名写错会在这里抛错，不会静默退回内置
-      catch (e) { throw engineError(e, String((prefs.agentCfg(config) || {}).engine || "").trim()); }
+      catch (e) { if (ownsTrace) tr.end({ error: (e && e.message) || String(e) }); throw engineError(e, String((prefs.agentCfg(config) || {}).engine || "").trim()); }
       if (picked.backend) {
         // 开跑前过闸（engines/gate.js）：组织关了命令行、多人共用属主没打开、型号没钉或不在放行列表、
         // 附加参数能换型号——当场报错，不退回内置引擎。收原始 config：属主那份不能被个人设置盖掉
@@ -3160,14 +3171,15 @@ function modePrompt(mode) {
           input: tracing._internals.messagesOf("", history),
           metadata: {
             engine: picked.backend.id,
+            model: picked.opts.model || picked.backend.label || picked.backend.id,
             // 这句得写清楚，不然看 trace 的人会以为这个引擎统共只调了一次模型
-            说明: "这一趟整个交给本机 CLI 跑了。它内部分几步、每步调了什么模型、烧了多少 token，本项目拿不到——这条 span 只有进去的话和出来的结果，中间是黑盒。想看逐步明细就把引擎切回「内置」。",
+            说明: "记录本机 CLI 返回的工具步骤、结果和整轮用量。未返回的模型内部提示词与逐次用量不可见，不补造记录。",
           },
         });
         try {
           const out = await runViaEngine({
             backend: picked.backend, opts: picked.opts,
-            history, emit, mode, deadline, stopSignal, baseDir, engineSession, engineImport, user, projectContext, lang, sessionId, sec, taskLabel,
+            history, emit, mode, deadline, stopSignal, baseDir, engineSession, engineImport, user, projectContext, lang, sessionId, sec, taskLabel, traceNode: sp,
           });
           sp.end({ output: out.finalText || "", usage: out.usage, metadata: { stopped: out.stopped || "", engine_session: out.sessionId || "" } });
           if (ownsTrace) tr.end({ output: out.finalText || "", usage: out.usage, metadata: { engine: picked.backend.id } });
