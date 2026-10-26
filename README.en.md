@@ -234,6 +234,8 @@ Multi-tenant, with seats, quotas and one-click offboarding. **Register the admin
 
 **Settings → Models**: pick a preset (OpenAI / Anthropic / OpenRouter / DeepSeek / Qwen / Zhipu / Kimi / Volcengine Ark / Ollama), paste the key, save — it applies immediately. Image, voice and video models have their own table. Reference → [配置模型](docs/配置模型.md) (Chinese)
 
+Assistant mode can also select local Codex, Claude Code, or a configured API model. It follows your current engine by default; changing its selection does not change scheduled task settings.
+
 > [!IMPORTANT]
 > Keys live only in `config.json`, which is already in `.gitignore`. Don't commit it.
 

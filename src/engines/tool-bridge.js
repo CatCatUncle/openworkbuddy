@@ -201,9 +201,9 @@ function notLent(name) {
  * 不退回本进程自己跑：那等于绕开属主要的审批和记账
  * @param {string} name @param {any} args @param {AbortSignal|undefined} signal
  */
-async function relayCall(name, args, signal) {
+async function relayCall(name, args, signal, file = RELAY_FILE) {
   let r;
-  try { r = await toolRelay.call(RELAY_FILE, name, args || {}, { signal }); }
+  try { r = await toolRelay.call(file, name, args || {}, { signal }); }
   catch (e) {
     if (e && e.connect) throw Object.assign(new Error(`${name} 这次没有执行：交不回 OpenWorkBuddy 主进程（${e.message}）。如实告诉用户这一步没做成。`), { relayDown: true, why: e.message });
     throw e;
@@ -221,6 +221,11 @@ async function callTool(name, args, { signal } = {}) {
     throw new Error(`这一趟是问答 / 计划模式，按只读跑，只借读的那几个工具；${name} 不在其中，没有执行`);
   }
   if (!ALLOW.has(name)) throw new Error(notLent(name));
+  if (name === "send_feishu_message") {
+    const file = process.env.OPENWORKBUDDY_MESSAGE_TICKET_FILE || RELAY_FILE;
+    if (!file) throw new Error("飞书发送必须通过应用消息通道执行，当前没有发送；不要在沙箱中重试 lark-cli 或降级钥匙串。");
+    return relayCall(name, args, signal, file);
+  }
   // 交回主进程跑：设置、安全策略、审批卡、记账都在那边照这一趟的上下文办，这里不读设置也不执行
   if (RELAY_FILE) return relayCall(name, args, signal);
   if (loaded.error) { loaded = loadConfig(); config = loaded.config; }
@@ -475,6 +480,7 @@ function sandboxBlock(name) {
   if (RELAY_FILE) return ""; // 交回主进程跑的不在这个进程里写数据目录、起 Chrome
   const inCodex = !!process.env.CODEX_SANDBOX;
   const via = `改用 mcp__openworkbuddy__${name}（那条路不在沙箱里）；手上没有这个工具，就如实告诉用户这一步没做成。`;
+  if (why === "host") return `${name} 只通过应用消息通道执行，不在命令沙箱内读取钥匙串。${via}`;
   if (why === "chrome") return inCodex ? `${name} 没有执行：它要起本机 Chrome，这条命令行入口跑在 codex 的命令沙箱里，起不来。${via}` : "";
   if (dataWritable()) return "";
   return `${name} 没有执行${why === "paid" ? "（上游没调，没花钱）" : ""}：它要往 OpenWorkBuddy 的数据目录（${dataPath("data")}）里${why === "paid" ? "记账" : "存东西"}，`

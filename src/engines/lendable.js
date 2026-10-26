@@ -12,6 +12,7 @@
 
 /** 借给 CLI 的工具白名单。改这里就是改「本机引擎能用到本项目的什么」。 */
 const LENDABLE = [
+  "send_feishu_message", // 飞书发送只借给主人的消息工具，钥匙串留在应用进程
   "generate_image",   // 生图：CLI 没有，用户最常撞的就是这条
   "generate_video",   // 生视频
   "text_to_speech",   // 配音
@@ -54,12 +55,13 @@ const NEEDS_RENDERER = ["html_to_image", "render_page"];
  *   chrome：要起本机 Chrome，沙箱里一起就 Abort trap: 6
  * 画布、交付页、取素材（资料库复制进工作区）写的是工作区，读资料库、读文档只读，这几样在沙箱里照跑，不在表里。
  * 新借一个工具，先想清它在沙箱里跑不跑得成再定进不进表（engine-bridge 的测试逐个点名核对）。
- * @type {Record<string, "paid"|"data"|"chrome">}
+ * @type {Record<string, "paid"|"data"|"chrome"|"host">}
  */
 const SANDBOX_BLOCKED = {
   generate_image: "paid", generate_video: "paid", text_to_speech: "paid", transcribe_audio: "paid", look_at_image: "paid", web_search: "paid",
   save_skill: "data", install_skill: "data", add_connector: "data", remember: "data", forget: "data",
   record_web_demo: "chrome",
+  send_feishu_message: "host",
 };
 
 /**

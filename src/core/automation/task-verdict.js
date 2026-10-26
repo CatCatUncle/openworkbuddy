@@ -158,7 +158,7 @@ function lastMatchIndex(pattern, text) {
  * @param {string|null} p.stopped  runTask 返回的 stopped 字段：撞上限 / 模型挂死 / 手动停止
  * @returns {{ok:true}|{ok:false,reason:string,label:string,hint:string,retryable:boolean}}
  */
-function judgeRun({ result, error, stopped } = {}) {
+function judgeRun({ result, error, stopped, task } = {}) {
   if (error) return { ok: true }; // 已经是 error 了，轮不到这里翻案（诊断走 explainRunError）
   const text = String(result == null ? "" : result).trim();
   const stop = String(stopped == null ? "" : stopped).trim();
@@ -196,6 +196,15 @@ function judgeRun({ result, error, stopped } = {}) {
       label: "Agent 一个字都没产出",
       hint: "这一轮 agent 没吐一个字就结束了——多半是渠道直接拒了、或者模型返回了空响应。翻这一条的会话日志看它停在哪；任务本身还在，下个周期照跑。",
     };
+  }
+
+  // 用户要的是送达，不能把「写出提醒正文，但明确说没发出」判成完成。
+  // 有任务上下文时才判断，避免把普通报告里引用的一条发送故障当成本轮失败。
+  if (text.length <= 1200 && /飞书|微信|推送|通知|发送|发消息/.test(String(task || ""))
+      && /(?:消息|提醒)[^。\n]{0,16}(?:没有|未能|未|无法)(?:发送|发出|送达)/.test(text)
+      && !/(?:已发送|已送达|发送成功)/.test(text)) {
+    return { ok: false, reason: "notification_failed", label: "通知未发送成功", retryable: false,
+      hint: "本轮没有送达回执。核对接收目标、发送权限与执行引擎；本机 CLI 的钥匙串须通过应用消息通道访问，不要降低凭据保护。" };
   }
 
   // 只在「整条结果就是那句报错」时翻案：正文短 + 头一句就命中特征。

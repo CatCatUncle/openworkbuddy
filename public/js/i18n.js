@@ -28,6 +28,8 @@
   // ---------- 词典：中文原句 → 英文 ----------
   const DICT = {
     en: {
+      "默认 API 模型": "Default API model",
+      "助理与远程消息使用的引擎和模型": "Engine and model used by the assistant and remote messages",
       "通知接收 ID（可选，ou_ 用户 / oc_ 会话）": "Notification recipient ID (optional: ou_ user / oc_ chat)",
       "定时任务通知：填写这个应用下的 ou_ 用户 ID 或 oc_ 会话 ID；留空不主动推送，不会自动群发。长连接在线仅表示可以收消息": "Scheduled notifications: enter a user open ID (ou_) or chat ID (oc_) for this app. Leave blank to disable outbound notifications. A connected socket only confirms incoming messaging.",
       "通知送达未确认": "Notification delivery unconfirmed",

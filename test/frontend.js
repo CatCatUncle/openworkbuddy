@@ -3566,9 +3566,10 @@ const ENGPICK_STUBS = [
   "var esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;');",
   "var MODALS = []; var openModal = (a, b) => MODALS.push(a + ':' + b);",
   "var inAssistMode = false;",
+  "var assistModel = null; var API_PICKS = [];",
   "var currentSessModel = () => null;",
   "var healthBadge = () => '';",
-  "var setSessionModel = async () => {};",
+  "var setSessionModel = async (name) => { API_PICKS.push(name); };",
   "var settingsCache = { active_model: 'deepseek', models: [{ name: 'deepseek', model: 'deepseek-chat', api_key: 'x' }], agent: { engine: 'claude-code', engine_label: '本机 Claude Code', engine_options: { 'claude-code': { model: 'claude-opus-5' } } } };",
 ].join("\n");
 const ENGPICK_CHECKS = `
@@ -3666,6 +3667,18 @@ const ENGPICK_CHECKS = `
   ok("本机引擎：按钮换成显示器图标，一眼看出走的是本机", btn.querySelector("use").getAttribute("href") === "#i-monitor");
   ok("悬停说清谁在跑、花不花钱", /本机 Claude Code/.test(btn.title) && /不花 API 额度/.test(btn.title), btn.title);
   ok("标签写的是它真正在用的模型", document.getElementById("model-label").textContent === "claude-opus-5", document.getElementById("model-label").textContent);
+  inAssistMode = true; settingsCache.assist_model = "deepseek";
+  updateModelLabel();
+  ok("助理未单独选引擎时沿用已有本机引擎，不被旧 API 标签切走", activeEngine().id === "claude-code");
+  settingsCache.assist_engine = "codex";
+  updateModelLabel();
+  ok("助理页不再强制只显示 API 模型", activeEngine().id === "codex" && menu.querySelector('[data-engine="codex"]') && menu.querySelector('[data-engine="claude-code"]'));
+  ok("本机引擎运行时仍可从助理菜单选择 API", !!menu.querySelector('[data-api="deepseek"]'));
+  menu.querySelector('[data-api="deepseek"]').click();
+  ok("助理菜单点击 API 传递实际型号", API_PICKS.includes("deepseek"));
+  settingsCache.assist_engine = "builtin";
+  updateModelLabel();
+  ok("助理选择 API 后标签与引擎一致", activeEngine() === null && document.getElementById("model-label").textContent === "deepseek");
   return names;
 })()
 `;

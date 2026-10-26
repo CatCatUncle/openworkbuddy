@@ -600,7 +600,7 @@ function createScheduler({ runtime, onResult, storePath, recorder, secondOpinion
       // 原来不报，一律顶着平台管理员跑——别家组织的成员排一条任务，到点就在总部的工作目录里执行
       const { finalText, stopped } = await delivery.withDelivery(deliveryState, () => runtime.runTask({ history, ...(item.user ? { user: item.user } : {}), ...((rec && rec.opts) || {}) }));
       if (deliveryState.feishu) run.feishu_delivery = deliveryState.feishu;
-      const v = judgeRun({ result: finalText, stopped });
+      const v = judgeRun({ result: finalText, stopped, task: item.task });
       if (v.ok) {
         // 判据放行了，但它从来没回答过「这件事到底办了没有」——正文一长它就主动让路。
         // 这一问只挂疑问不改判：run.ok 还是 true，通知里多一句「这条你自己看一眼」。

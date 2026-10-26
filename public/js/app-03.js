@@ -1516,7 +1516,7 @@ async function renderAssistPage() {
           : '<span style="color:var(--owb-text-3)">还没有连接任何 IM 通道</span>'}
       </div>
       <div class="picker" id="im-model-picker">
-        <button class="btn-plain" id="im-model-btn" title="助理页发消息用哪个模型（飞书 / QQ 等远程消息仍按全局默认跑）">${ic("sparkles")}<span id="im-model-label">模型</span>${ic("chevron-down")}</button>
+        <button class="btn-plain" id="im-model-btn" title="助理与远程消息使用的引擎和模型">${ic("sparkles")}<span id="im-model-label">模型</span>${ic("chevron-down")}</button>
         <div class="picker-menu down" id="im-model-menu"></div>
       </div>
       ${canOpenOnHost() ? `<button class="btn-plain" id="im-open-ws">${ic("folder-open")} 打开所在文件夹</button>` : ""}

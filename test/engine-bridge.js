@@ -692,6 +692,7 @@ const serverOf = (att) => JSON.parse(fs.readFileSync(att.runOpts.mcpConfigPath, 
       generate_image: "paid", generate_video: "paid", text_to_speech: "paid", transcribe_audio: "paid", look_at_image: "paid", web_search: "paid",
       save_skill: "data", install_skill: "data", add_connector: "data", remember: "data", forget: "data",
       record_web_demo: "chrome",
+      send_feishu_message: "host",
     };
     ok(sorted(Object.entries(SANDBOX_BLOCKED).map((e) => e.join(":"))) === sorted(Object.entries(want).map((e) => e.join(":"))),
       "★沙箱里跑不成的逐个点名★ 要花钱的、要写数据目录的、要起 Chrome 的", SANDBOX_BLOCKED);

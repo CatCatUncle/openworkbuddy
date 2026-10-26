@@ -284,7 +284,22 @@ function flatOutputs(sess, root, defaultRoot, key, limit = 200) {
   return out;
 }
 
+/** 已确认迁移了会话根时，同步成果事件里的旧指纹。旧目录仍在或有独立分格时不猜。 */
+function recoverFileRoots(sess, previous, keyOf) {
+  if (!sess || !previous || !sess.root || !previous.root || sess.root === previous.root
+      || !sess.dir || sess.dir !== previous.dir || (sess.dirs || {})[previous.root]
+      || fs.existsSync(previous.root) || !fs.existsSync(path.join(sess.root, sess.dir))) return false;
+  if (!path.isAbsolute(sess.root) || !path.isAbsolute(previous.root)
+      || !path.resolve(sess.root, sess.dir).startsWith(path.resolve(sess.root) + path.sep)) return false;
+  const before = keyOf(previous.root), after = keyOf(sess.root);
+  let changed = false;
+  for (const row of sess.transcript || []) for (const e of row.events || []) {
+    if (e.type === "files" && e.root === before) { e.root = after; changed = true; }
+  }
+  return changed;
+}
+
 module.exports = {
   canonDir, samePlace, appRoot, looksLikeRepo, folderLayout, perChatRoot, setLayout, taskSlug, dayStamp, freeDir, dropIfEmpty,
-  sessDirIn, sessDirAt, stashSessDir, useSessDirAt, newSessDir, flatOutputs,
+  sessDirIn, sessDirAt, stashSessDir, useSessDirAt, newSessDir, flatOutputs, recoverFileRoots,
 };

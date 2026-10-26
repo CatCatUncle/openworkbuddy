@@ -1473,6 +1473,7 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
     let base = TOOL_DEFS.filter(
       (t) =>
         !(shellOff && (t.name === "run_shell" || t.name === "run_node")) &&
+        !(t.name === "send_feishu_message" && (shellOff || (security.isMultiUser() && !security.isPlatformAdmin(user)) || !require("../core/ext/lark-message").binary())) &&
         !(installOff && t.name === "install_skill") &&
         !(connOff && t.name === "add_connector") &&
         !(noGui && DESKTOP_ONLY_TOOLS.includes(t.name)) &&
@@ -2206,6 +2207,7 @@ function modePrompt(mode) {
       signal: signal || stopSignal,
       taskLabel, // 审批卡片上标明发起任务，多任务并行时才分得清是谁在求批
       actor: user, // 审批归谁：多人共用一台服务器时，别人不该看见、更不该替他点「允许」
+      hostMessage: !security.isMultiUser() || security.isPlatformAdmin(user),
       baseDir, // 相对路径读写、脚本 cwd、产物落点全在本对话的成果子目录
       // 记之前先判一句：开关 + 这一趟在干什么（判一句话是不是只在这一趟里成立，得知道这一趟是什么活）
       memory: { user, gate: (config.agent || {}).memory_gate === true, task: taskLabel },
@@ -2622,8 +2624,10 @@ function modePrompt(mode) {
       });
     };
     let relay = null;
+    const hostMessages = !readOnly && !(orgPolicy() && orgPolicy().allow_shell === false)
+      && (!security.isMultiUser() || security.isPlatformAdmin(user)) && !!require("../core/ext/lark-message").binary();
     let askDown = false; // 勾了「先问我」、口子没开成：已经说过碰到会直接不做
-    if (opts.relay === true || askOn) {
+    if (opts.relay === true || askOn || hostMessages) {
       try { relay = await toolRelay.open({ exec: relayExec, approve: askOn ? approveHere : null, stopSignal, deadline: () => deadline, readOnly }); }
       catch (e) {
         const why = (e && e.message) || e;
@@ -2644,10 +2648,8 @@ function modePrompt(mode) {
         // 桥是个单独的子进程，组织策略（ALS）跟不过去：不该有的工具在这儿就别借出去。
         // 画布任务也不借生图 / 生视频 / 配音：那边要先交清单、用户点「开跑」才生成（src/tools/canvas.js CANVAS_QUOTE_FIRST），
         // 桥那头不知道是哪条会话，拦不住，只能不借
-        tools: skillsWriteOff() || connectorsLendOff() || canvasStore.canvasSessionOf(sessionId)
-          ? require("../engines/lendable").LENDABLE.filter((n) => !(skillsWriteOff() && n === "install_skill") && !(connectorsLendOff() && n === "add_connector")
-            && !(canvasStore.canvasSessionOf(sessionId) && canvasStore.CANVAS_QUOTE_FIRST.includes(n)))
-          : undefined,
+        tools: require("../engines/lendable").LENDABLE.filter((n) => !(skillsWriteOff() && n === "install_skill") && !(connectorsLendOff() && n === "add_connector")
+            && !(canvasStore.canvasSessionOf(sessionId) && canvasStore.CANVAS_QUOTE_FIRST.includes(n)) && !(n === "send_feishu_message" && (!hostMessages || !relay))),
         // 只读那一趟：只借读的工具，用户的连接器一个不挂（它们能干什么这边判断不了），命令行入口也不给。
         // 平时跟内置那边 startAll 同一份：自己配的在前、插件带来的在后；连接器页上关掉的不挂
         extraServers: readOnly ? [] : [...(config.mcp_servers || []), ...enginePluginServers()],
@@ -2658,6 +2660,7 @@ function modePrompt(mode) {
         approve: askOn,
         // 交回主进程跑：桥只拿凭据文件的路径（见上面的 relay）。只开审批的那一趟，借出去的工具照旧桥自己跑
         relayFile: relay && opts.relay === true ? relay.ticketFile : "",
+        hostMessageFile: relay && hostMessages ? relay.ticketFile : "",
         approveFile: relay && askOn ? relay.ticketFile : "",
         // 连接器页上给工具设的权限：claude 翻成放行 / 先问 / 不让用的规则，codex 翻成按工具的开关；问不了人的先问我按不让用办
         connectorPolicy: {
@@ -2673,7 +2676,7 @@ function modePrompt(mode) {
       if (relay) { relay.close().catch(() => {}); relay = null; }
     }
     // 交回来的只认这一趟借出去的那几样（跟桥那头同一份名单）；只开审批的那一趟一样都不收
-    if (relay) relay.allow(opts.relay === true ? bridged.lent : []);
+    if (relay) relay.allow(opts.relay === true ? bridged.lent : hostMessages ? ["send_feishu_message"] : []);
     // 审批真交回来了：名单里说「要问」的改成 claude 的「先问」（碰到弹卡），不再直接禁；那句「没有审批通道」也不说了
     const runGuard = bridged && bridged.askHuman ? security.askingGuard(guard) : guard;
     // 走网址的连接器两个 CLI 写法各不相同，这边没转。不说一句，用户只会看到工具少了几个
@@ -3093,7 +3096,7 @@ function modePrompt(mode) {
    * @param maxSteps 只给这一次任务的步数上限，不传就用全局配置
    * @returns { finalText }
    */
-  async function runTask({ history, emit = () => {}, systemPrompt, depth = 0, mode = "craft", deadline, stats, stopSignal, getInterject, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride, askUser, engineSession, engineImport, lang, sessionId, traceNode, mediaReopened, maxSteps: maxStepsOverride }) {
+  async function runTask({ history, emit = () => {}, systemPrompt, depth = 0, mode = "craft", deadline, stats, stopSignal, getInterject, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride, askUser, engineSession, engineImport, lang, sessionId, traceNode, mediaReopened, maxSteps: maxStepsOverride, engineOverride }) {
     // 读历史先过 normalizeEntry：老会话里引擎回合写的 { content } 就地改成 { text }。
     // 就地改的是调用方那份会话（sess.history），下次落盘就是正式格式，这段会话从此不再带着方言走
     normalizeHistory(history);
@@ -3140,7 +3143,10 @@ function modePrompt(mode) {
       // 带上发起的账号：成员没选过、跟着管理员那份默认走，而那个本机引擎没给他打开时按内置算（engines.resolve）
       try {
         if (taskBilling.current().billing_scope === "team") picked = engines.resolve({ ...config, agent: { ...config.agent, engine: "builtin" } }, { user });
-        else picked = engines.resolve(prefs.agentView(config), { user });
+        else {
+          const view = prefs.agentView(config);
+          picked = engines.resolve(engineOverride ? { ...view, agent: { ...view.agent, engine: engineOverride } } : view, { user });
+        }
       } // 引擎名写错会在这里抛错，不会静默退回内置
       catch (e) { throw engineError(e, String((prefs.agentCfg(config) || {}).engine || "").trim()); }
       if (picked.backend) {

@@ -697,6 +697,19 @@ const has = (p) => fs.existsSync(p);
       "设置页常摆两种放法；人没点过单选就不替他报（由服务端按新文件夹判的记）");
   }
 
+  {
+    const newer = path.join(HOME, "relocated-workspace"), older = path.join(HOME, "old-workspace");
+    fs.mkdirSync(path.join(newer, "report"), { recursive: true });
+    const key = r => require("crypto").createHash("sha1").update(r).digest("hex").slice(0, 8);
+    const previous = { root: older, dir: "report" };
+    const sess = { root: newer, dir: "report", transcript: [{ events: [{ type: "files", root: key(older) }, { type: "files", root: "other123" }] }] };
+    ok(taskDirs.recoverFileRoots(sess, previous, key), "目录迁移后恢复成果链接指纹");
+    ok(sess.transcript[0].events[0].root === key(newer) && sess.transcript[0].events[1].root === "other123", "只改证据对应的旧根，不混用其他项目");
+    ok(!taskDirs.recoverFileRoots(sess, previous, key), "恢复幂等");
+    fs.mkdirSync(older, { recursive: true });
+    sess.transcript[0].events[0].root = key(older);
+    ok(!taskDirs.recoverFileRoots(sess, previous, key), "旧目录仍在时不自动重定向");
+  }
   console.log(`\n${pass} 通过，${fail} 失败`);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });

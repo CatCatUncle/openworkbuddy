@@ -663,7 +663,7 @@ async function runSourcePins() {
   // 这条断言要钉死的是「个人偏好那层不许被绕过去」——写成 engines.resolve(config) 就等于
   // 所有人共用一份服务器配置，别人选的模型会跑到你头上。
   // 还得带上是谁发起的：成员没选过、跟着管理员的默认走时，那个本机引擎给没给他打开要按人算
-  ok(/engines\.resolve\(prefs\.agentView\(config\), \{ user \}\)/.test(agentSrc),
+  ok(/const view = prefs\.agentView\(config\);/.test(agentSrc) && /engines\.resolve\(engineOverride \? \{ \.\.\.view, agent: \{ \.\.\.view\.agent, engine: engineOverride \} \} : view, \{ user \}\)/.test(agentSrc),
      "agent.js 跑任务时解的是**发起人**选的引擎，不是 config 里那份");
   // 反向对照：工作线（办公 / 工程）不许再插手引擎。曾经这里套过一层 lanes.viewFor(lane, …)，
   // 后果是切个标签就把别人配的模型换掉了——服务器上两个人共用一份配置时，这是实打实的越权。

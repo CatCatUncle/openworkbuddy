@@ -828,6 +828,14 @@ function getSession(id) {
     // 会话文件坏了不抛错（不能因为一条对话打不开就让整个工作台起不来），
     // 但也绝不装作没有过这条对话：store 会先拿 .bak 顶上，实在不行把坏文件改名隔离
     const data = store.readJson(sessFile(id), { history: [], transcript: [], title: "", updated_at: null });
+    // 目录迁移可能只改过 root 字段，旧 files.root 哈希不可逆；仅用同一会话的备份核对原根。
+    try {
+      const staleRoot = data.root && data.dir && (data.transcript || []).some(row => (row.events || []).some(e => e.type === "files" && e.root && e.root !== workspaceKeyOf(data.root)));
+      if (staleRoot) {
+        const previous = JSON.parse(fs.readFileSync(sessFile(id) + ".bak", "utf8"));
+        if (taskDirs.recoverFileRoots(data, previous, workspaceKeyOf)) store.writeJsonAtomic(sessFile(id), data);
+      }
+    } catch { /* 没有迁移证据时保留原链接，不按文件名跨项目猜测。 */ }
     sessions.set(id, data);
     sessStamp.set(id, sessStat(id));
     sessUsedAt.set(id, Date.now());
@@ -2197,6 +2205,7 @@ app.get("/api/settings", (req, res) => {
     model_follow_last: myModel.model_follow_last,
     last_picked_model: myModel.last_picked_model,
     assist_model: myModel.assist_model,
+    assist_engine: assistEngineOf(req.user),
     agent: {
       max_steps: config.agent.max_steps,
       tool_timeout_ms: config.agent.tool_timeout_ms,
@@ -9379,21 +9388,29 @@ app.post("/api/models/member-byok", (req, res) => {
 // 刷新页面、离开助理页再回来都还是它。不存的话标签会自己弹回全局默认，
 // 而下面真正跑任务用的又是标签上那个——那就成了另一种「标签说一套、实际跑一套」
 app.post("/api/assist/model", (req, res) => {
-  const name = (req.body || {}).model;
+  const b = req.body || {};
+  const name = b.model;
   const val = name === null || name === undefined || name === "" ? "" : String(name);
+  const engine = String(b.engine || "builtin");
+  if (engines.get(engine) === undefined) return res.status(400).json({ error: "没有这个底层引擎：" + engine });
+  if (engine !== "builtin") {
+    try { engines.admit(engine, config, { user: req.user && req.user.username }); }
+    catch (e) { return res.status(400).json({ error: e.message }); }
+  }
   if (val && !memberModels.find(config, modelWho(req.user), val)) {
     return res.status(400).json({ error: `模型「${val.replace(/^my:/, "")}」不在你能用的模型里` });
   }
   // 「我在助理页用哪个模型」是个人的事。以前一律写 config，结果是多人服务器上谁都能
   // 改掉所有人的助理模型——而且这条路径压根没被服务器级的闸盖住
   if (ownPrefs(req)) {
-    prefs.write(req.user, { assist_model: val });
-    return res.json({ ok: true, model: val || null });
+    prefs.write(req.user, { assist_model: val, assist_engine: engine });
+    return res.json({ ok: true, model: val || null, engine });
   }
   if (val) config.assist_model = val;
   else delete config.assist_model;
+  config.assist_engine = engine;
   saveConfig();
-  res.json({ ok: true, model: config.assist_model || null });
+  res.json({ ok: true, model: config.assist_model || null, engine });
 });
 
 // 删除会话（内存 + 磁盘一起删）
@@ -9508,6 +9525,12 @@ function assistModelOf(owner) {
   let name = "";
   try { name = String((owner ? prefs.read(owner) : {}).assist_model || config.assist_model || ""); } catch { name = String(config.assist_model || ""); }
   return name && Array.isArray(config.models) && config.models.some((m) => m.name === name) ? name : "";
+}
+/** 未单独选择时沿用现有执行引擎；旧 API 标签不能把本机任务悄悄切到付费接口。 */
+function assistEngineOf(owner) {
+  const p = owner ? prefs.read(owner) : prefs.current() || {};
+  return String(p.assist_engine || config.assist_engine
+    || (p.agent || {}).engine || (config.agent || {}).engine || "builtin");
 }
 
 /**
@@ -9681,12 +9704,13 @@ function accountedRuntime(baseRuntime, source) {
       // 调用方没指定时，IM 跟着助理页那个选择走（见 assistModelOf）：
       // 成员（助理页里的、或者他自己绑的微信/飞书里来的）跟着他自己选的那个走，没选过才退回管理员的
       const want = modelName || (source === "im" ? assistModelOf(speaker || owner) : "");
+      const assistEngine = source === "im" ? assistEngineOf(speaker || owner) : "";
       // 助理页是成员自己在用：他用不着的模型不许跑，没点名就用他自己的默认（见 llmForSession）。
       // 定时任务的负责人是成员时同理：管理员没共享的模型不替他跑
       const runAs = caller || (owner ? owner.username : "");
       const runLLM = want || runAs ? llmForSession({ model: want, user: runAs, billing_scope: taskBilling.current().billing_scope }) : llm;
       // 价目闸：跟钱闸一样记在负责人头上，没价目的型号一个 cron 能刷出多少都扣不到预算
-      if (owner) {
+      if (owner && (!assistEngine || assistEngine === "builtin")) {
         const why = unpricedChat(owner, runLLM);
         if (why) throw Object.assign(new Error(why), { budget: { unpriced: true } });
       }
@@ -9719,6 +9743,7 @@ function accountedRuntime(baseRuntime, source) {
           baseDir: runDir,
           projectContext: projectContextOf(projectFor(runner || speaker)),
           ...rest,
+          ...(assistEngine ? { engineOverride: assistEngine } : {}),
           ...(want || taskBilling.current().billing_scope === "team" ? { llmOverride: runLLM } : {}),
         }));
       };

@@ -31,7 +31,7 @@ async function check(label, fn) { await fn(); count++; console.log("✓ " + labe
   fs.writeFileSync(path.join(HOME, "data", "sessions", "s_other.json"), JSON.stringify({ id: "s_other", owner: "owner", root: B, title: "Other", history: [], transcript: [] }));
   const owner = crypto.randomBytes(24).toString("hex"), member = crypto.randomBytes(24).toString("hex");
   fs.writeFileSync(path.join(HOME, "data", "users.json"), JSON.stringify({ users: [{ username: "owner", org: "default", salt: "fixture", hash: "fixture", role: "admin" }, { username: "member", org: "default", salt: "fixture", hash: "fixture", role: "member" }], tokens: { [owner]: { user: "owner", at: Date.now() }, [member]: { user: "member", at: Date.now() } } }));
-  fs.writeFileSync(path.join(HOME, "config.json"), JSON.stringify({ workspace_dir: A, projects: [{ id: "project-b", name: "B", dir: B }], mcp_servers: [] }));
+  fs.writeFileSync(path.join(HOME, "config.json"), JSON.stringify({ workspace_dir: A, projects: [{ id: "project-b", name: "B", dir: B }], assist_model: "legacy-api-label", agent: { engine: "codex", engine_options: { codex: { model: "fixture-model", enabled: true } } }, mcp_servers: [] }));
   child = spawn(process.execPath, [entry("server")], { env: { ...process.env, HOST: "127.0.0.1", PORT: "0", OPENWORKBUDDY_INSTALL_CLI: "0" }, stdio: ["ignore", "pipe", "pipe"] });
   let output = ""; child.stdout.on("data", d => { output += d; }); child.stderr.on("data", d => { output += d; });
   const port = await new Promise((resolve, reject) => {
@@ -39,6 +39,20 @@ async function check(label, fn) { await fn(); count++; console.log("✓ " + labe
     const poll = setInterval(() => { const m = /已启动: http:\/\/localhost:(\d+)/.exec(output); if (m || child.exitCode !== null) { clearTimeout(timeout); clearInterval(poll); if (m) resolve(Number(m[1])); else reject(new Error("isolated server exited")); } }, 100);
   });
   const call = (method, route, body, token = owner) => request(port, method, route, token, body);
+  await check("assistant engine choice is saved separately and accepts API or local engines", async () => {
+    assert.equal((await call("GET", "/api/settings")).json.assist_engine, "codex", "旧 API 标签不能把现有本机引擎切成付费 API");
+    const api = await call("POST", "/api/assist/model", { engine: "builtin", model: null });
+    assert.equal(api.status, 200); assert.equal(api.json.engine, "builtin");
+    const globalBefore = (await call("GET", "/api/settings")).json.agent.engine;
+    const local = await call("POST", "/api/assist/model", { engine: "codex", model: null });
+    assert.equal(local.status, 200); assert.equal(local.json.engine, "codex");
+    const setting = (await call("GET", "/api/settings")).json;
+    assert.equal(setting.assist_engine, "codex"); assert.equal(setting.agent.engine, globalBefore);
+    assert.equal((await call("POST", "/api/assist/model", { engine: "invalid" })).status, 400);
+    assert.equal((await call("POST", "/api/assist/model", { engine: "builtin", model: null }, member)).status, 200);
+    assert.equal((await call("GET", "/api/settings", undefined, member)).json.assist_engine, "builtin");
+    assert.equal((await call("GET", "/api/settings")).json.assist_engine, "codex", "成员选择不影响主人");
+  });
   await check("explicit roots beat a same-name file in the current workspace for preview and download", async () => {
     for (const endpoint of ["view", "download"]) {
       const a = await call("GET", "/api/files/" + endpoint + "/index.html?root=" + key(A));

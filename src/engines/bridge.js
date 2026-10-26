@@ -242,7 +242,7 @@ function writeShim(server) {
  * skipped：开着、但这次没转过去的连接器名（走网址的），调用方在运行页上说一句
  * @returns {{runOpts:object, names:string[], toolCount:number, skipped:string[], cleanup:function}}
  */
-function attach(engineId, { home, root = "", baseDir = "", user = "", run = "", tools, library = null, extraServers = [], disabled = [], readOnly = false, noShim = false, approve = false, relayFile = "", approveFile = "", connectorPolicy = null } = {}) {
+function attach(engineId, { home, root = "", baseDir = "", user = "", run = "", tools, library = null, extraServers = [], disabled = [], readOnly = false, noShim = false, approve = false, relayFile = "", hostMessageFile = "", approveFile = "", connectorPolicy = null } = {}) {
   const { servers, origin } = serverTable({ home, root, baseDir, user, run, tools, library, extraServers, disabled, readOnly });
   // 只读那一趟本来就一个不挂，不算「没转过去」
   const skipped = readOnly ? [] : forwardable(extraServers, disabled).skipped;
@@ -256,6 +256,8 @@ function attach(engineId, { home, root = "", baseDir = "", user = "", run = "", 
   if (relayFile && engineId !== "codex") servers[SERVER_NAME].env[RELAY_ENV] = relayFile;
   const shim = readOnly || noShim ? { path: "", dir: "", bin: "", cleanup() {} } : writeShim(servers[SERVER_NAME]);
   if (relayFile && engineId === "codex") servers[SERVER_NAME].env[RELAY_ENV] = relayFile;
+  // 仅 MCP 的飞书消息工具交回主进程，不改变其他工具或命令沙箱的执行位置。
+  if (hostMessageFile) servers[SERVER_NAME].env.OPENWORKBUDDY_MESSAGE_TICKET_FILE = hostMessageFile;
   // 「删文件等操作先问我」（engines/approve.js）：只有 claude 有这个口子；只读那一趟要审批的本来就一律不批。
   // 开关写在 owb 脚本烘好之后：命令行那条路不收审批，模型拿 owb 给自己批不了
   const ap = approve === true && engineId === "claude-code" && !readOnly;

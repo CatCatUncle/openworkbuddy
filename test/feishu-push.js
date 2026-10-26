@@ -23,6 +23,52 @@ const { mergeImPatch } = require("../src/im/im-config");
   };
   console.warn = () => {};
   try {
+    const message = require("../src/core/ext/lark-message");
+    const verdict = require("../src/core/automation/task-verdict");
+    let nativeSends = 0;
+    const request = { recipient: "ou_fixture01", text: "早上好\n今天的日报" };
+    const runner = async (bin, args, options) => {
+      nativeSends++;
+      assert.equal(bin, "/fixture/lark-cli");
+      assert.deepEqual(args.slice(0, 4), ["im", "+messages-send", "--as", "bot"]);
+      assert.equal(args[5], request.recipient); assert.equal(args[7], request.text);
+      assert.equal(options.cwd, dir); assert.equal(options.shell, undefined);
+      return { stdout: JSON.stringify({ ok: true, data: { message_id: "om_fixture" } }), stderr: "" };
+    };
+    await delivery.withDelivery({}, async () => {
+      const result = await message.send(request, { bin: "/fixture/lark-cli", run: runner, cwd: dir });
+      assert.equal(result.isError, false);
+      assert.equal((await message.send(request, { bin: "/fixture/lark-cli", run: runner, cwd: dir })).isError, true);
+    });
+    assert.equal(nativeSends, 1, "应用访问钥匙串的发送通道也遵守每轮去重");
+    assert.equal((await message.send({ ...request, recipient: "bad" }, { bin: "/fixture/lark-cli", run: runner })).isError, true);
+    assert.equal(nativeSends, 1, "非法目标不启动进程");
+    const failed = await message.send(request, { bin: "/fixture/lark-cli", run: async () => ({ stderr: "keychain not initialized: private fixture" }) });
+    assert(failed.isError && !failed.content.includes("private fixture"), "不把原始认证输出带回模型");
+    assert.equal(verdict.judgeRun({ task: "发消息到飞书", result: "今天的消息没有发出，未返回 message_id。" }).ok, false);
+    assert.equal(verdict.judgeRun({ result: "报告：昨天飞书消息没有发出，今天修复方案如下。" }).ok, true);
+    const relay = require("../src/engines/tool-relay");
+    const ticket = await relay.open({ exec: async (name, args) => {
+      assert.equal(name, "send_feishu_message"); assert.equal(args.recipient, request.recipient);
+      return { content: JSON.stringify({ ok: true, data: { message_id: "om_relay" } }), isError: false };
+    } });
+    ticket.allow(["send_feishu_message"]);
+    try {
+      const result = await new Promise((resolve, reject) => {
+        const child = require("child_process").spawn(process.execPath, [path.join(__dirname, "../src/engines/tool-bridge.js")], {
+          env: { ...process.env, OPENWORKBUDDY_HOME: dir, OPENWORKBUDDY_BRIDGE_ROOT: dir, OPENWORKBUDDY_BRIDGE_TOOLS: "send_feishu_message", OPENWORKBUDDY_MESSAGE_TICKET_FILE: ticket.ticketFile, OPENWORKBUDDY_RELAY_TICKET_FILE: "" }, stdio: ["pipe", "pipe", "pipe"],
+        });
+        let data = "", errors = "";
+        const timeout = setTimeout(() => { child.kill(); reject(new Error("message bridge timed out")); }, 15000);
+        child.stdout.on("data", b => { data += b; }); child.stderr.on("data", b => { errors += b; });
+        child.on("error", e => { clearTimeout(timeout); reject(e); });
+        child.on("close", code => { clearTimeout(timeout); if (code) reject(new Error(errors.slice(0, 200))); else resolve(JSON.parse(data.trim())); });
+        child.stdin.end(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "send_feishu_message", arguments: request } }) + "\n");
+      });
+      assert.equal(result.result.isError, false, "普通工具未开启交回主进程时，飞书 MCP 仍走专用消息通道");
+      assert.match(result.result.content[0].text, /om_relay/);
+      await assert.rejects(relay.call(ticket.ticketFile, "run_shell", { command: "fixture" }), /没有借给/, "消息通道不能被用于任意命令");
+    } finally { await ticket.close(); }
     assert.equal(await notify.pushFeishu({}, "x"), false);
     assert.equal(calls.length, 0, "没有目标不猜收件人、不发请求");
     assert.equal(notify.anyPushReady({ im }), true);

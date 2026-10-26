@@ -6584,14 +6584,14 @@ function defaultPendingModel() {
  * 点完还提示「已切换」：用户以为换了模型，其实每个任务都在用 CLI 的默认模型。
  * 所以走本机引擎时，标签要显示 CLI 的名字和 CLI 的模型，菜单要说清楚这里改不动它。
  *
- * 助理模式（inAssistMode）是例外：助理走的一直是内置的 API 那条路，不受引擎设置影响。
+ * 助理模式有独立的引擎选择，与服务端 /im/local、远程 IM 使用同一口径。
  */
 function activeEngine() {
   const ag = (settingsCache && settingsCache.agent) || {};
-  const id = ag.engine || "builtin";
-  if (id === "builtin" || inAssistMode || (typeof currentTaskBillingScope === "function" && currentTaskBillingScope() === "team")) return null;
+  const id = inAssistMode ? settingsCache.assist_engine || ag.engine || "builtin" : ag.engine || "builtin";
+  if (id === "builtin" || (typeof currentTaskBillingScope === "function" && currentTaskBillingScope() === "team")) return null;
   const o = (ag.engine_options || {})[id] || {};
-  return { id, label: ag.engine_label || id, model: (o.model || "").trim() };
+  return { id, label: inAssistMode ? ({ codex: "本机 Codex", "claude-code": "本机 Claude Code" }[id] || id) : ag.engine_label || id, model: (o.model || "").trim() };
 }
 function updateModelLabel() {
   if (!settingsCache) return;
@@ -6612,20 +6612,20 @@ function updateModelLabel() {
   renderModelMenu();
   // 助理页顶栏那个选择器（页面开着才有）跟输入框这个显示同一个值，别让两处对不上
   const al = document.getElementById("im-model-label");
-  if (al) { al.textContent = modelShown(ov || settingsCache.active_model); renderModelMenu(document.getElementById("im-model-menu")); }
+  if (al) { al.textContent = eng ? eng.model || eng.label : modelShown(ov || settingsCache.active_model); renderModelMenu(document.getElementById("im-model-menu")); }
   if (typeof syncSessionHeader === "function") syncSessionHeader();
 }
 async function setSessionModel(name) { // name: 模型名；null = 跟随全局默认
   // 本机引擎在跑的时候，这里选什么都到不了 CLI。让它落库再显示成「已切换」，
   // 就是骗用户——直接拒了，并指路真正能改模型的地方
   const eng = activeEngine();
-  if (eng) { toast("现在由「" + eng.label + "」在跑，模型由它自己定；要改去 设置 → 智能体 → 底层引擎"); return; }
+  if (eng && !inAssistMode) { toast("现在由「" + eng.label + "」在跑，模型由它自己定；要改去 设置 → 智能体 → 底层引擎"); return; }
   if (inAssistMode) { // 助理模式：存进配置，下次进来还是它
     try {
       const r = await fetch("/api/assist/model", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: name }) }).then(x => x.json());
       if (r && r.error) return toast(r.error, "triangle-alert");
       assistModel = name || undefined;
-      if (settingsCache) settingsCache.assist_model = assistModel || "";
+      if (settingsCache) { settingsCache.assist_model = assistModel || ""; settingsCache.assist_engine = r.engine || "builtin"; }
     } catch {}
     updateModelLabel();
     return;

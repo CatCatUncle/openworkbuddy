@@ -12,6 +12,7 @@ const { DATA_DIR, dataPath, appPath } = require("../platform/paths");
 const { spawn, spawnSync } = require("child_process");
 const { outDecoder } = require("../util/out-decode");
 const security = require("../core/safety/security");
+const larkMessage = require("../core/ext/lark-message");
 const netGuard = require("../core/safety/net-guard"); // 联网工具的地址闸：本机/内网默认拦、OWB 自己的端口永远拦、发请求钉住判过的 IP
 const netAddr = require("../util/net-addr");
 const memory = require("../core/memory/memory");
@@ -180,6 +181,7 @@ function safePathIn(root, rel) {
 }
 
 const TOOL_DEFS = [
+  larkMessage.DEF,
   {
     name: "canvas_manage",
     description:
@@ -4251,6 +4253,11 @@ async function executeToolCore(name, input, opts = {}) {
       return { content: CANVAS.CANVAS_QUOTE_FIRST_NOTE, isError: true };
     }
     switch (name) {
+      case "send_feishu_message":
+        if (!opts.hostMessage || (security.isMultiUser() && !security.isPlatformAdmin(opts.actor)) || orgBlocksShell() || sec.runtime_shell === false || security.permissionMode(sec) === "plan") {
+          return { content: "飞书机器人发送须由本机主人授权并交回应用执行；当前没有执行。", isError: true };
+        }
+        return larkMessage.send(input, { signal: opts.signal || opts.stopSignal, cwd: fileBase });
       case "canvas_manage":
         // 带上本对话的成果文件夹：agent 写进节点的相对路径是从那儿算的，画布要的是从根算的
         return canvasManage(input, { base: baseRel, platform: plat, media: opts.media });

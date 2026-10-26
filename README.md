@@ -233,6 +233,8 @@ bash deploy.sh --domain buddy.example.com # Docker + 自动 HTTPS
 
 **设置 → 模型**，挑预设（OpenAI / Anthropic / OpenRouter / DeepSeek / 通义 / 智谱 / Kimi / 火山方舟 / Ollama），粘 Key，保存即生效。生图、配音、生视频另有一张表。对照表 → [配置模型](docs/配置模型.md)
 
+助理模式也可在模型菜单选择本机 Codex、Claude Code 或已配置的 API 模型；默认沿用当前引擎，单独切换不改变定时任务的设置。
+
 > [!IMPORTANT]
 > Key 只存在 `config.json`，已在 `.gitignore` 里，别手滑提交。
 

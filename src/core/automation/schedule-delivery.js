@@ -51,5 +51,5 @@ async function runShell(input, run) {
   } catch (e) { state.feishu = "unknown"; throw e; }
 }
 
-const NOTE = "发送结果只使用用户指定的一个应用/机器人和一个收件目标。收到 message_id 等成功回执后立即停止发送，不切换 lark-cli profile、身份或机器人重复发送。只有缺参数、未登录这类明确未发出的错误才修正重试；超时、断连或没有回执时先核对原消息，不能当作失败重发。";
+const NOTE = "发送结果只使用用户指定的一个应用/机器人和一个收件目标。若有 send_feishu_message，优先通过它调用本机 lark-cli，由应用访问钥匙串；不要在命令沙箱中重试或降低钥匙串保护。收到 message_id 等成功回执后立即停止发送，不切换 profile、身份或机器人重复发送。只有缺参数、未登录这类明确未发出的错误才修正重试；超时、断连或没有回执时先核对原消息，不能当作失败重发。";
 module.exports = { current, withDelivery, runShell, sendCount, receipt, NOTE };

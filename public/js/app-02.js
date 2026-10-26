@@ -19,8 +19,9 @@ function modelShown(name) {
 // menu 不传就是输入框右下角那个；助理页顶栏那个把自己的容器传进来，两处共用同一份菜单
 function renderModelMenu(menu = modelMenu) {
   if (!settingsCache || !menu) return;
+  if (inAssistMode) return renderAssistModelMenu(menu);
   // 本机 CLI 在跑：这一整排 API 模型都是摆设，别再让用户点了以为生效。
-  // 只在输入框那个选择器上换（menu === modelMenu）；助理页顶栏那个走的还是 API，不受影响
+  // 普通任务的输入框显示当前本机引擎；助理页已由上面的独立菜单处理。
   const eng = menu === modelMenu ? activeEngine() : null;
   if (eng) {
     // 这里不是一排可选项，是一张「现在谁在跑」的卡：谁在跑、花不花钱、去哪儿改，三行完事。
@@ -63,6 +64,29 @@ function renderModelMenu(menu = modelMenu) {
     menu.classList.remove("show");
     if (mi.dataset.act === "manage") return openModal("settings", "models");
     await setSessionModel(mi.dataset.act === "default" ? null : mi.dataset.name);
+  });
+}
+
+/** 助理页的两个选择器都能选 API 或本机引擎，选择只影响助理与 IM。 */
+function renderAssistModelMenu(menu) {
+  menu.classList.remove("eng");
+  const selected = settingsCache.assist_engine || (settingsCache.agent || {}).engine || "builtin";
+  const items = (settingsCache.models || []).filter(modelReady);
+  menu.innerHTML = `<div class="mi${selected === "builtin" && !assistModel ? " on" : ""}" data-api="">${ic("sparkles")}默认 API 模型 <span class="sub">${esc(modelShown(settingsCache.active_model))}</span></div>`
+    + items.map(m => `<div class="mi${selected === "builtin" && assistModel === m.name ? " on" : ""}" data-api="${esc(m.name)}">${ic("sparkles")}${esc(modelShown(m.name))}</div>`).join("")
+    + [["codex", "本机 Codex"], ["claude-code", "本机 Claude Code"]].map(([id, label]) => `<div class="mi${selected === id ? " on" : ""}" data-engine="${id}">${ic("monitor")}${esc(label)} <span class="sub">${esc((((settingsCache.agent || {}).engine_options || {})[id] || {}).model || "用它自己的默认模型")}</span></div>`).join("")
+    + `<div class="mi" data-manage="1">${ic("settings")}管理模型…</div>`;
+  menu.querySelectorAll(".mi").forEach(item => item.onclick = async () => {
+    menu.classList.remove("show");
+    if (item.dataset.manage) return openModal("settings", "models");
+    if (!item.dataset.engine) return setSessionModel(item.dataset.api || null);
+    try {
+      const response = await fetch("/api/assist/model", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ engine: item.dataset.engine, model: assistModel || null }) });
+      const result = await response.json();
+      if (!response.ok || result.error) return toast(result.error || "保存失败", "triangle-alert");
+      settingsCache.assist_engine = result.engine;
+      updateModelLabel();
+    } catch { toast("保存失败", "triangle-alert"); }
   });
 }
 
