@@ -39,6 +39,49 @@ async function librarySmoke() {
   await evaluate("window.fetch=_libraryFetch;true");
   console.log("PASS 输入法未确认不搜索，确认后仅搜索一次最终文字");
 }
+async function pageSearchSmoke() {
+  for (const [kind, selector, render, query, sequence] of [
+    ["proj", "#pj-q", "renderProjPage", "document.getElementById('assist-page')._q", "_projSeq"],
+    ["autom", "#at-q", "renderAutomPage", "automState.q", "_automSeq"],
+  ]) {
+    await evaluate(`openPageView(${JSON.stringify(kind)});true`);
+    await waitFor(`!!document.querySelector(${JSON.stringify(selector)})`);
+    await evaluate(`window._pageInput=document.querySelector(${JSON.stringify(selector)});_pageInput.focus();
+      window._pageFetch=window.fetch;window._pageFetches=0;
+      window.fetch=(url,opt)=>{if(/^\\/api\\/(projects|schedules)(?:[?\/]|$)/.test(String(url)))_pageFetches++;return _pageFetch(url,opt);};true`);
+    for (const letter of "ppt") { await cmd("Input.insertText", { text: letter }); await pause(300); }
+    assert(await evaluate(`document.querySelector(${JSON.stringify(selector)})===_pageInput && _pageInput.value==='ppt' && _pageInput.selectionStart===3 && document.activeElement===_pageInput && _pageFetches===0`), kind + " 搜索需保留输入与光标，不重复请求列表");
+    console.log("PASS " + kind + " 实际键入 ppt 保持焦点和顺序，搜索未重复请求接口");
+    await evaluate(`window._beforePageSearch=document.getElementById('assist-page')[${JSON.stringify(sequence)}];
+      _pageInput.value='queued';_pageInput.dispatchEvent(new InputEvent('input',{bubbles:true}));
+      _pageInput.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));
+      _pageInput.value='pin';_pageInput.dispatchEvent(new InputEvent('input',{bubbles:true,isComposing:true}));true`);
+    await pause(350);
+    assert(await evaluate(`${query}==='ppt' && document.getElementById('assist-page')[${JSON.stringify(sequence)}]===_beforePageSearch`), kind + " 组词前需取消未执行的搜索");
+    await evaluate(`_pageInput.value='拼音';_pageInput.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true,data:'拼音'}));_pageInput.dispatchEvent(new InputEvent('input',{bubbles:true}));true`);
+    await pause(350);
+    assert(await evaluate(`${query}==='拼音' && document.getElementById('assist-page')[${JSON.stringify(sequence)}]===_beforePageSearch+1 && document.querySelector(${JSON.stringify(selector)})===_pageInput`), kind + " 确认输入后仅更新一次");
+    await evaluate(`_pageInput.setSelectionRange(0,1,'backward');${render}().then(()=>true)`);
+    assert(await evaluate(`document.querySelector(${JSON.stringify(selector)})===_pageInput && _pageInput.selectionStart===0 && _pageInput.selectionEnd===1 && _pageInput.selectionDirection==='backward' && document.activeElement===_pageInput`), kind + " 刷新数据时需保留原输入框与选区");
+    const action = kind === "proj" ? "#pj-new" : "#at-new";
+    await evaluate(`_pageInput.value='ppt';_pageInput.dispatchEvent(new InputEvent('input',{bubbles:true}));window._pageAction=document.querySelector(${JSON.stringify(action)});_pageAction.focus();true`);
+    await pause(350);
+    assert(await evaluate(`document.querySelector(${JSON.stringify(action)})===_pageAction && document.activeElement===_pageAction`), kind + " 搜索返回时不能抢走已移到按钮的焦点");
+    await evaluate("window.fetch=_pageFetch;true");
+    console.log("PASS " + kind + " 输入法确认后仅更新一次，刷新数据不重建输入框");
+  }
+  await evaluate(`window._runsFetch=window.fetch;window._releaseRuns=null;window.fetch=(url,opt)=>String(url).startsWith('/api/schedules/runs?')?new Promise(resolve=>{_releaseRuns=()=>resolve(_runsFetch(url,opt));}):_runsFetch(url,opt);automState.tab='runs';window._pendingRuns=renderAutomPage();true`);
+  await waitFor("typeof _releaseRuns==='function'");
+  await evaluate("automState.tab='tasks';renderAutomPage().then(()=>true)");
+  await evaluate("_releaseRuns();_pendingRuns.then(()=>true)");
+  assert(await evaluate("automState.tab==='tasks' && !!document.getElementById('at-q')"), "迟到的运行记录不能覆盖已切回的自动化列表");
+  await evaluate("window.fetch=_runsFetch;true");
+  console.log("PASS 运行记录迟到时不会覆盖已切回的任务列表");
+  await evaluate("_pageInput.value='abandoned';_pageInput.dispatchEvent(new InputEvent('input',{bubbles:true}));openPageView('trace');true");
+  await pause(400);
+  assert(await evaluate("pageKind==='trace' && !document.getElementById('at-q')"), "离开页面后不能被旧搜索重新打开");
+  console.log("PASS 页面切换后旧搜索不会覆盖新页面");
+}
 (async () => {
   const a = path.join(temp, "project-a"), b = path.join(temp, "project-b");
   fs.mkdirSync(a); fs.mkdirSync(b);
@@ -75,6 +118,7 @@ async function librarySmoke() {
   await evaluate(`fetch('/api/auth/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:'追踪检查',password:${JSON.stringify(crypto.randomBytes(16).toString("base64url"))}})}).then(r=>r.json())`);
   await cmd("Page.navigate", { url: base });
   await waitFor("typeof send==='function' && typeof curBusy==='function'"); await pause(1200);
+  if (process.argv.includes("--search-only")) { await librarySmoke(); await pageSearchSmoke(); return; }
   if (process.argv.includes("--library-only")) { await librarySmoke(); return; }
   await evaluate(`document.getElementById('onb-mask')?.classList.remove('show');inputEl.value='请用工具执行 printf trace-smoke，然后回复追踪验证完成。只执行这一条命令，不联网、不改其他文件。';inputEl.dispatchEvent(new Event('input'));void send();true`);
   await pause(1200); await waitFor("!curBusy()", 180);
@@ -101,6 +145,7 @@ async function librarySmoke() {
   await evaluate("document.getElementById('onb-mask')?.classList.remove('show');openPageView('trace');true"); await waitFor("!!document.querySelector('[data-trace]')");
   console.log("PASS 刷新后记录仍可见");
   await librarySmoke();
+  await pageSearchSmoke();
 })().catch(e => { console.error(e.message); process.exitCode = 1; }).finally(async () => {
   try { ws && ws.close(); child && child.stdin.write("quit\n"); await pause(1500); if (child && child.exitCode === null) process.kill(-child.pid, "SIGKILL"); } catch {}
   fs.rmSync(temp, { recursive: true, force: true });

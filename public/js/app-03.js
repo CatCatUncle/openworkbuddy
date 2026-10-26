@@ -1626,10 +1626,12 @@ const PROJ_TEMPLATES = [
   { icon: "package", tt: "项目交付", dd: "管理客户需求、计划、风险和周报", ins: "这是一个对客户的交付项目。所有对外文档开头都要有结论摘要；周报固定三段：本周进展/风险与阻塞/下周计划；风险必须写清楚影响和应对，不许只列现象；涉及排期变化要显式标出来。" },
   { icon: "megaphone", tt: "内容营销", dd: "选题、成稿、多平台分发一条线", ins: "这是一个内容营销项目。选题先给出目标人群和钩子；正文口语化、短句、多分段；每篇产出都附一条一句话摘要和 3 个候选标题；发布渠道不同措辞不同：公众号可长文，小红书要点化+emoji。" },
 ];
-async function renderProjPage() {
+async function renderProjPage({ reuse = false } = {}) {
   const page = document.getElementById("assist-page");
   if (!page) return;
-  await refreshProjects();
+  const seq = page._projSeq = (page._projSeq || 0) + 1;
+  if (!(reuse && page.querySelector("#pj-q"))) await refreshProjects();
+  if (seq !== page._projSeq || !page.isConnected) return;
   const q = (page._q || "").toLowerCase();
   const mine = projects.filter(p => !q || p.name.toLowerCase().includes(q));
   // 路径从**左边**截。右边那两级（.../工程目录/我的项目）才是分得清谁是谁的部分，
@@ -1638,7 +1640,7 @@ async function renderProjPage() {
     const a = String(d || "").replace(/\\/g, "/").split("/").filter(Boolean);
     return !a.length ? "（还没设目录）" : a.length > 2 ? "…/" + a.slice(-2).join("/") : String(d);
   };
-  page.innerHTML = `
+  renderSearchPage(page, `
     <div class="pg-hero"><h1>项目</h1><div class="sub">项目 = 工作目录 + 可选的资料库文件夹（AI 只看得到它）</div></div>
     <div class="hub-head">
       <button class="btn-brand" id="pj-new" style="padding:8px 16px">${ic("plus")}新建项目</button>
@@ -1665,10 +1667,10 @@ async function renderProjPage() {
         <div class="dd">${esc(t.dd)}</div>
         <div class="ops"><a class="link" href="#">用这个模版新建${ic("arrow-right")}</a></div>
       </div>`).join("")}
-    </div>`;
+    </div>`, "#pj-q", reuse);
   page.querySelector("#pj-new").onclick = () => openProjEditor(null);
   const qEl = page.querySelector("#pj-q");
-  qEl.oninput = () => { page._q = qEl.value; clearTimeout(page._t); page._t = setTimeout(renderProjPage, 200); };
+  bindPageSearch(qEl, value => { page._q = value; renderProjPage({ reuse: true }); });
   page.querySelectorAll(".proj-card[data-tpl]").forEach(el => el.onclick = (e) => { e.preventDefault(); openProjEditor(null, PROJ_TEMPLATES[+el.dataset.tpl]); });
   page.querySelectorAll(".proj-card[data-name]").forEach(el => el.onclick = async (e) => {
     e.preventDefault();
@@ -1899,18 +1901,23 @@ function cronToForm(root, cron) {
   else { set("#sf-freq", "custom"); set("#sf-cron", cron || ""); }
   root.querySelector("#sf-freq").onchange();
 }
-async function renderAutomPage() {
+async function renderAutomPage({ reuse = false } = {}) {
   const page = document.getElementById("assist-page");
   if (!page) return;
+  const seq = page._automSeq = (page._automSeq || 0) + 1;
   const st = automState;
   if (st.tab === "runs") return renderAutomRuns(page);
-  const { list, error } = await getList("/api/schedules");
+  const { list, error } = reuse && page.querySelector("#at-q") && page._automList
+    ? { list: page._automList, error: null } : await getList("/api/schedules");
+  if (seq !== page._automSeq || !page.isConnected) return;
   // 服务端说了不给（多人服务器上定时任务归平台管理员），就把这句话摆出来。
   // 以前这儿直接 list.filter，403 的那个对象一进来整页就断在半空，白屏。
   if (error) {
+    page._automList = null;
     page.innerHTML = `<div class="hub-empty">${ic("clock")} 自动化<br><br>${esc(error)}<br><br><span style="font-size: 13px">定时任务用服务器额度，由平台管理员管理。<br>自己的活直接在对话里说。</span></div>`;
     return;
   }
+  page._automList = list;
   const q = st.q.toLowerCase();
   const match = list.filter(t => !q || t.name.toLowerCase().includes(q) || t.task.toLowerCase().includes(q));
   const on = match.filter(t => t.enabled), off = match.filter(t => !t.enabled);
@@ -1944,7 +1951,7 @@ async function renderAutomPage() {
       </span>
     </div>`;
   };
-  page.innerHTML = `
+  renderSearchPage(page, `
     <div class="hub-head">
       <div class="hub-tabs">
         <button class="active" data-tab="tasks">${ic("timer")} 定时任务</button>
@@ -1967,10 +1974,10 @@ async function renderAutomPage() {
     </div>` : ""}
     ${on.length ? `<div class="at-group">启用中（${on.length}）</div>` + on.map(row).join("") : ""}
     ${off.length ? `<div class="at-group">已暂停（${off.length}）</div>` + off.map(row).join("") : ""}
-    ${!match.length ? '<div class="hub-empty">还没有自动化任务。点右上角「添加自动化」或「从模版添加」建一个。</div>' : ""}`;
+    ${!match.length ? `<div class="hub-empty">${q ? "没有匹配的自动化任务" : "还没有自动化任务。点右上角「添加自动化」或「从模版添加」建一个。"}</div>` : ""}`, "#at-q", reuse);
   page.querySelector('[data-tab="runs"]').onclick = () => { st.tab = "runs"; renderAutomPage(); };
   const qEl = page.querySelector("#at-q");
-  qEl.oninput = () => { st.q = qEl.value; clearTimeout(page._t); page._t = setTimeout(renderAutomPage, 200); };
+  bindPageSearch(qEl, value => { st.q = value; renderAutomPage({ reuse: true }); });
   page.querySelector("#at-bulk").onclick = () => { st.bulk = !st.bulk; st.sel.clear(); renderAutomPage(); };
   page.querySelector("#at-new").onclick = () => { st.editing = null; openAutomDialog((b) => renderAutomForm(b)); };
   page.querySelector("#at-tpl").onclick = () => openAutomDialog(renderAutomTplPicker);
@@ -2142,12 +2149,14 @@ function renderAutomForm(box, tpl) {
   };
 }
 async function renderAutomRuns(page) {
+  const seq = page._automSeq = (page._automSeq || 0) + 1;
+  const taskId = automState.runTaskId;
   const { list: runs, error: runsErr } = await getList("/api/schedules/runs?limit=300");
+  if (seq !== page._automSeq || !page.isConnected) return;
   if (runsErr) {
     page.innerHTML = `<div class="hub-empty">${ic("scroll-text")} 运行记录<br><br>${esc(runsErr)}</div>`;
     return;
   }
-  const taskId = automState.runTaskId;
   const taskRuns = taskId ? runs.filter((run) => run.task_id === taskId) : runs;
   const taskName = taskId && (runs.find((run) => run.task_id === taskId) || {}).name;
   const fmtMs = (ms) => ms >= 60000 ? Math.round(ms / 60000) + " 分" : Math.max(1, Math.round(ms / 1000)) + " 秒";

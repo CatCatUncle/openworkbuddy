@@ -87,9 +87,10 @@ const IC_STUB = UI00_SRC.slice(UI00_SRC.indexOf("function ic(name, cls)"), UI00_
 // 「这台是什么系统」那几个小函数（fileMgrName / modKeyName）也在这一段里，界面文字拼「在访达里打开」要用。
 // 夹具自己垫了个假 ic 的，第一块就整块跳过了，所以第二块单独看它们在不在
 const UI_OS_EXPORTS = "window.uiOsOf = uiOsOf; window.UI_OS = UI_OS; window.fileMgrName = fileMgrName; window.modKeyName = modKeyName;";
+const UI_SEARCH_EXPORTS = "window.bindPageSearch = bindPageSearch; window.renderSearchPage = renderSearchPage;";
 const IC_BOOT = 'if (typeof ic === "undefined") { (function(){\n' + IC_STUB
-  + '\n;window.ic = ic; window.setMsg = setMsg; window.isIconName = isIconName; window.ava = ava; window.avaPicks = avaPicks; window.AVATAR_ICONS = AVATAR_ICONS; window.imeKey = imeKey; ' + UI_OS_EXPORTS + '\n})(); }\n'
-  + 'if (typeof fileMgrName === "undefined") { (function(){\n' + IC_STUB + '\n;' + UI_OS_EXPORTS + '\n})(); }\n';
+  + '\n;window.ic = ic; window.setMsg = setMsg; window.isIconName = isIconName; window.ava = ava; window.avaPicks = avaPicks; window.AVATAR_ICONS = AVATAR_ICONS; window.imeKey = imeKey; ' + UI_OS_EXPORTS + UI_SEARCH_EXPORTS + '\n})(); }\n'
+  + 'if (typeof fileMgrName === "undefined" || typeof bindPageSearch === "undefined") { (function(){\n' + IC_STUB + '\n;' + UI_OS_EXPORTS + UI_SEARCH_EXPORTS + '\n})(); }\n';
 const A0 = APP02.indexOf("// ================= ＋ 上传文件到工作空间");
 const A1 = APP02.indexOf("// ================= 两条工作线"); // 附件段的下一段（以前是会话历史，中间插进了工作线）
 if (A0 < 0 || A1 <= A0) throw new Error("app-02.js 里的附件段找不到了（段标题被改过？），前端测试没法定位真源码");
@@ -4842,7 +4843,7 @@ const APP03_AT = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app
 const APP04_LIB = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-04.js"), "utf8");
 const NAV0 = APP01_NAV.indexOf('const PLATFORM_ONLY_VIEWS = ["autom", "eval", "trace"];');
 const NAV1 = APP01_NAV.indexOf("// 这个选择器只管「当前对话」用哪个模型");
-const AUT0 = APP03_AT.indexOf("async function renderAutomPage() {");
+const AUT0 = APP03_AT.indexOf("async function renderAutomPage(");
 const AUT1 = APP03_AT.indexOf("function renderAutomTplPicker(box) {");
 // 添加 / 模版 / 编辑都开在弹框里：开框、收框这两个函数用真的，表单和模版内容喂桩
 const ADL0 = APP03_AT.indexOf("function openAutomDialog(fill) {");
@@ -5340,6 +5341,31 @@ const DEAD_CHECKS = `
   ok("反向对照：平台管理员看得到任务行", !!page.querySelector(".at-row"));
   ok("反向对照：「＋ 添加自动化」在", !!page.querySelector("#at-new"));
   {
+    const originalFetch = window.fetch;
+    let searchReads = 0;
+    window.fetch = (url, opt) => { if (url === "/api/schedules") searchReads++; return originalFetch(url, opt); };
+    const input = page.querySelector("#at-q"), pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+    input.focus(); input.value = "ppt"; input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    await pause(270);
+    ok("自动化搜索：保留原输入框、焦点与英文顺序", page.querySelector("#at-q") === input && document.activeElement === input && input.value === "ppt" && input.selectionStart === 3);
+    ok("自动化搜索：只筛选已读取的列表，不重复请求接口", searchReads === 0 && html().includes("没有匹配的自动化任务") && !page.querySelector(".at-row"));
+    input.setSelectionRange(0, 2, "backward"); await renderAutomPage();
+    ok("自动化刷新：保留原输入框和双向选区", page.querySelector("#at-q") === input && input.selectionStart === 0 && input.selectionEnd === 2 && input.selectionDirection === "backward");
+    const beforeIme = page._automSeq;
+    input.value = "pending"; input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    input.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+    input.value = "zaobao"; input.dispatchEvent(new InputEvent("input", { bubbles: true, isComposing: true }));
+    await pause(270);
+    ok("自动化搜索：组词取消旧定时器，未确认不筛选", window.automState.q === "ppt" && page._automSeq === beforeIme);
+    input.value = "早报"; input.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "早报" }));
+    input.dispatchEvent(new InputEvent("input", { bubbles: true })); await pause(270);
+    ok("自动化搜索：确认后只更新一次，任务行重新出现", window.automState.q === "早报" && page._automSeq === beforeIme + 1 && !!page.querySelector(".at-row"));
+    input.value = "ppt"; input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    const button = page.querySelector("#at-new"); button.focus(); await pause(270);
+    ok("自动化搜索：更新列表不抢走按钮焦点", page.querySelector("#at-new") === button && document.activeElement === button);
+    window.fetch = originalFetch; window.automState.q = ""; await renderAutomPage();
+  }
+  {
     // 2026-10-12 用户：「从模版添加」「添加自动化」要弹个框选，别在列表上方原地撑高
     const masks = () => document.querySelectorAll(".ask-mask .at-dlg");
     const before = page.innerHTML;
@@ -5364,6 +5390,16 @@ const DEAD_CHECKS = `
   await renderAutomPage();
   ok("反向对照：运行记录画得出表格", !!page.querySelector(".at-runs"));
   window.automState.tab = "tasks";
+  {
+    const originalFetch = window.fetch;
+    let release;
+    window.fetch = (url, opt) => url.startsWith("/api/schedules/runs?")
+      ? new Promise(resolve => { release = () => resolve(originalFetch(url, opt)); }) : originalFetch(url, opt);
+    const late = renderAutomRuns(page);
+    await renderAutomPage(); release(); await late;
+    ok("自动化切页：迟到的运行记录不会覆盖任务列表", !!page.querySelector("#at-q") && !page.querySelector(".at-runs"));
+    window.fetch = originalFetch;
+  }
 
   // ③ 侧栏：会 403 的入口不摆在那儿
   const shown = (v) => document.querySelector('.side-nav [data-view="' + v + '"]').style.display !== "none";

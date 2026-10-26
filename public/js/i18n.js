@@ -1611,6 +1611,7 @@
       "还没有用量记录": "No usage yet",
       "本地 · 用户": "Local · user",
       "没有匹配的项目": "No matching projects",
+      "没有匹配的自动化任务": "No matching automations",
       "批量管理": "Bulk manage",
       "从模版添加": "Add from template",
       "添加自动化": "Add automation",

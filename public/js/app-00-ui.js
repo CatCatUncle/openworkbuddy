@@ -126,6 +126,44 @@ function modKeyName(os = UI_OS) {
   return os === "mac" ? "⌘" : "Ctrl";
 }
 
+/** 搜索只接收已确认的输入；重复绑定保留定时器和输入法状态。 */
+function bindPageSearch(input, commit, delay = 200) {
+  let state = input._pageSearch;
+  if (state) { state.commit = commit; return; }
+  state = input._pageSearch = { commit, composing: false, timer: null };
+  const schedule = () => {
+    clearTimeout(state.timer);
+    if (state.composing) return;
+    state.timer = setTimeout(() => {
+      if (input.isConnected && !state.composing) state.commit(input.value);
+    }, delay);
+  };
+  input.oninput = (event) => {
+    clearTimeout(state.timer);
+    if (!state.composing && !event?.isComposing) schedule();
+  };
+  input.oncompositionstart = () => { state.composing = true; clearTimeout(state.timer); };
+  input.oncompositionend = () => { state.composing = false; schedule(); };
+}
+
+/** 刷新简单搜索页时保留顶栏搜索框及其祖先，不能移走焦点或重建正在组词的节点。 */
+function renderSearchPage(page, markup, selector, keepHead = false) {
+  const input = page.querySelector(selector), head = input?.closest(".hub-head"), search = input?.closest(".hub-search");
+  if (!head || head.parentNode !== page || search?.parentNode !== head) { page.innerHTML = markup; return; }
+  const template = document.createElement("template");
+  template.innerHTML = markup;
+  const nextInput = template.content.querySelector(selector), nextHead = nextInput?.closest(".hub-head"), nextSearch = nextInput?.closest(".hub-search");
+  if (!nextHead || nextHead.parentNode !== template.content || nextSearch?.parentNode !== nextHead) { page.innerHTML = markup; return; }
+  const replaceAround = (parent, next, keep, nextKeep) => {
+    const children = [...next.childNodes], at = children.indexOf(nextKeep);
+    for (const child of [...parent.childNodes]) if (child !== keep) child.remove();
+    for (const child of children.slice(0, at)) parent.insertBefore(child, keep);
+    for (const child of children.slice(at + 1)) parent.appendChild(child);
+  };
+  if (!keepHead) replaceAround(head, nextHead, search, nextSearch);
+  replaceAround(page, template.content, head, nextHead);
+}
+
 /* 自建 tooltip 顶掉原生 title：原生那个要悬停一秒才出来，出来是一坨系统灰框，
    成果卡上那种长路径会直接糊掉半张卡。这里 380ms 出、跟着目标走、贴不下就翻到下方。
    不改任何标记——鼠标扫过时把 title 就地搬进 data-tip，动态插入的节点一样吃得到。 */

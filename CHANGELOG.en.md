@@ -9,6 +9,8 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 ## 2026
 
+- **Oct 27** Project and automation search preserve the input and caret, wait for IME confirmation, and reuse loaded lists. Ignore late run-history responses after switching views.
+
 - **Oct 26** Fix missing traces across projects, split ledgers when switching directories during a run, missing local-engine tool events, and duplicated usage totals. Show read failures explicitly, refresh the trace page automatically, and restore the full Experts · Skills · Connectors sidebar label.
 - **Oct 26** Library search preserves the input and caret, waits for IME confirmation, and ignores stale responses to prevent reordered text.
 
