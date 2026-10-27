@@ -1072,7 +1072,7 @@ async function canvasGenerate(node, kind) {
     // 人还在这张画布这一页才开右侧预览。离开画布去看对话时 canvasState 不拆（图、画布名都还在），
     // 光看上面的 here 认不出来，结果一枪几分钟的视频生完，预览面板直接弹在他正看着的那条对话上
     if (!["image", "video", "audio"].includes(nodeKind) && typeof previewFile === "function" && viewKind() === viewAtStart
-      && canvasState.canvasName === board && canvasState.workspaceName === project) previewFile(canvasResolvedFileName(file));
+      && canvasState.canvasName === board && canvasState.workspaceName === project) canvasPreviewRight(file);
     // 回写分镜表没成也算「做好了」：画布上这一格确实有了，重跑只会再花一次钱
     return { ok: true };
   } catch (error) {

@@ -97,7 +97,7 @@ function serve() {
   return new Promise((resolve) => {
     const srv = http.createServer((req, res) => {
       const rel = decodeURIComponent(String(req.url || "/").split("?")[0]);
-      const pic = rel.startsWith("/api/files/view/") && TEST_IMGS[rel.split("/").pop()];
+      const pic = rel.startsWith("/api/files/view/") && TEST_IMGS[rel.slice("/api/files/view/".length)];
       if (pic) { res.setHeader("Content-Type", "image/png"); return res.end(pic); }
       const file = VENDOR[rel] || path.join(PUB, path.normalize(rel).replace(/^([/\\.]+)/, ""));
       if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) { res.statusCode = 404; return res.end("nope"); }
@@ -418,6 +418,9 @@ const STUB4 = `
 `;
 
 app.whenReady().then(async () => {
+  for (const [name, width] of [["预览甲/同名.png", 24], ["预览乙/同名.png", 48]]) {
+    TEST_IMGS[name] = nativeImage.createFromBitmap(Buffer.alloc(width * 16 * 4, width * 3), { width, height: 16 }).toPNG();
+  }
   const srv = await serve();
   // 隐藏窗口仍要按正常帧率验证滚轮合帧和小地图，不能被后台节流暂停 rAF。
   const win = new BrowserWindow({ show: false, width: 1440, height: 900, webPreferences: { contextIsolation: false, nodeIntegration: false, backgroundThrottling: false } });

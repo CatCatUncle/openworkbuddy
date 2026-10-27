@@ -172,8 +172,14 @@ function canvasSetSelection(ids, anchor) {
 }
 function canvasPreviewRight(value) {
   const path = String(value || "").trim(); if (!path) return canvasToast("这个节点还没有可预览的文件。", "info");
-  if (/^https?:/i.test(path) || typeof previewFile !== "function") return canvasOpenImagePreview(path, "素材预览");
-  previewFile(canvasResolvedFileName(path));
+  if (/^(https?:|data:)/i.test(path) || typeof previewFile !== "function") return canvasOpenImagePreview(path, "素材预览");
+  if (path.startsWith("/api/files/view/")) {
+    try {
+      const url = new URL(canvasFileUrl(path), location.origin);
+      return previewFile(decodeURIComponent(url.pathname.slice("/api/files/view/".length)), url.searchParams.get("root") || "");
+    } catch { return canvasToast("素材路径无效，请重新选择文件。", "info"); }
+  }
+  previewFile(canvasResolvedFileName(path), canvasState.workspaceRoot || "");
 }
 /**
  * 删掉选中的节点。右键菜单走这里，跟 Delete 键（canvasBindViewport 键盘那一段）做的是同一件事：

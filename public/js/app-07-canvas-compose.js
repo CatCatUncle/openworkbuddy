@@ -732,6 +732,7 @@ const CANVAS_REF_KEYS = ["path", "file", "url", "video", "audio", "image", "refe
  * （用户把文件补回来之后，横幅得自己消失，不能等刷新整页）。
  */
 async function canvasVerifyMissing() {
+  const scope = canvasScope(), request = canvasState.libraryRequest;
   const nodes = canvasState.graph?.getElements?.() || [];
   const inList = new Set(canvasState.files.map((f) => String(f.name || f.path || "")));
   const ask = new Set();
@@ -746,12 +747,12 @@ async function canvasVerifyMissing() {
   }
   // 清单里全找得着，就没什么可问的；顺手把上一轮留下的判决清掉
   if (!ask.size) { if (canvasState.missing.size) { canvasState.missing.clear(); nodes.forEach((n) => canvasRefreshNode(n)); } return; }
-  const r = await fetch("/api/files/exists", {
+  const r = await fetch(canvasFileRootUrl("/api/files/exists"), {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ paths: [...ask] }),
   }).then((x) => x.json()).catch(() => null);
   // 问不到（断网、接口挂了）就维持「认在」——没问出结果不是给文件盖章的理由
-  if (!r || !r.exists) return;
+  if (!r || !r.exists || canvasScope() !== scope || canvasState.libraryRequest !== request) return;
   let changed = false;
   for (const [path, ok] of Object.entries(r.exists)) {
     const had = canvasState.missing.has(path);
@@ -764,7 +765,9 @@ async function canvasVerifyMissing() {
 }
 
 async function canvasLoadLibrary() {
-  const response = await fetch("/api/files").then((x) => x.json()).catch(() => []);
+  const scope = canvasScope(), request = ++canvasState.libraryRequest;
+  const response = await fetch(canvasFileRootUrl("/api/files")).then((x) => x.json()).catch(() => []);
+  if (canvasScope() !== scope || canvasState.libraryRequest !== request) return;
   canvasState.files = Array.isArray(response) ? response : [];
   canvasState.graph?.getElements?.().forEach((node) => canvasRefreshNode(node));
   canvasRenderLibrary(); canvasMaterializeResultNodes(); if (canvasSelectedNode()) canvasRenderInspector(false);

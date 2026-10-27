@@ -87,7 +87,7 @@ let canvasState = {
   // proposalGone：这台机器上点过的清单号，服务端那份还没收掉之前同步一圈也别再冒出来
   proposal: null, proposalGone: new Set(),
   canvasName: "main", canvasList: [], taskSessionId: null, chatBusy: false, chatStopping: false, chatReferences: new Map(), history: [], historyIndex: -1, historyTimer: null, historyMute: false, historySeq: 0,
-  workspaceProjects: [], workspaceLocked: false, workspaceOwn: false, workspaceName: "", workspaceDir: "",
+  workspaceProjects: [], workspaceLocked: false, workspaceOwn: false, workspaceName: "", workspaceDir: "", workspaceRoot: "", libraryRequest: 0,
   // 正在生成的节点 id。生一张图几十秒，这期间远端那份每 1.8 秒来一趟、整图重铺——
   // 铺的时候这几个节点留本机这份，不然刚写上的结果被一份旧快照盖回去（见 canvasApplySnapshot）
   inflight: new Set(),
@@ -235,12 +235,15 @@ function canvasSafeText(value, fallback = "") { return String(value == null ? fa
 function canvasResolvedFileName(value) {
   const raw = String(value || "").trim();
   if (!raw || /^(https?:|data:|\/api\/files\/view\/)/i.test(raw)) return raw;
-  const files = Array.isArray(canvasState.files) ? canvasState.files : [];
-  const hit = files.find((file) => {
-    const name = String(file.name || file.path || "");
-    return name === raw || name.endsWith("/" + raw) || name.split(/[\\/]/).pop() === raw.split(/[\\/]/).pop();
-  });
-  return hit ? String(hit.name || hit.path) : raw;
+  const name = raw.replace(/\\/g, "/").replace(/^(\.\/)+/, "");
+  const dir = String(canvasState.workspaceDir || "").replace(/\\/g, "/").replace(/\/+$/, "");
+  // 路径就是素材身份，不能用同名文件补位。清单会截断，甚至暂时为空；
+  // 不在清单里也要保留原路径，让服务端确认缺失，不能换成另一目录的图片。
+  return dir && name.startsWith(dir + "/") ? name.slice(dir.length + 1) : name;
+}
+function canvasFileRootUrl(url) {
+  const root = String(canvasState.workspaceRoot || "");
+  return root && !/[?&]root=/.test(url) ? url + (url.includes("?") ? "&" : "?") + "root=" + encodeURIComponent(root) : url;
 }
 /**
  * 画布节点上那张图要的地址。w 传了就要缩略图。
@@ -259,8 +262,8 @@ function canvasFileUrl(value, w) {
   if (!name) return "";
   const thumb = w && !/\.svg(\?|$)/i.test(name) ? "?thumb=" + w : "";
   if (/^(https?:|data:)/i.test(name)) return name;
-  if (/^\/api\/files\/view\//i.test(name)) return thumb && !/[?&]thumb=/.test(name) ? name + (name.includes("?") ? "&" : "?") + "thumb=" + w : name;
-  return "/api/files/view/" + name.split(/[\\/]/).filter(Boolean).map(encodeURIComponent).join("/") + thumb;
+  if (/^\/api\/files\/view\//i.test(name)) return canvasFileRootUrl(thumb && !/[?&]thumb=/.test(name) ? name + (name.includes("?") ? "&" : "?") + "thumb=" + w : name);
+  return canvasFileRootUrl("/api/files/view/" + name.split(/[\\/]/).map(encodeURIComponent).join("/") + thumb);
 }
 function canvasMediaPath(payload) { return String(payload && (payload.path || payload.file || payload.url || payload.video || payload.audio || "") || "").trim(); }
 function canvasMediaMime(value) {

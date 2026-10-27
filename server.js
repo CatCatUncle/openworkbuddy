@@ -1740,7 +1740,12 @@ app.post("/api/update/install", async (req, res) => {
 
 // 跟 files 事件同一份清单，走后台线程翻目录（见 agent.js scanOutputs）：输入框里敲 @ 就会拉它，
 // 在主线程上同步走整棵树，那一下所有对话的流式输出一起停
-app.get("/api/files", (_req, res, next) => { scanOutputs(getWorkspaceDir()).then((f) => res.json(f), next); });
+app.get("/api/files", (req, res, next) => {
+  try {
+    const dir = req.query.root ? rootedPath(req, ".") : getWorkspaceDir();
+    scanOutputs(dir).then((files) => res.json(files), next);
+  } catch (error) { res.status(400).json({ error: error.message }); }
+});
 
 // 资料库「工作区」那一栏：一次列一层，像访达那样一层层点进去。/api/files 是「最近动过的 500 个、
 // 最深 3 层」，拿它当全集的话，第 4 层往下和第 501 个往后的文件哪儿都找不到（细账在 src/domains/library/ws-browse.js 开头）。
@@ -4504,17 +4509,17 @@ app.get("/api/projects", (req, res) => {
   // 没有项目这回事的如实说 locked，前端见到就整块不画、也不按项目过滤；
   // 用自己工作目录的人回他自己那份清单（own: true，前端不给选文件夹）
   const scope = projectScope(req.user);
-  if (scope === "none") return res.json({ projects: [], active: "", locked: true });
+  if (scope === "none") return res.json({ projects: [], active: "", locked: true, root: workspaceKeyOf(getWorkspaceDir()) });
   if (scope === "own") {
     try {
       const { projects, active } = ownProjects(req.user);
-      return res.json({ projects, active, locked: false, own: true });
+      return res.json({ projects, active, locked: false, own: true, root: workspaceKeyOf(getWorkspaceDir()) });
     } catch (e) {
       return res.status(503).json({ error: "你的工作目录建不出来，稍后再试或找管理员" });
     }
   }
   ensureProjects();
-  res.json({ projects: config.projects, active: config.active_project, locked: false });
+  res.json({ projects: config.projects, active: config.active_project, locked: false, root: workspaceKeyOf(getWorkspaceDir()) });
 });
 
 app.post("/api/projects", (req, res) => {

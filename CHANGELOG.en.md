@@ -9,6 +9,8 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 ## 2026
 
+- **10-27** Fixed same-name image mix-ups on the canvas. Thumbnails and previews stay bound to the original file and project; missing files are never substituted, and late file lists are ignored after project switches.
+
 - **Oct 27** The mobile app UI adapts to the visible viewport, uses horizontal settings tabs and full-screen file previews, and closes navigation after selection.
 
 - **Oct 27** Mobile website layouts now wrap navigation, resize headings and media, and improve English and Chinese documentation on narrow screens.

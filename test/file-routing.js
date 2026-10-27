@@ -39,6 +39,18 @@ async function check(label, fn) { await fn(); count++; console.log("✓ " + labe
     const poll = setInterval(() => { const m = /已启动: http:\/\/localhost:(\d+)/.exec(output); if (m || child.exitCode !== null) { clearTimeout(timeout); clearInterval(poll); if (m) resolve(Number(m[1])); else reject(new Error("isolated server exited")); } }, 100);
   });
   const call = (method, route, body, token = owner) => request(port, method, route, token, body);
+  await check("canvas project identity binds listings and image reads to the same root", async () => {
+    const projects = await call("GET", "/api/projects");
+    assert.equal(projects.json.root, key(A));
+    fs.writeFileSync(path.join(A, "only-a.txt"), "A"); fs.writeFileSync(path.join(B, "only-b.txt"), "B");
+    const files = await call("GET", "/api/files?root=" + key(B));
+    assert.equal(files.status, 200); assert.ok(files.json.some(f => f.name === "only-b.txt"));
+    assert.ok(!files.json.some(f => f.name === "only-a.txt"));
+    assert.equal((await call("GET", "/api/files?root=00000000")).status, 400);
+    assert.equal((await call("GET", "/api/files?root=" + key(B), undefined, member)).status, 400);
+    const read = await call("GET", "/api/files/view/index.html?root=" + key(B) + "&sid=s_other");
+    assert.ok(read.text.includes("PROJECT_B") && !read.text.includes("PROJECT_A"));
+  });
   await check("trace APIs aggregate known projects and keep owner-only access", async () => {
     const write = (root, id) => {
       const dir = path.join(root, ".openworkbuddy"); fs.mkdirSync(dir, { recursive: true });

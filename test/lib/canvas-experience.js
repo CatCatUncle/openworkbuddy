@@ -27,6 +27,50 @@ async function runCanvasExperience({ run, win, ok }) {
     const file = process.env.CANVAS_SCREENSHOT.replace(/\.png$/, suffix + ".png");
     fs.writeFileSync(file, (await win.webContents.capturePage(rect)).toPNG());
   };
+  console.log("\n— 图片预览：目录相同才是同一张素材 —");
+  const 图片身份 = await run(`(async () => {
+    ${摆画布([卡片("preview-exact", "image", { path: "预览乙/同名.png" }, 20, 20)])}
+    const saved = { root: canvasState.workspaceRoot, dir: canvasState.workspaceDir, preview: window.previewFile };
+    try {
+      canvasState.workspaceRoot = "fixture-root"; canvasState.workspaceDir = "/tmp/jia";
+      canvasState.files = [{ name: "预览甲/同名.png" }, { name: "预览乙/同名.png" }];
+      const out = { 完整路径: canvasResolvedFileName("预览乙/同名.png") === "预览乙/同名.png",
+        绝对路径: canvasResolvedFileName("/tmp/jia/预览乙/同名.png") === "预览乙/同名.png",
+        删除不补位: canvasResolvedFileName("缺失/同名.png") === "缺失/同名.png",
+        裸名不猜: canvasResolvedFileName("同名.png") === "同名.png" };
+      canvasRefreshNode(canvasState.graph.getCell("preview-exact"));
+      const image = canvasWireRoot("preview-exact").querySelector("[data-canvas-image-preview]");
+      await image.decode(); out.缩略图 = image.naturalWidth === 48;
+      image.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+      const big = document.querySelector("#canvas-media-lightbox img"); await big.decode();
+      out.放大原图 = big.naturalWidth === 48 && big.src.includes(encodeURIComponent("预览乙")) && !big.src.includes("thumb=");
+      out.项目绑定 = big.src.includes("root=fixture-root");
+      document.querySelector(".canvas-media-lightbox-close").click();
+      let opened; window.previewFile = (name, root) => { opened = { name, root }; };
+      canvasWireRoot("preview-exact").querySelector("[data-canvas-side-preview]").click();
+      out.侧栏 = opened.name === "预览乙/同名.png" && opened.root === "fixture-root";
+      canvasPreviewRight("/api/files/view/" + encodeURIComponent("预览乙") + "/" + encodeURIComponent("同名.png") + "?root=old-root");
+      out.已有地址 = opened.name === "预览乙/同名.png" && opened.root === "old-root";
+      canvasState.files = []; out.清单迟到 = canvasResolvedFileName("预览乙/同名.png") === "预览乙/同名.png";
+      return out;
+    } finally {
+      canvasState.workspaceRoot = saved.root; canvasState.workspaceDir = saved.dir; window.previewFile = saved.preview;
+      document.querySelector(".canvas-media-lightbox-close")?.click();
+    }
+  })()`);
+  for (const [label, passed] of Object.entries(图片身份)) ok(passed, "图片身份：" + label, 图片身份);
+  const 素材迟到 = await run(`(async () => {
+    const oldFetch = window.fetch, oldFiles = canvasState.files;
+    let release; const pending = new Promise((resolve) => { release = resolve; });
+    window.fetch = (url, options) => String(url).startsWith("/api/files?") ? pending : oldFetch(url, options);
+    try {
+      canvasState.workspaceRoot = "fixture-root";
+      const load = canvasLoadLibrary(); canvasState.workspaceName = "yi";
+      release({ json: async () => [{ name: "其他项目/同名.png" }] }); await load;
+      return canvasState.files === oldFiles;
+    } finally { window.fetch = oldFetch; canvasState.workspaceRoot = ""; canvasState.workspaceName = "jia"; }
+  })()`);
+  ok(素材迟到, "切项目后迟到的素材清单不能覆盖当前画布");
   console.log("\n— 同批卡片长高：一次让位、不漏卡、不改人工叠放 —");
   const 批量让位 = await run(`(() => {
     const graph = canvasState.graph; let writes = 0, reads = 0;

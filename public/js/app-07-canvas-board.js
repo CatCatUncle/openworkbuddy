@@ -21,6 +21,7 @@ async function canvasLoadWorkspaceProjects() {
   // own：成员这类用自己工作目录的账号，项目都建在自己目录里，不能另选文件夹（服务端也不收 dir）
   canvasState.workspaceOwn = !!data.own;
   canvasState.workspaceName = String(data.active || "");
+  canvasState.workspaceRoot = String(data.root || "");
   canvasState.workspaceDir = String(canvasState.workspaceProjects.find((item) => item.name === canvasState.workspaceName)?.dir || (typeof settingsCache !== "undefined" ? settingsCache?.workspace_dir : "") || "");
 }
 
