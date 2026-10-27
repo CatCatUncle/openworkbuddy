@@ -9,6 +9,8 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 ## 2026
 
+- **Oct 27** The mobile app UI adapts to the visible viewport, uses horizontal settings tabs and full-screen file previews, and closes navigation after selection.
+
 - **Oct 27** Mobile website layouts now wrap navigation, resize headings and media, and improve English and Chinese documentation on narrow screens.
 - **Oct 27** Recommended skills now include software copyright template filling and resume coaching, installed on demand from the author's public repositories.
 - **Oct 27** Project and automation search preserve the input and caret, wait for IME confirmation, and reuse loaded lists. Ignore late run-history responses after switching views.

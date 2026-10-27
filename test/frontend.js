@@ -3077,7 +3077,7 @@ const WIN_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" 
   + "<div id='preview-panel'></div><div id='files-panel'></div><div class='main'><div class='topbar'><button id='search-conversation'></button></div></div></body>";
 const WIN_STUBS = TRAIL_STUBS + "\n" + [
   "var chatScroll = document.getElementById('chat-scroll');",
-  "var closeAssistView = () => {}, stopCliWatch = () => {}, attnSeen = () => {}, resetCtxMeter = () => {}, closePreview = () => {}, renderCtxMeter = () => {};",
+  "var closeSidebar = () => {}, closeAssistView = () => {}, stopCliWatch = () => {}, attnSeen = () => {}, resetCtxMeter = () => {}, closePreview = () => {}, renderCtxMeter = () => {};",
   "var sessions = [], activeLane = 'work', laneOfSession = () => activeLane, renderLaneTabs = () => {}, renderHistory = () => {};",
   "var runningSessions = new Map(), updateSendUI = () => {}, planPlaceholder = '';",
   "var sessionDirs = new Map(), sessionAttachDirs = new Map(), openDirs = new Set(), filesAllScope = false, renderFiles = () => {};",
@@ -13928,7 +13928,7 @@ const laneHtml = (sideW) => "<!doctype html><meta charset='utf-8'><style>" + UI_
 // 而用户看到的就是整段导航消失。
 const ASIDE_SRC = (() => {
   const html = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
-  const a = html.indexOf("<aside>");
+  const a = html.search(/<aside\b[^>]*>/);
   const b = html.indexOf("</aside>", a);
   if (a < 0 || b <= a) throw new Error("index.html 里的 <aside> 段找不到了，前端测试没法定位真源码");
   return html.slice(a, b + "</aside>".length);

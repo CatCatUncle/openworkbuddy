@@ -509,4 +509,26 @@ function initSideFades() {
 if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", initSideFades);
 else initSideFades();
 
-
+// Match the visible viewport when keyboards/browser bars resize the phone UI.
+(() => {
+  let timer = 0;
+  const update = () => {
+    timer = 0;
+    const root = document.documentElement, view = window.visualViewport;
+    if (window.innerWidth > 700) { root.style.removeProperty("--owb-viewport-height"); root.classList.remove("owb-keyboard"); return; }
+    if (view && Math.abs(view.scale - 1) > .01) return; // Keep pinch zoom available.
+    const height = Math.round(view ? view.height : window.innerHeight) + "px";
+    if (root.style.getPropertyValue("--owb-viewport-height") !== height) root.style.setProperty("--owb-viewport-height", height);
+    const editing = document.activeElement && document.activeElement.matches("input, textarea, [contenteditable=true]");
+    root.classList.toggle("owb-keyboard", !!(editing && view && view.height < window.innerHeight - 140));
+  };
+  // Timers also run when a browser suspends animation frames during keyboard transitions.
+  const schedule = () => { if (!timer) timer = setTimeout(update, 16); };
+  window.addEventListener("resize", schedule);
+  window.addEventListener("pageshow", schedule);
+  document.addEventListener("visibilitychange", schedule);
+  document.addEventListener("focusin", schedule);
+  document.addEventListener("focusout", schedule);
+  if (window.visualViewport) window.visualViewport.addEventListener("resize", schedule);
+  update();
+})();

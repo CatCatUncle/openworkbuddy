@@ -1421,6 +1421,7 @@ const PAGE_VIEWS = {
   trace: { icon: "activity", title: "执行追踪", wide: true, render: () => renderTracePage() },
 };
 function openPageView(kind) {
+  closeSidebar();
   closeChatSearch(false);
   const searchButton = document.getElementById("search-conversation");
   if (searchButton) searchButton.hidden = true;

@@ -1249,7 +1249,7 @@
   body.rsz-on { cursor: col-resize; user-select: none; }
   body.rsz-on aside, body.rsz-on .preview-panel, body.rsz-on .files-panel { transition: none; }
   /* ---- 快捷键 / 对话内搜索 / 命令审批 / 侧栏折叠 ---- */
-  body.side-collapsed aside { display: none; }
+  body.side-collapsed > aside { display: none; }
   .main { position: relative; }
   /* ---------- 响应式：窗口任意拉伸自适应 ---------- */
   /* 几何统一到桥接层（markup 上补了 .icon-btn），这里只留颜色。
@@ -1269,7 +1269,7 @@
     .main { min-width: 0; }
     .rsz { display: none; }
     aside { display: none; }
-    body.side-open aside { display: flex; position: fixed; left: 0; top: 0; bottom: 0; z-index: 45; box-shadow: 8px 0 28px rgba(23,24,28,.22); }
+    body.side-open > aside { display: flex; position: fixed; left: 0; top: 0; bottom: 0; z-index: 45; box-shadow: 8px 0 28px rgba(23,24,28,.22); }
     .files-panel.show { position: fixed; right: 0; top: 56px; bottom: 0; width: min(280px, 86vw); z-index: 40; box-shadow: -8px 0 28px rgba(23,24,28,.15); }
     .preview-panel.show { position: fixed; right: 0; top: 56px; bottom: 0; width: min(520px, 92vw); min-width: 0; max-width: none; z-index: 39; box-shadow: -8px 0 28px rgba(23,24,28,.15); }
     .chat-col { padding: 16px 12px 8px; }
@@ -2892,6 +2892,7 @@
     border: none; background: none; border-radius: 0; box-shadow: none;
     accent-color: var(--owb-brand-text); cursor: pointer; }
 </style>
+<link rel="stylesheet" href="/css/mobile.css">
 </head>
 <body>
 <!-- lucide 图标 sprite（ISC，https://lucide.dev）——内联进来是为了离线可用、且能跟着 currentColor 变色 -->
@@ -3086,7 +3087,8 @@
 <symbol id="i-square-dashed" viewBox="0 0 24 24"><path d="M5 3a2 2 0 0 0-2 2" /> <path d="M19 3a2 2 0 0 1 2 2" /> <path d="M21 19a2 2 0 0 1-2 2" /> <path d="M5 21a2 2 0 0 1-2-2" /> <path d="M9 3h1" /> <path d="M9 21h1" /> <path d="M14 3h1" /> <path d="M14 21h1" /> <path d="M3 9v1" /> <path d="M21 9v1" /> <path d="M3 14v1" /> <path d="M21 14v1" /></symbol>
 <symbol id="i-list-ordered" viewBox="0 0 24 24"><line x1="10" x2="21" y1="6" y2="6" /> <line x1="10" x2="21" y1="12" y2="12" /> <line x1="10" x2="21" y1="18" y2="18" /> <path d="M4 6h1v4" /> <path d="M4 10h2" /> <path d="M6 18H4c0-1 2-2 2-3s-1-1.5-2-1" /></symbol>
 </svg>
-<aside>
+<aside id="sidebar" aria-label="任务导航">
+  <button type="button" id="close-side" class="icon-btn side-close" aria-label="关闭导航" title="关闭导航"><svg class="i" aria-hidden="true"><use href="#i-x"></use></svg></button>
   <div class="brand">
     <!-- 第一屏就得是猫。applyAssistantIdentity() 要等设置拉回来才刷这里，
          写死一个 W 的话未登录/加载中那几秒品牌位是个字母，跟窗口图标对不上 -->
@@ -3135,7 +3137,7 @@
 
 <div class="main">
   <div class="topbar">
-    <button id="toggle-side" class="icon-btn" title="收起/展开侧栏"><svg class="i" aria-hidden="true"><use href="#i-panel-left"></use></svg></button>
+    <button id="toggle-side" class="icon-btn" aria-controls="sidebar" aria-expanded="false" title="收起/展开侧栏"><svg class="i" aria-hidden="true"><use href="#i-panel-left"></use></svg></button>
     <div class="title" id="session-title">新任务</div>
     <div class="right"><button type="button" class="icon-btn" id="search-conversation" title="搜索当前对话" aria-label="搜索当前对话" aria-expanded="false" aria-controls="chat-search" hidden><svg class="i" aria-hidden="true"><use href="#i-search"></use></svg></button><div class="inbox-wrap"><button type="button" class="icon-btn" id="inbox-toggle" title="收件箱" aria-label="收件箱" aria-expanded="false" aria-controls="attention-inbox"><svg class="i" aria-hidden="true"><use href="#i-bell"></use></svg><span id="inbox-count" hidden></span></button><div id="attention-inbox" role="region" aria-label="收件箱" hidden></div></div><button id="toggle-files" title="查看这个任务的文件"><svg class="i" aria-hidden="true"><use href="#i-file"></use></svg> <span id="session-file-count">文件</span></button></div>
   </div>

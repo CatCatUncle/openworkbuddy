@@ -6481,19 +6481,35 @@ document.getElementById("toggle-files").onclick = () => {
 };
 document.getElementById("fp-close").onclick = () => document.getElementById("files-panel").classList.remove("show");
 // 侧栏开关：窄窗（≤900px）走浮层抽屉 side-open，宽窗走常规折叠 side-collapsed
+function closeSidebar() {
+  document.body.classList.remove("side-open");
+  document.getElementById("toggle-side").setAttribute("aria-expanded", String(window.innerWidth > 900 && !document.body.classList.contains("side-collapsed")));
+}
 function toggleSidebar() {
-  if (window.innerWidth <= 900) document.body.classList.toggle("side-open");
-  else document.body.classList.toggle("side-collapsed");
+  if (window.innerWidth <= 900) {
+    document.body.classList.toggle("side-open");
+  } else document.body.classList.toggle("side-collapsed");
+  const open = window.innerWidth <= 900 ? document.body.classList.contains("side-open") : !document.body.classList.contains("side-collapsed");
+  document.getElementById("toggle-side").setAttribute("aria-expanded", String(open));
 }
 document.getElementById("toggle-side").onclick = toggleSidebar;
-window.addEventListener("resize", () => { if (window.innerWidth > 900) document.body.classList.remove("side-open"); });
+document.getElementById("close-side").onclick = closeSidebar;
+window.addEventListener("resize", () => { if (window.innerWidth > 900) closeSidebar(); });
+closeSidebar();
+document.addEventListener("keydown", (e) => {
+  if (imeKey(e)) return;
+  if (e.key === "Escape" && document.body.classList.contains("side-open")) closeSidebar();
+});
+document.getElementById("sidebar").addEventListener("click", (e) => {
+  if (e.target.closest("[data-view], #ab-head, #new-task, .proj-item")) closeSidebar();
+});
 // 抽屉开着时点旁边关掉。那层灰罩是 body 的伪元素（body.side-open::before），
 // 伪元素接不了事件，点它命中的是 body 本身——所以监听挂在 document 上，只认「点的就是 body」。
 // 挂在 .main 上收不到：灰罩盖在 .main 上面，指针根本落不到里面的元素。
 document.addEventListener("click", (e) => {
   if (!document.body.classList.contains("side-open")) return;
   if (e.target === document.body || (e.target.closest && e.target.closest(".main"))) {
-    document.body.classList.remove("side-open");
+    closeSidebar();
   }
 }, true);
 document.getElementById("open-ws").onclick = (e) => { e.preventDefault(); openWorkspaceOnHost(); };
@@ -6599,7 +6615,7 @@ function updateModelLabel() {
   const ov = currentSessModel();
   const text = eng ? (eng.model || eng.label) : (ov || (typeof taskDefaultModel === "function" ? taskDefaultModel() : settingsCache.active_model));
   const btn = document.getElementById("model-btn");
-  document.getElementById("model-label").textContent = modelShown(text);
+  document.getElementById("model-label").textContent = modelShown(text) || "选择模型";
   // 本机 CLI 在跑的时候，光看模型名跟 API 模型长得一模一样——用户分不清这次花不花钱。
   // 换成显示器图标 + 一句「谁在跑、花不花钱」的悬停说明，扫一眼就知道自己在哪条路上
   if (btn) {

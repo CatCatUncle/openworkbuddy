@@ -2031,6 +2031,7 @@ function openNote(text, retry) {
   return d;
 }
 async function openSession(id, opts) {
+  closeSidebar();
   closeChatSearch(false);
   const sid = id;
   const tok = ++openSeq;
@@ -2931,7 +2932,9 @@ async function openModal(kind, subTab) {
   if (kind === "experts") return openHub("team");
   if (kind === "sched") return openPageView("autom"); // 自动化已从弹窗搬到主区
   if (kind === "library") return openPageView("lib"); // 资料库同理
+  closeSidebar();
   mask.classList.add("show");
+  modalBox.dataset.kind = kind;
   modalBox.classList.toggle("wide", ["settings", "account", "proj-edit"].includes(kind));
   if (kind === "account") {
     mTitle.textContent = "账号 · 用量";
