@@ -691,7 +691,10 @@ function partE() {
     /await scanOutputs\(getWorkspaceDir\(\)\)/.test(S) && /await sweepPlanOffThread\(getWorkspaceDir\(\)/.test(S));
   ok("回合收尾：await flushSessionSave(sessionId) 紧挨在 done 前面（界面说「完成」时记录已在盘上）",
     /await flushSessionSave\(sessionId\);\s*send\(\{ type: "done" \}\);/.test(S));
-  ok("/api/files（输入框敲 @ 就拉）也走后台", /app\.get\("\/api\/files", [^\n]*scanOutputs\(/.test(S));
+  const filesAt = S.indexOf('app.get("/api/files",');
+  const filesRoute = code(S.slice(filesAt, S.indexOf("\napp.", filesAt + 1)));
+  ok("/api/files（输入框敲 @ 就拉）也走后台",
+    filesAt >= 0 && /scanOutputs\([^)]*\)\.then\(/.test(filesRoute) && !/\boutputFiles\(/.test(filesRoute));
   ok("进程退出补写：exit 钩子挂着，第一件就是会话",
     /process\.on\("exit", flushPendingWritesSync\)/.test(S) && /function flushPendingWritesSync\(\) \{\s*flushSessionSavesSync\(\);/.test(S));
   ok("两处任务发射器都走后台（scan: true），开跑前都等基线落定",

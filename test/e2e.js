@@ -10754,18 +10754,19 @@ function testCanvasThumb() {
   const from = src.indexOf("function canvasResolvedFileName(");
   const to = src.indexOf("function canvasMediaPath(");
   assert.ok(from > 0 && to > from, "切不出 canvasFileUrl 那一段了（函数被改名或搬走？）");
-  // 这两个函数只认 canvasState.files，其余什么都不碰——所以能单独拎出来跑
+  // 路径和项目标识来自画布状态，不能按素材列表顺序猜同名文件。
   const build = new Function("canvasState", src.slice(from, to) + "\nreturn { canvasFileUrl, canvasResolvedFileName };");
-  const { canvasFileUrl } = build({ files: [{ name: "任务_0916_短剧/镜头01_首帧.png" }] });
+  const state = { files: [{ name: "其他任务/镜头01_首帧.png" }, { name: "任务_0916_短剧/镜头01_首帧.png" }] };
+  const { canvasFileUrl } = build(state);
 
-  // ① 工作区里的成图：短名字要能认回全路径，且带上缩略图参数
-  const shot = canvasFileUrl("镜头01_首帧.png", 640);
+  // ① 工作区里的成图：保留完整路径，且带上缩略图参数
+  const shot = canvasFileUrl("任务_0916_短剧/镜头01_首帧.png", 640);
   assert.ok(shot.startsWith("/api/files/view/"), "画布节点的图没走工作区路由：" + shot);
   assert.ok(shot.endsWith("?thumb=640"), "画布节点预览拿的是原图，不是 640 缩略图（一屏三十张成图 = 几个 GB 位图）：" + shot);
-  assert.ok(shot.includes(encodeURIComponent("任务_0916_短剧")), "短名字没认回工作区里的全路径：" + shot);
+  assert.ok(shot.includes(encodeURIComponent("任务_0916_短剧")), "完整路径被另一张同名图替换：" + shot);
 
   // ② 不传宽度就是原图。双击放大的灯箱走的正是这一条：那时候屏幕上就这一张，本来就该看清楚
-  const full = canvasFileUrl("镜头01_首帧.png");
+  const full = canvasFileUrl("任务_0916_短剧/镜头01_首帧.png");
   assert.ok(!full.includes("thumb"), "不传宽度也偷偷缩了，灯箱里看到的就是一张糊图：" + full);
 
   // ③ svg 不缩：矢量本来就小，栅格化只会更大更糊
@@ -10782,6 +10783,13 @@ function testCanvasThumb() {
 
   // ⑥ 空值照旧是空字符串——节点上没图的时候不许拼出一个 "/api/files/view/?thumb=640" 去 404
   assert.strictEqual(canvasFileUrl("", 640), "", "没有文件名却拼出了一个地址");
+
+  assert.strictEqual(canvasFileUrl("镜头01_首帧.png"), "/api/files/view/" + encodeURIComponent("镜头01_首帧.png"), "裸名不能猜成其他目录里的同名图");
+  assert.ok(canvasFileUrl("已删除/镜头01_首帧.png").includes(encodeURIComponent("已删除")), "缺失路径被换成列表里另一张图");
+  state.workspaceRoot = "project-root";
+  assert.ok(canvasFileUrl("任务_0916_短剧/镜头01_首帧.png", 640).endsWith("?thumb=640&root=project-root"), "缩略图没有绑定画布项目");
+  assert.ok(canvasFileUrl("任务_0916_短剧/镜头01_首帧.png").endsWith("?root=project-root"), "原图没有绑定画布项目");
+  assert.ok(canvasFileUrl("/api/files/view/a.png?root=original-root", 640).includes("root=original-root&thumb=640"), "预览地址已有的所属项目被覆盖");
 
   // ⑦ 调用处：三处节点预览（首帧 / 生成图 / 人物地点的内嵌图）都要传宽度
   const previews = src.match(/canvasFileUrl\([^)]*\)/g) || [];

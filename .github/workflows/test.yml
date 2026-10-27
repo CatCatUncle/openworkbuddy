@@ -66,7 +66,14 @@ jobs:
       # 只在 ubuntu 那条腿装发行版的 ffmpeg：它带 libass/drawtext，本机 Homebrew 那份不带，
       # 烧字幕这类分支只有在这儿才真跑得到。中文字体给 libass 排字用。macOS 那条腿不装，照旧跳过真 ffmpeg 段。
       - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-noto-cjk
+        name: Install media test dependencies
+        timeout-minutes: 8
+        run: |
+          if [ "$(dpkg-query -W -f='${db:Status-Status}' ffmpeg fonts-noto-cjk 2>/dev/null)" = "installedinstalled" ]; then
+            exit 0
+          fi
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 install -y --no-install-recommends ffmpeg fonts-noto-cjk
       # 沙箱小助手是 Go 写的、不进 git，Windows 那条腿现编一份
       - if: runner.os == 'Windows'
         uses: actions/setup-go@v6
