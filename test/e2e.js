@@ -10471,14 +10471,14 @@ async function testCanvasMissingAssets() {
   const vf = src.indexOf("const CANVAS_REF_KEYS =");
   const vt = src.indexOf("async function canvasLoadLibrary(");
   assert.ok(vf > 0 && vt > vf, "切不出 canvasVerifyMissing 了（改名/搬窝？）");
-  const runVerify = async (payloads, exists, { fail = false } = {}) => {
-    const st = { files: [], missing: new Set(), graph: { getElements: () => payloads.map((p, i) => ({ id: "n" + i, _p: p })) } };
+  const runVerify = async (payloads, exists, { fail = false, stale = false } = {}) => {
+    const st = { files: [], missing: new Set(), workspaceName: "jia", libraryRequest: 0, graph: { getElements: () => payloads.map((p, i) => ({ id: "n" + i, _p: p })) } };
     let refreshed = 0;
     const ctx = new Function("canvasState", "canvasPayload", "canvasRefreshNode", "canvasSelectedNode",
-      "canvasRenderInspector", "canvasResolvedFileName", "fetch",
+      "canvasRenderInspector", "canvasResolvedFileName", "canvasScope", "canvasFileRootUrl", "fetch",
       src.slice(vf, vt) + "\nreturn { canvasVerifyMissing };");
-    await ctx(st, (n) => n._p, () => { refreshed += 1; }, () => null, () => {}, (x) => x,
-      async () => (fail ? Promise.reject(new Error("断网")) : { json: async () => ({ exists }) }))
+    await ctx(st, (n) => n._p, () => { refreshed += 1; }, () => null, () => {}, (x) => x, () => st.workspaceName, (url) => url,
+      async () => { if (stale) st.workspaceName = "yi"; return fail ? Promise.reject(new Error("断网")) : { json: async () => ({ exists }) }; })
       .canvasVerifyMissing();
     return { missing: [...st.missing], refreshed };
   };
@@ -10492,6 +10492,9 @@ async function testCanvasMissingAssets() {
   // 首帧/尾帧这些字段也得问，不然镜头节点上的图照旧被冤枉
   const frame = await runVerify([{ first_frame: "首帧.png", last_frame: "尾帧.png" }], { "首帧.png": false, "尾帧.png": true });
   assert.deepStrictEqual(frame.missing, ["首帧.png"], "first_frame / last_frame 这些字段没被拿去问盘");
+
+  const stale = await runVerify([{ path: "原项目/图.png" }], { "原项目/图.png": false }, { stale: true });
+  assert.deepStrictEqual(stale, { missing: [], refreshed: 0 }, "旧项目迟到的判决覆盖了当前画布");
 
   // ---------- ④ 盘上那个口子：深目录里的文件要认得出来 ----------
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-canvasmiss-"));
