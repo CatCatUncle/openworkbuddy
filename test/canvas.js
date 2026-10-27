@@ -42,8 +42,9 @@ if (!process.versions.electron) {
   const r = require("child_process").spawnSync(bin, [__filename], {
     stdio: ["ignore", "inherit", "inherit"],
     env: { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: "1" },
-    timeout: 300000, killSignal: "SIGKILL",
+    timeout: 630000, killSignal: "SIGKILL",
   });
+  if (r.error) console.error("画布测试进程异常：", r.error.message);
   process.exit(r.status == null ? 1 : r.status);
 }
 
@@ -51,6 +52,21 @@ const fs = require("fs");
 const path = require("path");
 const http = require("http");
 const { app, BrowserWindow, nativeImage } = require("electron");
+
+// 整套交互回归增长后，累计预算与单阶段卡住分别计时，超时保留最后进展。
+const WATCH_START = Date.now();
+let lastProgress = WATCH_START, lastStage = "等待 Electron 启动";
+const log = console.log.bind(console);
+console.log = (...args) => {
+  lastProgress = Date.now(); lastStage = args.map(String).join(" ").trim();
+  log(...args);
+};
+setInterval(() => {
+  const elapsed = Date.now() - WATCH_START, stalled = Date.now() - lastProgress;
+  if (elapsed < 600000 && stalled < 120000) return;
+  console.error(`画布测试超时：累计 ${Math.round(elapsed / 1000)} 秒，连续 ${Math.round(stalled / 1000)} 秒无进展；最后阶段：${lastStage}`);
+  process.exit(1);
+}, 1000).unref();
 
 if (process.platform === "darwin" && app.dock && app.dock.hide) app.dock.hide();
 
@@ -403,7 +419,8 @@ const STUB4 = `
 
 app.whenReady().then(async () => {
   const srv = await serve();
-  const win = new BrowserWindow({ show: false, width: 1440, height: 900, webPreferences: { contextIsolation: false, nodeIntegration: false } });
+  // 隐藏窗口仍要按正常帧率验证滚轮合帧和小地图，不能被后台节流暂停 rAF。
+  const win = new BrowserWindow({ show: false, width: 1440, height: 900, webPreferences: { contextIsolation: false, nodeIntegration: false, backgroundThrottling: false } });
   // 建窗时 macOS 会把窗口压进屏幕的可用区（藏着也压）：CI 那台 Mac 屏幕小，压完拖线要指的卡落到底下被盖住。
   // 建完再定一次尺寸就不压了，哪台机器上都是 1440×900
   win.setSize(1440, 900);
