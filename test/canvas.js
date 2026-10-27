@@ -3043,7 +3043,7 @@ app.whenReady().then(async () => {
   // 以前预览框是写死的高度 + cover：竖屏首帧只剩中间一截，超宽的场景图两头被切，卡片本身也固定高，
   // 图一高「重生成定妆照」就被挤出卡外。现在框跟着图的比例走，卡跟着内容长高、把正下方的卡往下推
   const 图尺寸 = { "tall.png": [180, 320], "wide.png": [320, 180], "ultratall.png": [100, 300], "ultrawide.png": [300, 100] };
-  for (const [n, [w, h]] of Object.entries(图尺寸)) TEST_IMGS[n] = nativeImage.createFromBitmap(Buffer.alloc(w * h * 4, 0x9a), { width: w, height: h }).toPNG();
+  for (const [n, [w, h]] of Object.entries(图尺寸)) TEST_IMGS["ws/" + n] = nativeImage.createFromBitmap(Buffer.alloc(w * h * 4, 0x9a), { width: w, height: h }).toPNG();
   const 图卡 = (id, f, x, y) => ({ id, kind: "image", payload: { title: f, path: "ws/" + f }, position: { x, y } });
   const 比例 = await run(`
     (async () => {
