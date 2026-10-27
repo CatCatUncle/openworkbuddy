@@ -268,6 +268,7 @@ Entry points are `server.js`, `cli.js` and `src/im/`; the Agent is in `src/agent
 
 ## What's new
 
+- **Oct 27** Recommended skills now include software copyright template filling and resume coaching, installed on demand from the author's public repositories.
 - **Oct 27** Project and automation search preserve the input and caret, wait for IME confirmation, and reuse loaded lists. Ignore late run-history responses after switching views.
 
 - **Oct 26** Execution traces persist across projects and show local-engine tool results and read errors. The sidebar shows Experts · Skills · Connectors.

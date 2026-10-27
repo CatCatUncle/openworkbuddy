@@ -617,6 +617,22 @@ function cloneRepo({ owner, repo, branch, subpath }) {
  */
 const DEFAULT_SKILLS = [
   {
+    name: "ruanzhu-kit",
+    title: "软著模板填写与导出",
+    repo: "CatCatUncle/ruanzhu-kit", branch: "main", subpath: "",
+    license: "MIT", author: "开发者猫叔 (CatCatUncle)",
+    bytes: 2448 * 1024,
+    why: "按 Word 模板填写软件资料、源码与说明书，核对后用 WPS / Word 导出 PDF；申请正文由用户提供",
+  },
+  {
+    name: "resume-coach",
+    title: "简历教练与求职辅导",
+    repo: "CatCatUncle/resume-coach", branch: "main", subpath: "",
+    license: "MIT", author: "开发者猫叔 (CatCatUncle)",
+    bytes: 28 * 1024,
+    why: "从零撰写、修改简历，按岗位匹配真实经历并准备面试；不编造经历和业绩",
+  },
+  {
     name: "frontend-design",
     title: "前端设计品味",
     repo: "anthropics/skills", branch: "main", subpath: "skills/frontend-design",
