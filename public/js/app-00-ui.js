@@ -254,13 +254,13 @@ function onActivate(el, fn) {
   return markActivatable(el);
 }
 
-/* 键盘可达：侧栏的会话、项目、导航项全是 <div>，鼠标能点、Tab 走不到。
+/* 键盘可达：侧栏的会话、导航项是 <div>，鼠标能点、Tab 走不到。项目行使用原生 button。
    实测这一屏 198 个"看着能点"（cursor:pointer）的元素里有 30 个键盘够不着，
    其中就包括切会话和切项目这两件最常做的事——纯键盘用户根本换不了会话。
    这里不动任何渲染代码，只给侧栏那几类行补 tabindex/role，并把 Enter/空格映射成 click。
    只观察侧栏容器：正文那片在流式输出时每个 token 都在动，往那儿挂 MutationObserver 是纯浪费。 */
 (function () {
-  const SEL = ".hist-item, .proj-item, .side-nav .item";
+  const SEL = ".hist-item, .side-nav .item";
   function arm() {
     document.querySelectorAll(SEL).forEach(markActivatable);
   }

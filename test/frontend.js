@@ -1975,7 +1975,7 @@ const ENG_CHECKS = `
 // 补齐这件事的真源码是 app-00-ui.js 里的 markActivatable/onActivate + 全局 keydown，
 // 整份直接拉进来跑，不抄。测的是"Enter/空格真的等价于点击"，不是"属性写上了没有"。
 const KBD_HTML = "<!doctype html><meta charset='utf-8'><body>"
-  + "<div id='proj-list'><div class='proj-item'>默认项目</div></div>"
+  + "<div id='proj-list'><div class='proj-item'><button type='button' class='proj-switch'>默认项目</button></div></div>"
   + "<div class='side-nav'><div class='item'>专家</div></div>"
   + "<div id='history'><div class='hist-item'>某个会话</div></div>"
   + "<div id='chat'><div class='out-card'>报告.pptx<button class='oa-main'>预览</button>"
@@ -1996,8 +1996,10 @@ const KBD_CHECKS = `
   const q = (s) => document.querySelector(s);
   const press = (el, key) => { el.focus(); const e = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }); el.dispatchEvent(e); return e; };
 
-  // 侧栏三类行：不改渲染代码，靠 arm() 补
-  for (const sel of [".proj-item", ".side-nav .item", ".hist-item"]) {
+  // 会话和导航靠 arm() 补；项目已经使用原生按钮，无须给外层重复造一个焦点。
+  ok("项目切换是可聚焦的原生按钮", q(".proj-switch").tagName === "BUTTON" && q(".proj-switch").tabIndex === 0);
+  ok("项目外层没有重复的 Tab 停靠点", q(".proj-item").tabIndex === -1);
+  for (const sel of [".side-nav .item", ".hist-item"]) {
     const el = q(sel);
     ok(sel + " 能 Tab 到", el.tabIndex === 0, "tabIndex=" + el.tabIndex);
     ok(sel + " 读屏念得出是按钮", el.getAttribute("role") === "button");
@@ -13977,7 +13979,7 @@ const SIDEBAR_CHECKS = `
     '<div class="hist-item"><span class="ht">第 ' + i + ' 趟活儿，标题还挺长的免得被省略号吃掉</span></div>').join("");
   // 项目也塞几个：真实场景里导航自己也不短
   document.getElementById("proj-list").innerHTML = Array.from({ length: 5 }, (_, i) =>
-    '<div class="proj-item"><span class="pn">项目 ' + i + '</span></div>').join("");
+    '<div class="proj-item"><button type="button" class="proj-switch"><span class="pn">项目 ' + i + '</span></button></div>').join("");
   document.getElementById("more-box").classList.add("open");   // 「更多」展开，导航最高的那档
 
   // ⓪ 先钉住一件比什么都底层的事：改完样式紧接着读，读到的必须是新值。
@@ -15417,7 +15419,7 @@ const PROJ_CHECKS = `
   await refreshProjects();
   ok("管理员看得见「项目」这一栏", getComputedStyle(head).display !== "none" && getComputedStyle(box).display !== "none");
   ok("项目列表照常画出来", box.querySelectorAll(".proj-item").length === 2);
-  ok("  └ 两个都能移除", box.querySelectorAll(".proj-item .del").length === 2);
+  ok("  └ 两个项目都有操作菜单", box.querySelectorAll(".proj-item .proj-more").length === 2);
   ok("当前项目高亮的是服务端说的那个", box.querySelector(".proj-item.active").dataset.name === "默认项目");
   ok("任务历史按项目过滤：没记项目的算「默认项目」", [...hist.querySelectorAll(".hist-item")].map(e => e.dataset.id).join(",") === "s1,s2", hist.textContent);
   ok("空的时候说清楚是「这个项目」没任务", (() => { sessions = []; renderHistory(); const t = hist.textContent; sessions = SESS.slice(); return /该项目在这条线上还没有任务/.test(t); })());
@@ -15457,7 +15459,33 @@ const PROJ_CHECKS = `
   // ---- 用自己工作目录的人：工作目录本身那个项目没有「移除」（点了也只会报错） ----
   __PROJ_REPLY = { projects: [{ name: "默认项目", folder: "", dir: "/h" }, { name: "客户 A", folder: "客户_A", dir: "/h/projects/客户_A" }], active: "默认项目", locked: false, own: true };
   await refreshProjects();
-  ok("工作目录本身那个项目没有移除键，新建的有", [...box.querySelectorAll(".proj-item")].map(e => e.dataset.name + ":" + !!e.querySelector(".del")).join(",") === "默认项目:false,客户 A:true", box.innerHTML);
+  box.querySelector('.proj-item[data-name="默认项目"] .proj-more').click();
+  ok("工作目录本身那个项目的菜单没有移除键", !document.querySelector('.proj-popover [data-act="remove"]'));
+  closeProjectPopover();
+  box.querySelector('.proj-item[data-name="客户 A"] .proj-more').click();
+  ok("新建项目仍可从菜单移除", !!document.querySelector('.proj-popover [data-act="remove"]'));
+  closeProjectPopover();
+
+  // 快捷区有上限，搜索仍能找到所有项目；置顶不把当前项目挤掉。
+  projects = Array.from({ length: 12 }, (_, i) => ({ name: "项目 " + i, folder: "p" + i }));
+  activeProject = "项目 11";
+  projectQuickPrefs({ pinned: [], recent: ["项目 8"] });
+  renderProjects();
+  ok("侧栏最多五个项目，当前和最近使用的项目可见", box.querySelectorAll(".proj-item").length === 5 && box.querySelector('.proj-item.active').dataset.name === "项目 11" && !![...box.querySelectorAll(".proj-item")].find(e => e.dataset.name === "项目 8"));
+  ok("快捷区没有独立滚动条", !/auto|scroll/.test(getComputedStyle(box).overflowY));
+  box.querySelector("#proj-all").click();
+  ok("全部项目面板初始列出十二个项目", document.querySelectorAll('.proj-results .proj-item').length === 12);
+  ok("全部项目面板从项目标题旁展开，不贴着底部入口", document.querySelector('.proj-popover').getBoundingClientRect().top <= Math.max(12, head.getBoundingClientRect().top) + 1);
+  const search = document.querySelector('.proj-search input');
+  search.value = "项目 9";
+  search.dispatchEvent(new Event("input"));
+  ok("能搜到快捷区以外的项目", document.querySelectorAll('.proj-results .proj-item').length === 1 && document.querySelector('.proj-results .proj-item').dataset.name === "项目 9");
+  document.querySelector('.proj-results .proj-more').click();
+  document.querySelector('.proj-popover [data-act="pin"]').click();
+  ok("从完整列表置顶后进入快捷区，当前项目仍在", projectQuickPrefs().pinned.includes("项目 9") && !![...box.querySelectorAll(".proj-item")].find(e => e.dataset.name === "项目 9") && box.querySelector('.proj-item.active').dataset.name === "项目 11");
+  box.querySelector("#proj-all").click();
+  document.querySelector('.proj-search input').dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  ok("Esc 关闭面板并返回入口焦点", !document.querySelector('.proj-popover') && document.activeElement.id === "proj-all");
 
   // ---- 回到 locked：状态能来回切，不是只在首次加载对 ----
   __PROJ_REPLY = { projects: [], active: "", locked: true };
@@ -17882,14 +17910,14 @@ const ROWACT_MARKUP = (() => {
     return hits.map((h) => h.replace(/\$\{esc\(`([^`]*)`\)\}/g, (_, t) => t.replace(/\$\{[^}]*\}/g, "第一件事"))
       .replace(/\$\{[^}]*\}/g, '<svg class="i" width="14" height="14"></svg>'));
   };
-  const del = lift(APP02, "del", "app-02.js（侧栏项目行）", 1)[0];
+  const del = lift(APP02, "proj-more", "app-02.js（侧栏项目行）", 1)[0];
   const hmore = lift(APP02, "hmore", "app-02.js（任务历史行的「⋯」）", 1)[0];
   const ops = lift(APP02X, "op", "app-01.js（整理面板）", 2);
   const ucopy = lift(APP02X, "u-copy", "app-01.js（我发的那条消息）", 1)[0];
   // 行本身的 tabindex 是 markActivatable 在运行时补的（见 app-00-ui.js），这里照它的结果摆。
   // 那个函数还在不在，下面另有一条静态断言盯着，不靠这份 markup 替它作证。
   return '<div class="side"><div id="proj-list">'
-    + '<div class="proj-item" data-name="甲项目" tabindex="0"><span class="pn">甲项目</span>' + del + '</div></div>'
+    + '<div class="proj-item" data-name="甲项目"><button type="button" class="proj-switch"><span class="pn">甲项目</span></button>' + del + '</div></div>'
     + '<div id="history"><div class="hist-item" data-id="s1" tabindex="0"><span class="ht">第一件事</span>' + hmore + '</div></div></div>'
     + '<div class="sweep-panel"><div class="sw-tasks"><div class="sw-task" data-task="x">'
     + '<span class="nm">任务甲</span><span class="sw-sz">1 MB</span><span class="cnt">3 个</span>' + ops.join("") + '</div></div></div>'
@@ -17928,7 +17956,7 @@ const ROWACT_CHECKS = `
     return true;
   };
   const CASES = [
-    ["项目行·移除项目", ".proj-item", ".del"],
+    ["项目行·项目操作", ".proj-item", ".proj-more"],
     ["任务历史行·更多操作", ".hist-item", ".hmore"],
     ["整理面板·行内操作", ".sw-task", ".op"],
     ["我发的消息·复制", ".u-msg", ".u-copy"],
@@ -17953,10 +17981,11 @@ const ROWACT_CHECKS = `
        name + "：显形靠的是行上的 :focus-within —— 程序给的焦点压根不算「键盘聚焦」");
     act.blur(); document.body.focus(); await settle();
     ok(op(act) === 0, name + "：焦点挪走就又收回去");
-    if (row.tabIndex >= 0) {
-      row.focus(); await settle();
+    const main = row.querySelector(".proj-switch") || row;
+    if (main.tabIndex >= 0) {
+      main.focus(); await settle();
       ok(op(act) === 1, name + "：焦点才刚落在行上，这个操作就已经看得见了");
-      row.blur(); document.body.focus(); await settle();
+      main.blur(); document.body.focus(); await settle();
     }
   }
   // .sw-task 那一行本身不可聚焦（它不是个能点的东西），:focus-within 在那儿买到的是另一件事：
@@ -17993,7 +18022,7 @@ const ROWACT_CHECKS = `
   if (!window.__rowactMutant) {
     // ★反向对照★ 把「透明 + 不吃点击」换回 visibility:hidden，四个操作必须当场全退出 Tab 序
     const st = document.createElement("style");
-    st.textContent = ".proj-item .del, .hist-item .hmore, .sw-task .op, .u-msg .u-copy { visibility: hidden; }";
+    st.textContent = ".proj-item .proj-more, .hist-item .hmore, .sw-task .op, .u-msg .u-copy { visibility: hidden; }";
     document.head.appendChild(st);
     await settle();
     const stillTab = CASES.map(([n, r, a]) => [n, document.querySelector(r + " " + a)]).filter(([n, el]) => el && tabbable(el));

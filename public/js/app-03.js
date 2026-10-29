@@ -1690,19 +1690,7 @@ async function renderProjPage({ reuse = false } = {}) {
       renderProjPage();
       return;
     }
-    if (name !== activeProject) {
-      const r = await fetch("/api/projects/switch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) }).catch(() => null);
-      if (!r || !r.ok) {
-        const d = r ? await r.json().catch(() => ({})) : {};
-        toast(d.error || "没切过去，再试一次", "circle-x");
-        return renderProjPage();
-      }
-      activeProject = name;
-      refreshSettingsCache();
-      fetch("/api/files").then(r => r.json()).then(renderFiles);
-    }
-    closeAssistView();
-    document.getElementById("new-task").click();
+    await switchQuickProject(name);
   });
 }
 
@@ -2053,6 +2041,12 @@ function openAutomDialog(fill) {
   wrap.innerHTML = '<div class="ask-box at-dlg" role="dialog" aria-modal="true"></div>';
   const box = wrap.firstChild;
   const onKey = (e) => {
+    if (e.key === "Tab") {
+      const items = [...box.querySelectorAll('button, input, select, textarea, a[href]')].filter(el => !el.disabled && el.getClientRects().length);
+      const first = items[0], last = items[items.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    }
     if (e.key !== "Escape" || e.isComposing || e.keyCode === 229) return; // 输入法还在选字时的 Esc 是给输入法的
     e.preventDefault(); e.stopPropagation(); close();
   };
@@ -2060,6 +2054,7 @@ function openAutomDialog(fill) {
     if (openAutomDialog._close !== close) return;
     openAutomDialog._close = null;
     document.removeEventListener("keydown", onKey, true);
+    if (box._taskResize) box._taskResize.disconnect();
     wrap.remove();
     automState.editing = null;
     try { if (prev && prev.isConnected && prev.focus) prev.focus(); } catch {}
@@ -2069,6 +2064,7 @@ function openAutomDialog(fill) {
   box._close = close;
   document.body.appendChild(wrap);
   fill(box);
+  box.querySelector("input, select, textarea, button, a[href]")?.focus();
   return box;
 }
 function closeAutomDialog(box) {
@@ -2077,11 +2073,16 @@ function closeAutomDialog(box) {
 }
 function renderAutomForm(box, tpl) {
   const ed = automState.editing;
+  box.classList.add("at-editor");
+  box.setAttribute("aria-labelledby", "sf-title");
   box.innerHTML = `<div class="at-form">
-    <div class="ask-t" style="margin-bottom:10px">${ed ? `编辑「${esc(ed.name)}」` : "添加自动化"}</div>
+    <div class="ask-t" id="sf-title">${ed ? "编辑自动化" : "添加自动化"}</div>
+    <div class="at-fields">
+    <label class="sf-label" for="sf-name">任务名称</label>
     <input id="sf-name" placeholder="任务名（如：每日晨报）" value="${esc((ed || tpl || {}).name || (tpl || {}).tt || "")}">
+    <label class="sf-label" for="sf-freq">执行时间</label>
     <div class="form-row">
-      <select id="sf-freq">
+      <select id="sf-freq" aria-label="执行频率">
         <option value="once">只跑一次</option>
         <option value="daily">每天</option>
         <option value="workday">工作日（周一到周五）</option>
@@ -2091,22 +2092,43 @@ function renderAutomForm(box, tpl) {
         <option value="half-hour">每 30 分钟</option>
         <option value="custom">自定义 cron</option>
       </select>
-      <select id="sf-dow" style="display:none">
+      <select id="sf-dow" aria-label="星期" style="display:none">
         <option value="1">周一</option><option value="2">周二</option><option value="3">周三</option>
         <option value="4">周四</option><option value="5">周五</option><option value="6">周六</option><option value="0">周日</option>
       </select>
-      <select id="sf-dom" style="display:none">${Array.from({ length: 28 }, (_, i) => `<option value="${i + 1}">${i + 1} 日</option>`).join("")}</select>
-      <input id="sf-time" type="time" value="09:00">
-      <input id="sf-at" type="datetime-local" style="display:none" value="${localMin(Date.now() + 30 * 60000)}">
+      <select id="sf-dom" aria-label="每月日期" style="display:none">${Array.from({ length: 28 }, (_, i) => `<option value="${i + 1}">${i + 1} 日</option>`).join("")}</select>
+      <input id="sf-time" aria-label="执行时刻" type="time" value="09:00">
+      <input id="sf-at" aria-label="执行日期和时间" type="datetime-local" style="display:none" value="${localMin(Date.now() + 30 * 60000)}">
     </div>
-    <input id="sf-cron" placeholder="cron 表达式：分 时 日 月 周" style="display:none">
-    <textarea id="sf-task" rows="2" placeholder="要自动执行的任务描述，如：抓取今天的 AI 新闻生成晨报">${esc((ed || tpl || {}).task || "")}</textarea>
-    <label class="sf-catchup"><input id="sf-catchup" type="checkbox" ${(ed || tpl || {}).catch_up !== false ? "checked" : ""}>错过后补跑最近一次 <span>适合晨报、周报；时效任务可关闭</span></label>
+    <input id="sf-cron" aria-label="cron 表达式" placeholder="cron 表达式：分 时 日 月 周" style="display:none">
+    </div>
+    <div class="sf-content">
+      <label class="sf-label" for="sf-task">任务内容</label>
+      <textarea id="sf-task" rows="12" placeholder="要自动执行的任务描述，如：抓取今天的 AI 新闻生成晨报">${esc((ed || tpl || {}).task || "")}</textarea>
+    </div>
+    <div class="at-footer">
+    <label class="sf-catchup"><input id="sf-catchup" type="checkbox" ${(ed || tpl || {}).catch_up !== false ? "checked" : ""}><span class="sf-catchup-copy">错过后补跑最近一次 <small>适合晨报、周报；时效任务可关闭</small></span></label>
     <div class="ask-ops">
       <button class="btn-plain" id="sf-cancel">取消</button>
       <button class="btn-brand" id="sf-add">${ed ? "保存修改" : "添加"}</button>
     </div>
+    </div>
   </div>`;
+  const taskEl = box.querySelector("#sf-task");
+  const fitTask = () => {
+    // 按内容长高，上限交给弹窗的 flex 布局；继续输入时只滚正文。
+    const top = taskEl.scrollTop;
+    taskEl.style.height = "0px";
+    taskEl.style.height = Math.max(280, taskEl.scrollHeight + 2) + "px";
+    taskEl.scrollTop = top;
+  };
+  taskEl.addEventListener("input", fitTask);
+  const observer = new ResizeObserver(() => {
+    if (box._taskWidth !== taskEl.clientWidth) { box._taskWidth = taskEl.clientWidth; fitTask(); }
+  });
+  observer.observe(taskEl);
+  box._taskResize = observer;
+  fitTask();
   const freqEl = box.querySelector("#sf-freq");
   freqEl.onchange = () => {
     const v = freqEl.value;
@@ -2117,7 +2139,7 @@ function renderAutomForm(box, tpl) {
     box.querySelector("#sf-at").style.display = v === "once" ? "" : "none";
     // 只跑一次的没有「下一次」，补跑那一格问的是「错过了还补不补」——这条照样成立（合上盖子去开会，
     // 回来该看见它响过），所以不藏，只把说明换成对得上的那句
-    box.querySelector(".sf-catchup span").textContent = v === "once" ? "睡眠 / 重启错过时，24 小时内仍会补上这一次" : "适合晨报、周报；时效任务可关闭";
+    box.querySelector(".sf-catchup small").textContent = v === "once" ? "睡眠 / 重启错过时，24 小时内仍会补上这一次" : "适合晨报、周报；时效任务可关闭";
   };
   cronToForm(box, (ed || tpl || {}).cron || "0 9 * * *");
   // 编辑一条「只跑一次」时，cronToForm 看见空 cron 会落到自定义档；这儿把它掰回 once 档

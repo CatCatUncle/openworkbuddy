@@ -6501,7 +6501,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && document.body.classList.contains("side-open")) closeSidebar();
 });
 document.getElementById("sidebar").addEventListener("click", (e) => {
-  if (e.target.closest("[data-view], #ab-head, #new-task, .proj-item")) closeSidebar();
+  if (e.target.closest("[data-view], #ab-head, #new-task, .proj-switch")) closeSidebar();
 });
 // 抽屉开着时点旁边关掉。那层灰罩是 body 的伪元素（body.side-open::before），
 // 伪元素接不了事件，点它命中的是 body 本身——所以监听挂在 document 上，只认「点的就是 body」。

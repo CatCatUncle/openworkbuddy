@@ -9,6 +9,10 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 ## 2026
 
+- **Oct 29** Automation editing now gives instructions a larger area that grows with content, scrolls long tasks, and keeps Save visible on smaller windows.
+
+- **Oct 29** The sidebar shows up to five current and frequent projects, with pins, recent use and full-list search. The picker opens beside the Projects heading; editing and removal move into a row menu.
+
 - **Oct 27** Fixed same-name image mix-ups on the canvas. Thumbnails and previews stay bound to the original file and project; missing files are never substituted, and late file lists are ignored after project switches.
 
 - **Oct 27** The mobile app UI adapts to the visible viewport, uses horizontal settings tabs and full-screen file previews, and closes navigation after selection.

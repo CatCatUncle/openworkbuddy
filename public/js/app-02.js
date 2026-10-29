@@ -2182,20 +2182,181 @@ async function refreshProjects() {
 function projRemovable(p) {
   return projects.length > 1 && !(projectsOwn && !p.folder);
 }
-function renderProjects() {
-  const box = document.getElementById("proj-list");
-  if (!box) return;
-  // 服务端说 locked 的没有项目可管（留在共享根上却不是管理员，老账本才有；写操作一律 403），
-  // 侧栏连「项目」这一栏都不该出现，更不该出现一个点不动的 tab。用 style.display 而不是 hidden：.side-nav .item 自带 display，hidden 压不住。
-  const head = document.querySelector('.side-nav [data-view="proj"]');
-  if (head) head.style.display = projectsLocked ? "none" : "";
-  box.style.display = projectsLocked ? "none" : "";
-  if (projectsLocked) { box.innerHTML = ""; return; }
-  box.innerHTML = projects.map(p =>
-    `<div class="proj-item ${p.name === activeProject ? "active" : ""}" data-name="${esc(p.name)}" title="${esc(p.dir)}">${ic("folder-open")}<span class="pn">${esc(p.name)}</span>${projRemovable(p) ? `<button type="button" class="del" title="移除项目（不删文件）" aria-label="移除项目（不删文件）">${ic("x")}</button>` : ""}</div>`).join("");
-  box.querySelectorAll(".proj-item").forEach(el => el.onclick = async (e) => {
-    const name = el.dataset.name;
-    if (e.target.closest(".del")) {
+// 只记这个浏览器、这个账号的侧栏偏好，不改项目本身的顺序。
+function projectQuickPrefs(next) {
+  const user = typeof currentUser !== "undefined" && currentUser;
+  const key = "owb-project-quick:" + (user && (user.id || user.username) || "local");
+  const memory = projectQuickPrefs._memory || (projectQuickPrefs._memory = {});
+  if (next) {
+    memory[key] = next;
+    try { localStorage.setItem(key, JSON.stringify(next)); } catch {}
+    return next;
+  }
+  let value;
+  try { value = JSON.parse(localStorage.getItem(key) || "null"); } catch {}
+  value = value || memory[key] || {};
+  const names = (a) => Array.isArray(a) ? a.filter(n => typeof n === "string") : [];
+  return { pinned: names(value.pinned), recent: names(value.recent) };
+}
+function rememberProject(name) {
+  const prefs = projectQuickPrefs();
+  prefs.recent = [name, ...prefs.recent.filter(n => n !== name)].slice(0, 50);
+  projectQuickPrefs(prefs);
+}
+function quickProjects() {
+  const prefs = projectQuickPrefs();
+  const names = [...new Set([activeProject, ...prefs.pinned, ...prefs.recent, ...projects.map(p => p.name)])];
+  return names.map(n => projects.find(p => p.name === n)).filter(Boolean);
+}
+async function switchQuickProject(name) {
+  if (projectsLocked) return false;
+  if (name !== activeProject) {
+    const r = await fetch("/api/projects/switch", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }),
+    }).catch(() => null);
+    if (!r || !r.ok) {
+      const d = r ? await r.json().catch(() => ({})) : {};
+      toast(d.error || "没切过去，再试一次", "circle-x");
+      await refreshProjects();
+      return false;
+    }
+    if (activeProject) rememberProject(activeProject);
+    activeProject = name;
+    refreshSettingsCache();
+    fetch("/api/files").then(r => r.json()).then(renderFiles);
+  }
+  rememberProject(name);
+  closeProjectPopover(false);
+  document.getElementById("new-task").click();
+  renderProjects();
+  return true;
+}
+function projectRowHtml(p) {
+  const current = p.name === activeProject;
+  const pinned = projectQuickPrefs().pinned.includes(p.name);
+  return `<div class="proj-item ${current ? "active" : ""}" data-name="${esc(p.name)}">
+    <button type="button" class="proj-switch" title="${esc(p.name)}" ${current ? 'aria-current="true"' : ""}>
+      ${ic(current ? "folder-open" : "folder")}<span class="pn" translate="no">${esc(p.name)}</span>
+      ${current ? '<span class="proj-current">当前</span>' : pinned ? ic("pin", "proj-pin") : ""}
+    </button>
+    <button type="button" class="proj-more" title="项目操作" aria-label="项目操作" aria-haspopup="dialog" aria-expanded="false">${ic("ellipsis")}</button>
+  </div>`;
+}
+function bindProjectRows(box) {
+  box.querySelectorAll(".proj-item").forEach(row => {
+    row.querySelector(".proj-switch").onclick = () => {
+      if (row.dataset.name === activeProject) { closeProjectPopover(); return; }
+      return switchQuickProject(row.dataset.name);
+    };
+    row.querySelector(".proj-more").onclick = (e) => openProjectMenu(e.currentTarget, row.dataset.name);
+  });
+}
+function closeProjectPopover(refocus = true) {
+  if (openProjectPopover._close) openProjectPopover._close(refocus);
+}
+/** 放到 body 上，避免被侧栏的滚动容器裁掉。菜单和完整列表共用关闭、定位规则。 */
+function openProjectPopover(anchor, html, label, placementAnchor = anchor) {
+  const same = openProjectPopover._anchor === anchor;
+  const rect = placementAnchor.getBoundingClientRect();
+  closeProjectPopover(false);
+  if (same) return null;
+  const panel = document.createElement("div");
+  panel.className = "proj-popover";
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-label", label);
+  panel.innerHTML = html;
+  document.body.appendChild(panel);
+  anchor.setAttribute("aria-expanded", "true");
+  panel._place = () => {
+    const bounds = panel.getBoundingClientRect();
+    panel.style.left = Math.max(12, Math.min(rect.right + 12, innerWidth - bounds.width - 12)) + "px";
+    panel.style.top = Math.max(12, Math.min(rect.top, innerHeight - bounds.height - 12)) + "px";
+  };
+  panel._place();
+  const onDown = (e) => { if (!panel.contains(e.target) && !anchor.contains(e.target)) close(false); };
+  const onFocus = (e) => { if (!panel.contains(e.target) && !anchor.contains(e.target)) close(false); };
+  const onScroll = (e) => { if (e.target.contains && e.target.contains(anchor)) close(false); };
+  const onResize = () => close(false);
+  function close(refocus) {
+    panel.remove();
+    anchor.setAttribute("aria-expanded", "false");
+    document.removeEventListener("pointerdown", onDown, true);
+    document.removeEventListener("focusin", onFocus);
+    document.removeEventListener("scroll", onScroll, true);
+    window.removeEventListener("resize", onResize);
+    openProjectPopover._close = null;
+    openProjectPopover._anchor = null;
+    if (refocus) (anchor.isConnected ? anchor : document.getElementById("proj-all"))?.focus();
+  }
+  panel.onkeydown = (e) => {
+    if (imeKey(e)) return;
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(true); }
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      const items = [...panel.querySelectorAll("input, .proj-switch, .proj-action")];
+      const i = items.indexOf(document.activeElement);
+      if (i >= 0) { e.preventDefault(); items[(i + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length].focus(); }
+    }
+  };
+  document.addEventListener("pointerdown", onDown, true);
+  document.addEventListener("focusin", onFocus);
+  document.addEventListener("scroll", onScroll, true);
+  window.addEventListener("resize", onResize);
+  openProjectPopover._close = close;
+  openProjectPopover._anchor = anchor;
+  panel.querySelector("input, button").focus();
+  return panel;
+}
+function openAllProjects(anchor) {
+  const heading = document.querySelector('.side-nav [data-view="proj"]') || anchor;
+  const panel = openProjectPopover(anchor, `<div class="proj-pop-head"><strong>全部项目</strong><span>${projects.length}</span></div>
+    <label class="proj-search">${ic("search")}<input type="search" aria-label="搜索项目" placeholder="搜索项目"></label>
+    <div class="proj-results"></div>
+    <div class="proj-pop-footer"><button type="button" class="proj-action" id="proj-manage">${ic("settings")}管理项目${ic("arrow-right")}</button></div>`, "全部项目", heading);
+  if (!panel) return;
+  const input = panel.querySelector("input");
+  const results = panel.querySelector(".proj-results");
+  const fill = () => {
+    const q = input.value.trim().toLocaleLowerCase();
+    const matches = quickProjects().filter(p => p.name.toLocaleLowerCase().includes(q));
+    results.innerHTML = matches.map(projectRowHtml).join("") || '<div class="proj-empty" role="status">没有匹配的项目</div>';
+    bindProjectRows(results);
+    panel._place();
+  };
+  input.oninput = fill;
+  input.onkeydown = (e) => { if (imeKey(e)) return; if (e.key === "Enter") { e.preventDefault(); const first = results.querySelector(".proj-switch"); if (first) first.click(); } };
+  panel.querySelector("#proj-manage").onclick = () => {
+    closeProjectPopover(false);
+    document.querySelector('.side-nav [data-view="proj"]').click();
+  };
+  fill();
+}
+function openProjectMenu(anchor, name) {
+  const p = projects.find(p => p.name === name);
+  if (!p) return;
+  const prefs = projectQuickPrefs();
+  const pinned = prefs.pinned.includes(name);
+  // 完整列表里的行会随着关面板移除，返回焦点时回到侧栏入口。
+  const back = document.getElementById("proj-all") || anchor;
+  const panel = openProjectPopover(anchor, `<div class="proj-menu-name" translate="no">${esc(name)}</div>
+    <button type="button" class="proj-action" data-act="pin">${ic("pin")}${pinned ? "取消置顶" : "置顶项目"}</button>
+    <button type="button" class="proj-action" data-act="edit">${ic("pencil")}编辑项目</button>
+    ${projRemovable(p) ? `<button type="button" class="proj-action danger" data-act="remove">${ic("trash-2")}移除项目（不删文件）</button>` : ""}`, "项目操作");
+  if (!panel) return;
+  panel.classList.add("proj-menu");
+  panel._place();
+  panel.querySelectorAll("[data-act]").forEach(btn => btn.onclick = async () => {
+    closeProjectPopover(false);
+    if (btn.dataset.act === "pin") {
+      prefs.pinned = pinned ? prefs.pinned.filter(n => n !== name) : [name, ...prefs.pinned];
+      projectQuickPrefs(prefs);
+      renderProjects();
+      const row = [...document.querySelectorAll("#proj-list .proj-item")].find(el => el.dataset.name === name);
+      (row ? row.querySelector(".proj-more") : document.getElementById("proj-all"))?.focus();
+    } else if (btn.dataset.act === "edit") {
+      if (back.isConnected) back.focus();
+      openProjEditor(p);
+    } else {
+      if (back.isConnected) back.focus();
       if (!(await askConfirm({ title: `把项目「${name}」从列表移除？`, hint: "只从列表移除，不删硬盘上的文件。", ok: "移除" }))) return;
       const r = await fetch("/api/projects/" + encodeURIComponent(name), { method: "DELETE" }).catch(() => null);
       if (!r || !r.ok) {
@@ -2203,25 +2364,24 @@ function renderProjects() {
         toast(d.error || "没移除成，再试一次", "circle-x");
       }
       refreshProjects().then(refreshSettingsCache);
-      return;
     }
-    if (name === activeProject) return;
-    const r = await fetch("/api/projects/switch", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
-    }).catch(() => null);
-    // 没切成就别当切过去了：界面换了名字，任务却还落在原来那个项目里
-    if (!r || !r.ok) {
-      const d = r ? await r.json().catch(() => ({})) : {};
-      toast(d.error || "没切过去，再试一次", "circle-x");
-      return refreshProjects();
-    }
-    activeProject = name;
-    document.getElementById("new-task").click();
-    renderProjects();
-    refreshSettingsCache();
-    fetch("/api/files").then(r => r.json()).then(renderFiles);
   });
+}
+function renderProjects() {
+  const box = document.getElementById("proj-list");
+  if (!box) return;
+  closeProjectPopover(false);
+  // 服务端说 locked 的没有项目可管（留在共享根上却不是管理员，老账本才有；写操作一律 403），
+  // 侧栏连「项目」这一栏都不该出现，更不该出现一个点不动的 tab。用 style.display 而不是 hidden：.side-nav .item 自带 display，hidden 压不住。
+  const head = document.querySelector('.side-nav [data-view="proj"]');
+  if (head) head.style.display = projectsLocked ? "none" : "";
+  box.style.display = projectsLocked ? "none" : "";
+  if (projectsLocked) { box.innerHTML = ""; return; }
+  box.innerHTML = quickProjects().slice(0, 5).map(projectRowHtml).join("")
+    + (projects.length ? `<button type="button" id="proj-all" class="proj-all" aria-haspopup="dialog" aria-expanded="false"><span>查看全部</span><span class="proj-count">${projects.length}</span>${ic("chevron-right")}</button>` : "");
+  bindProjectRows(box);
+  const all = box.querySelector("#proj-all");
+  if (all) all.onclick = () => openAllProjects(all);
 }
 // 这颗 ＋ 长在「项目」那一行里面，而整行是「打开项目管理页」。不拦住冒泡的话，
 // 点 ＋ 会被 .side-nav 上那个委托监听当成点了整行：主区切到项目页、顺手把 #proj-list

@@ -268,6 +268,10 @@ Entry points are `server.js`, `cli.js` and `src/im/`; the Agent is in `src/agent
 
 ## What's new
 
+- **Oct 29** Automation editing now gives instructions a larger area that grows with content, scrolls long tasks, and keeps Save visible on smaller windows.
+
+- **Oct 29** The sidebar shows up to five current and frequent projects, with pins, recent use and full-list search. The picker opens beside the Projects heading; editing and removal move into a row menu.
+
 - **Oct 27** Fixed same-name image mix-ups on the canvas. Thumbnails and previews stay bound to the original file and project; missing files are never substituted, and late file lists are ignored after project switches.
 
 - **Oct 27** The mobile app UI adapts to the visible viewport, uses horizontal settings tabs and full-screen file previews, and closes navigation after selection.
@@ -275,62 +279,16 @@ Entry points are `server.js`, `cli.js` and `src/im/`; the Agent is in `src/agent
 - **Oct 27** Mobile website layouts now wrap navigation, resize headings and media, and improve English and Chinese documentation on narrow screens.
 
 - **Oct 27** Recommended skills now include software copyright template filling and resume coaching, installed on demand from the author's public repositories.
+
 - **Oct 27** Project and automation search preserve the input and caret, wait for IME confirmation, and reuse loaded lists. Ignore late run-history responses after switching views.
 
 - **Oct 26** Execution traces persist across projects and show local-engine tool results and read errors. The sidebar shows Experts · Skills · Connectors.
+
 - **Oct 26** Library search preserves the input and caret, waits for IME confirmation, and ignores stale responses to prevent reordered text.
 
 - **Oct 24** Keep task navigation in one desktop workbench. Remove the session menu’s new-window action, reuse the main window for task links and preview redirects, and retain separate file previews.
 
-- **Oct 23** Remove three dependency cycles; share workspace context across tools and connectors, and avoid loading the tool executor just to locate connector files
-
-- **Oct 23** Edit text models directly; disconnect the local Feishu user identity; prevent scheduled Feishu results from being sent again through another bot after a delivery receipt
-
-- **Oct 23** Keep canvas models scoped to the current app; restore defaults on cards and prevent API or local engines from guessing model IDs from another installation
-
-- **Oct 23** Select models on cards; fix missing-tool claims by local engines. Keep shot outputs and errors inline, show start feedback, support approved Ark assets, preserve original frames, compare versions and export assets
-- **Oct 21** Keep read notifications, find scheduled results in the inbox, and jump to conversation search matches from a visible search button
-- **Oct 20** File links retain their project and full local path; previews and deployments no longer switch to same-name files or accept stale responses
-- **Oct 20** Installed apps register a bundled-runtime CLI; Windows checks cover Unicode/space paths and the launch directory. Rerun `npm link` after moving a source checkout
-- **Oct 20** Two groups of five common tasks; pin directly from task rows and rename from the menu; local session imports and read-only sharing are disabled
-<details>
-<summary>More updates</summary>
-
-- **Oct 20** Read notifications stay read; run summaries distinguish ended, stopped and incomplete turns; inline script checks and video output collision protection
-- **Oct 20** Source updates check Git state first; keep modified or divergent checkouts intact to protect sessions and deliverables
-- **Oct 19** Rework the architecture diagram to match actual calls and use scalable SVG so node labels stay readable
-- **Oct 19** Rename tasks and identify dated previews; Goal checks unmet work and resumes in bounded rounds after 100 steps; CLI sandbox denials explain approval limits
-- **Oct 19** Embedded preview temporary storage now allows 64 MiB per `localStorage` and `sessionStorage` store and clears on close.
-
-- **Oct 19** HTML previews now fill the side panel and keep a real viewport for interactive pages; switch to fit-to-page when you want to see a full static page
-
-- **Oct 17** Compact CLI output with on-demand diagnostics and usage; fix blank interjections, stale file lists and lost follow-ups, and open session results directly with local applications
-
-- **Oct 16** Games and buttons work in HTML previews with isolated temporary storage; application data remains separate
-- **Oct 16** HTTP connector OAuth adds provider authorization, token refresh and local credential removal
-- **Oct 16** Preview region annotations and line comments enter editable revision drafts; individual change blocks can be reverted and restored
-- **Oct 16** Team tasks use organization models and connectors with separate usage records; browser recordings generate reviewable skill drafts
-- **Oct 16** English UI tests catch untranslated text while preserving user content; the website includes bilingual user and developer guides
-
-- **Oct 16** Owners can create and revoke organization-only read-only task links; sharing settings stay in the page and are hidden in single-user mode
-- **Oct 16** Quick start now leads to an editable project update deck, with a copyable task, review criteria, troubleshooting and explicit gaps in adoption metrics
-- **Oct 15** Execution plans stay in the conversation as collapsible lists. Updates preserve expansion and keyboard focus, and the list scrolls with your messages
-- **Oct 15** Pin tasks to a Pinned group at the top of the history; pins follow you to other computers
-- **Oct 15** Accept in Self-evolve no longer reloads the page; Self-evolve and Agents open without a multi-second wait
-- **Oct 14** Every account can bind its own WeChat, Feishu, QQ, WeCom, Official Account, group bots and email: messages run as you, results go only to you
-- **Oct 14** Members on a shared server get their own setup: per-provider model sharing, their own API keys, their own experts, and their own assistant name and preferences
-- **Oct 14** Attachments with the Chinese enumeration comma (、) in their names are no longer split into two files that don't exist
-- **Oct 13** Sign up with an email: the part before @ becomes your username, and signing in with the email works too; failed sign-ups no longer count toward the limit
-- **Oct 13** New "Sandbox safety" switch in Settings → Security: turn it off and the AI can touch files outside the workspace and reach local and private addresses; locked on when several accounts share one install
-- **Oct 13** "Allowed local/private addresses" accepts wildcards: 192.168.1.*:* for a whole subnet, *.local:8080 for a family of hosts
-- **Oct 12** Your personal WeChat now gets scheduled-task results and reminders; messages keep arriving while a task runs, so "stop" works right away, and WeChat shows "typing…" while it works
-- **Oct 12** Local Codex / Claude Code can read files sent with a message: pasted text, images and documents now come with their full path, not just the file name
-- **Oct 10** Members, auditors and branch-org accounts can create multiple projects too: each gets its own folder inside their own working folder, and earlier outputs stay in the default project
-- **Oct 10** Drag from a canvas card's port onto another card to link them; cards that can't take the link turn red and say why. "+" adds a card that's already linked, and titles and prompts can be edited right on the card
-
-</details>
-
-Full history → **[Changelog](CHANGELOG.en.md)**.
+Full history: **[Changelog](CHANGELOG.en.md)**.
 
 ## ⚠️ This agent has a shell
 
