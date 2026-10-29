@@ -22,5 +22,16 @@ try {
   const e2e = fs.readFileSync(path.join(__dirname, "e2e.js"), "utf8");
   assert.ok(e2e.includes('require("./lib/css-token-gate")(path.join(__dirname, ".."))'), "E2E reuses the same color gate");
   require("./lib/css-token-gate")();
+  const os = require("os"), cp = require("child_process"), tmp = fs.mkdtempSync(path.join(os.tmpdir(), "owb-release-notes-"));
+  try {
+    const git = (...args) => cp.execFileSync("git", args, { cwd: tmp, encoding: "utf8" });
+    git("init", "-q"); for (const [key, value] of [["user.name", "Test"], ["user.email", "test@example.invalid"], ["commit.gpgsign", "false"], ["tag.gpgsign", "false"]]) git("config", key, value);
+    const old = Array.from({ length: 10 }, (_, n) => "- **10-29** Previous release " + n), fresh = Array.from({ length: 5 }, (_, n) => "- **10-30** Current release " + n);
+    fs.writeFileSync(path.join(tmp, "README.md"), old.join("\n\n")); git("add", "."); git("commit", "-qm", "before"); git("tag", "v0.1.0");
+    fs.writeFileSync(path.join(tmp, "README.md"), [...fresh, ...old.slice(0, 5)].join("\n\n")); git("add", "."); git("commit", "-qm", "after"); git("tag", "v0.1.1");
+    const notes = require("../scripts/release-notes").main("v0.1.1", { cwd: tmp });
+    assert.deepEqual(notes.split("\n").filter(line => line.startsWith("- **")), fresh, "retained history is not announced again after README reflow");
+    assert(yaml.includes("name: ${{ github.ref_name }}"), "Release title is exactly the version tag");
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
   console.log("✓ Release CI: exact SHA, main push, trusted workflow, freshness and full-test fallback");
 } catch (e) { console.error(e.stack || e); process.exitCode = 1; }

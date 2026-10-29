@@ -9,15 +9,15 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 ## 2026
 
-- **Oct 29** Office previews add document pages, zoom and expansion. DOC/WPS and XLS/ET have built-in compatibility readers. Open With remains optional and does not change defaults. See the [format capability matrix](docs/文件预览与转换.md).
+- **Oct 30** Office previews add document pages, zoom and expansion. DOC/WPS and XLS/ET have built-in compatibility readers. Open With remains optional and does not change defaults. See the [format capability matrix](docs/文件预览与转换.md).
 
-- **Oct 29** Export common Office, PDF and OFD files to Markdown. Legacy PPT uses live-slide text extraction. Scanned pages, truncation and omitted images are reported; CEB requires an authorized local engine.
+- **Oct 30** Export common Office, PDF and OFD files to Markdown. Legacy PPT uses live-slide text extraction. Scanned pages, truncation and omitted images are reported; CEB requires an authorized local engine.
 
-- **Oct 29** Library previews use their own reading area with compact borders and separate title/actions. Old conversation drawers close, stale reads cancel, and spreadsheets load one sheet and 100 rows at a time.
+- **Oct 30** Library previews use their own reading area with compact borders and separate title/actions. Old conversation drawers close, stale reads cancel, and spreadsheets load one sheet and 100 rows at a time.
 
-- **Oct 29** Inbox events stay in date order when read, including successful results. Project selection keeps shortcuts in place. CLI history has its own retention window and directory-based project ownership, with --project support.
+- **Oct 30** Inbox events stay in date order when read, including successful results. Project selection keeps shortcuts in place. CLI history has its own retention window and directory-based project ownership, with --project support.
 
-- **Oct 29** Temporary approvals are scoped to account and task. External files can be imported as working copies; legacy output links recover only with matching path, size and modification-time evidence.
+- **Oct 30** Temporary approvals are scoped to account and task. External files can be imported as working copies; legacy output links recover only with matching path, size and modification-time evidence.
 
 - **Oct 29** Library grouping and layout switches now update locally without reloading directory or task indexes. File rows, thumbnails and previews are reused, and offscreen layout work is reduced.
 

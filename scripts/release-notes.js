@@ -37,7 +37,10 @@ function main(tagArg, { cwd, previousTag } = {}) {
   let diff;
   try { diff = git(cwd, "diff", `${prev}..${tag}`, "--unified=0", "--", "README.md"); }
   catch { return ""; } // 浅克隆拿不到上一个 tag 的对象：不写，不猜
-  const added = diff.split("\n").map((l) => RE.exec(l)).filter(Boolean).map((m) => m[1]);
+  // Reflowing or moving the retained history can make git report old bullets
+  // as additions. Only entries absent from the previous release are new.
+  const previous = new Set(git(cwd, "show", `${prev}:README.md`).split("\n").map(line => line.trim()));
+  const added = diff.split("\n").map((l) => RE.exec(l)).filter(Boolean).map((m) => m[1]).filter(line => !previous.has(line.trim()));
   if (!added.length) return "";
   return "## 这一版改了什么\n\n" + added.join("\n")
     + "\n\n每条对应的代码和判据在 [CHANGELOG](https://github.com/CatCatUncle/openworkbuddy/blob/main/CHANGELOG.md)。\n";
