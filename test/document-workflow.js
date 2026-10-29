@@ -62,6 +62,16 @@ function pdfFixture(chinese = false) {
     ofd.file("Doc/Pages/1.xml", '<o:Page><o:Content><o:TextObject><o:TextCode>国企公文正文</o:TextCode></o:TextObject></o:Content></o:Page>');
     const ofdFile = path.join(home, "公文.ofd"); fs.writeFileSync(ofdFile, await ofd.generateAsync({ type: "nodebuffer" }));
     const ofdMD = await documentMarkdown(ofdFile, "公文.ofd"); assert(ofdMD.markdown.includes("国企公文正文") && ofdMD.warnings.some(w => w.includes("签章")));
+    ofd.file("OFD.xml", '<o:OFD><o:DocBody><o:DocRoot>/Doc/Document.xml</o:DocRoot></o:DocBody></o:OFD>');
+    ofd.file("Doc/Document.xml", '<o:Document><o:Pages><o:Page BaseLoc="/Doc/Pages/1.xml"/></o:Pages></o:Document>');
+    fs.writeFileSync(ofdFile, await ofd.generateAsync({ type: "nodebuffer" }));
+    assert((await documentMarkdown(ofdFile, "根路径.ofd")).markdown.includes("国企公文正文"), "archive-root references are valid OFD paths");
+    ofd.file("Doc/Document.xml", '<o:Document><o:Pages><o:Page BaseLoc="../../outside.xml"/></o:Pages></o:Document>');
+    fs.writeFileSync(ofdFile, await ofd.generateAsync({ type: "nodebuffer" }));
+    await assert.rejects(documentMarkdown(ofdFile, "越界.ofd"), /越界/);
+    ofd.file("Doc/Document.xml", '<o:Document><o:Pages><o:Page BaseLoc="Pages/missing.xml"/></o:Pages></o:Document>');
+    fs.writeFileSync(ofdFile, await ofd.generateAsync({ type: "nodebuffer" }));
+    await assert.rejects(documentMarkdown(ofdFile, "缺页.ofd"), /页面数据缺失/);
     const { structuredMarkdown } = require("../src/domains/library/document-markdown");
     assert(structuredMarkdown({ kind: "doc", blocks: [{ t: "table", rows: [[{ runs: [{ s: "A&B<C>" }] }]] }] }, []).includes("A&amp;B&lt;C&gt;"));
     const { cliProject } = require("../src/cli/project-owner");

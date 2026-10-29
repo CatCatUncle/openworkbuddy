@@ -85,12 +85,22 @@ async function convertCore(file, name) {
   else if (ext === "ofd") {
     const zip = readZip(file), entry = parseXml(zip.text("OFD.xml") || "");
     const all = (n, tag) => { const out = []; const walk = x => { for (const c of x.children || []) if (typeof c !== "string") { if (c.name.split(":").pop() === tag) out.push(c); walk(c); } }; walk(n); return out; };
-    const docRoot = textOf(all(entry, "DocRoot")[0]).trim(), doc = parseXml(zip.text(docRoot) || "");
+    const partOf = (base, value) => {
+      const ref = String(value || "").trim().replace(/\\/g, "/");
+      if (!ref || /^[a-z][a-z0-9+.-]*:/i.test(ref)) throw Error("OFD 内部路径无效");
+      const part = path.posix.normalize(ref.startsWith("/") ? ref.slice(1) : path.posix.join(base, ref));
+      if (part === "." || part === ".." || part.startsWith("../") || part.startsWith("/")) throw Error("OFD 内部路径越界");
+      return part;
+    };
+    const docRoot = partOf("", textOf(all(entry, "DocRoot")[0]));
+    if (!zip.has(docRoot)) throw Error("OFD 文档入口不存在");
+    const doc = parseXml(zip.text(docRoot) || "");
     const pages = all(doc, "Page"); if (!pages.length) throw Error("OFD 中没有可读取的页面");
+    if (all(doc, "TemplatePage").length || all(doc, "Annotations").length) warnings.push("OFD 模板页和批注中的内容未提取，请结合原文核对。");
     const out = [];
     for (const [i, page] of pages.slice(0, 300).entries()) {
-      const part = path.posix.normalize(path.posix.join(path.posix.dirname(docRoot), page.attrs.BaseLoc || ""));
-      if (part.startsWith("../") || part.startsWith("/")) throw Error("OFD 页路径无效");
+      const part = partOf(path.posix.dirname(docRoot), page.attrs.BaseLoc);
+      if (!zip.has(part)) throw Error("OFD 页面数据缺失：第 " + (i + 1) + " 页");
       const data = parseXml(zip.text(part) || ""), text = all(data, "TextCode").map(node => textOf(node)).join("\n").trim();
       if (!text) warnings.push("OFD 第 " + (i + 1) + " 页没有文字，需要 OCR 或原阅读器核对。");
       out.push("## 第 " + (i + 1) + " 页\n\n" + (safe(text) || "[本页无可提取文字]"));
