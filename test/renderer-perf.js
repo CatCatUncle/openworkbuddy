@@ -116,7 +116,7 @@ const cut = (src, head, tail) => {
   return b < 0 ? "" : src.slice(a, b + tail.length);
 };
 const MA_SRC = cut(UI00, "function markActivatable(el) {", "\n}\n");
-const KBD_SRC = cut(UI00, "(function () {\n  const SEL = \".hist-item, .proj-item, .side-nav .item\";", "\n})();\n");
+const KBD_SRC = cut(UI00, "(function () {\n  const SEL = \".hist-item, .side-nav .item\";", "\n})();\n");
 const MA_GUARD = 'if (el.dataset.activate !== "1") el.dataset.activate = "1";';
 const MO_NEW = "new MutationObserver(armAdded)";
 
