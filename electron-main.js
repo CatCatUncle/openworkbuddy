@@ -11,6 +11,26 @@ const os = require("os");
 const { dataPath, seedDataDir, resolvePort } = require("./src/platform/paths");
 const { throttleWhenAway } = require("./src/desktop/win-away");
 const { workbenchLink } = require("./src/desktop/window-links");
+const openFiles = require("./src/desktop/open-files");
+const fileOpenTokens = [];
+let fileOpenTimer = null;
+function deliverOpenFiles() {
+  if (fileOpenTimer) return;
+  fileOpenTimer = setInterval(async () => {
+    if (!fileOpenTokens.length) { clearInterval(fileOpenTimer); fileOpenTimer = null; return; }
+    if (!win || win.isDestroyed() || !PAGE_UP || win.webContents.getURL() !== `http://127.0.0.1:${PORT}/`) return;
+    const token = fileOpenTokens[0];
+    const accepted = await win.webContents.executeJavaScript(`typeof window.owbOpenFiles === "function" && window.owbOpenFiles(${JSON.stringify(token)})`).catch(() => false);
+    if (accepted && fileOpenTokens[0] === token) fileOpenTokens.shift();
+  }, 700);
+  fileOpenTimer.unref();
+}
+function queueOpenFiles(files) {
+  const token = openFiles.offer(files);
+  if (!token) return;
+  fileOpenTokens.push(token); deliverOpenFiles();
+}
+app.on("open-file", (event, file) => { event.preventDefault(); queueOpenFiles([file]); });
 
 // ---------- 桌面壳这一层的文案 ----------
 /**
@@ -364,7 +384,8 @@ if (!app.requestSingleInstanceLock()) {
   bootLog("已经有一个实例在跑，这次启动把它唤到前台后退出");
   app.exit(0); // 立即退出：app.quit() 是异步的，慢一步的话 whenReady 还会抢跑建出第二个窗口
 } else {
-  app.on("second-instance", () => {
+  app.on("second-instance", (_event, argv) => {
+    queueOpenFiles(argv.slice(app.isPackaged ? 1 : 2));
     // 锁在、窗口不在：上一个实例卡在启动中途（或者已经崩了但进程没退）。
     // 这时候用户会一直双击图标、一直没反应——必须告诉他发生了什么，以及去哪儿看日志。
     if (!win || win.isDestroyed()) {
@@ -598,9 +619,10 @@ async function waitForServer(url, tries = 200) {
 }
 
 app.whenReady().then(async () => {
+  queueOpenFiles(process.argv.slice(app.isPackaged ? 1 : 2));
   bootLog("Electron 运行时就绪");
   if (app.isPackaged && !HIDDEN && path.resolve(app.getAppPath()) === path.resolve(__dirname) && process.env.OPENWORKBUDDY_INSTALL_CLI !== "0") {
-    require("./src/desktop/cli-install").installCli({ appDir: __dirname })
+    require("./src/desktop/cli-install").installCli({ appDir: __dirname, dataHome: process.env.OPENWORKBUDDY_HOME || undefined })
       .then(r => { if (!r.ok) bootLog("CLI 注册未完成：" + r.reason); })
       .catch(e => bootLog("CLI 注册失败：" + e.message));
   }

@@ -28,6 +28,17 @@ const ASSETS = [
   "src/desktop/pet-preload.js",          // 宠物窗口的 preload，BrowserWindow 按路径加载
   "public/pet.html",         // 同上
   "public/index.html",       // 主界面
+  "public/document-preview.html",
+  "public/css/document-preview.css",
+  "public/js/document-frame.js",
+  "public/js/document-viewer.js",
+  "public/js/app-16-documents.js",
+  "public/vendor/ofd/index.js",
+  "public/vendor/msdoc/msdoc/parser.js",
+  "public/vendor/msdoc/render/html.js",
+  "public/vendor/sheetjs/xlsx.full.min.js",
+  "public/vendor/pdf/pdf.mjs",
+  "public/vendor/pdf/pdf.worker.mjs",
   "src/engines/tool-bridge.js",  // 被当成子进程 spawn，不走 require
   "src/engines/mcp-cwd.js",      // 同上：claude 那边插件连接器先切目录再起，少了插件连接器一台也起不来
   "src/platform/render/thumb-worker.js",         // 缩略图编码的 Worker 线程：thumb.js / htmlshot.js 按路径 new Worker，少了封面静默变灰

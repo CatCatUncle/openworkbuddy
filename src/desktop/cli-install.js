@@ -10,9 +10,9 @@ const MARKER = "OpenWorkBuddy CLI launcher";
 const quote = value => "'" + String(value).replace(/'/g, "'\"'\"'") + "'";
 const batchQuote = value => String(value).replace(/%/g, "%%");
 
-function launcher({ platform, executable, cli }) {
-  if (platform === "win32") return `@rem ${MARKER}\r\n@echo off\r\nsetlocal DisableDelayedExpansion\r\nfor /f "tokens=2 delims=:" %%C in ('chcp') do set "_owb_cli_cp=%%C"\r\nchcp 65001 >nul\r\nset "ELECTRON_RUN_AS_NODE=1"\r\nif not defined OPENWORKBUDDY_HOME set "OPENWORKBUDDY_HOME=%USERPROFILE%\\OpenWorkBuddy"\r\n"${batchQuote(executable)}" "${batchQuote(cli)}" %*\r\nset "_owb_cli_exit=%errorlevel%"\r\nif defined _owb_cli_cp chcp %_owb_cli_cp% >nul\r\nexit /b %_owb_cli_exit%\r\n`;
-  return `#!/bin/sh\n# ${MARKER}\nexport ELECTRON_RUN_AS_NODE=1\nif [ -z "\${OPENWORKBUDDY_HOME:-}" ]; then\n  export OPENWORKBUDDY_HOME="$HOME/OpenWorkBuddy"\nfi\nexec ${quote(executable)} ${quote(cli)} "$@"\n`;
+function launcher({ platform, executable, cli, dataHome }) {
+  if (platform === "win32") return `@rem ${MARKER}\r\n@echo off\r\nsetlocal DisableDelayedExpansion\r\nfor /f "tokens=2 delims=:" %%C in ('chcp') do set "_owb_cli_cp=%%C"\r\nchcp 65001 >nul\r\nset "ELECTRON_RUN_AS_NODE=1"\r\nif not defined OPENWORKBUDDY_HOME set "OPENWORKBUDDY_HOME=${dataHome ? batchQuote(dataHome) : "%USERPROFILE%\\OpenWorkBuddy"}"\r\n"${batchQuote(executable)}" "${batchQuote(cli)}" %*\r\nset "_owb_cli_exit=%errorlevel%"\r\nif defined _owb_cli_cp chcp %_owb_cli_cp% >nul\r\nexit /b %_owb_cli_exit%\r\n`;
+  return `#!/bin/sh\n# ${MARKER}\nexport ELECTRON_RUN_AS_NODE=1\nif [ -z "\${OPENWORKBUDDY_HOME:-}" ]; then\n  export OPENWORKBUDDY_HOME=${dataHome ? quote(dataHome) : '"$HOME/OpenWorkBuddy"'}\nfi\nexec ${quote(executable)} ${quote(cli)} "$@"\n`;
 }
 
 function run(file, args) {
@@ -20,7 +20,7 @@ function run(file, args) {
 }
 
 /** Per-user registration. It never changes the task's current working directory. */
-async function installCli({ appDir, executable = process.execPath, platform = process.platform, home = os.homedir(), env = process.env, runCommand = run }) {
+async function installCli({ appDir, dataHome, executable = process.execPath, platform = process.platform, home = os.homedir(), env = process.env, runCommand = run }) {
   if (env.OPENWORKBUDDY_INSTALL_CLI === "0") return { ok: false, reason: "disabled" };
   if (!["darwin", "win32"].includes(platform)) return { ok: false, reason: "unsupported" };
   const cli = path.join(appDir, "cli.js");
@@ -29,7 +29,7 @@ async function installCli({ appDir, executable = process.execPath, platform = pr
     ? path.join(env.LOCALAPPDATA || path.join(home, "AppData", "Local"), "OpenWorkBuddy", "bin")
     : path.join(home, ".local", "bin");
   const file = path.join(bin, platform === "win32" ? "openworkbuddy.cmd" : "openworkbuddy");
-  const text = launcher({ platform, executable, cli });
+  const text = launcher({ platform, executable, cli, dataHome });
   let previous = "";
   try {
     const st = fs.lstatSync(file);

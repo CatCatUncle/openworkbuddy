@@ -393,7 +393,7 @@ const run = (name, input) => tools.executeTool(name, input, { security: { gatewa
 
       const pdf = await run("library_read", { name: "扫描件.pdf" });
       eq(pdf.isError, true, "PDF 也拦");
-      has(pdf.content, /pdftotext/, "PDF 指的还是那条真走得通的路");
+      has(pdf.content, /read_document/, "PDF 指向内置文档读取入口，不作为纯文本读取");
 
       const img = await run("library_read", { name: "图.png" });
       eq(img.isError, true, "图片也拦");
@@ -1264,7 +1264,7 @@ const run = (name, input) => tools.executeTool(name, input, { security: { gatewa
     ok(!plain.size && !plain.media && plain.slides.every((s) => !s.layout), "★不要版式时一点版式数据都不带★", Object.keys(plain));
     const toolsSrc = srcLib.src("tools");
     ok(!/layout\s*:\s*true/.test(toolsSrc), "★模型读文档那条路没要版式★", (toolsSrc.match(/.{0,60}layout\s*:\s*true/) || [""])[0]);
-    eq((srcLib.src("server").match(/previewData\([^()]*\{\s*layout:\s*true\s*\}\)/g) || []).length, 2,
+    eq((srcLib.src("server").match(/previewData\([^\n]*\{\s*layout:\s*true\s*,\s*signal:\s*[^}]+\}\)/g) || []).length, 2,
       "对话页预览和资料库预览两个接口都要了版式");
 
     const d = await preview.previewData(pf, "版式.pptx", { layout: true });

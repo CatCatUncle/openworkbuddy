@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src data: blob:; font-src data: blob:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<title>文档版式预览</title>
+<link rel="stylesheet" href="/css/document-preview.css">
+<script src="/vendor/document/jszip.min.js" defer></script>
+<script src="/vendor/document/docx-preview.min.js" defer></script>
+<script src="/js/document-frame.js" defer></script>
+</head><body><header><span id="status" role="status">正在打开文档…</span><div><button id="less" aria-label="缩小">−</button><button id="fit">适合宽度</button><button id="more" aria-label="放大">＋</button></div></header>
+<main id="scroll"><div id="pages"></div></main><footer>版式预览 · 缺少原字体时，显示可能与原应用有差异</footer></body></html>

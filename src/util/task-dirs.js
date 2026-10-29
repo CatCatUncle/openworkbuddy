@@ -299,7 +299,25 @@ function recoverFileRoots(sess, previous, keyOf) {
   return changed;
 }
 
+/** A legacy root hash alone is not a path. Recover only inside the session's
+ * recorded task folder, with an exact relative name AND size/mtime evidence.
+ * A same-name file in another project, or a modified replacement, never qualifies. */
+function recordedFileMatches(sess, rel, key, root) {
+  const name = String(rel || "").replace(/\\/g, "/");
+  const dir = String(sess && sess.dir || "").replace(/\\/g, "/").replace(/\/+$/, "");
+  if (!sess || !dir || !key || !name.startsWith(dir + "/") || name.split("/").includes("..") || path.isAbsolute(name)) return false;
+  let record = null;
+  for (const row of sess.transcript || []) for (const e of row.events || []) if (e.type === "files" && e.root === key) {
+    for (const file of e.files || []) if (file && String(file.name || "").replace(/\\/g, "/") === name) record = file;
+  }
+  if (!record || !Number.isFinite(Number(record.size)) || !Number.isFinite(Date.parse(record.mtime))) return false;
+  try {
+    const cell = fs.realpathSync(path.join(root, dir)), file = fs.realpathSync(path.join(root, name)), st = fs.statSync(file);
+    return file.startsWith(cell + path.sep) && st.isFile() && st.size === Number(record.size) && Math.abs(st.mtimeMs - Date.parse(record.mtime)) < 2;
+  } catch { return false; }
+}
+
 module.exports = {
   canonDir, samePlace, appRoot, looksLikeRepo, folderLayout, perChatRoot, setLayout, taskSlug, dayStamp, freeDir, dropIfEmpty,
-  sessDirIn, sessDirAt, stashSessDir, useSessDirAt, newSessDir, flatOutputs, recoverFileRoots,
+  sessDirIn, sessDirAt, stashSessDir, useSessDirAt, newSessDir, flatOutputs, recoverFileRoots, recordedFileMatches,
 };

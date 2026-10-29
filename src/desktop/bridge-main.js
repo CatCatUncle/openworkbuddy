@@ -65,6 +65,13 @@ function createShellBridge({ electron, getWin, pet, registerShortcuts, relaunch,
 
   /** @type {Record<string, (args: any) => any>} */
   const calls = {
+    "files.takeOpened": (a) => require("./open-files").take(String(a && a.token || "")),
+    "dialog.openFiles": async () => {
+      noDialog("dialog.openFiles");
+      const opts = { properties: ["openFile", "multiSelections"], title: "打开文件并对话" };
+      const w = win();
+      return w ? electron.dialog.showOpenDialog(w, opts) : electron.dialog.showOpenDialog(opts);
+    },
     "dialog.openDirectory": async (a) => {
       noDialog("dialog.openDirectory");
       const opts = { properties: ["openDirectory"], title: (a && a.title) || undefined };

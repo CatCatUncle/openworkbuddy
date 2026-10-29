@@ -74,7 +74,7 @@ const SHELLS = { Bash: "", PowerShell: "win32", Monitor: "" };
 const HARMLESS = new Set(["TodoWrite", "BashOutput", "KillShell", "KillBash", "TaskOutput", "TaskStop"]);
 
 /** @typedef {{action: string, rule?: string, seg?: string, ruleKey?: string, blacklist?: boolean}} Verdict */
-/** @typedef {(verdict: Verdict, label: string, text: string, detail: string) => Promise<boolean>} Ask 摆审批卡、等人点，批了回 true */
+/** @typedef {((verdict: Verdict, label: string, text: string, detail: string) => Promise<boolean>) & {approvalScope?: {owner: string, sessionId: string}}} Ask 摆审批卡、等人点，批了回 true */
 
 /** 问不了的时候，用户去哪儿放行（设置页上的真名，跟内置引擎同一份） */
 const wayOut = security.wayOut;
@@ -117,7 +117,7 @@ async function refuse(sec, verdict, label, text, force, ask, detail = "") {
  * @returns {Ask}
  */
 function cardAsk({ sec, signal, deadline = () => 0, source = "", owner = "", sessionId = "" }) {
-  return async (verdict, label, text, detail) => {
+  const ask = async (verdict, label, text, detail) => {
     if (signal && signal.aborted) return false;
     const due = deadline();
     return security.requestApproval(label + "执行", text, {
@@ -133,6 +133,8 @@ function cardAsk({ sec, signal, deadline = () => 0, source = "", owner = "", ses
       blacklist: !!verdict.blacklist,
     });
   };
+  ask.approvalScope = { owner, sessionId };
+  return ask;
 }
 
 /**
@@ -169,7 +171,10 @@ function writeDetail(name, input, abs, rel) {
  *   mcp：用户连接器的工具按连接器页上的权限怎么办（connector-policy.plan 的 rules），没有就照老样子不认
  * @returns {Promise<{behavior: "allow", updatedInput: any} | {behavior: "deny", message: string}>}
  */
-async function decide(req, { sec, readOnly = false, root, base, platform = process.platform, ask = null, mcp = null }) {
+function decide(req, ctx) {
+  return security.withApprovalScope(ctx.ask && ctx.ask.approvalScope, () => decideCore(req, ctx));
+}
+async function decideCore(req, { sec, readOnly = false, root, base = undefined, platform = /** @type {string} */ (process.platform), ask = null, mcp = null }) {
   const name = String((req && req.tool_name) || "");
   const input = req && req.input && typeof req.input === "object" && !Array.isArray(req.input) ? req.input : {};
   const allow = () => /** @type {const} */ ({ behavior: "allow", updatedInput: input });

@@ -47,6 +47,18 @@ $PB -c "Set :CFBundleIdentifier com.openworkbuddy.app" "$P"
 $PB -c "Set :CFBundleIconFile icon.icns" "$P"
 $PB -c "Set :CFBundleShortVersionString $VERSION" "$P"
 $PB -c "Set :CFBundleVersion $VERSION" "$P"
+# Offer Open With without becoming the preferred/default handler.
+$PB -c 'Delete :CFBundleDocumentTypes' "$P" 2>/dev/null || true
+$PB -c 'Add :CFBundleDocumentTypes array' "$P"
+$PB -c 'Add :CFBundleDocumentTypes:0 dict' "$P"
+$PB -c 'Add :CFBundleDocumentTypes:0:CFBundleTypeName string OpenWorkBuddy Document' "$P"
+$PB -c 'Add :CFBundleDocumentTypes:0:CFBundleTypeRole string Editor' "$P"
+$PB -c 'Add :CFBundleDocumentTypes:0:LSHandlerRank string Alternate' "$P"
+$PB -c 'Add :CFBundleDocumentTypes:0:CFBundleTypeExtensions array' "$P"
+owb_extensions="$(node -e 'process.stdout.write(require(process.argv[1]).EXTENSIONS.join(" "))' "$REPO/src/desktop/open-files.js")"
+for owb_extension in $owb_extensions; do
+  $PB -c "Add :CFBundleDocumentTypes:0:CFBundleTypeExtensions: string $owb_extension" "$P"
+done
 # 中文系统下 Finder/Dock 也认 CFBundleDisplayName；InfoPlist.strings 在 Electron 包里本来就是空目录，无需改
 
 # 权限说明：操作其他应用（Apple Events）、麦克风、摄像头。Electron 自带的是英文默认值，

@@ -1332,6 +1332,11 @@ app.use((req, res, next) => {
  * vendor 那两个不在 public 底下，得单独把前缀指过去——它们俩加起来 558 KB，
  * 恰恰是首屏里最大的一块，漏了等于白做。
  */
+// Viewer code is public, immutable application code. CORS lets the opaque
+// sandbox import OFD modules; document bytes still arrive only from its parent.
+for (const asset of ["ofd", "msdoc"]) app.use("/vendor/" + asset, (_req, res, next) => { res.set("Access-Control-Allow-Origin", "*"); next(); });
+app.get("/vendor/document/jszip.min.js", (_req, res) => res.sendFile(appPath("node_modules/jszip/dist/jszip.min.js")));
+app.get("/vendor/document/docx-preview.min.js", (_req, res) => res.sendFile(appPath("node_modules/docx-preview/dist/docx-preview.min.js")));
 app.use(staticCompress([
   { prefix: "/", dir: appPath("public") },
   { prefix: "/vendor/joint/", dir: appPath("node_modules/@joint/core/dist") },
@@ -3318,7 +3323,7 @@ app.get("/api/security/approvals", (req, res) => {
   res.json({
     items: security.listApprovals(scopeTo),
     mode: security.permissionMode(config.security),
-    session_allow: security.listSessionAllow(),
+    session_allow: security.listSessionAllow(scopeTo),
     // 界面照这个决定要不要画「一直允许」那颗按钮：会 403 的按钮不该摆在那儿
     can_always: scopeTo === undefined,
     // 服务器此刻的钟：界面按 deadline - now 算还剩多久，两边的钟差多少都不影响倒计时
@@ -3411,8 +3416,8 @@ app.get("/api/security/toolward", (req, res) => {
     res.json({ mode: "auto", on: false, bin: "", version: "", why: String(e.message || e), install: toolward.INSTALL_HINT, licence: toolward.LICENCE_NOTE });
   }
 });
-app.post("/api/security/session-allow/clear", (_req, res) => {
-  security.clearSessionAllow();
+app.post("/api/security/session-allow/clear", (req, res) => {
+  security.clearSessionAllow(approvalScope(req));
   res.json({ ok: true });
 });
 app.get("/api/security/system", (_req, res) => {
@@ -4896,11 +4901,30 @@ app.get("/api/library/preview/*", async (req, res) => {
     const rel = relOf(req);
     const p = libPath(rel);
     if (!fs.existsSync(p) || !fs.statSync(p).isFile()) return res.status(404).json({ error: "文件不存在" });
-    res.json(await previewData(p, rel, { layout: true }));
+    const controller = new AbortController(); res.once("close", () => { if (!res.writableEnded) controller.abort(); });
+    res.json(await previewData(p, rel, { layout: true, signal: controller.signal }));
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
 });
+for (const [prefix, resolve] of [["/api/library", (req) => libPath(relOf(req))], ["/api/files", (req) => rootedPath(req, relOf(req))]]) {
+  for (const mode of ["office-info", "office-view", "markdown"]) app.get(prefix + "/" + mode + "/*", async (req, res) => {
+    try {
+      const p = resolve(req);
+      if (!fs.existsSync(p) || !fs.statSync(p).isFile()) return res.status(404).json({ error: "文件不存在" });
+      if (mode === "markdown") {
+        const controller = new AbortController();
+        res.once("close", () => { if (!res.writableEnded) controller.abort(); });
+        const result = await require("./src/domains/library/document-markdown").documentMarkdown(p, relOf(req), { signal: controller.signal });
+        res.set("Cache-Control", "private, no-store"); return res.json(result);
+      }
+      const result = await require("./src/domains/library/office-compat").officeFile(p, relOf(req));
+      res.set("Cache-Control", "private, no-store");
+      if (mode === "office-info") return res.json({ kind: result.kind, converted: result.converted });
+      res.type(result.ext).sendFile(result.file);
+    } catch (error) { res.status(400).json({ error: error.message }); }
+  });
+}
 
 app.delete("/api/library/file/*", (req, res) => {
   try {
@@ -6473,6 +6497,53 @@ async function startPluginMcp(pluginName) {
 // - 原始字节（Content-Type: application/octet-stream）：输入框、画布现在都走这条。边收边写盘，多大的视频都不过内存；
 //   名字、会话、replace 放在请求头里，URI 编码过（请求头只认 ASCII）
 // - JSON + base64：老页面、脚本还在用，照收。这条受全局 express.json 60MB 的限制，大文件别走它
+// Only the desktop shell can supply source paths. The HTTP caller supplies a
+// one-use opaque grant or asks for a native picker, never an arbitrary path.
+app.post("/api/desktop/open-files", async (req, res) => {
+  const bridge = require("./src/platform/electron-bridge");
+  if (bridge.mode() === "none" || !isPlatformOwner(req)) return res.status(403).json({ error: "请在本机桌面版打开文件" });
+  try {
+    const b = req.body || {};
+    const sess = b.session ? getSession(String(b.session)) : null;
+    if (!sess || !sessionAllowed(req.user, sess)) return res.status(403).json({ error: "这条对话不可用" });
+    const call = async (op, args) => {
+      if (bridge.isRemote()) return op === "files.takeOpened"
+        ? bridge.call("files.takeOpened", args, { timeoutMs: 15 * 60 * 1000 })
+        : bridge.call("dialog.openFiles", args, { timeoutMs: 15 * 60 * 1000 });
+      if (op === "files.takeOpened") return require("./src/desktop/open-files").take(String(args.token || ""));
+      const { dialog } = require("electron");
+      return dialog.showOpenDialog({ properties: ["openFile", "multiSelections"], title: "打开文件并对话" });
+    };
+    const picked = b.token ? await call("files.takeOpened", { token: String(b.token) }) : b.pick === true ? await call("dialog.openFiles", {}) : [];
+    const sources = Array.isArray(picked) ? picked : picked.canceled ? [] : picked.filePaths || [];
+    const files = [], errors = [];
+    // A new file conversation starts in the active project's default folder,
+    // even if the previous conversation temporarily used a different workspace.
+    const importRoot = (admin.keepsSharedSpace(req.user) && activeProject()?.dir) || getWorkspaceDir();
+    await withWorkspace(importRoot, async () => {
+    for (const source of sources.slice(0, 20)) {
+      let tmp = "";
+      try {
+        const st = await fs.promises.stat(source);
+        if (!st.isFile() || st.size > 200 * 1024 * 1024) throw Error("请选择 200 MB 以内的文件");
+        const base = path.basename(source).replace(/[\u0000-\u001f\u007f]/g, "").trim();
+        const own = perChatHere() ? sessDirOf(sess) : null;
+        const dir = path.dirname(safePath(own ? path.join(own, base) : base));
+        await fs.promises.mkdir(dir, { recursive: true });
+        tmp = path.join(dir, ".open-" + require("crypto").randomBytes(12).toString("hex"));
+        await fs.promises.copyFile(source, tmp, fs.constants.COPYFILE_EXCL);
+        const saved = uploadName.writeUploadFresh(dir, base, { from: tmp }); tmp = "";
+        const rel = own ? path.join(own, saved) : saved;
+        noteUserInput(rel);
+        if (!own) sess.pending_uploads = (sess.pending_uploads || []).concat({ name: saved, root: getWorkspaceDir(), by: req.user?.username || "" });
+        files.push({ name: saved, path: rel, size: st.size });
+      } catch (error) { errors.push({ name: path.basename(String(source)), error: error.message }); }
+      finally { if (tmp) await fs.promises.unlink(tmp).catch(() => {}); }
+    }
+    });
+    res.json({ ok: true, canceled: !sources.length, files, errors, root: workspaceKeyOf(importRoot) });
+  } catch (error) { res.status(400).json({ error: error.message }); }
+});
 app.post("/api/upload", async (req, res) => {
   const raw = !!req.is("application/octet-stream");
   let tmp = "";
@@ -7300,7 +7371,7 @@ function sessionGrant(s, rel, rootKey) {
   for (const [r, d] of Object.entries(s.dirs || {})) if (d) cells.push([r, d]);
   for (const [r, d] of cells) {
     const R = realOf(r), cell = path.resolve(R, String(d));
-    if (rootKey && workspaceKeyOf(R) !== rootKey && workspaceKeyOf(r) !== rootKey) continue;
+    if (rootKey && workspaceKeyOf(R) !== rootKey && workspaceKeyOf(r) !== rootKey && !taskDirs.recordedFileMatches(s, norm, rootKey, R)) continue;
     let p;
     try { p = safePathIn(R, norm); } catch { continue; }
     if (p.startsWith(cell + path.sep) && fs.existsSync(p) && within(p, cell)) return { path: p, dir: cell };
@@ -7712,7 +7783,8 @@ app.get("/api/files/preview/*", async (req, res) => {
     const p = rootedPath(req, rel);
     if (!fs.existsSync(p)) return res.status(404).json({ error: "文件不存在" });
     // layout：PPT 连每页的版式一起给，面板里看到的是一页页幻灯片，不只是念出来的字
-    res.json(await previewData(p, rel, { layout: true }));
+    const controller = new AbortController(); res.once("close", () => { if (!res.writableEnded) controller.abort(); });
+    res.json(await previewData(p, rel, { layout: true, signal: controller.signal }));
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -8824,7 +8896,12 @@ app.get("/api/chat/live", (req, res) => {
 app.get("/api/sessions", (req, res) => {
   const mine = listSessionsOnDisk().filter((r) => ownSession(req.user, r));
   // 只回最近 300 条，置顶的不论多老都带上：不然顶了半年前那条，过阵子它就从侧栏掉出去了
-  const rows = mine.filter((r, i) => i < 300 || r.pinned_at);
+  let engineering = 0;
+  const rows = mine.filter((r, i) => {
+    const cli = r.lane === "cli" || (!r.lane && /^cli_/.test(r.id));
+    const include = i < 300 || r.pinned_at || (cli && engineering < 300);
+    if (cli) engineering++; return include;
+  });
   // filling：还有老会话的文件数在后台补，前端过一会儿再拉一次，图标就齐了
   res.json({ sessions: rows.map(({ user, ...r }) => r), ...(sessFilesTodo.size ? { filling: true } : {}) }); // 归属只用来过滤，不回给前端
 });

@@ -388,9 +388,10 @@ function attentionInboxRows() {
     rows.set("__approval__", { id: "__approval__", title: "安全审批", state: "ask", status: approval ? "待审批" : "待回答", cli: false, at: Date.now() });
   }
   if (scheduleInboxOwner === scheduleInboxKey()) for (const row of scheduleInboxRows) rows.set(row.id, row);
-  for (const [id, row] of inboxHistory()) if (!rows.has(id) && attnKnownSid(id)) rows.set(id, { ...row, title: stripSceneTag((byId.get(id) || {}).title || row.title) });
-  const rank = { ask: 0, error: 1, running: 2, unseen: 3 };
-  return [...rows.values()].sort((a, b) => Number(!!a.read) - Number(!!b.read) || rank[a.state] - rank[b.state] || b.at - a.at);
+  for (const [id, row] of inboxHistory()) if (!rows.has(id) && !attnGone.has(id)) rows.set(id, { ...row, title: stripSceneTag((byId.get(id) || {}).title || row.title) });
+  // 收件箱是时间线：已读和执行成败只改变标记，不改变位置。
+  // 旧失败一直排在最新成功前面，会让用户误以为今天的通知丢了。
+  return [...rows.values()].sort((a, b) => b.at - a.at || a.id.localeCompare(b.id));
 }
 /** 阅读通知不会批准操作、回答问题或停止任务；这些待办继续保留角标。 */
 function markInboxRead(rows = attentionInboxRows()) {

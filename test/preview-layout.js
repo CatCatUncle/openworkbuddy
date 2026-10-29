@@ -238,7 +238,7 @@ const seen = []; // 转过去的每一条：地址、方法、带没带登录 co
 function serve(realPort) {
   return new Promise((resolve) => {
     const srv = http.createServer((req, res) => {
-      if (PROXY_RE.test(String(req.url || ""))) {
+      if (PROXY_RE.test(String(req.url || "")) || String(req.url || "").startsWith("/vendor/document/")) {
         const rec = {
           url: decodeURIComponent(String(req.url)), method: req.method,
           cookie: /openworkbuddy_token=/.test(String(req.headers.cookie || "")),
@@ -335,6 +335,8 @@ const probe = (name) => `
 
 let real = null;
 app.whenReady().then(async () => {
+  const { Document, Packer, Paragraph } = require("docx");
+  W("方案.docx", await Packer.toBuffer(new Document({ sections: [{ children: Array.from({ length: 40 }, (_, i) => new Paragraph("第 " + (i + 1) + " 段正文。")) }] })));
   real = await bootServer();
   if (!real.port) throw new Error("真 server.js 没起来，这一套作废：" + real.why);
   const srv = await serve(real.port);

@@ -3713,6 +3713,7 @@ function unloadPreview() {
   cancelPvUnload(); // 当场拆了，排着的那次就不用了
   const body = document.getElementById("pv-body");
   if (!body) return;
+  releaseSheetDocuments(body);
   if (body._fitAbort) { body._fitAbort.abort(); body._fitAbort = null; }
   body.querySelectorAll("audio,video").forEach((m) => {
     try { m.onerror = null; m.pause(); m.removeAttribute("src"); m.load(); } catch {}
@@ -3738,7 +3739,9 @@ function cancelPvUnload() {
   if (pvUnloadOff) { pvUnloadOff(); pvUnloadOff = null; }
 }
 function closePreview(byUser, opts) {
-  pvPanel.classList.remove("show");
+  pvPanel.classList.remove("show", "pv-expanded");
+  const expand = document.getElementById("pv-expand");
+  if (expand) { expand.title = "展开预览"; expand.setAttribute("aria-label", expand.title); expand.setAttribute("aria-expanded", "false"); }
   pvCurrent = null;
   if (byUser) { pvRoot = ""; pvClosedAt = Date.now(); }
   if (opts && opts.now) { unloadPreview(); return; }
@@ -3782,7 +3785,7 @@ const PV_AUDIO_RE = /\.(mp3|wav|m4a|aac|ogg|oga|flac|opus)$/i;
 const PV_VIDEO_RE = /\.(mp4|webm|mov|m4v|ogv|mkv|avi|wmv|flv|mpe?g|m2ts|mts|3gp)$/i;
 const PV_MD_RE = /\.(md|markdown)$/i;
 // 下面四种浏览器自己打不开（zip 里的一包 XML / 一堆条目），走 /api/files/preview 让服务端拆
-const PV_DOC_RE = /\.docx$/i;
+const PV_DOC_RE = /\.(docx|docm|dotx|dotm)$/i;
 const PV_SHEET_RE = /\.xlsx$/i;
 const PV_SLIDES_RE = /\.pptx$/i;
 const PV_ARCHIVE_RE = /\.zip$/i;
@@ -3791,6 +3794,8 @@ const PV_BINARY_RE = /\.(zip|gz|tgz|bz2|xz|7z|rar|tar|dmg|pkg|iso|exe|dll|so|dyl
 
 /** 预览走哪条路。抽成纯函数是为了能直接断言，不用一个个文件点开肉眼验 */
 function previewKind(name) {
+  if (/\.ofd$/i.test(name)) return "ofd";
+  if (/\.(doc|dot|wps|wpt|rtf|odt|xls|et|ett|ods|xlsm|xltx|ppt|dps|dpt|odp|pptm|ppsx|ceb|cebx)$/i.test(name)) return "office";
   if (PV_PDF_RE.test(name)) return "pdf";
   if (PV_SVG_RE.test(name)) return "svg";
   if (PV_IFRAME_RE.test(name)) return "iframe";
@@ -3805,6 +3810,19 @@ function previewKind(name) {
   if (PV_CSV_RE.test(name)) return "csv";
   if (PV_BINARY_RE.test(name)) return "binary";
   return "text"; // 认不出来的一律先当文本试，试不成再退回去
+}
+function canConvertMarkdown(name) { return /\.(doc|dot|docx|docm|dotx|dotm|wps|wpt|rtf|odt|ppt|pptx|pptm|ppsx|dps|dpt|odp|xls|xlsx|xlsm|xltx|et|ett|ods|pdf|ofd|ceb|cebx|html?|md|markdown|txt|csv|tsv)$/i.test(name); }
+async function exportDocumentMarkdown(url, button) {
+  if (button.disabled) return;
+  const text = button.textContent; button.disabled = true; button.textContent = "转换中…";
+  try {
+    const response = await fetch(url), data = await response.json();
+    if (!response.ok || data.error) throw Error(data.error || "文档转换失败");
+    const blob = URL.createObjectURL(new Blob([data.markdown], { type: "text/markdown;charset=utf-8" }));
+    const a = document.createElement("a"); a.href = blob; a.download = data.name; a.click(); setTimeout(() => URL.revokeObjectURL(blob), 1000);
+    toast(data.warnings?.length ? "已转为 Markdown，文末附有转换说明，请核对" : "已转为 Markdown", "file");
+  } catch (error) { toast(error.message || "转换未完成", "circle-x"); }
+  finally { button.disabled = false; button.textContent = text; }
 }
 
 /** 这段内容到底是不是文本：有 NUL 就是二进制；UTF-8 解码非法字节会吐 U+FFFD，
@@ -4047,15 +4065,99 @@ function docHtml(d) {
   return `<div class="ov-doc">${out.join("")}</div>`;
 }
 
+async function renderCompatibleDocument(host, infoURL, viewURL, previewURL) {
+  const info = await fetch(infoURL).then(r => r.json());
+  if (info.error) throw Error(info.error);
+  if (!host.isConnected) return;
+  if (["doc", "msdoc", "html-doc"].includes(info.kind)) return OWBDocumentViewer.mount(host, viewURL, info.kind);
+  if (info.kind === "pdf") { host.innerHTML = `<iframe title="兼容文档预览" src="${esc(viewURL)}" style="width:100%;height:100%;min-height:450px;border:0"></iframe>`; return; }
+  const data = await fetch(previewURL).then(r => r.json());
+  if (data.error) throw Error(data.error);
+  if (!host.isConnected) return;
+  host.innerHTML = (data.compatibility ? `<div class="ov-note">${esc(data.compatibility)}</div>` : "") + (data.kind === "sheet" ? sheetHtml(data) : slidesHtml(data));
+  host.querySelectorAll(".ov-tab").forEach(t => { t.onclick = () => {
+    host.querySelectorAll(".ov-tab").forEach(x => x.classList.toggle("on", x === t));
+    host.querySelectorAll(".ov-pane").forEach(p => { p.hidden = p.dataset.pane !== t.dataset.sheet; });
+  }; });
+  attachOfficeReadingControls(host);
+}
+function attachOfficeReadingControls(host) {
+  const doc = host.querySelector(".ov-doc");
+  if (!doc || host.querySelector(".office-reader")) return;
+  const reader = document.createElement("div"); reader.className = "office-reader";
+  reader.innerHTML = '<div class="office-reader-tools" role="group" aria-label="文档缩放"><span class="office-zoom-value">100%</span><button type="button" data-office-zoom="less" aria-label="缩小">' + ic("minus") + '</button><button type="button" data-office-zoom="fit">适合宽度</button><button type="button" data-office-zoom="more" aria-label="放大">' + ic("plus") + '</button></div><div class="office-reader-viewport"></div>';
+  doc.replaceWith(reader); const viewport = reader.lastElementChild; viewport.append(doc);
+  let zoom = 1, naturalWidth = 0;
+  reader.querySelectorAll(".office-reader-tools button").forEach(button => { button.onclick = () => {
+    const action = button.dataset.officeZoom;
+    if (!naturalWidth) naturalWidth = Math.max(viewport.clientWidth, doc.scrollWidth);
+    zoom = action === "fit" ? Math.min(1, viewport.clientWidth / naturalWidth) : Math.max(.2, Math.min(2.5, zoom + (action === "more" ? .1 : -.1)));
+    doc.style.width = naturalWidth + "px"; doc.style.zoom = String(zoom);
+    reader.querySelector(".office-zoom-value").textContent = Math.round(zoom * 100) + "%";
+  }; });
+}
+const sheetDocuments = new Map();
+function sheetLimitNote(sh) { return sh.truncated ? `<div class="ov-note">共 ${sh.totalRows} 行 × ${sh.totalCols} 列，只显示了前 ${sh.rows.length} 行。</div>` : ""; }
+function releaseSheetDocuments(host) {
+  if (!host) return;
+  host.querySelectorAll("[data-sheet-document]").forEach(node => sheetDocuments.delete(node.dataset.sheetDocument));
+}
+let sheetDocumentSeq = 0;
+function sheetGrid(sh, page = 0) {
+  if (!sh.layout) return gridHtml(sh.rows, "ov-table ov-sheet");
+  const layout = sh.layout, first = page * 100 + 1, last = Math.min(sh.rows.length, first + 99);
+  const colName = n => { let s = ""; for (; n; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + (n - 1) % 26) + s; return s; };
+  const color = value => /^#[0-9a-f]{6}$/i.test(value || "") ? value : "";
+  const cols = layout.columns.map((c, i) => ({ ...c, n: i + 1 })).filter(c => !c.hidden);
+  const merges = new Map(), covered = new Set();
+  for (const m of layout.merges || []) {
+    if (m.bottom < first || m.top > last) continue;
+    const top = Math.max(first, m.top), bottom = Math.min(last, m.bottom), cc = cols.filter(c => c.n >= m.left && c.n <= m.right);
+    if (!cc.length) continue;
+    merges.set(top + "," + cc[0].n, { colspan: cc.length, rowspan: bottom - top + 1, text: sh.rows[m.top - 1]?.[m.left - 1] || "" });
+    for (let r = top; r <= bottom; r++) for (const c of cc) if (r !== top || c.n !== cc[0].n) covered.add(r + "," + c.n);
+  }
+  const rows = [];
+  for (let r = first; r <= last; r++) {
+    const h = layout.heights[r];
+    if (h?.hidden) continue;
+    rows.push(`<tr style="height:${Math.min(600, Math.max(20, Number(h?.height || 15) * 4 / 3))}px"><th scope="row">${r}</th>` + cols.map(c => {
+      const key = r + "," + c.n; if (covered.has(key)) return "";
+      const s = layout.styles[key] || {}, merge = merges.get(key), style = [];
+      if (s.bold) style.push("font-weight:700"); if (s.italic) style.push("font-style:italic"); if (s.underline) style.push("text-decoration:underline");
+      style.push(`font-size:${Math.min(72, Math.max(8, Number(s.size) || 11))}pt`);
+      if (s.font) style.push("font-family:" + deckFont([s.font]));
+      if (color(s.color)) style.push("color:" + color(s.color));
+      if (color(s.background)) style.push("background:" + color(s.background));
+      if (["left", "center", "right", "justify"].includes(s.horizontal)) style.push("text-align:" + s.horizontal);
+      if (["top", "middle", "bottom"].includes(s.vertical)) style.push("vertical-align:" + s.vertical);
+      style.push("white-space:" + (s.wrap ? "pre-wrap" : "pre"));
+      for (const edge of ["top", "bottom", "left", "right"]) if (color(s.borders?.[edge])) style.push(`border-${edge}:1px solid ${color(s.borders[edge])}`);
+      return `<td${merge ? ` colspan="${merge.colspan}" rowspan="${merge.rowspan}"` : ""} style="${esc(style.join(";"))}">${esc(merge ? merge.text : sh.rows[r - 1][c.n - 1] || "")}</td>`;
+    }).join("") + "</tr>");
+  }
+  const pages = Math.ceil(sh.rows.length / 100);
+  return `<div class="ov-scroll"><table class="ov-table ov-sheet ov-styled"><colgroup><col style="width:42px">${cols.map(c => `<col style="width:${Math.max(28, Math.min(600, Number(c.width) * 7 + 5))}px">`).join("")}</colgroup><thead><tr><th></th>${cols.map(c => `<th scope="col">${colName(c.n)}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table></div>`
+    + (pages > 1 ? `<div class="ov-sheet-pages"><button type="button" data-sh-page="${page - 1}"${page ? "" : " disabled"}>上一页</button><span>第 ${first}–${last} 行 · 共 ${sh.rows.length} 行</span><button type="button" data-sh-page="${page + 1}"${page + 1 < pages ? "" : " disabled"}>下一页</button></div>` : "");
+}
+document.addEventListener("click", event => {
+  const tab = event.target.closest?.(".ov-tab"), pager = event.target.closest?.("[data-sh-page]");
+  const doc = (tab || pager)?.closest("[data-sheet-document]"); if (!doc) return;
+  const sheets = sheetDocuments.get(doc.dataset.sheetDocument); if (!sheets) return;
+  const pane = tab ? doc.querySelector(`.ov-pane[data-pane="${Number(tab.dataset.sheet)}"]`) : pager.closest(".ov-pane");
+  if (pane && (pager || !pane.dataset.loaded)) { const sh = sheets[Number(pane.dataset.pane)]; pane.innerHTML = sheetGrid(sh, pager ? Number(pager.dataset.shPage) : 0) + sheetLimitNote(sh); pane.dataset.loaded = "1"; }
+});
 function sheetHtml(d) {
+  const key = String(++sheetDocumentSeq); sheetDocuments.set(key, d.sheets);
+  while (sheetDocuments.size > 4) sheetDocuments.delete(sheetDocuments.keys().next().value);
   const tabs = d.sheets.map((sh, i) =>
     `<button class="ov-tab${i ? "" : " on"}" data-sheet="${i}">${esc(sh.name)}</button>`).join("");
   const panes = d.sheets.map((sh, i) => {
-    const note = sh.truncated ? `<div class="ov-note">共 ${sh.totalRows} 行 × ${sh.totalCols} 列，只显示了前 ${sh.rows.length} 行。</div>` : "";
-    const grid = sh.rows.length ? gridHtml(sh.rows, "ov-table ov-sheet") : '<div class="ov-note">空工作表。</div>';
-    return `<div class="ov-pane" data-pane="${i}"${i ? " hidden" : ""}>${grid}${note}</div>`;
+    const note = sheetLimitNote(sh);
+    const grid = i ? "" : sh.rows.length ? sheetGrid(sh) : '<div class="ov-note">空工作表。</div>';
+    return `<div class="ov-pane" data-pane="${i}"${i ? " hidden" : ' data-loaded="1"'}>${grid}${note}</div>`;
   }).join("");
-  return `<div class="ov-doc">${d.sheets.length > 1 ? `<div class="ov-tabs">${tabs}</div>` : ""}${panes}</div>`;
+  return `<div class="ov-doc" data-sheet-document="${key}">${d.sheets.length > 1 ? `<div class="ov-tabs">${tabs}</div>` : ""}${panes}</div>`;
 }
 
 // ---- PPT：按每页真实版式画 ----
@@ -4906,12 +5008,6 @@ const PV_FIT_REPORTER = '<script>(function(){var w0=-1;function s(){try{var d=do
 
 // opts.next：这件打不开（已经不在了）时接着试的几件，收尾自动打开那一下才给，见 pvGone
 async function previewFile(name, root, opts) {
-  if (OFFICE_RE.test(name)) {
-    // Office 文件交给本机 Office/WPS 打开。多人服务器上「本机」是服务端那台，
-    // 对成员没意义也没权限——那边直接给他下载，这才是他真正想要的结果
-    if (canOpenOnHost()) await openOnHost(name, root); else downloadFile(name, root);
-    return;
-  }
   pvCurrent = name;
   const seq = ++pvSeq;
   const stale = () => seq !== pvSeq || pvCurrent !== name; // 关面板 / 切对话都会把 pvCurrent 清掉
@@ -4923,6 +5019,11 @@ async function previewFile(name, root, opts) {
   unloadPreview(); // 上一份（网页/音视频）先停掉再换，别在后台接着跑到被垃圾回收
   document.getElementById("pv-body").innerHTML = pvNotice("loader-circle", "正在打开…");
   const pvName = document.getElementById("pv-name");
+  const markdownButton = document.getElementById("pv-markdown");
+  if (markdownButton) {
+    markdownButton.hidden = !canConvertMarkdown(name);
+    markdownButton.onclick = () => exportDocumentMarkdown(withRoot("/api/files/markdown/" + fpath(name), pvRoot), markdownButton);
+  }
   const activeTask = typeof sessionId !== "undefined" && typeof sessions !== "undefined" && sessionId
     ? sessions.find((s) => s.id === sessionId) : null;
   const taskDir = activeTask && String(activeTask.dir || "").replace(/\\/g, "/").replace(/\/+$/, "");
@@ -5026,6 +5127,15 @@ async function previewFile(name, root, opts) {
       body.innerHTML = pvFallback("这个" + (kind === "audio" ? "音频" : "视频") + "的编码浏览器解不了（常见于 iPhone 的 HEVC，以及 mkv / avi / wmv 这些容器）");
       bindPvFallback(body, name);
     };
+  } else if (kind === "office") {
+    try {
+      await renderCompatibleDocument(body, withRoot("/api/files/office-info/" + fpath(name) + "?v=" + ver, pvRoot),
+        withRoot("/api/files/office-view/" + fpath(name) + "?v=" + ver, pvRoot),
+        withRoot("/api/files/preview/" + fpath(name) + "?v=" + ver, pvRoot));
+    } catch (error) { if (!stale()) body.innerHTML = pvFallback(error.message); }
+  } else if ((kind === "doc" || kind === "ofd") && window.OWBDocumentViewer) {
+    try { await OWBDocumentViewer.mount(body, url, kind); }
+    catch (error) { if (!stale()) body.innerHTML = pvFallback(error.message); }
   } else if (kind === "doc" || kind === "sheet" || kind === "slides" || kind === "archive") {
     let st = 0;
     const d = await fetch(withRoot("/api/files/preview/" + fpath(name) + "?v=" + ver, pvRoot)).then(r => { st = r.status; return r.json(); }).catch(() => null);
@@ -5038,6 +5148,7 @@ async function previewFile(name, root, opts) {
       body.querySelectorAll(".ov-tab").forEach((x) => x.classList.toggle("on", x === t));
       body.querySelectorAll(".ov-pane").forEach((p) => { p.hidden = p.dataset.pane !== t.dataset.sheet; });
     }; });
+    attachOfficeReadingControls(body);
   } else if (kind === "binary") {
     body.innerHTML = pvFallback("这是二进制文件");
   } else {
@@ -5974,7 +6085,7 @@ function makeOutCard(f, isHtml, root) {
   card.dataset.stem = f.name.replace(/\.[^./]+$/, ""); // 去掉扩展名的全路径：认 svg / png 是同一张图用
   if (root) card.dataset.root = root;                  // 卡片被挪走/换掉时根跟着走，见 attachAltFmt
   if (f.size) card.dataset.size = String(f.size);
-  card.title = f.name + " · " + (OFFICE_RE.test(f.name) ? "点击用系统程序打开" : "点击预览");
+  card.title = f.name + " · 点击预览";
   card.tabIndex = 0; // 键盘也能落到 chip 上（不加 role=button：里面还有三个真按钮，按钮套按钮读屏会吞掉它们）
   const mainTx = isHtml ? "在浏览器打开" : "预览";
   card.innerHTML = `<div class="out-thumb">${thumb}</div>
@@ -6292,7 +6403,7 @@ function makeFileLink(label, name, root) {
  *   · 这趟里用户自己把预览关掉过：他已经明说了不想看
  *   · 成果文件面板开着：他正在自己翻列表，别把面板从手里抢走
  *   · 窄窗：预览在这个宽度下是盖在聊天上的浮层，一开就把刚写完的结论挡了
- *   · 只剩 .doc/.ppt/.xls 那三个老格式：previewFile 会去拉起本机 Office，抢的是整个系统焦点，太重
+ *   · Office 老格式也在应用内预览，兼容提示保留在内容区
  */
 // 一道题里提到的文件。
 // AI 让人「三版对比在《封面三选一.html》里，你要哪版」，题面其实**在那个文件里**——
@@ -6399,7 +6510,7 @@ function rankFinishDeliverables(outs) {
   for (const f of outs || []) {
     const name = (f && f.name) || "";
     const tier = outTier(name);
-    if (!name || OFFICE_RE.test(name) || SCAFFOLD_RE.test(name.split("/").pop()) || tier === 99) continue;
+    if (!name || SCAFFOLD_RE.test(name.split("/").pop()) || tier === 99) continue;
     cand.push({ name, tier, proc: isProcessOutput(name, all), t: Date.parse((f && f.mtime) || "") || 0, depth: name.split("/").length });
   }
   if (cand.some((c) => !c.proc)) cand = cand.filter((c) => !c.proc);

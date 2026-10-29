@@ -1427,6 +1427,13 @@ function openPageView(kind) {
   if (searchButton) searchButton.hidden = true;
   const v = PAGE_VIEWS[kind];
   if (!v) return;
+  releaseSheetDocuments(chatCol);
+  if (typeof renderLibPreview === "function" && renderLibPreview.abort) renderLibPreview.abort.abort();
+  // Page views own their preview region. Do not squeeze a library between the
+  // previous conversation's preview and its file drawer.
+  closePreview(false, { now: true });
+  document.getElementById("files-panel").classList.remove("show");
+  document.getElementById("toggle-files").style.display = kind === "lib" ? "none" : "";
   if (pageKind === kind) { v.render(); return; } // 同页重进 = 刷新内容
   if (assistTimer) { clearInterval(assistTimer); assistTimer = null; }
   assistViewOn = true;
@@ -1470,8 +1477,11 @@ function openAssistView() {
 }
 function closeAssistView() {
   if (!assistViewOn) return;
+  releaseSheetDocuments(chatCol);
+  if (typeof renderLibPreview === "function" && renderLibPreview.abort) renderLibPreview.abort.abort();
   assistViewOn = false;
   pageKind = null;
+  document.getElementById("toggle-files").style.display = "";
   inAssistMode = false;
   updateModelLabel(); // 离开助理页，标签立刻换回这个对话自己的模型
   if (assistTimer) { clearInterval(assistTimer); assistTimer = null; }

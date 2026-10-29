@@ -1202,6 +1202,18 @@
   :is(#pv-body, .lib-prev) .ov-table th, :is(#pv-body, .lib-prev) .ov-table td { border: 1px solid var(--owb-border); padding: 5px 10px; text-align: left; vertical-align: top; max-width: 340px; overflow-wrap: anywhere; }
   :is(#pv-body, .lib-prev) .ov-table th { background: var(--owb-bg-side); font-weight: 600; position: sticky; top: 0; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
   :is(#pv-body, .lib-prev) .ov-sheet td, :is(#pv-body, .lib-prev) .ov-sheet th { white-space: pre-wrap; }
+  :is(#pv-body, .lib-prev) .ov-styled { table-layout:fixed; background:#fff; color:#222; }
+  :is(#pv-body, .lib-prev) .ov-styled td { overflow:hidden; max-width:none; padding:2px 5px; }
+  :is(#pv-body, .lib-prev) .ov-styled th { background:var(--owb-bg-side); color:#626773; text-align:center; font-size:11px; }
+  .ov-sheet-pages { display:flex; align-items:center; justify-content:center; gap:12px; padding:12px 0; font-size:12px; }
+  .ov-sheet-pages button { border:1px solid var(--owb-border); background:var(--owb-bg); border-radius:var(--radius-sm); padding:5px 9px; color:var(--owb-text); }
+  .office-reader { display:flex; flex-direction:column; width:100%; min-height:360px; height:100%; min-width:0; }
+  .office-reader-tools { position:sticky; top:0; display:flex; justify-content:flex-end; align-items:center; gap:5px; background:var(--owb-bg); padding:4px 0 7px; z-index:2; }
+  .office-reader-tools button { border:1px solid var(--owb-border); border-radius:var(--radius-sm); background:var(--owb-bg); color:var(--owb-text); padding:3px 8px; cursor:pointer; }
+  .office-zoom-value { margin-right:auto; font-size:11px; color:var(--owb-text-3); }
+  .office-reader-viewport { overflow:auto; flex:1; min-height:0; min-width:0; }
+  .office-reader-viewport>.ov-doc { transform-origin:top left; padding:0 0 16px!important; }
+  #preview-panel.show.pv-expanded { position:fixed; inset:64px 12px 12px; width:auto!important; max-width:none; z-index:80; }
   :is(#pv-body, .lib-prev) .ov-note { color: var(--owb-text-3); font-size: 13px; margin: 10px 0; }
   :is(#pv-body, .lib-prev) .ov-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
   :is(#pv-body, .lib-prev) .ov-tab { border: 1px solid var(--owb-border); background: var(--owb-bg); border-radius: var(--radius-md); padding: 3px 12px; font-size: 13px; color: var(--owb-text-2); cursor: pointer; }
@@ -1234,6 +1246,8 @@
 
      同一份 .pptx 在对话里点得开、在资料库里点不开，那就是没做好。样式只此一份，别抄第二遍 */
   .lib-prev .ov-doc { padding: 0; }
+  .lib-prev .ov-deck[data-view="layout"] .ov-slide.has-stage { padding:0; border:0; background:transparent; border-radius:0; margin:10px 0 16px; }
+  .lib-prev .ov-slide.has-stage .ov-stage { border-radius:0; }
   .lib-prev .ov-table th { position: static; }
   /* ---------- 代码预览 ----------
      两条铁律，都是「看着像乱码」那次反馈换来的：
@@ -2287,6 +2301,18 @@
     grid-template-columns: 232px minmax(0, 1fr);
     grid-template-areas: "side main";
   }
+  .assist-page:has(.lib-page) { container-type:inline-size; container-name:library; }
+  .lib-page > * { min-width:0; }
+  .lib-main { overflow:hidden; }
+  .lib-preview-head { display:flex; flex-direction:column; gap:10px; margin-bottom:12px; }
+  .lib-preview-title { display:flex; align-items:center; gap:4px; min-width:0; }
+  .lib-preview-title b { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:14px; }
+  .lib-preview-title .icon-btn { flex:none; width:28px; height:28px; }
+  .lib-preview-actions { display:flex; flex-wrap:wrap; align-items:center; gap:7px 14px; font-size:12px; }
+  .proj-context { height:24px; line-height:24px; margin:0 8px 3px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; font-size:11px; color:var(--owb-text-3); }
+  .h-project { max-width:86px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:10px; color:var(--owb-text-3); flex:none; }
+  .lib-prev.lib-prev-expanded { position:fixed; inset:76px 24px 24px; z-index:80; max-height:none!important; background:var(--owb-bg); box-shadow:0 12px 60px var(--owb-shadow); }
+  .lib-prev-expanded .lib-preview-head { position:sticky; top:-18px; z-index:2; background:var(--owb-bg); padding:10px 0; }
   .lib-page[data-prev="on"] {
     grid-template-columns: 232px minmax(0, 1fr) clamp(300px, 30vw, 460px);
     grid-template-areas: "side main prev";
@@ -2483,7 +2509,7 @@
   .lib-list.as-gallery .lib-pager { flex: none; align-self: center; }
 
   /* 预览栏 */
-  .lib-prev { border: 1px solid var(--owb-border); border-radius: var(--radius-xl); min-height: 420px; max-height: calc(100vh - 150px); padding: 18px 20px; overflow: auto; }
+  .lib-prev { border:0; border-left:1px solid var(--owb-border); border-radius:0; min-height:420px; max-height:calc(100vh - 150px); padding:8px 10px; overflow:auto; }
   .lib-page[data-mode="gallery"] .lib-prev { min-height: 300px; max-height: calc(100vh - 290px); }
   .lib-prev iframe { width: 100%; height: 70vh; border: none; border-radius: var(--radius-md); background: #fff; }
   .lib-prev pre.raw { white-space: pre-wrap; word-break: break-word; font-family: var(--font-mono-sys); font-size: 13px; line-height: 1.6; }
@@ -2503,6 +2529,16 @@
     }
     .lib-side, .lib-main { max-height: calc(100vh - 220px); }
     .lib-prev { max-height: none; min-height: 300px; }
+  }
+  @container library (max-width:1060px) {
+    .lib-page, .lib-page[data-prev="on"], .lib-page[data-mode="gallery"] { grid-template-columns:180px minmax(0,1fr); grid-template-areas:"side main" "prev prev"; }
+    .lib-side, .lib-main { max-height:55vh; }
+    .lib-prev { min-height:400px; max-height:75vh; }
+  }
+  @container library (max-width:560px) {
+    .lib-page, .lib-page[data-prev="on"], .lib-page[data-mode="gallery"] { grid-template-columns:minmax(0,1fr); grid-template-areas:"side" "main" "prev"; }
+    .lib-side { max-height:none; }
+    .lib-side-tip { display:none; }
   }
 
   /* ================= 全局顺滑层：圆角 / 过渡 / 入场动效（治「生硬」） ================= */
@@ -2992,6 +3028,8 @@
 <symbol id="i-settings" viewBox="0 0 24 24"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915" /> <circle cx="12" cy="12" r="3" /></symbol>
 <symbol id="i-panel-left" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2" /> <path d="M9 3v18" /></symbol>
 <symbol id="i-arrow-down" viewBox="0 0 24 24"><path d="M12 5v14" /> <path d="m19 12-7 7-7-7" /></symbol>
+<symbol id="i-maximize-2" viewBox="0 0 24 24"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" /></symbol>
+<symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14" /></symbol>
 <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14" /> <path d="M12 5v14" /></symbol>
 <symbol id="i-shopping-cart" viewBox="0 0 24 24"><circle cx="8" cy="21" r="1" /> <circle cx="19" cy="21" r="1" /> <path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12" /></symbol>
 <symbol id="i-sparkles" viewBox="0 0 24 24"><path d="M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z" /> <path d="M20 2v4" /> <path d="M22 4h-4" /> <circle cx="4" cy="20" r="2" /></symbol>
@@ -3194,7 +3232,7 @@
   <div class="topbar">
     <button id="toggle-side" class="icon-btn" aria-controls="sidebar" aria-expanded="false" title="收起/展开侧栏"><svg class="i" aria-hidden="true"><use href="#i-panel-left"></use></svg></button>
     <div class="title" id="session-title">新任务</div>
-    <div class="right"><button type="button" class="icon-btn" id="search-conversation" title="搜索当前对话" aria-label="搜索当前对话" aria-expanded="false" aria-controls="chat-search" hidden><svg class="i" aria-hidden="true"><use href="#i-search"></use></svg></button><div class="inbox-wrap"><button type="button" class="icon-btn" id="inbox-toggle" title="收件箱" aria-label="收件箱" aria-expanded="false" aria-controls="attention-inbox"><svg class="i" aria-hidden="true"><use href="#i-bell"></use></svg><span id="inbox-count" hidden></span></button><div id="attention-inbox" role="region" aria-label="收件箱" hidden></div></div><button id="toggle-files" title="查看这个任务的文件"><svg class="i" aria-hidden="true"><use href="#i-file"></use></svg> <span id="session-file-count">文件</span></button></div>
+    <div class="right"><button type="button" class="icon-btn" id="open-document" title="打开文件并对话（创建工作副本）" aria-label="打开文件并对话"><svg class="i" aria-hidden="true"><use href="#i-folder-open"></use></svg></button><button type="button" class="icon-btn" id="search-conversation" title="搜索当前对话" aria-label="搜索当前对话" aria-expanded="false" aria-controls="chat-search" hidden><svg class="i" aria-hidden="true"><use href="#i-search"></use></svg></button><div class="inbox-wrap"><button type="button" class="icon-btn" id="inbox-toggle" title="收件箱" aria-label="收件箱" aria-expanded="false" aria-controls="attention-inbox"><svg class="i" aria-hidden="true"><use href="#i-bell"></use></svg><span id="inbox-count" hidden></span></button><div id="attention-inbox" role="region" aria-label="收件箱" hidden></div></div><button id="toggle-files" title="查看这个任务的文件"><svg class="i" aria-hidden="true"><use href="#i-file"></use></svg> <span id="session-file-count">文件</span></button></div>
   </div>
   <div id="chat-scroll"><div id="goal-card" style="display:none"></div><div class="chat-col" id="chat-col"></div></div>
   <button id="to-bottom" title="回到最新"><svg class="i" aria-hidden="true"><use href="#i-arrow-down"></use></svg></button>
@@ -3251,6 +3289,8 @@
   <div class="rsz l" data-rsz="pv" role="separator" aria-orientation="vertical" tabindex="0" aria-label="拖动调整预览面板宽度" title="拖动调整宽度 · 双击恢复默认"></div>
   <div class="pv-head">
     <span class="pv-name" id="pv-name"></span>
+    <button id="pv-markdown" class="icon-btn" title="转为 Markdown" aria-label="转为 Markdown" hidden>MD</button>
+    <button id="pv-expand" class="icon-btn" title="展开预览" aria-label="展开预览"><svg class="i" aria-hidden="true"><use href="#i-maximize-2"></use></svg></button>
     <button id="pv-copy" class="icon-btn" title="复制图片（可直接粘到微信 / Word / PPT）" hidden><svg class="i" aria-hidden="true"><use href="#i-copy"></use></svg></button>
     <button id="pv-sys" class="icon-btn" title="用系统默认程序打开"><svg class="i" aria-hidden="true"><use href="#i-app-window"></use></svg></button>
     <button id="pv-rv" class="icon-btn" title="打开所在位置"><svg class="i" aria-hidden="true"><use href="#i-folder-open"></use></svg></button>
@@ -3328,6 +3368,7 @@
 <!-- 应用脚本：原单块内联 script 按顶层语句边界拆成顺序加载的经典脚本（非 ESM，共享全局作用域，语义与内联时完全一致）。改代码直接改 js/ 下的分片，刷新即生效。 -->
 <script src="js/app-00-ui.js"></script>
 <script src="js/preview-runtime.js"></script>
+<script src="js/document-viewer.js"></script>
 <script src="js/app-01.js"></script>
 <script src="js/app-01-attention.js"></script>
 <script src="js/app-02.js"></script>
@@ -3343,6 +3384,7 @@
 <script src="js/app-13-annotate.js"></script>
 <script src="js/app-14-team.js"></script>
 <script src="js/app-15-recording.js"></script>
+<script src="js/app-16-documents.js"></script>
 <!--
   无限画布那三个文件（joint 463KB + dagre 95KB + 画布本体 128KB）不在这儿加载了。
 

@@ -165,6 +165,7 @@ module.exports = {
   ],
 
   mac: {
+    fileAssociations: [{ ext: require("./src/desktop/open-files").EXTENSIONS, name: "OpenWorkBuddy Document", role: "Editor", rank: "Alternate" }],
     category: "public.app-category.productivity",
     icon: "build/icon.icns",
     identity: null, // 见文件头 (3)

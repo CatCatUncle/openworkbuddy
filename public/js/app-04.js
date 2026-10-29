@@ -406,10 +406,10 @@ function libSize(n) { return !n ? "—" : n > 1048576 ? (n / 1048576).toFixed(1)
  */
 const LIB_KINDS = [
   ["all", "全部", () => true],
-  ["doc", "文档", (n) => /\.(md|markdown|txt|docx?|rtf|pages|odt)$/i.test(n)],
-  ["sheet", "表格", (n) => /\.(csv|tsv|xlsx?|numbers|ods)$/i.test(n)],
-  ["slide", "演示", (n, f) => /\.(pptx?|key|odp)$/i.test(n) || (!!(f && f.deck) && /\.html?$/i.test(n))],
-  ["pdf", "PDF", (n) => /\.pdf$/i.test(n)],
+  ["doc", "文档", (n) => /\.(md|markdown|txt|docx?|docm|dotx|dotm|wps|wpt|rtf|pages|odt)$/i.test(n)],
+  ["sheet", "表格", (n) => /\.(csv|tsv|xlsx?|xlsm|xltx|et|ett|numbers|ods)$/i.test(n)],
+  ["slide", "演示", (n, f) => /\.(pptx?|pptm|ppsx|dps|dpt|key|odp)$/i.test(n) || (!!(f && f.deck) && /\.html?$/i.test(n))],
+  ["pdf", "PDF / 版式", (n) => /\.(pdf|ofd|ceb|cebx)$/i.test(n)],
   ["web", "网页", (n, f) => /\.html?$/i.test(n) && !(f && f.deck)],
   ["img", "图片", (n) => /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif|heic|heif)$/i.test(n)],
   ["media", "音视频", (n) => /\.(mp4|mov|webm|mkv|m4v|mp3|wav|m4a|aac|flac|ogg|opus)$/i.test(n)],
@@ -827,6 +827,7 @@ async function renderLibPage() {
     </div>`;
 
   // 搜索框留在原来的 DOM 位置：搜索返回不能重建它或回填旧光标，避免英文乱序和输入法断词。
+  releaseSheetDocuments(page);
   const current = page.querySelector(".lib-page"), search = page.querySelector("#lb-q");
   if (current && search) {
     const next = document.createElement("template");
@@ -1344,8 +1345,13 @@ function libSearchHtml(data, q, recents) {
 }
 
 async function renderLibPreview(prev, lib) {
+  releaseSheetDocuments(prev);
+  if (renderLibPreview.abort) renderLibPreview.abort.abort();
+  const controller = new AbortController(); renderLibPreview.abort = controller;
+  const request = (...args) => fetch(args[0], { ...(args[1] || {}), signal: controller.signal });
   const { src, name, task } = libState.pick || {};
   if (!src) return;
+  const stale = () => controller.signal.aborted || !prev.isConnected || libState.pick?.src !== src || libState.pick?.name !== name || libState.pick?.task !== task;
   const sid = src === "ws" ? String(task || "") : ""; // 按任务那一栏点进来的：带上是哪条任务的（见 libUrl）
   // 上一份网页预览留下的 blob 和尺寸监听：下面马上要把那个 iframe 换掉，换掉之后当场还回去。
   // 以前从不 revoke，资料库里每点开一个网页，那一整页文本就在渲染进程里多留一份，直到窗口关掉。
@@ -1397,17 +1403,30 @@ async function renderLibPreview(prev, lib) {
   const fromTurn = from ? libTurnOf(from, name) : null;
   // 资料库那条路现在默认内联发（不内联的话 <audio>/<iframe> 渲染不出来），
   // 所以「下载」得自己把 ?dl=1 带上，别指望 <a download> 一个属性扑掉所有情况
-  const dlUrl = url + (src === "lib" ? "?dl=1" : "");
-  const bar = `<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
-    <b style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(name)}</b>
+  const dlUrl = src === "lib" ? url + "?dl=1" : url.replace("/view/", "/download/");
+  const bar = `<div class="lib-preview-head">
+    <div class="lib-preview-title"><b title="${esc(name)}">${esc(name.split(/[\\/]/).pop())}</b><button type="button" class="icon-btn" id="lb-expand" aria-label="展开预览" title="展开预览">${ic("maximize-2")}</button><button type="button" class="icon-btn" id="lb-close-preview" aria-label="关闭预览" title="关闭预览">${ic("x")}</button></div>
+    <div class="lib-preview-actions">
     ${canOpenOnHost() ? `<a class="link" href="#" id="lb-reveal" title="在${fileMgrName()}里打开它所在的文件夹，并选中它">所在位置</a>
     <a class="link" href="#" id="lb-copy" title="把文件本身放进剪贴板，之后直接粘到微信 / 邮件里">复制文件</a>` : ""}
     ${isCopyableText(name) ? `<a class="link" href="#" id="lb-copytext" title="把里面的文字整份复制，贴进飞书 / Word 保留格式">复制全文</a>` : ""}
-    <a class="link" href="${dlUrl}" ${src === "lib" ? "download" : 'target="_blank"'}>${src === "lib" ? "下载" : "新窗口打开"}</a>
+    <a class="link" href="${dlUrl}" download>下载</a>
+    ${canConvertMarkdown(name) ? '<button type="button" class="link" id="lb-markdown">转为 MD</button>' : ""}
     ${src === "lib" ? `<a class="link danger" href="#" id="lb-del">删除</a>` : ""}
-  </div>
+    </div></div>
   ${from ? `<div class="lib-from">${ic("sparkles")}<span>出自任务</span><a href="#" class="link" data-open="${esc(from.id)}"${fromTurn == null ? "" : ` data-turn="${fromTurn}"`} title="${fromTurn == null ? "回到产生这份文件的那次对话" : "回到产生这份文件的那次对话，并停在写出它的那一段"}">${esc(from.title)}</a><em>${esc(libWhen(from.at))}</em>${fromTurn == null ? "" : `<span class="lib-from-at">第 ${fromTurn + 1} 轮</span>`}</div>` : ""}`;
   prev.innerHTML = bar + '<div class="ph">加载中…</div>';
+  prev.querySelector("#lb-expand").onclick = () => {
+    const on = prev.classList.toggle("lib-prev-expanded");
+    const button = prev.querySelector("#lb-expand"); button.title = on ? "收起预览" : "展开预览"; button.setAttribute("aria-label", button.title); button.setAttribute("aria-expanded", String(on));
+  };
+  prev.querySelector("#lb-close-preview").onclick = () => {
+    controller.abort(); prev.classList.remove("lib-prev-expanded"); libState.pick = null;
+    const page = prev.closest(".lib-page"); if (page) page.dataset.prev = "off";
+  };
+  const md = prev.querySelector("#lb-markdown");
+  if (md) md.onclick = () => exportDocumentMarkdown((src === "lib" ? "/api/library/markdown/" : "/api/files/markdown/") + fpath(name) + (sid ? "?sid=" + encodeURIComponent(sid) : ""), md);
+  prev.onkeydown = event => { if (event.key === "Escape" && !imeKey(event) && prev.classList.contains("lib-prev-expanded")) { event.preventDefault(); prev.querySelector("#lb-expand").click(); prev.querySelector("#lb-expand").focus(); } };
   dropOldBlob();
   const body = prev.lastElementChild;
   const wireDel = () => {
@@ -1432,7 +1451,7 @@ async function renderLibPreview(prev, lib) {
   }</div>`;
   const failPh = (why) => `<div class="ph">预览不了：${esc(why)}</div>`;
   // 只在出错时才问一句「是没了，还是读不出来」——顺利的那条路上一个多余的请求都不发
-  const alive = () => fetch(url, { method: "HEAD" }).then((r) => r.ok).catch(() => false);
+  const alive = () => request(url, { method: "HEAD" }).then((r) => r.ok).catch(() => false);
   try {
     if (/\.(png|jpe?g|gif|webp|svg)$/i.test(name)) {
       body.outerHTML = `<img id="lb-img" src="${url}" style="max-width:100%;border-radius:8px">`;
@@ -1456,6 +1475,15 @@ async function renderLibPreview(prev, lib) {
     } else if (/\.pdf$/i.test(name)) {
       // iframe 出错同样不通知外面：PDF 不在的时候，框里显示的是服务端那句「文件不存在」的纯文本
       body.outerHTML = (await alive()) ? `<iframe src="${url}"></iframe>` : gonePh;
+    } else if (previewKind(name) === "office") {
+      const api = src === "lib" ? "/api/library/" : "/api/files/";
+      const query = sid ? "?sid=" + encodeURIComponent(sid) : "";
+      body.style.cssText = "min-height:500px;height:calc(100% - 65px)";
+      await renderCompatibleDocument(body, api + "office-info/" + fpath(name) + query, api + "office-view/" + fpath(name) + query, api + "preview/" + fpath(name) + query);
+    } else if (/\.(docx|docm|dotx|dotm|ofd)$/i.test(name) && window.OWBDocumentViewer) {
+      body.className = "lib-document-host";
+      body.style.cssText = "height:calc(100% - 65px);min-height:500px;display:flex";
+      await OWBDocumentViewer.mount(body, url, /\.ofd$/i.test(name) ? "ofd" : "doc", { signal: controller.signal });
     } else if (/\.(docx|xlsx|pptx|zip)$/i.test(name)) {
       // Word / Excel / PPT / zip 本质是一包 XML 的压缩档，浏览器自己打不开，得服务端先拆。
       // 以前这一页没有这条路，同一份 .pptx 在对话里点得开、拖进资料库就变成一屏乱码。
@@ -1463,10 +1491,11 @@ async function renderLibPreview(prev, lib) {
       const api = src === "lib" ? "/api/library/preview/" : "/api/files/preview/";
       // 不再带 ?t=当前时间：每点一次一个新地址，浏览器每次都往磁盘缓存里多存一份存了就再也用不上的副本。
       // 这个接口不给强缓存（没有 max-age），固定地址每次照样回服务端核对，内容变了当场拿新的
-      const r = await fetch(api + fpath(name) + (sid ? "?sid=" + encodeURIComponent(sid) : ""));
+      const r = await request(api + fpath(name) + (sid ? "?sid=" + encodeURIComponent(sid) : ""));
       if (r.status === 404) body.outerHTML = gonePh;
       else {
         const d = await r.json().catch(() => null);
+        if (stale()) return;
         if (!d || d.error) body.outerHTML = failPh((d && d.error) || `服务端回了 HTTP ${r.status}`);
         else body.outerHTML = /\.docx$/i.test(name) ? docHtml(d)
           : /\.xlsx$/i.test(name) ? sheetHtml(d)
@@ -1491,11 +1520,12 @@ async function renderLibPreview(prev, lib) {
         ? `<div class="ph">二进制文件，无法预览。<br>请下载后用对应程序打开。</div>`
         : gonePh;
     } else {
-      const r = await fetch(url);
+      const r = await request(url);
       if (r.status === 404) body.outerHTML = gonePh;
       else if (!r.ok) body.outerHTML = failPh(`服务端回了 HTTP ${r.status}`);
       else {
         const text = await r.text();
+        if (stale()) return;
         // HTML 真渲染，而且不受下面那道 400KB 的闸限制（网页本来就容易几 MB，正是最该看长相的一类）。
         // sandbox 掐掉同源和弹窗：资料是外来的，不能让它碰应用本身
         if (/\.html?$/i.test(name)) {
@@ -1525,8 +1555,11 @@ async function renderLibPreview(prev, lib) {
       }
     }
   } catch (e) {
+    if (stale()) return;
     body.outerHTML = failPh(e.message);
   }
+  if (stale()) return;
+  attachOfficeReadingControls(prev);
   wireDel();
   const rev = prev.querySelector("#lb-reveal");
   if (rev) rev.onclick = (e) => revealFile(name, e, "", src === "lib" ? "lib" : "", sid);

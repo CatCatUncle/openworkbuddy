@@ -71,3 +71,5 @@
       Abort
   FunctionEnd
 !endif
+
+!include "open-with.nsh"

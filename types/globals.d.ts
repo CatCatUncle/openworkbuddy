@@ -19,6 +19,7 @@ declare var I18N: any;
 
 /** public/js/preview-runtime.js exposes its shared browser/Node API on globalThis. */
 declare var OWBPreviewRuntime: { inject(html: string, scriptUrl?: string): string; installStorage(): void };
+declare var OWBDocumentViewer: { mount(host: HTMLElement, url: string, kind: string, opts?: {signal?: AbortSignal}): Promise<HTMLIFrameElement | null | void> };
 
 /** public/svgfig.js 末尾 `root.SvgFig = {...}`：回复里的 SVG 图修补、消毒、转 PNG */
 declare var SvgFig: any;

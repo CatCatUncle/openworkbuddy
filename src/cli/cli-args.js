@@ -46,6 +46,7 @@ const PERM_ARG = PERM_IDS.join("|"); // 跟 MODE_ARG 一个写法：不带尖括
  * 另外 kv: true 表示值必须长成 名字=值（-i product=智能水杯），没等号当场报错。
  */
 const FLAGS = [
+  { long: "project", type: "str", key: "project", arg: "<项目名>", desc: "新任务归属到桌面端已有项目；默认按启动目录匹配，续接保留原项目" },
   { long: "mode", type: "enum", key: "mode", arg: MODE_ARG, choices: MODE_IDS, desc: "执行模式（默认 craft）" },
   { long: "perm", type: "enum", key: "perm", arg: PERM_ARG, choices: PERM_IDS, desc: "这一次放多少权（默认按配置，改不了配置文件）" },
   { long: "workspace", short: "C", type: "str", key: "workspace", arg: "<目录>", desc: "这次在哪个目录干活（只影响本次，不改配置）" },

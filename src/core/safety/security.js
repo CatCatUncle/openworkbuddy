@@ -1187,16 +1187,35 @@ function winPathNeedles(raw) {
  * 要永久放行是另一个按钮（写进 cmd_allow，看得见、删得掉）。
  */
 const sessionAllow = new Set();
-function addSessionAllow(rule) {
+const approvalContext = new (require("async_hooks").AsyncLocalStorage)();
+const taskAllows = new Map();
+function withApprovalScope(scope, fn) {
+  return scope && scope.sessionId ? approvalContext.run({ owner: String(scope.owner || ""), sessionId: String(scope.sessionId) }, fn) : fn();
+}
+function taskAllow(scope, create = false) {
+  if (!scope || !scope.sessionId) return sessionAllow;
+  const key = JSON.stringify([scope.owner || "", scope.sessionId]);
+  if (!taskAllows.has(key) && create) {
+    taskAllows.set(key, new Set());
+    if (taskAllows.size > 1000) taskAllows.delete(taskAllows.keys().next().value);
+  }
+  return taskAllows.get(key) || new Set();
+}
+function currentAllow() { return new Set([...sessionAllow, ...taskAllow(approvalContext.getStore())]); }
+function addSessionAllow(rule, scope = approvalContext.getStore()) {
   const r = String(rule || "").trim();
-  if (r) sessionAllow.add(r);
-  return [...sessionAllow];
+  const rules = taskAllow(scope, true);
+  if (r) rules.add(r);
+  return [...rules];
 }
-function listSessionAllow() {
-  return [...sessionAllow];
+function listSessionAllow(owner) {
+  const rules = new Set(sessionAllow);
+  for (const [key, values] of taskAllows) if (owner === undefined || JSON.parse(key)[0] === owner) for (const rule of values) rules.add(rule);
+  return [...rules];
 }
-function clearSessionAllow() {
-  sessionAllow.clear();
+function clearSessionAllow(owner) {
+  if (owner === undefined) { sessionAllow.clear(); taskAllows.clear(); }
+  else for (const key of taskAllows.keys()) if (JSON.parse(key)[0] === owner) taskAllows.delete(key);
 }
 
 /**
@@ -1328,7 +1347,7 @@ function listedCommand(sec, seg, platform = process.platform) {
   const s = String(seg || "");
   const env = platform === "win32" ? s : stripEnvAssign(s); // cmd 没有 `FOO=1 命令`，见 winBareCommand
   const bare = bareCommand(s, platform);
-  return matchesPrefix((sec || {}).cmd_allow, s, env, bare) || matchesPrefix([...sessionAllow], s, env, bare);
+  return matchesPrefix((sec || {}).cmd_allow, s, env, bare) || matchesPrefix([...currentAllow()], s, env, bare);
 }
 
 /**
@@ -1341,7 +1360,7 @@ function checkWrite(sec, relPath) {
   if (m.write === "deny") return { action: "deny", rule: `当前权限档位是「${m.label}」，不写文件`, seg: String(relPath || "") };
   if (m.write === "ask") {
     const rule = `写文件 ${String(relPath || "")}`;
-    if (sessionAllow.has("write:*")) return { action: "allow" };
+    if (currentAllow().has("write:*")) return { action: "allow" };
     return { action: "ask", rule, seg: String(relPath || ""), ruleKey: "write:*" };
   }
   return { action: "allow" };
@@ -1377,13 +1396,13 @@ function checkCommand(sec, command, platform = process.platform) {
     if (mode === "plan") return { action: "deny", rule: `当前权限档位是「${PERMISSION_MODES.plan.label}」，不跑命令`, seg };
     if (sec.gateway) {
       // 高危表在放行名单之前查：cmd_allow 是给日常命令省事的，不该顺手把毁数据的形态一起放过去
-      const danger = DANGER_PATTERNS.find((d) => d.re.test(seg) && !sessionAllow.has("danger:" + d.key));
+      const danger = DANGER_PATTERNS.find((d) => d.re.test(seg) && !currentAllow().has("danger:" + d.key));
       if (danger) return { action: "ask", rule: `高危命令：${danger.rule}`, seg, ruleKey: "danger:" + danger.key };
       // 跟高危表一样排在名单前、全自动也问；不给「同类不再问」——批一次等于以后任何编码命令都放行
       if (psEncoded) return { action: "ask", rule: "PowerShell 编码命令看不到内容，需审批", seg, ruleKey: "" };
     }
     if (matchesPrefix(sec.cmd_allow, seg, env, bare)) continue; // 永久放行名单
-    if (matchesPrefix([...sessionAllow], seg, env, bare)) continue; // 本会话已经批过同类
+    if (matchesPrefix([...currentAllow()], seg, env, bare)) continue;
     // 运行时开关是用户明确关掉的东西，不受权限档位影响：全自动也不代表把关掉的运行时打开。
     // Windows 上还有个 py（Python 启动器），python.exe 这种 winName 已经去过后缀
     if (!sec.runtime_python && (win ? /^(python3?|pip3?|py)$/ : /^(python3?|pip3?)$/).test(tok)) {
@@ -1521,7 +1540,7 @@ function checkCode(sec, code, platform = process.platform) {
   if (mode === "plan") return { action: "deny", rule: `当前权限档位是「${PERMISSION_MODES.plan.label}」，不执行代码`, seg: "" };
   if (!sec.gateway) {
     // 总开关关掉的是黑名单、子进程这些规则；「每步都问」是用户当场选的档，照样得问（跟写文件、跑命令一致）
-    if (mode === "ask" && !sessionAllow.has("code:*")) return { action: "ask", rule: "每步都问模式", seg: src.slice(0, 80), ruleKey: "code:*" };
+    if (mode === "ask" && !currentAllow().has("code:*")) return { action: "ask", rule: "每步都问模式", seg: src.slice(0, 80), ruleKey: "code:*" };
     return { action: "allow" };
   }
   // Windows 上代码里的路径常写成 "C:\\Users\\Me\\.ssh"，折完跟黑名单比（同 checkCommand）
@@ -1543,11 +1562,11 @@ function checkCode(sec, code, platform = process.platform) {
   if (mode === "full") return { action: "allow" };
   const shellOut = /child_process|execSync|execFileSync|spawnSync|process\.binding|node:child_process/.exec(src);
   if (shellOut) {
-    if (sessionAllow.has("code:child_process")) return { action: "allow" };
+    if (currentAllow().has("code:child_process")) return { action: "allow" };
     return { action: "ask", rule: "代码里要开子进程（等于绕过命令闸）", seg: shellOut[0], ruleKey: "code:child_process" };
   }
   if (mode === "ask") {
-    if (sessionAllow.has("code:*")) return { action: "allow" };
+    if (currentAllow().has("code:*")) return { action: "allow" };
     return { action: "ask", rule: "每步都问模式", seg: src.slice(0, 80), ruleKey: "code:*" };
   }
   return { action: "allow" };
@@ -1670,6 +1689,7 @@ function requestApproval(kind, text, { timeoutMs = 120000, stopSignal = null, ru
       deadline,
       // 哪个会话在等：侧栏要把点亮在那一行上；空 = 不属于某个会话（只进标题计数）
       sessionId: String(sessionId || ""),
+      grantScope: sessionId ? { owner: String(owner || ""), sessionId: String(sessionId) } : approvalContext.getStore(),
       // 碰了文件黑名单的卡：多人共用时谁也批不了（见 resolveApproval）
       blacklist: !!blacklist,
       // 按钮上写什么（{ once, session, deny }）：动 Chrome 那类卡的「这次任务里这个网站都允许」跟命令的「本会话」不是一回事
@@ -1711,7 +1731,7 @@ function resolveApproval(id, allow, scope = "once", scopeTo) {
   const key = e.ruleKey;
   if (allow && key && (scope === "session" || scope === "always")) {
     if (e.onScope) { try { e.onScope(scope); } catch {} }
-    else addSessionAllow(key);
+    else addSessionAllow(key, e.grantScope);
   }
   e.resolve(!!allow);
   return { ok: true, ruleKey: key, scope };
@@ -1811,6 +1831,7 @@ module.exports = {
   listedCommand, // 判险那道闸用：人批过的段不再花钱判
   commandSegments, // 同上：两道闸按同一个拆法看命令，不然一边看得见 `bash -c` 里那条、一边看不见
   addSessionAllow,
+  withApprovalScope,
   listSessionAllow,
   clearSessionAllow,
   splitSegments, // 给测试用：命令拆段是整个命令闸的地基，得能单独验

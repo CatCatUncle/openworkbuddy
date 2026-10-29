@@ -443,7 +443,7 @@ function setAttachThumb(item, url) {
 /** 点 chip 打开预览。上传时服务端把它放进本对话的成果文件夹，那个相对路径跟着响应回来 */
 function openAttach(item) {
   if (item.state !== "done") return;
-  if (typeof previewFile === "function") previewFile(item.path || item.name, "");
+  if (typeof previewFile === "function") previewFile(item.path || item.name, item.root || "");
   else toast(`这份在工作目录里：${item.path || item.name}`, "folder");
 }
 function removeAttach(item) {
@@ -879,6 +879,7 @@ document.addEventListener("paste", async (e) => {
  */
 function laneOfSession(s) {
   const v = s && s.lane;
+  if (!v && s && /^cli_/.test(s.id || "")) return "cli";
   return v === "cli" || v === "office" ? v : defaultLane;
 }
 function renderLaneTabs() {
@@ -923,6 +924,7 @@ document.getElementById("lane-tabs").addEventListener("click", (e) => {
   const cur = sessionId && sessions.find((x) => x.id === sessionId);
   if (cliWatch || (cur && laneOfSession(cur) !== activeLane)) document.getElementById("new-task").click();
   else renderHistory();
+  if (activeLane === "cli" && typeof mergeServerSessions === "function") mergeServerSessions();
 });
 
 // ---------- 工程线：终端（openworkbuddy 命令行）里正在跑的活儿 ----------
@@ -942,7 +944,10 @@ async function pollCliLive() {
     if (d && Array.isArray(d.rows)) {
       const before = cliLiveKey(cliLiveRows);
       cliLiveRows = d.rows;
-      if (before !== cliLiveKey(cliLiveRows)) { renderLaneTabs(); renderHistory(); }
+      if (before !== cliLiveKey(cliLiveRows)) {
+        renderLaneTabs(); renderHistory();
+        if (cliLiveRows.some(r => !r.live && !sessions.some(s => s.id === r.id)) && typeof mergeServerSessions === "function") mergeServerSessions();
+      }
       // 正在跟的那趟结束了：流那边也会发 cli_end，这里是它断线时的兜底
       if (cliWatch && cliWatch.live && !cliLiveRows.some((r) => r.id === cliWatch.id && r.live)) {
         finishCliWatch({ type: "cli_end", ok: true });
@@ -1300,7 +1305,7 @@ function renderHistory() {
   const askFirst = (id) => (attnPick(sessionAttn.get(id), false) === "ask" ? 0 : 1);
   for (const id of histStopping) if (!runningSessions.has(id)) histStopping.delete(id); // 真收尾了，「正在停」这个态跟着撤
   const row = (s) => ["i:" + s.id,
-    `<div class="hist-item ${s.id === sessionId ? "active" : ""}${s.pinned_at ? " pinned" : ""}" data-id="${s.id}" draggable="true" title="${esc(stripSceneTag(s.title) + (s.files > 0 ? ` · 产出过 ${s.files} 个文件` : ""))}"><span class="ht">${esc(stripSceneTag(s.title))}</span>${histPinHtml(s)}${attnDotHtml(s.id)}${histMoreHtml(s)}</div>`];
+    `<div class="hist-item ${s.id === sessionId ? "active" : ""}${s.pinned_at ? " pinned" : ""}" data-id="${s.id}" draggable="true" title="${esc(stripSceneTag(s.title) + (s.files > 0 ? ` · 产出过 ${s.files} 个文件` : ""))}"><span class="ht">${esc(stripSceneTag(s.title))}</span>${activeLane === "cli" ? `<span class="h-project" title="所属项目：${esc(s.project || "未归属")}">${esc(s.project || "未归属")}</span>` : ""}${histPinHtml(s)}${attnDotHtml(s.id)}${histMoreHtml(s)}</div>`];
   const sec = (k, label) => ["h:" + k, `<div class="hist-sec" data-sec="${k}">${esc(label)}</div>`];
   // 置顶的单独一组排最上面，按顶上去的先后（后顶的在上）
   const pinned = list.filter((s) => s.pinned_at).sort((a, b) => b.pinned_at - a.pinned_at);
@@ -1456,7 +1461,7 @@ function syncSessionHeader() {
 }
 /** 只有一个项目、或者压根没有项目这回事的，「移到项目」不出现：点进去没得选。终端那条线不分项目 */
 function histCanMove(s) {
-  return !projectsLocked && projects.length > 1 && laneOfSession(s) !== "cli";
+  return !projectsLocked && projects.length > 1;
 }
 function histMenuHtml(s, view) {
   if (view === "move") {
@@ -2205,7 +2210,8 @@ function rememberProject(name) {
 }
 function quickProjects() {
   const prefs = projectQuickPrefs();
-  const names = [...new Set([activeProject, ...prefs.pinned, ...prefs.recent, ...projects.map(p => p.name)])];
+  // 访问只改选中态。只有显式固定/取消固定、增删项目才改变快捷入口的顺序。
+  const names = [...new Set([...prefs.pinned, ...projects.map(p => p.name)])];
   return names.map(n => projects.find(p => p.name === n)).filter(Boolean);
 }
 async function switchQuickProject(name) {
@@ -2377,7 +2383,7 @@ function renderProjects() {
   if (head) head.style.display = projectsLocked ? "none" : "";
   box.style.display = projectsLocked ? "none" : "";
   if (projectsLocked) { box.innerHTML = ""; return; }
-  box.innerHTML = quickProjects().slice(0, 5).map(projectRowHtml).join("")
+  box.innerHTML = `<div class="proj-context" title="${esc(activeProject || "")}"><span>当前</span> · <span translate="no">${esc(activeProject || "未选择")}</span></div>` + quickProjects().slice(0, 5).map(projectRowHtml).join("")
     + (projects.length ? `<button type="button" id="proj-all" class="proj-all" aria-haspopup="dialog" aria-expanded="false"><span>查看全部</span><span class="proj-count">${projects.length}</span>${ic("chevron-right")}</button>` : "");
   bindProjectRows(box);
   const all = box.querySelector("#proj-all");
@@ -3460,7 +3466,7 @@ async function pollApprovals() {
   bar.dataset.sig = sig;
   // ruleKey 为空 = 这次拦截的理由不适合被记住（碰了文件黑名单那种），只给「本次允许」
   bar.innerHTML = list.map(a => `
-    <div class="ap-row">
+    <div class="ap-row" data-session-id="${esc(a.sessionId || "")}">
       <div class="ap-main">
         <div class="ap-head">${ic("shield")}${esc(a.kind)}待审批${a.source ? ` · <span class="ap-src" title="发起审批的任务">来自「${esc(a.source)}」</span>` : ""}${a.rule ? ` · <span class="ap-why">${esc(a.rule)}</span>` : ""}<span class="ap-keys">${esc(I18N.tr("快捷键：Esc 拒绝 · 主修饰键+Enter 本次允许").replace("__MOD__", modKeyName()))}</span>${a.deadline > 0 ? `<span class="ap-left" data-dl="${Number(a.deadline) - (Number(d.now) || Date.now()) + Date.now()}"></span>` : ""}</div>
         <code class="ap-cmd" style="white-space:pre-wrap;word-break:break-all;max-height:7.5em;overflow:auto">${esc(a.text)}</code>
@@ -3469,7 +3475,7 @@ async function pollApprovals() {
       </div>
       <div class="ap-btns">
         <button class="ap-ok" data-id="${esc(a.id)}" data-scope="once">${esc((a.labels && a.labels.once) || "本次允许")}</button>
-        ${a.ruleKey ? `<button class="ap-ok2" data-id="${esc(a.id)}" data-scope="session" title="本次运行期间不再问「${esc(a.ruleKey)}」">${esc((a.labels && a.labels.session) || "本会话一直允许")}</button>` : ""}
+        ${a.ruleKey ? `<button class="ap-ok2" data-id="${esc(a.id)}" data-scope="session" title="${a.sessionId ? "仅当前任务" : "本次应用运行期间"}不再问「${esc(a.ruleKey)}」，不写入永久名单">${esc((a.labels && a.labels.session) || (a.sessionId ? "此任务允许同类" : "本次运行允许同类"))}</button>` : ""}
         ${a.persistable && apCanAlways ? `<button class="ap-ok2" data-id="${esc(a.id)}" data-scope="always" title="把「${esc(a.ruleKey)}」写进放行名单，重启也生效">一直允许</button>` : ""}
         <button class="ap-no" data-id="${esc(a.id)}">${esc((a.labels && a.labels.deny) || "拒绝")}</button>
       </div>
@@ -3477,7 +3483,8 @@ async function pollApprovals() {
   apTick();
   if (!apTimer) apTimer = setInterval(apTick, 1000);
   bar.querySelectorAll("button").forEach(b => b.onclick = async () => {
-    bar.querySelectorAll("button").forEach(x => (x.disabled = true));
+    b.closest(".ap-row").querySelectorAll("button").forEach(x => (x.disabled = true));
+    b.textContent = "处理中…";
     const allow = !b.classList.contains("ap-no");
     const resp = await fetch("/api/security/approvals/" + encodeURIComponent(b.dataset.id), {
       method: "POST",
@@ -3493,9 +3500,9 @@ async function pollApprovals() {
       pollApprovals();
       return;
     }
-    if (allow && r.downgraded) toast(`已允许，本次运行期间不再问「${r.ruleKey}」。${r.reason || "永久放行需平台管理员设置"}`);
+    if (allow && r.downgraded) toast(`已允许，${b.closest(".ap-row").dataset.sessionId ? "仅在此任务" : "本次运行期间"}不再问「${r.ruleKey}」。${r.reason || "永久放行需平台管理员设置"}`);
     else if (allow && r.scope === "always" && r.ruleKey) toast(`已永久放行「${r.ruleKey}」，要撤回去 设置 → 安全 的「放行名单」删掉`);
-    else if (allow && r.scope === "session" && r.ruleKey) toast(`本次运行期间不再问「${r.ruleKey}」`);
+    else if (allow && r.scope === "session" && r.ruleKey) toast(b.closest(".ap-row").dataset.sessionId ? `仅在此任务允许「${r.ruleKey}」，其他任务仍按原规则询问` : `本次运行期间不再问「${r.ruleKey}」`);
     pollApprovals();
   });
 }

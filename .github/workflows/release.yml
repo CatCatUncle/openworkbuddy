@@ -170,6 +170,7 @@ jobs:
           PY
       - uses: softprops/action-gh-release@v3
         with:
+          name: ${{ github.ref_name }}
           # 缺了平台就落草稿由人拍板：下面那段正文写死了 Windows 的文件名，
           # 缺 Windows 还照发，等于给用户指了几个不存在的下载链接
           draft: ${{ needs.build.result != 'success' }}

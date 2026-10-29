@@ -268,27 +268,25 @@ Entry points are `server.js`, `cli.js` and `src/im/`; the Agent is in `src/agent
 
 ## What's new
 
+- **Oct 29** Office previews add document pages, zoom and expansion. DOC/WPS and XLS/ET have built-in compatibility readers. Open With remains optional and does not change defaults. See the [format capability matrix](docs/文件预览与转换.md).
+
+- **Oct 29** Export common Office, PDF and OFD files to Markdown. Legacy PPT uses live-slide text extraction. Scanned pages, truncation and omitted images are reported; CEB requires an authorized local engine.
+
+- **Oct 29** Library previews use their own reading area with compact borders and separate title/actions. Old conversation drawers close, stale reads cancel, and spreadsheets load one sheet and 100 rows at a time.
+
+- **Oct 29** Inbox events stay in date order when read, including successful results. Project selection keeps shortcuts in place. CLI history has its own retention window and directory-based project ownership, with --project support.
+
+- **Oct 29** Temporary approvals are scoped to account and task. External files can be imported as working copies; legacy output links recover only with matching path, size and modification-time evidence.
+
 - **Oct 29** Library grouping and layout switches now update locally without reloading directory or task indexes. File rows, thumbnails and previews are reused, and offscreen layout work is reduced.
 
 - **Oct 29** Automation editing now gives instructions a larger area that grows with content, scrolls long tasks, and keeps Save visible on smaller windows.
 
-- **Oct 29** The sidebar shows up to five current and frequent projects, with pins, recent use and full-list search. The picker opens beside the Projects heading; editing and removal move into a row menu.
+- **Oct 29** The sidebar shows up to five project shortcuts with pins and full-list search. The picker opens beside the Projects heading; editing and removal move into a row menu.
 
 - **Oct 27** Fixed same-name image mix-ups on the canvas. Thumbnails and previews stay bound to the original file and project; missing files are never substituted, and late file lists are ignored after project switches.
 
 - **Oct 27** The mobile app UI adapts to the visible viewport, uses horizontal settings tabs and full-screen file previews, and closes navigation after selection.
-
-- **Oct 27** Mobile website layouts now wrap navigation, resize headings and media, and improve English and Chinese documentation on narrow screens.
-
-- **Oct 27** Recommended skills now include software copyright template filling and resume coaching, installed on demand from the author's public repositories.
-
-- **Oct 27** Project and automation search preserve the input and caret, wait for IME confirmation, and reuse loaded lists. Ignore late run-history responses after switching views.
-
-- **Oct 26** Execution traces persist across projects and show local-engine tool results and read errors. The sidebar shows Experts · Skills · Connectors.
-
-- **Oct 26** Library search preserves the input and caret, waits for IME confirmation, and ignores stale responses to prevent reordered text.
-
-Full history: **[Changelog](CHANGELOG.en.md)**.
 
 ## ⚠️ This agent has a shell
 

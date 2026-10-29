@@ -880,8 +880,10 @@ console.log("\n【13】自有 JS 文件开头都带 SPDX 版权头，协议写�
     const m = /^\/\/ SPDX-License-Identifier: (\S+)$/.exec(lines[at] || "");
     return { id: m && m[1], notice: /^\/\/ Copyright \(c\) 2026 (?:开发者猫叔 \(DeveloperCatUncle\)|OpenWorkBuddy Contributors)(?:$| ·)/.test(lines[at + 1] || "") };
   };
+  const thirdParty = ["ofd", "msdoc", "pdf", "sheetjs"].map(name => "public/vendor/" + name + "/");
+  for (const prefix of thirdParty) ok(fs.existsSync(path.join(ROOT, prefix, "LICENSE")), "第三方预览引擎随附许可证：" + prefix);
   const files = execFileSync("git", ["ls-files", "-z"], { cwd: ROOT, encoding: "utf8" }).split("\0")
-    .filter((f) => /\.(js|cjs|mjs)$/.test(f) && fs.existsSync(path.join(ROOT, f)));
+    .filter((f) => /\.(js|cjs|mjs)$/.test(f) && !thirdParty.some(prefix => f.startsWith(prefix)) && fs.existsSync(path.join(ROOT, f)));
   const bad = [];
   for (const f of files) {
     const h = headOf(fs.readFileSync(path.join(ROOT, f), "utf8"));

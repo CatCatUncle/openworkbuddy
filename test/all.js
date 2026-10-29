@@ -211,6 +211,8 @@ const SUITES = [
   ["brand-kit", "品牌档案：摘要 ≤300 字、提到才注入、没出处的数字过不了、存档必须人点头（不联网，不花钱）"],
   ["stop", "「让我停下」：正在跑的命令要真停得下来，连孙子进程一起收"],
   ["preview-layout", "右边成果预览：每种格式在面板里摆得对不对（量面板/内容/位置，不看截图）", ELECTRON],
+  ["document-viewer", "Word/OFD 内置版式、分页缩放和隔离预览", ELECTRON],
+  ["document-workflow", "Office/PDF 转 Markdown、旧格式读取、授权作用域和历史文件恢复"],
   ["library-mkdir", "资料库「新建文件夹」：按钮点下去要真有反应（Electron 里 prompt 一调用就抛）", ELECTRON],
   ["win-away", "桌面窗口收起来就降频、停动画，拿回来就恢复；流式回报收着也照样到", ELECTRON],
   ["win-ui", "Windows 界面：资源管理器/Ctrl 的叫法、系统授权卡只在 Mac 出、头像 emoji 不出方块、等宽字带中文、原生控件跟主题"],

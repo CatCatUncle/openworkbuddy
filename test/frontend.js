@@ -701,11 +701,11 @@ const TURNOUT_CHECKS = `
       html.querySelector('[data-a="pin"]').title === "置顶文件到侧栏" && html.querySelector('[data-a="br"]').title === "在浏览器打开" && html.querySelector('[data-a="rv"]').title === "打开所在位置" && html.querySelector("a[download]").title === "下载");
     ok("图标钮是 26px 方钮，不是带边框的长条", html.querySelector('[data-a="rv"]').getBoundingClientRect().width <= 28 && getComputedStyle(html.querySelector('[data-a="rv"]')).borderStyle === "none");
     ok("卡能落焦点（tabindex=0），但不套 role=button（里面还有真按钮）", html.tabIndex === 0 && !html.getAttribute("role"));
-    // OFFICE_RE 只认 .doc/.ppt/.xls 这种老二进制格式（app 里预览不了，只能交给系统程序）；pptx/docx/xlsx 有结构化预览，走「点击预览」
+    // 新旧 Office 都提供应用内预览，不自动拉起系统程序。
     ok("卡的 title 写着文件名和点了会怎样", html.title.includes("报告.html") && html.title.includes("点击预览") && ppt.title.includes("点击预览"));
     const legacy = fresh(); renderTurnOutputs(legacy, [F("老报表.xls", 9)], [F("老报表.xls", 9)]);
     const xls = legacy.querySelector('.out-card[data-name="老报表.xls"]');
-    ok("老格式（.xls）的卡提示「点击用系统程序打开」", !!xls && xls.title.includes("点击用系统程序打开") && !xls.title.includes("点击预览"));
+    ok("老格式（.xls）的卡也提示点击预览", !!xls && xls.title.includes("点击预览") && !xls.title.includes("点击用系统程序打开"));
     ok("大小挂在名字下边", html.querySelector(".out-meta").textContent === "2048 B");
   }
 
@@ -5296,6 +5296,7 @@ const DEAD_CHECKS = `
     }
     // 预览一个工作区产出。HEAD 是预览出错后补问的那一下「到底是没了，还是读不出来」，
     // 它必须跟 GET 一个口径——两边不一致的话，测出来的就不是页面真实的判断
+    if (url.startsWith("/api/library/office-info/") || url.startsWith("/api/files/office-info/")) return j({ kind: "sheet" });
     if (url.startsWith("/api/library/preview/") || url.startsWith("/api/files/preview/")) {
       ovHits.push(url.split("?")[0]);
       return j(ovResp.body, ovResp.code);
@@ -5723,15 +5724,38 @@ const DEAD_CHECKS = `
      pv.innerHTML.includes("这个文件损坏了") && !pv.innerHTML.includes("已不在"), pv.innerHTML.slice(-260));
   ovResp = { code: 200, body: {} };
 
-  // Office 97-2003：是格式的事，不是文件坏了。以前它掉进兜底的 <pre>，
-  // 用户看到的是一屏二进制，还得自己猜「是不是文件坏了」
-  viewResp = { code: 200, body: "" }; // alive() 那一下 HEAD 要回 ok
-  pv = await libPreviewOf("旧档/合同.doc");
-  ok("预览·doc：老格式说清是格式的事，并给出一条走得通的路（另存为 .docx）",
-     pv.innerHTML.includes("97-2003") && pv.innerHTML.includes(".docx") && !pv.querySelector("pre.raw"), pv.innerHTML.slice(-320));
+  // 旧格式也走兼容入口，验证实际表格和缩放，而不是二进制乱码或自动打开系统程序。
+  ovResp = { code: 200, body: { kind: "sheet", sheets: [
+    { name: "旧表", rows: [["项目", "金额"], ["测试预算", "1200"]], totalRows: 2, totalCols: 2 }
+  ] } };
   pv = await libPreviewOf("旧档/报价.xls");
-  ok("预览·xls：同一条路，扩展名跟着换成 .xlsx（写死成 .docx 就是在瞎指路）",
-     pv.innerHTML.includes(".xlsx") && !pv.innerHTML.includes(".docx"), pv.innerHTML.slice(-320));
+  ok("预览·xls：兼容入口画出表格，不显示二进制", pv.innerHTML.includes("测试预算") && !pv.querySelector("pre.raw"), pv.innerHTML.slice(-320));
+  pv.querySelector('[data-office-zoom="more"]').click();
+  ok("预览·xls：放大按钮生效", pv.querySelector('.office-zoom-value').textContent === "110%");
+  ovResp = { code: 500, body: { error: "旧文件受保护，无法读取" } };
+  pv = await libPreviewOf("旧档/合同.doc");
+  ok("预览·doc：兼容引擎的明确错误可见，不伪装成文件丢失", pv.innerHTML.includes("旧文件受保护") && !pv.innerHTML.includes("已不在"), pv.innerHTML.slice(-320));
+
+  pv = await libPreviewOf("财务/预算表.xlsx");
+  const expansion = pv.querySelector("#lb-expand"); expansion.click();
+  const expandedBox = pv.getBoundingClientRect();
+  ok("资料库展开预览使用大部分窗口宽度，控件仍在窗口内", pv.classList.contains("lib-prev-expanded") && expandedBox.width >= innerWidth - 60 && expandedBox.left >= 0 && expandedBox.right <= innerWidth + 1);
+  pv.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  ok("Esc 收起展开并返回按钮焦点", !pv.classList.contains("lib-prev-expanded") && document.activeElement === expansion);
+  const beforeSwitchFetch = window.fetch; let finishOldPreview, oldPreviewSignal;
+  window.fetch = (url, opts) => {
+    if (url.includes("/preview/") && url.includes(encodeURIComponent("迟到"))) {
+      oldPreviewSignal = opts?.signal; return new Promise(resolve => { finishOldPreview = () => resolve({ ok: true, status: 200, json: async () => ({ slides: [{ n: 1, title: "旧请求不应出现", lines: [] }] }) }); });
+    }
+    return beforeSwitchFetch(url, opts);
+  };
+  window.libState.pick = { src: "lib", name: "迟到.pptx" };
+  const oldPreview = renderLibPreview(pv, { notes: [] });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  ovResp = { code: 200, body: { slides: [{ n: 1, title: "当前新预览", lines: [] }] } };
+  await libPreviewOf("最新.pptx"); finishOldPreview(); await oldPreview;
+  ok("连续切文件取消旧请求，迟到内容不能覆盖新预览", oldPreviewSignal.aborted && pv.textContent.includes("当前新预览") && !pv.textContent.includes("旧请求不应出现"));
+  window.fetch = beforeSwitchFetch;
 
   // CSV：跟对话页共用 csvHtml。以前资料库另有一个只认逗号的迷你版，
   // 字段里带逗号（"甲,乙"）会被拆成两格，.tsv 更是整列糊在一起
@@ -11983,8 +12007,8 @@ const PREVIEW_CHECKS = `
        window.downloaded.length === n + 1 && window.downloaded.at(-1) === "b.pcm", JSON.stringify(window.downloaded.slice(-2)));
     const m = window.opened.length;
     await previewFile("成员的.doc");
-    ok(".doc 对成员走下载，不再往服务器桌面上弹一个他看不见的窗",
-       window.opened.length === m && window.downloaded.at(-1) === "成员的.doc", JSON.stringify(window.opened.slice(-2)));
+    ok(".doc 对成员尝试应用内预览，不自动打开服务器程序或强制下载",
+       window.opened.length === m && window.downloaded.length === n + 1, JSON.stringify(window.opened.slice(-2)));
     ok("预览一渲染就把标题栏那两颗「在本机打开」也按身份收一收", window.navSyncs > 0);
     window.settingsCache = { platform_owner: true }; // 还原：后面几节还是按平台管理员验
     const back = await show("c.pcm");
@@ -12037,8 +12061,8 @@ const PREVIEW_CHECKS = `
     const n = window.opened.length;
     document.getElementById("pv-body").innerHTML = "原样";
     await previewFile("老方案.doc");
-    ok(".doc 交给系统程序", window.opened.at(-1) === "老方案.doc" && window.opened.length === n + 1);
-    ok(".doc 不动预览面板", document.getElementById("pv-body").innerHTML === "原样");
+    ok(".doc 先尝试应用内兼容预览，不擅自启动系统程序", window.opened.length === n);
+    ok(".doc 的预览面板给出内容或明确的兼容提示", document.getElementById("pv-body").innerHTML !== "原样");
     for (const bad of ["方案.docx", "账.xlsx", "介绍.pptx"])
       ok(bad + " 不再走系统程序", !OFFICE_RE.test(bad));
   }
@@ -13717,7 +13741,7 @@ const ARRIVAL_CHECKS = `
   ok("同一件拷了两份：开路径最浅的那个", pickFinishDeliverable([F("任务_0910/简历.html"), F("简历.html")]) === "简历.html");
   ok("只有 Word 稿也照开（应用内拆得出内容看）", pickFinishDeliverable([F("方案.docx")]) === "方案.docx");
   ok("只有过程账本就不开（PROGRESS.md 不是交付物）", finishPreviewPlan({ ...fb, turnOut: [F("任务_0910/PROGRESS.md")] }).preview === null);
-  ok("只有 .ppt 这类老格式不开（那会去拉起本机 Office，抢整个系统焦点）", finishPreviewPlan({ ...fb, turnOut: [F("旧方案.ppt")] }).preview === null);
+  ok("旧版 PPT 也可在应用内看，收尾允许显示成品", finishPreviewPlan({ ...fb, turnOut: [F("旧方案.ppt")] }).preview === "旧方案.ppt");
   ok("这趟压根没产出：不开", finishPreviewPlan({ ...fb, turnOut: [] }).preview === null);
   // 五种「开了反而添乱」的情形
   ok("回放历史不开", finishPreviewPlan({ ...fb, replaying: true }).preview === null);
@@ -14437,10 +14461,10 @@ const LANE_CHECKS = `
   ok("注意力·等你（黄）和出错（红）的颜色分得开", bgs[3] !== bgs[1], bgs.join(" / "));
   syncAttentionInbox();
   const inboxRows = [...document.querySelectorAll("#attention-inbox .inbox-row")];
-  ok("收件箱·待答复优先，其次出错、运行中、未读", inboxRows.map((r) => r.dataset.inboxId).join() === "a4,a2,a1,a3", inboxRows.map((r) => r.dataset.inboxId).join());
-  ok("收件箱·状态各自可辨，干净任务不列入", inboxRows.map((r) => r.dataset.state).join() === "ask,error,running,unseen" && !inboxRows.some((r) => r.dataset.inboxId === "a5"), inboxRows.map((r) => r.dataset.state).join());
+  ok("收件箱·时间倒序，执行状态不抢占新消息", inboxRows.map((r) => r.dataset.inboxId).join() === "a1,a2,a3,a4", inboxRows.map((r) => r.dataset.inboxId).join());
+  ok("收件箱·状态各自可辨，干净任务不列入", inboxRows.map((r) => r.dataset.state).join() === "running,error,unseen,ask" && !inboxRows.some((r) => r.dataset.inboxId === "a5"), inboxRows.map((r) => r.dataset.state).join());
   ok("收件箱·运行中的任务不冒充未读消息", document.getElementById("inbox-count").textContent === "3" && !document.getElementById("inbox-count").hidden);
-  inboxRows[0].click(); await Promise.resolve();
+  inboxRows.find((r) => r.dataset.inboxId === "a4").click(); await Promise.resolve();
   ok("收件箱·点一条待答复跳到原任务", __OPENED[0] === "a4" && document.getElementById("attention-inbox").hidden, JSON.stringify(__OPENED));
   scheduleInboxById.set("run-alone", { id: "run-alone", name: "独立排期结果", session_id: "schedule-session" });
   scheduleInboxRows = [{ id: "__schedule__:run-alone", title: "独立排期结果", state: "unseen", status: "定时任务已完成", at: 9 }];
@@ -15478,12 +15502,16 @@ const PROJ_CHECKS = `
   ok("新建项目仍可从菜单移除", !!document.querySelector('.proj-popover [data-act="remove"]'));
   closeProjectPopover();
 
-  // 快捷区有上限，搜索仍能找到所有项目；置顶不把当前项目挤掉。
+  // 快捷区有上限且顺序固定；当前项目在独立文字行显示，点击不会挤换快捷项。
   projects = Array.from({ length: 12 }, (_, i) => ({ name: "项目 " + i, folder: "p" + i }));
   activeProject = "项目 11";
   projectQuickPrefs({ pinned: [], recent: ["项目 8"] });
   renderProjects();
-  ok("侧栏最多五个项目，当前和最近使用的项目可见", box.querySelectorAll(".proj-item").length === 5 && box.querySelector('.proj-item.active').dataset.name === "项目 11" && !![...box.querySelectorAll(".proj-item")].find(e => e.dataset.name === "项目 8"));
+  ok("侧栏五个固定快捷项目，另行显示当前项目", box.querySelectorAll(".proj-item").length === 5 && box.querySelector('.proj-context').textContent.includes("项目 11") && [...box.querySelectorAll('.proj-item')].map(e=>e.dataset.name).join(',') === '项目 0,项目 1,项目 2,项目 3,项目 4');
+  const fixedOrder = [...box.querySelectorAll('.proj-item')].map(e=>e.dataset.name).join(',');
+  activeProject = "项目 3"; rememberProject("项目 3"); renderProjects();
+  ok("切换项目只变选中态，快捷项次序不变", box.querySelector('.proj-item.active').dataset.name === "项目 3" && [...box.querySelectorAll('.proj-item')].map(e=>e.dataset.name).join(',') === fixedOrder);
+  activeProject = "项目 11"; renderProjects();
   ok("快捷区没有独立滚动条", !/auto|scroll/.test(getComputedStyle(box).overflowY));
   box.querySelector("#proj-all").click();
   ok("全部项目面板初始列出十二个项目", document.querySelectorAll('.proj-results .proj-item').length === 12);
@@ -15494,7 +15522,7 @@ const PROJ_CHECKS = `
   ok("能搜到快捷区以外的项目", document.querySelectorAll('.proj-results .proj-item').length === 1 && document.querySelector('.proj-results .proj-item').dataset.name === "项目 9");
   document.querySelector('.proj-results .proj-more').click();
   document.querySelector('.proj-popover [data-act="pin"]').click();
-  ok("从完整列表置顶后进入快捷区，当前项目仍在", projectQuickPrefs().pinned.includes("项目 9") && !![...box.querySelectorAll(".proj-item")].find(e => e.dataset.name === "项目 9") && box.querySelector('.proj-item.active').dataset.name === "项目 11");
+  ok("从完整列表置顶后进入快捷区，当前项目仍在", projectQuickPrefs().pinned.includes("项目 9") && !![...box.querySelectorAll(".proj-item")].find(e => e.dataset.name === "项目 9") && box.querySelector('.proj-context').textContent.includes("项目 11"));
   box.querySelector("#proj-all").click();
   document.querySelector('.proj-search input').dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   ok("Esc 关闭面板并返回入口焦点", !document.querySelector('.proj-popover') && document.activeElement.id === "proj-all");

@@ -1769,6 +1769,8 @@ function settleChatDir(dir) {
  * @returns {"ok"|"error"|"aborted"} 给退出码用
  */
 async function runOnceIn(runtime, text, mode, interactive, shown) {
+  try { Object.assign(sess, require("./src/cli/project-owner").cliProject({ explicit: opts.project, cwd: wantWorkspace, projects: config.projects || [], existing: sess })); }
+  catch (error) { process.stderr.write(red(error.message + "\n")); return "error"; }
   if (!shown || shown === text) shown = "";
   const asked = shown || text;
   // 积分闸门：默认是关的（本地个人用不限额），开了才拦。CLI 消耗记在管理员（首个注册用户）名下

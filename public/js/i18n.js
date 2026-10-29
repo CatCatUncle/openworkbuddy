@@ -28,6 +28,22 @@
   // ---------- 词典：中文原句 → 英文 ----------
   const DICT = {
     en: {
+      "PDF / 版式": "PDF / Fixed layout",
+      "打开文件并对话": "Open file and chat",
+      "打开文件并对话（创建工作副本）": "Open file and chat (working copy)",
+      "展开预览": "Expand preview",
+      "收起预览": "Restore preview",
+      "关闭预览": "Close preview",
+      "转为 MD": "Convert to MD",
+      "转为 Markdown": "Convert to Markdown",
+      "转换中…": "Converting…",
+      "适合宽度": "Fit width",
+      "文档缩放": "Document zoom",
+      "放大": "Zoom in",
+      "缩小": "Zoom out",
+      "此任务允许同类": "Allow similar in this task",
+      "本次运行允许同类": "Allow similar until restart",
+      "处理中…": "Processing…",
       "默认 API 模型": "Default API model",
       "助理与远程消息使用的引擎和模型": "Engine and model used by the assistant and remote messages",
       "通知接收 ID（可选，ou_ 用户 / oc_ 会话）": "Notification recipient ID (optional: ou_ user / oc_ chat)",

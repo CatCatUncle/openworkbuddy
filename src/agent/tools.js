@@ -297,7 +297,7 @@ const TOOL_DEFS = [
   {
     name: "read_document",
     description:
-      "读 Word / Excel / PPT / 压缩包（.docx / .xlsx / .pptx / .zip），拍平成纯文本给你看。这几种是压缩包格式，用 read_file 读回来只会是乱码。内嵌图片会变成「［图片］」占位。表格很大时用 sheet / from / to 分段读。PDF 不走这里，用 read_file 看提示。",
+      "读 Word、Excel、PPT、PDF、OFD 和压缩包。新版 Office 内置解析；DOC 支持本机解析，部分旧格式需兼容引擎。PDF/OFD 提取文字，扫描页需 OCR，CEB 需已授权的本机引擎。内嵌图片以占位说明，不做验签。大表格用 sheet/from/to 分段读。",
     input_schema: {
       type: "object",
       properties: {
@@ -1773,7 +1773,7 @@ function libraryImport(name, dir) {
 //      truncated 标志，拍平后还要再按字符截一次。不说清楚，模型会拿半份当全文下结论。
 //   3. **PDF 不归这里。** previewData 只认这四种，pdf 进来会抛「不认识的预览类型」。
 //      PDF 走 read_file 里那条 pdftotext 指路，别把模型骗到一个必然报错的工具上。
-const DOC_EXT = /\.(docx|xlsx|pptx|zip)$/i;
+const DOC_EXT = /\.(docx|docm|dotx|dotm|xlsx|pptx|zip|doc|dot|wps|wpt|rtf|odt|xls|xlsm|xltx|et|ett|ods|ppt|pptm|ppsx|dps|dpt|odp|pdf|ofd|ceb|cebx)$/i;
 const DOC_CHARS = 50000; // 跟 read_file 同一个口径
 
 /**
@@ -1901,6 +1901,10 @@ async function readDocument(abs, rel, input) {
   const { previewData } = require("../domains/library/preview");
   if (!DOC_EXT.test(abs)) {
     throw new Error(`read_document 只读 .docx / .xlsx / .pptx / .zip。${rel} 不是这几种——纯文本用 read_file，PDF 用 pdftotext（read_file 会告诉你怎么装）。`);
+  }
+  if (!/\.(docx|xlsx|pptx|zip)$/i.test(abs)) {
+    const result = await require("../domains/library/document-markdown").documentMarkdown(abs, path.basename(rel));
+    return result.markdown.length > DOC_CHARS ? result.markdown.slice(0, DOC_CHARS) + "\n（文字超过 50000 字符，本次读取已截断）" : result.markdown;
   }
   const d = await previewData(abs, path.basename(abs)); // xlsx 分支是 async，必须 await
   let body = "", head = "";
@@ -4004,7 +4008,7 @@ async function viaMedia(cap, opts, input, run, hold) {
 
 /** 工具跑完之后：改了文件就跑 after_edit 钩子，输出接在回执后面（钩子见 hooks.js） */
 async function executeTool(name, input, opts = {}) {
-  const r = await executeToolCore(name, input, opts);
+  const r = await security.withApprovalScope({ owner: opts.actor || "", sessionId: opts.sessionId || "" }, () => executeToolCore(name, input, opts));
   if (r && r.editedFile && !r.isError && opts.hooks && HK.pick(opts.hooks.after_edit, r.editedFile).length) {
     const f = r.editedFile;
     // prettier 这类钩子会把刚写的文件再改写一遍。那是我们自己这边的改动，不能让下一次 edit_file
@@ -4093,7 +4097,10 @@ async function executeToolCore(name, input, opts = {}) {
     const r = security.resolvePathWithPolicy(sec, rel, ws(), fileBase);
     if (!r.allowed) {
       security.audit("文件拦截", `${name}: ${rel}`, "拦截");
-      throw new Error(`文件访问被安全中心拦截：${r.reason}`);
+      const next = /越界|工作区外面/.test(r.reason || "")
+        ? "。可通过顶栏「打开文件并对话」导入工作副本；需要原地编辑时，选择该文件夹作为任务工作目录。无需关闭沙箱。"
+        : "。这类受保护路径不能通过普通任务授权放行，请使用不含敏感信息的工作副本。";
+      throw new Error(`文件访问被安全中心拦截：${r.reason}${next}`);
     }
     // 成果子目录下没有、工作空间根下有 → 用根下那个（读旧对话的产物/共享素材不用写全路径）
     // 兜底只认文件：兜到一个同名目录上，下游就是一句莫名其妙的 EISDIR
@@ -4484,7 +4491,7 @@ async function executeToolCore(name, input, opts = {}) {
         // docx/xlsx/pptx 本质是 zip，按 utf8 读回来同样是一大坨乱码。这个产品自己就产出这几种
         // 文件，读不了等于交付完看不了自己的活
         if (DOC_EXT.test(p)) {
-          return { content: `${input.path} 是打包格式（Office 文档 / 压缩包），按文本读只会得到乱码。改用 read_document。`, isError: true };
+          return { content: `${input.path} 是文档格式，按文本 read_file 会得到乱码。改用 read_document。${/\.pdf$/i.test(p) ? pdfHowTo(String(input.path)) : ""}`, isError: true };
         }
         // PDF 没有内置解析器，只能指条真路。别说「自己写代码解析」——run_node 里也没有这个库
         if (/\.pdf$/i.test(p)) {

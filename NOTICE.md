@@ -18,6 +18,10 @@ Required Notice: Any use not permitted by the PolyForm Noncommercial License 1.0
 | 组件 | 版本 | 许可 | 出处 | 我们怎么用的 |
 |---|---|---|---|---|
 | Lucide 图标 | sprite 子集 | ISC | https://lucide.dev | 挑用到的图标做成 `<symbol>` sprite，内联进 `public/index.html`。内联是为了断网也能开，且图标跟着 `currentColor` 变色 |
+| @file-viewer/doc | 3.3.0 | MIT | https://github.com/flyfish-dev/docjs | 保留 core、msdoc、render 源码及 LICENSE；仅在隔离预览中按需加载 |
+| PDF.js | 6.4.299 | Apache-2.0 | https://github.com/mozilla/pdfjs-dist | 本地文字提取；保留主库、worker、CMap 与各自许可证 |
+| SheetJS CE | 0.20.3 | Apache-2.0 | https://docs.sheetjs.com/docs/getting-started/installation/standalone | 从官方 CDN 固定版本分发，内置 XLS / ET 兼容读取，在工作线程内解析 |
+| ofdjs | 0.1.0 | Apache-2.0 | https://github.com/isee15/ofdjs | `public/vendor/ofd/` 保留原始 JS 源码及 LICENSE；OFD 文件在隔离预览框中本机解析，不进行签章验证 |
 
 > 内联 sprite 只取了用到的那些图标，路径数据原样保留，没有改形。
 
@@ -31,6 +35,7 @@ Required Notice: Any use not permitted by the PolyForm Noncommercial License 1.0
 | @viz-js/viz | 3.29.0 | MIT | https://github.com/mdaines/viz-js |
 | @joint/core | 4.3.3 | MPL-2.0 | https://github.com/clientIO/joint |
 | docx | 9.7.1 | MIT | https://github.com/dolanmiu/docx |
+| docx-preview | 0.4.1 | Apache-2.0 | https://github.com/VolodymyrBaydalka/docxjs |
 | echarts | 6.1.0 | Apache-2.0 | https://github.com/apache/echarts |
 | electron-updater | 6.8.9 | MIT | https://github.com/electron-userland/electron-builder |
 | exceljs | 4.4.0 | MIT | https://github.com/exceljs/exceljs |
