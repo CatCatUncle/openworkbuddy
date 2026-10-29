@@ -17540,10 +17540,24 @@ async function testSessionIndex() {
     assert.deepStrictEqual(gone(), [], "会话目录不存在时没给空清单");
 
     // ---- 接口那一层：归属只用来过滤，不许回给前端；假项目不许再回来 ----
-    const route = src.slice(src.indexOf('app.get("/api/sessions"'), src.indexOf('app.get("/api/sessions"') + 400);
-    assert.ok(/ownSession\(req\.user/.test(route), "/api/sessions 没按归属过滤——别人的任务会出现在你的侧栏");
-    assert.ok(/\{ user, \.\.\./.test(route) || /delete .*\.user/.test(route),
-      "/api/sessions 把 user 字段原样回给前端了——侧栏不需要，回了就是白泄露组织成员名单");
+    const start = src.indexOf('app.get("/api/sessions"');
+    const end = src.indexOf("\n});", start);
+    assert(start >= 0 && end > start, "session route must exist");
+    const route = src.slice(start, end + 5);
+    const indexRows = [
+      ...Array.from({ length: 400 }, (_, i) => ({ id: "web_" + i, user: "boss", lane: "office" })),
+      ...Array.from({ length: 350 }, (_, i) => ({ id: "cli_" + i, user: "boss", ...(i % 2 ? { lane: "cli" } : {}) })),
+      { id: "pinned_old", user: "boss", pinned_at: 1 }, { id: "staff_secret", user: "staff", pinned_at: 1 },
+    ];
+    let handler, publicIndex;
+    new Function("app", "listSessionsOnDisk", "ownSession", "sessFilesTodo", route)(
+      { get(url, fn) { assert.strictEqual(url, "/api/sessions"); handler = fn; } },
+      () => indexRows, (user, row) => row.user === user.username, new Set());
+    handler({ user: { username: "boss" } }, { json(value) { publicIndex = value; } });
+    assert.strictEqual(publicIndex.sessions.length, 601, "300 recent + 300 CLI + older pinned tasks remain visible");
+    assert.strictEqual(publicIndex.sessions.filter(row => row.id.startsWith("cli_")).length, 300, "CLI history has an independent retention window, including legacy IDs without lane");
+    assert(publicIndex.sessions.some(row => row.id === "pinned_old") && !publicIndex.sessions.some(row => row.id === "staff_secret"), "ownership filtering applies to recent, CLI and pinned rows");
+    assert(publicIndex.sessions.every(row => !Object.hasOwn(row, "user")), "account identifiers are never returned in session summaries");
     // 注释里写着这段事故的来龙去脉，那是给人看的；要拦的是它重新变成一个会发出去的值。
     const noComments = src.replace(/\/\*[\s\S]*?\*\//g, "")
       .split("\n").map((l) => l.replace(/(^|[^:"'`])\/\/.*$/, "$1")).join("\n");
