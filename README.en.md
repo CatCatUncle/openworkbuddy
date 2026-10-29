@@ -268,6 +268,8 @@ Entry points are `server.js`, `cli.js` and `src/im/`; the Agent is in `src/agent
 
 ## What's new
 
+- **Oct 29** Library grouping and layout switches now update locally without reloading directory or task indexes. File rows, thumbnails and previews are reused, and offscreen layout work is reduced.
+
 - **Oct 29** Automation editing now gives instructions a larger area that grows with content, scrolls long tasks, and keeps Save visible on smaller windows.
 
 - **Oct 29** The sidebar shows up to five current and frequent projects, with pins, recent use and full-list search. The picker opens beside the Projects heading; editing and removal move into a row menu.
@@ -285,8 +287,6 @@ Entry points are `server.js`, `cli.js` and `src/im/`; the Agent is in `src/agent
 - **Oct 26** Execution traces persist across projects and show local-engine tool results and read errors. The sidebar shows Experts · Skills · Connectors.
 
 - **Oct 26** Library search preserves the input and caret, waits for IME confirmation, and ignores stale responses to prevent reordered text.
-
-- **Oct 24** Keep task navigation in one desktop workbench. Remove the session menu’s new-window action, reuse the main window for task links and preview redirects, and retain separate file previews.
 
 Full history: **[Changelog](CHANGELOG.en.md)**.
 

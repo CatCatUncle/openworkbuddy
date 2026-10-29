@@ -6010,6 +6010,13 @@ const DEAD_CHECKS = `
   ok("反向对照：不传宽度就是原图——预览、下载走的是这一条，不能被缩略图截胡",
      !libUrl("ws", "设计稿.png").includes("thumb"), libUrl("ws", "设计稿.png"));
 
+  const presentationFetch = window.fetch;
+  const presentationRequests = [];
+  // 前面媒体预览的异步存活探测可能尚未结束；只排除它的 HEAD，实际列表/预览 GET 都要计数。
+  window.fetch = (...args) => { if (args[1]?.method !== "HEAD") presentationRequests.push(String(args[0])); return presentationFetch(...args); };
+  const presentationRow = pngRow(), presentationThumb = pngRow().querySelector("img");
+  const presentationBar = page.querySelector(".lib-bar"), presentationPrev = page.querySelector("#lb-prev");
+  const presentationOrder = [...list().querySelectorAll(".lib-it")].map(el => el.dataset.src + ":" + el.dataset.name).join("|");
   page.querySelector('.lib-md[data-mode="icon"]').click();
   await new Promise((r) => setTimeout(r, 0));
   ok("摆法：切图标，页面和列表的标记一起换", pg().dataset.mode === "icon" && list().classList.contains("as-icon"), pg().dataset.mode);
@@ -6038,6 +6045,11 @@ const DEAD_CHECKS = `
   page.querySelector('.lib-gp[data-group="none"]').click();
   await new Promise((r) => setTimeout(r, 0));
   ok("反向对照：切回不分组，小标题全收掉", !page.querySelector(".lib-grp"));
+  ok("分组与摆法切换不重新请求目录、任务索引或文件预览", presentationRequests.length === 0, "requests=" + presentationRequests.join(","));
+  ok("分组复用原文件行及缩略图，不重复解码图片", pngRow() === presentationRow && pngRow().querySelector("img") === presentationThumb);
+  ok("切换保留工具栏和预览节点，不让视频或文档预览重新加载", page.querySelector(".lib-bar") === presentationBar && page.querySelector("#lb-prev") === presentationPrev);
+  ok("切回不分组恢复原文件次序，参考资料与本地产物保持分开", [...list().querySelectorAll(".lib-it")].map(el => el.dataset.src + ":" + el.dataset.name).join("|") === presentationOrder);
+  window.fetch = presentationFetch;
 
   // ⑤f-2 ★点一个文件，右边那块得真的露出来★
   // 行高亮了、内容也确实渲染进 #lb-prev 了，

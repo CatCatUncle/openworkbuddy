@@ -2342,6 +2342,9 @@
 
   /* ── 一行 = 一个文件。三种摆法共用这一份 HTML，下面只换 CSS ── */
   .lib-it { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: var(--radius-md); font-size: 14px; cursor: pointer; color: var(--owb-text-2); }
+  /* 大列表只排版视口附近的行；auto 记住已显示过的真实高度，分组时不重排屏外缩略图和文字。 */
+  .lib-list.as-list .lib-it { content-visibility: auto; contain-intrinsic-size: auto 44px; }
+  .lib-list.as-icon .lib-it { content-visibility: auto; contain-intrinsic-size: auto 120px; }
   .lib-it.lib-dir .nm { font-weight: 600; color: var(--owb-text); }
   .lib-it:hover { background: var(--owb-bg-hover); }
   .lib-it.active { background: var(--owb-brand-weak); color: var(--owb-text); font-weight: 600; box-shadow: inset 3px 0 0 var(--owb-brand); }

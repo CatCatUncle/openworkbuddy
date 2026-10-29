@@ -479,6 +479,55 @@ function libGroupFiles(files) {
   // 按固定次序排，不按谁先出现：同一个目录来回进出，分组的顺序不该跟着抖
   return order.filter((k) => bag.has(k)).map((k) => ({ label: k, items: bag.get(k) }));
 }
+/** 注释标出各自独立的一段文件，不增加会干扰网格/画廊布局的容器。 */
+function libGroupedHtml(files, row) {
+  const order = new Map(files.map((f, i) => [f, i]));
+  return "<!--lib-group-start-->" + libGroupFiles(files).map(g =>
+    (g.label ? `<div class="sec lib-grp">${esc(g.label)} <span class="n">${g.items.length}</span></div>` : "")
+    + g.items.map(f => row(f, order.get(f))).join("")
+  ).join("") + "<!--lib-group-end-->";
+}
+/** 分组只移动当前页的文件行：不重新读盘、不重建缩略图，也不打断右侧预览。 */
+function libRegroup(page) {
+  const list = page.querySelector(".lib-list");
+  if (!list) return;
+  let start = null;
+  for (const node of [...list.childNodes]) {
+    if (node.nodeType !== 8) continue;
+    if (node.data === "lib-group-start") { start = node; continue; }
+    if (node.data !== "lib-group-end" || !start) continue;
+    const rows = [];
+    for (let child = start.nextSibling; child && child !== node;) {
+      const next = child.nextSibling;
+      if (child.nodeType === 1 && child.classList.contains("lib-it")) rows.push(child);
+      else child.remove();
+      child = next;
+    }
+    rows.sort((a, b) => Number(a.dataset.libOrder) - Number(b.dataset.libOrder));
+    const groups = libGroupFiles(rows.map(row => ({ name: row.dataset.name, mtime: Number(row.dataset.libMtime), deck: row.dataset.libDeck === "true", row })));
+    for (const g of groups) {
+      if (g.label) {
+        const heading = document.createElement("div");
+        heading.className = "sec lib-grp";
+        heading.innerHTML = `${esc(g.label)} <span class="n">${g.items.length}</span>`;
+        list.insertBefore(heading, node);
+      }
+      for (const { row } of g.items) {
+        // Chromium 支持时用状态保留移动，已解码的图片继续用原节点。
+        if (typeof list.moveBefore === "function") list.moveBefore(row, node);
+        else list.insertBefore(row, node);
+      }
+    }
+    start = null;
+  }
+}
+function libPresentationButtons(page, selector, field) {
+  page.querySelectorAll(selector).forEach(button => {
+    const on = button.dataset[field] === libState[field];
+    button.classList.toggle("on", on);
+    button.setAttribute("aria-pressed", String(on));
+  });
+}
 /** 「3 分钟前 / 昨天 / 09-14」——绝对时间在这种列表里没人读得动，相对时间才有信息量 */
 function libWhen(iso) {
   const t = typeof iso === "number" ? iso : Date.parse(iso || "");
@@ -517,6 +566,7 @@ function libRowHtml(src, f, o) {
   const dir = opt.dir !== undefined ? opt.dir : String(full).split("/").slice(0, -1).join("/");
   const on = libState.pick && libState.pick.src === src && libState.pick.name === full;
   const gone = !!(opt.gone || f.gone);
+  const mtime = typeof f.mtime === "number" ? f.mtime : Date.parse(f.mtime || "") || 0;
   // 图片就直接拿真图当缩略图——图标视图里一排「图片」图标等于没有视图。
   // 文件没了就别发这个请求：拿一串 404 换一排碎图标没有意义。
   const thumb = !gone && LIB_IMG.test(label) ? `<img loading="lazy" src="${libUrl(src, full, 160, opt.task)}" alt="">` : libIcon(label);
@@ -536,7 +586,7 @@ function libRowHtml(src, f, o) {
       ? `<a href="#" class="lib-del" data-del-out="${esc(opt.delOut)}" title="删掉">${ic("trash-2")}</a>`
       : "";
   return `
-  <div class="lib-it ${opt.cls || ""} ${gone ? "gone" : ""} ${on ? "active" : ""}" data-src="${src}" data-name="${esc(full)}"${opt.task ? ` data-task="${esc(opt.task)}"` : ""} title="${esc(full)}">
+  <div class="lib-it ${opt.cls || ""} ${gone ? "gone" : ""} ${on ? "active" : ""}" data-src="${src}" data-name="${esc(full)}" data-lib-order="${opt.order || 0}" data-lib-mtime="${mtime}" data-lib-deck="${!!f.deck}"${opt.task ? ` data-task="${esc(opt.task)}"` : ""} title="${esc(full)}">
     <span class="th">${thumb}</span>
     <span class="nm">${libMark(label, opt.q)}${dir ? `<span class="pth">${esc(dir)}</span>` : ""}</span>
     <span class="sz">${opt.note !== undefined ? opt.note : libSize(f.size || 0)}</span>
@@ -605,10 +655,7 @@ function libRecentKey() {
 function libCollectionHtml(data, more) {
   if (!data || data.error) return `<div class="lib-none">${esc((data && data.error) || "文件列表读取失败")}</div>`;
   const items = Array.isArray(data.items) ? data.items : [];
-  const rows = libGroupFiles(items).map((g) =>
-    (g.label ? `<div class="sec lib-grp">${esc(g.label)} <span class="n">${g.items.length}</span></div>` : "") +
-    g.items.map((f) => libRowHtml(f.src, f, { full: f.path, dir: I18N.tr(f.src === "lib" ? "参考资料" : "本地产物") + (String(f.path).includes("/") ? " / " + String(f.path).split("/").slice(0, -1).join("/") : ""), gone: !!f.missing, note: f.missing ? esc(I18N.tr("已不在")) : undefined })).join("")
-  ).join("");
+  const rows = libGroupedHtml(items, (f, order) => libRowHtml(f.src, f, { order, full: f.path, dir: I18N.tr(f.src === "lib" ? "参考资料" : "本地产物") + (String(f.path).includes("/") ? " / " + String(f.path).split("/").slice(0, -1).join("/") : ""), gone: !!f.missing, note: f.missing ? esc(I18N.tr("已不在")) : undefined }));
   const total = Number(data.total) || items.length;
   const offset = Number(data.offset) || 0, limit = Number(data.limit) || LIB_CHUNK;
   const pages = more === "all" && total > limit ? `<div class="lib-page-nav">${offset > 0 ? `<button type="button" class="lib-more" data-alloff="${Math.max(0, offset - limit)}">上一页</button>` : ""}<span>${offset + 1}–${Math.min(offset + items.length, total)} / ${total}</span>${offset + limit < total ? `<button type="button" class="lib-more" data-alloff="${offset + limit}">下一页</button>` : ""}</div>` : "";
@@ -680,10 +727,7 @@ async function renderLibPage() {
   if (out && out.tasks) libOutCache = out;
 
   const libRow = (src, f, o) => libRowHtml(src, f, { q, ...(o || {}) });
-  // 分组小标题。不分组时 label 是空串，这儿就什么都不画——调用方不用到处写 if
-  const groupHead = (label, n) => label ? `<div class="sec lib-grp">${esc(label)} <span class="n">${n}</span></div>` : "";
-  const groupedRows = (files, src, mk) => libGroupFiles(files)
-    .map((g) => groupHead(g.label, g.items.length) + g.items.map((f) => libRow(src, f, mk ? mk(f) : undefined)).join("")).join("");
+  const groupedRows = (files, src, mk) => libGroupedHtml(files, (f, order) => libRow(src, f, { ...(mk ? mk(f) : {}), order }));
   // 文件夹行：点一下是「进去」，不是「选中预览」，所以单独一个类名，事件也分开接
   const folder = (f) => `
     <div class="lib-it lib-dir" data-dir="${esc(f.path)}" title="${esc(f.name)}">
@@ -861,14 +905,22 @@ async function renderLibPage() {
   });
   // 摆法和分组都记到本地：这一页每个人的用法差很远——有人一直用列表找文档，有人一直用画廊过图
   page.querySelectorAll(".lib-md").forEach(b => b.onclick = () => {
+    if (libState.mode === b.dataset.mode) return;
     libState.mode = b.dataset.mode;
     try { localStorage.setItem("owb_lib_mode", libState.mode); } catch {}
-    renderLibPage();
+    const current = page.querySelector(".lib-page"), list = page.querySelector(".lib-list");
+    current.dataset.mode = libState.mode;
+    current.dataset.prev = libState.mode === "gallery" || libState.pick ? "on" : "off";
+    for (const [mode] of LIB_MODES) list.classList.toggle("as-" + mode, mode === libState.mode);
+    libPresentationButtons(page, ".lib-md", "mode");
+    if (libState.mode === "gallery" && !libState.pick) page.querySelector(".lib-it:not(.lib-dir)")?.click();
   });
   page.querySelectorAll(".lib-gp").forEach(b => b.onclick = () => {
+    if (libState.group === b.dataset.group) return;
     libState.group = b.dataset.group;
     try { localStorage.setItem("owb_lib_group", libState.group); } catch {}
-    renderLibPage();
+    libPresentationButtons(page, ".lib-gp", "group");
+    libRegroup(page);
   });
 
   if (page.querySelector("#lb-up")) {
@@ -1224,9 +1276,7 @@ function libWsHtml(tree) {
       <span class="th">${ic("folder")}</span><span class="nm">${esc(d.name)}</span><span class="sz">${d.count || 0} 项</span><span class="tm">${esc(libWhen(d.mtime))}</span>
       <a href="#" class="lib-del" data-del-out="${esc(d.path)}" title="删掉这个文件夹">${ic("trash-2")}</a>
     </div>`;
-  const groups = libGroupFiles(fShow).map((g) =>
-    (g.label ? `<div class="sec lib-grp">${esc(g.label)} <span class="n">${g.items.length}</span></div>` : "")
-    + g.items.map((f) => libRowHtml("ws", f, { label: f.base || String(f.name).split("/").pop(), dir: "", delOut: f.name })).join("")).join("");
+  const groups = libGroupedHtml(fShow, (f, order) => libRowHtml("ws", f, { order, label: f.base || String(f.name).split("/").pop(), dir: "", delOut: f.name }));
   const here = tree.dir ? String(tree.dir).split("/").pop() : "工作区";
   const empty = !dirs.length && !files.length
     ? `<div class="lib-none">${(tree.files || []).length ? "这一层没有这类文件，换个类型或者进子文件夹看看" : tree.dir ? "这个文件夹还是空的" : "工作目录还没有文件。任务写出来的东西会落在这儿"}</div>`

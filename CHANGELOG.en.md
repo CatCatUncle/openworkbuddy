@@ -9,6 +9,8 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 ## 2026
 
+- **Oct 29** Library grouping and layout switches now update locally without reloading directory or task indexes. File rows, thumbnails and previews are reused, and offscreen layout work is reduced.
+
 - **Oct 29** Automation editing now gives instructions a larger area that grows with content, scrolls long tasks, and keeps Save visible on smaller windows.
 
 - **Oct 29** The sidebar shows up to five current and frequent projects, with pins, recent use and full-list search. The picker opens beside the Projects heading; editing and removal move into a row menu.
