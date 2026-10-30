@@ -271,7 +271,7 @@ openworkbuddy engines use claude-code # 换执行引擎：跑在你已经付过�
 
 - **10-30** Office 预览增加分页、缩放与展开；DOC/WPS、XLS/ET 内置读取；可选“打开方式”不改默认关联。
 
-- **10-30** Office、PDF、OFD 可转 Markdown；旧 PPT 提取有效幻灯片文字，扫描页、截断和图片遗漏会提示；CEB 需授权引擎。
+- **10-30** Office、PDF、OFD 可转 Markdown；OFD 上传保留后缀和字节；旧 PPT 提取有效文字，扫描页与截断会提示；CEB 需授权引擎。
 
 - **10-30** 资料库预览接管阅读区域，收紧外框，标题和操作分行；关闭旧对话侧栏，取消过期读取，大表按工作表与每页 100 行显示。
 

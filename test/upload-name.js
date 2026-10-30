@@ -187,5 +187,51 @@ console.log("\n【7】大文件不过内存：请求体流进同目录的临时�
   ok(!/30 \* 1048576|不能超过 30MB/.test(canvasNodes) && /application\/octet-stream/.test(canvasNodes) && /body: file/.test(canvasNodes), "画布拖素材：不卡 30MB，直接发原文件");
   const libPage = fs.readFileSync(path.join(ROOT, "public/js/app-04.js"), "utf8");
   ok(/"\/api\/library\/upload", \{[\s\S]{0,200}application\/octet-stream[\s\S]{0,200}body: file/.test(libPage) && !/readAsDataURL\(file\)/.test(libPage), "资料库上传：直接发原文件");
+
+  console.log("\n【9】OFD 附件：真实上传路由保留后缀和全部字节，不留下空文件或 NTFS 备用流");
+  const uploads = require(mod("upload-name"));
+  ok(uploads.uploadBaseName("公文:附件.OFD", "win32") === "公文_附件.OFD", "Windows 冒号转为下划线，OFD 后缀保留");
+  ok(uploads.uploadBaseName("公文:附件.ofd", "darwin") === "公文:附件.ofd", "Mac 合法的冒号保持原样");
+  ok(uploads.uploadBaseName("CON.ofd", "win32") === "_CON.ofd", "Windows 保留名不会吞掉文件内容");
+  const express = require("express"), vm = require("vm"), app = express();
+  const routeDir = path.join(WS, "ofd-route"); fs.mkdirSync(routeDir);
+  const headerCode = server.match(/function uploadHeaders\(req\) \{[\s\S]*?\n\}/)[0];
+  const libCode = server.match(/app\.post\("\/api\/library\/upload"[\s\S]*?\n\}\);/)[0];
+  app.use(express.json());
+  const safePath = name => { const p = path.resolve(routeDir, name); if (!p.startsWith(routeDir + path.sep)) throw Error("路径越界"); return p; };
+  vm.runInNewContext(headerCode + "\n" + up + "\n" + libCode, {
+    app, fs, path, Buffer,
+    // Exercise Windows filename policy on every host, plus real NTFS in Windows CI.
+    uploadName: { ...uploads, uploadBaseName: name => uploads.uploadBaseName(name, "win32") },
+    safePath, libRel: name => name, libPath: safePath, getSession: () => ({}), sessionAllowed: () => true,
+    perChatHere: () => false, getWorkspaceDir: () => routeDir, noteUserInput() {}, isUserInput: () => true,
+  });
+  const listener = await new Promise(resolve => { const s = app.listen(0, "127.0.0.1", () => resolve(s)); });
+  try {
+    const zip = new (require("jszip"))(); zip.file("OFD.xml", "<OFD>公文附件</OFD>");
+    const bytes = await zip.generateAsync({ type: "nodebuffer" });
+    const post = (route, name, body, json = false, replace = "") => fetch(`http://127.0.0.1:${listener.address().port}${route}`, {
+      method: "POST", headers: json ? { "Content-Type": "application/json" } : { "Content-Type": "application/octet-stream", "X-Upload-Name": encodeURIComponent(name), "X-Upload-Replace": encodeURIComponent(replace) },
+      body: json ? JSON.stringify({ name, data_b64: body.toString("base64") }) : body,
+    });
+    for (const name of ["公文.ofd", "公文:附件.OFD", "CON.ofd"]) {
+      const response = await post("/api/upload", name, bytes), result = await response.json();
+      ok(response.ok && result.name.endsWith(path.extname(name)) && fs.readFileSync(path.join(routeDir, result.path)).equals(bytes), `上传 ${name}：回执路径能读回完整 OFD 字节`, result);
+    }
+    const duplicate = await post("/api/upload", "公文.ofd", bytes).then(r => r.json());
+    ok(duplicate.name === "公文_2.ofd" && fs.readFileSync(path.join(routeDir, duplicate.path)).equals(bytes), "同名 OFD 追加编号但保留扩展名与内容", duplicate);
+    const empty = await post("/api/upload", "空.ofd", Buffer.alloc(0));
+    ok(empty.status === 400 && /内容为空/.test((await empty.json()).error) && !fs.existsSync(path.join(routeDir, "空.ofd")), "零字节 OFD 明确报错，不生成空文件");
+    const replaceEmpty = await post("/api/upload", "公文.ofd", Buffer.alloc(0), false, "公文.ofd");
+    ok(replaceEmpty.status === 400 && fs.readFileSync(path.join(routeDir, "公文.ofd")).equals(bytes), "空附件不能替换已有完整 OFD");
+    for (const json of [false, true]) {
+      const saved = await post("/api/library/upload", "资料.ofd", bytes, json);
+      ok(saved.ok && fs.readFileSync(path.join(routeDir, "资料.ofd")).equals(bytes), `资料库 ${json ? "JSON" : "原始流"} 上传保留完整 OFD`);
+      // JSON compatibility requires a nonempty base64 string, so whitespace tests decoded emptiness.
+      const blank = json ? await fetch(`http://127.0.0.1:${listener.address().port}/api/library/upload`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "资料.ofd", data_b64: " " }) }) : await post("/api/library/upload", "资料.ofd", Buffer.alloc(0));
+      ok(blank.status === 400 && fs.readFileSync(path.join(routeDir, "资料.ofd")).equals(bytes), "资料库空 OFD 不覆盖原有附件");
+    }
+    ok(!fs.readdirSync(routeDir).some(n => !/\.ofd$/i.test(n)), "目录里只有完整 OFD，没有无后缀空文件或残余占位文件", fs.readdirSync(routeDir));
+  } finally { await new Promise(resolve => listener.close(resolve)); }
   finish();
 })().catch((e) => { fail++; console.log("  ✗ 【7】抛了：" + (e && e.stack)); finish(); });

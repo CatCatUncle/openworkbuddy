@@ -37,7 +37,7 @@ jobs:
           - os: windows-latest
             label: Windows 沙箱
             sandbox_win: "1"
-            cmd: node test/sandbox-win.js && node test/engine-tool-relay.js && node test/win-main.js
+            cmd: node test/sandbox-win.js && node test/engine-tool-relay.js && node test/win-main.js && node test/upload-name.js
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
     # 兜底的保险丝。GitHub 默认给 6 小时，2026-09-13 那次就是这么烧掉的：

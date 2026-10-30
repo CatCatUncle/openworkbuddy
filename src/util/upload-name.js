@@ -15,8 +15,20 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { pipeline } = require("stream/promises");
+const { safeSegment } = require("./winname");
 
 const MAX_TRY = 999;
+
+/** Preserve the extension while removing path/control characters and NTFS stream syntax. */
+function uploadBaseName(name, platform = process.platform) {
+  const base = safeSegment(String(name || "").split(/[\\/]/).pop().replace(/[\u0000-\u001f\u007f]/g, "").trim(), platform);
+  if (!base || base === "." || base === "..") throw new Error("文件名不合法");
+  return base;
+}
+
+function checkUploadContent(name, bytes) {
+  if (/\.ofd$/i.test(name) && bytes === 0) throw new Error("OFD 附件内容为空，请重新选择完整文件");
+}
 
 /**
  * data 是 Buffer：照写。是 { from }：那是 receiveUploadToTemp 收好的临时文件，改名过去，不再读进内存。
@@ -24,6 +36,7 @@ const MAX_TRY = 999;
  * 不先占住的话两份同名的同时到，后到的照样把先到的盖掉
  */
 function placeUpload(fsx, file, data, exclusive) {
+  checkUploadContent(file, Buffer.isBuffer(data) ? data.length : data && typeof data.from === "string" ? fsx.statSync(data.from).size : -1);
   if (!data || Buffer.isBuffer(data) || typeof data.from !== "string") {
     fsx.writeFileSync(file, data, exclusive ? { flag: "wx" } : undefined);
     return;
@@ -55,6 +68,7 @@ function uploadCandidate(base, n) {
  * @returns {string}
  */
 function writeUploadFresh(dir, base, buf, o = {}) {
+  base = uploadBaseName(base);
   const fsx = o.fs || fs;
   fsx.mkdirSync(dir, { recursive: true });
   for (let n = 1; n <= MAX_TRY; n += 1) {
@@ -101,11 +115,14 @@ function uploadIsCandidate(base, name) {
  * @returns {string}
  */
 function writeUploadReplace(dir, base, prevName, buf, owns, o = {}) {
+  base = uploadBaseName(base);
   const fsx = o.fs || fs;
   const name = String(prevName || "");
+  if (name && uploadBaseName(name) !== name) return "";
   if (!name || path.basename(name) !== name || !uploadIsCandidate(base, name)) return "";
   const file = path.join(dir, name);
   if (typeof owns !== "function" || !owns(name, file)) return "";
+  checkUploadContent(name, Buffer.isBuffer(buf) ? buf.length : -1);
   if (buf && !Buffer.isBuffer(buf) && typeof buf.from === "string") {
     placeUpload(fsx, file, buf, false);
     return name;
@@ -159,4 +176,4 @@ function mb(n) {
   return n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} 字节`;
 }
 
-module.exports = { uploadCandidate, writeUploadFresh, uploadIsCandidate, writeUploadReplace, receiveUploadToTemp };
+module.exports = { uploadBaseName, checkUploadContent, uploadCandidate, writeUploadFresh, uploadIsCandidate, writeUploadReplace, receiveUploadToTemp };

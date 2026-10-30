@@ -4853,10 +4853,13 @@ app.post("/api/library/upload", async (req, res) => {
     fs.mkdirSync(path.dirname(abs), { recursive: true });
     if (raw) {
       tmp = await uploadName.receiveUploadToTemp(req, path.dirname(abs));
+      uploadName.checkUploadContent(rel, fs.statSync(tmp).size);
       fs.renameSync(tmp, abs);
       tmp = "";
     } else {
-      fs.writeFileSync(abs, Buffer.from(data_b64, "base64"));
+      const buf = Buffer.from(data_b64, "base64");
+      uploadName.checkUploadContent(rel, buf.length);
+      fs.writeFileSync(abs, buf);
     }
     res.json({ ok: true, name: path.basename(rel), path: rel });
   } catch (e) {
@@ -6526,7 +6529,8 @@ app.post("/api/desktop/open-files", async (req, res) => {
       try {
         const st = await fs.promises.stat(source);
         if (!st.isFile() || st.size > 200 * 1024 * 1024) throw Error("请选择 200 MB 以内的文件");
-        const base = path.basename(source).replace(/[\u0000-\u001f\u007f]/g, "").trim();
+        const base = uploadName.uploadBaseName(source);
+        uploadName.checkUploadContent(base, st.size);
         const own = perChatHere() ? sessDirOf(sess) : null;
         const dir = path.dirname(safePath(own ? path.join(own, base) : base));
         await fs.promises.mkdir(dir, { recursive: true });
@@ -6552,7 +6556,7 @@ app.post("/api/upload", async (req, res) => {
     if (!name || (!raw && !data_b64)) return res.status(400).json({ error: raw ? "缺少文件名（X-Upload-Name）" : "缺少 name 或 data_b64" });
     // basename 之后再洗一遍：控制字符和路径分隔符在文件名里没有正当用途，
     // 而这些名字会被拼进链接、传给系统程序、写进日志
-    const base = path.basename(String(name)).replace(/[\u0000-\u001f\u007f]/g, "").trim();
+    const base = uploadName.uploadBaseName(name);
     if (!base || base === "." || base === "..") return res.status(400).json({ error: "文件名不合法" });
     const sess = session ? getSession(String(session)) : null;
     // 归属必须查：这个接口是拿请求体里的 sessionId 直接取会话的，不查就等于

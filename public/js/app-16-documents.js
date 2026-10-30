@@ -29,6 +29,7 @@
       const sid = "s_" + Date.now() + "_" + Math.floor(Math.random() * 1e6);
       const { data, why } = await postJson("/api/desktop/open-files", { session: sid, ...(token ? { token } : { pick: true }) }, 16 * 60 * 1000);
       if (!data?.ok) throw Error(data?.error || why);
+      for (const error of data.errors || []) toast(error.name + "：" + error.error, "circle-x");
       if (!data.files?.length) return;
       document.getElementById("new-task").click();
       sessionId = sid;
@@ -38,7 +39,6 @@
         const item = makeAttachItem(file.name, { size: file.size }); addAttachChip(item);
         item.path = file.path; item.root = data.root || ""; item.sid = sid; memoAttach(sid, item.name, item.path); setAttachState(item, "done"); attached.push(item);
       }
-      for (const error of data.errors || []) toast(error.name + "：" + error.error, "circle-x");
       await opened(attached);
     } catch (error) { toast(error.message || "文件没能打开", "circle-x"); }
     finally { busy = false; if (button) button.disabled = false; }

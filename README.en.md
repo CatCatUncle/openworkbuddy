@@ -270,7 +270,7 @@ Entry points are `server.js`, `cli.js` and `src/im/`; the Agent is in `src/agent
 
 - **Oct 30** Office previews add document pages, zoom and expansion. DOC/WPS and XLS/ET have built-in compatibility readers. Open With remains optional and does not change defaults. See the [format capability matrix](docs/文件预览与转换.md).
 
-- **Oct 30** Export common Office, PDF and OFD files to Markdown. Legacy PPT uses live-slide text extraction. Scanned pages, truncation and omitted images are reported; CEB requires an authorized local engine.
+- **Oct 30** Export Office, PDF and OFD to Markdown. OFD uploads retain extensions and bytes. Legacy PPT uses live-slide text; scanned pages and truncation are reported. CEB requires an authorized engine.
 
 - **Oct 30** Library previews use their own reading area with compact borders and separate title/actions. Old conversation drawers close, stale reads cancel, and spreadsheets load one sheet and 100 rows at a time.
 
