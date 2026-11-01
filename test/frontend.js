@@ -4400,7 +4400,7 @@ function testPreviewCloseSites(src) {
   const names = [];
   const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
   const now = (src.match(/closePreview\(false, \{ now: true \}\)/g) || []).length;
-  const other = (src.match(/closePreview\((?!false, \{ now: true \}\))/g) || []).length;
+  const other = (src.match(/closePreview\((?!(?:true|false), \{ now: true \}\))/g) || []).length;
   ok("换对话 / 开新任务那三处收面板都是当场拆（now:true）", now === 3 && other === 0, `now:true ${now} 处，别的写法 ${other} 处`);
   return names;
 }
@@ -14851,11 +14851,16 @@ const DRAGPIN_CHECKS = `
 // ★反向对照★ 五个变体各自红在自己那条上：按键漏出去、改名没存上不改回、切回窗口就擦掉亲手标的未读、
 // 重画后不补「开着」、收起不还焦点。
 const HMENU_STUBS = [
+  "var __realAskConfirm = (" + APP02X.slice(APP02X.indexOf("function askConfirm(opts)"), APP02X.indexOf("// 本地只是缓存", APP02X.indexOf("function askConfirm(opts)"))).trim() + ");",
+  "var sessionDirs = new Map(), sessionRootFiles = new Map(), sessionMadeFiles = new Map(), sessionAttachDirs = new Map(), sessionAttachSpots = new Map(), attachPaths = new Map(), sessionModels = new Map(), sessionGoals = new Map();",
   "var imeKey = (e) => !!(e && (e.isComposing || e.keyCode === 229));",
   "var __ASKED = [], __ANSWER = null;",
   "var askText = async (opts) => { __ASKED.push(opts); return __ANSWER; };",
   "var __CONFIRMS = [], __CONFIRM = false;",
-  "var askConfirm = async (opts) => { __CONFIRMS.push(opts); return __CONFIRM; };",
+  "var __KEEP_FILES = false;",
+  "var filesRoot = '12345678', pvRoot = '12345678', pvCurrent = '任务_1031_周报/report.md', __PREVIEW_CLOSED = 0;",
+  "var closePreview = () => { __PREVIEW_CLOSED++; pvCurrent = null; };",
+  "var askConfirm = async (opts) => { __CONFIRMS.push(opts); if (__KEEP_FILES && opts.check) opts.check.onChange(false); return __CONFIRM; };",
   "var sessionQueues = new Map();",
   "var __WIN = [];",
   "window.open = (u, t, f) => { __WIN.push([u, t, f]); return null; };",
@@ -15088,13 +15093,36 @@ const HMENU_CHECKS = `
   key("Escape"); projectsLocked = false; renderHistory();
 
   // ⑩ 删除
+  reply["/api/session/b/delete-preview"] = { status: 200, body: { ok: true, token: "confirmed-b", folders: [{ rel: "任务_1031_周报", root: "/workspace", files: 2 }], retained: [] } };
   __CONFIRM = false; posts.length = 0;
   await tap("b"); key("d"); await flush();
   const C0 = __CONFIRMS[0] || {};
-  ok("删除先问一声，选了不删就什么都不动", __CONFIRMS.length === 1 && C0.title === "删掉这个任务？" && C0.danger === true && !!row("b") && posts.length === 0, JSON.stringify(__CONFIRMS));
+  ok("删除先问一声，选了不删就什么都不动", __CONFIRMS.length === 1 && C0.title === "删掉这个任务？" && C0.danger === true && !!row("b") && posts.every(x => x.startsWith("GET ")), JSON.stringify(__CONFIRMS));
+  ok("任务文件夹默认勾选清理，确认前能看到文件数", C0.check?.checked === true && C0.items[0].includes("2 个文件"));
+  // A server error must leave the row and cached history intact.
+  __CONFIRM = true;
+  reply["/api/session/b"] = { status: 409, body: { error: "文件夹仍被使用" } };
+  await deleteSessionRow("b");
+  ok("服务端拒绝删除时保留任务行和本地历史", !!row("b") && sessions.some(x => x.id === "b"));
+  delete reply["/api/session/b"];
+  __KEEP_FILES = true;
+  sessions.push({ id: "keep", title: "保留成果", project: "默认项目", lane: "office" });
+  reply["/api/session/keep/delete-preview"] = reply["/api/session/b/delete-preview"];
+  await deleteSessionRow("keep");
+  ok("取消勾选后删除请求明确传保留文件", posts.some(x => x.startsWith("DELETE /api/session/keep ") && x.includes('"trash_files":false')));
+  __KEEP_FILES = false;
+  reply["/api/session/b"] = { status: 200, body: { ok: true, moved: [{ name: "任务_1031_周报", root_key: "12345678" }] } };
   __CONFIRM = true;
   await tap("b"); key("d"); await flush();
-  ok("确认了才删：本地没了、告诉服务端", !row("b") && !sessions.some((x) => x.id === "b") && posts.includes("DELETE /api/session/b"), posts.join(" ／ "));
+  ok("确认了才删：本地没了、告诉服务端", !row("b") && !sessions.some((x) => x.id === "b") && posts.some(x => x.startsWith("DELETE /api/session/b ") && x.includes('"trash_files":true')), posts.join(" ／ "));
+  ok("已回收文件的旧预览同步关闭", __PREVIEW_CLOSED === 1 && pvCurrent === null);
+  const realDialog = __realAskConfirm({ title: "删掉这个任务？", check: { label: "同时清理此任务文件夹", checked: true, onChange: checked => { window.__trashChoice = checked; } }, ok: "删掉" });
+  const chk = document.querySelector(".ask-check input");
+  ok("真实确认框默认勾选，键盘焦点留在取消按钮", !!chk?.checked && document.activeElement?.classList.contains("ask-no"));
+  chk.click();
+  ok("取消勾选会传回保留文件的选择", window.__trashChoice === false);
+  document.querySelector(".ask-no").click();
+  ok("取消确认不会执行删除", await realDialog === false && !document.querySelector(".ask-mask"));
 
   // ⑪ 右键
   const comp = document.createElement("textarea"); document.body.appendChild(comp); comp.focus();

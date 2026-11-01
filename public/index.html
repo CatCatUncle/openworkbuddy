@@ -1527,7 +1527,9 @@
      那就成了比原生框更糟的一种「没有出路」 */
   .ask-box .ask-li { margin: 8px 0 0; padding: 8px 12px; list-style: none; max-height: 168px; overflow: auto; font-size: 13px; line-height: 1.8; color: var(--owb-text-2); background: var(--owb-bg-hover); border-radius: var(--radius-md); }
   .ask-box .ask-li li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .ask-box .ask-note { margin-top: 8px; }
+  .ask-box .ask-note { margin-top: 8px; max-height: 140px; overflow-y: auto; white-space: pre-line; overflow-wrap: anywhere; }
+  .ask-box .ask-check { display: flex; align-items: flex-start; gap: 8px; margin-top: 14px; font-size: 13px; line-height: 1.6; cursor: pointer; }
+  .ask-box .ask-check input { flex: 0 0 auto; margin: 3px 0 0; accent-color: var(--owb-brand-text); }
   .ask-box .ask-in { display: block; width: 100%; box-sizing: border-box; margin-top: 12px; height: var(--owb-ctl-h); padding: 0 10px; font-size: 14px; color: var(--owb-text); background: var(--owb-bg); border: 1px solid var(--owb-border); border-radius: var(--radius-md); outline: none; }
   .ask-box .ask-in:focus { border-color: var(--owb-brand-text); }
   .ask-box .ask-err { margin-top: 8px; font-size: 12px; line-height: 1.6; color: var(--owb-err-text); }

@@ -1698,18 +1698,54 @@ async function moveSessionRow(sid, project) {
   // 挪的只是归哪个项目，文件不跟着搬：之前产出的还在原来那个文件夹里
   toast(`已移到「${project}」，之前的文件还在原处`);
 }
+const histDeleting = new Set();
 async function deleteSessionRow(id) {
-  if (!(await askConfirm({ title: "删掉这个任务？", hint: "它的对话记录一起没，找不回来。", ok: "删掉", danger: true }))) return;
-  sessions = sessions.filter(s => s.id !== id);
-  saveSessions();
-  if (runningSessions.has(id)) { // 正在跑的任务跟着会话一起停，别留孤儿任务烧钱
-    fetch("/api/chat/stop", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: id }) }).catch(() => {});
-  }
-  sessionQueues.delete(id);
-  attnForget(id);
-  fetch("/api/session/" + encodeURIComponent(id), { method: "DELETE" }).catch(() => {});
-  if (sessionId === id) document.getElementById("new-task").click();
-  else renderHistory();
+  if (histDeleting.has(id)) return;
+  histDeleting.add(id);
+  const url = "/api/session/" + encodeURIComponent(id);
+  try {
+    const response = await fetch(url + "/delete-preview");
+    const preview = await response.json();
+    if (!response.ok || !preview.ok) throw Error(preview.error || "无法核对任务文件夹，请稍后重试");
+    if (preview.cli) throw Error("此任务正在终端运行，请先在终端停止，再删除");
+    if (preview.blocked) throw Error(preview.blocked);
+    const folders = preview.folders || [], retained = preview.retained || [];
+    let trashFiles = folders.length > 0;
+    const yes = await askConfirm({
+      title: "删掉这个任务？",
+      hint: (preview.running ? "会先停止任务并等待收尾。" : "") + "对话记录删除后无法恢复。",
+      items: folders.map(f => `${f.rel} · ${f.files}${f.more ? "+" : ""} 个文件（${f.root}）`),
+      check: folders.length ? { label: "同时清理此任务文件夹", checked: true, onChange: checked => { trashFiles = checked; } } : null,
+      note: [folders.length ? "勾选时，文件移入系统废纸篓；服务端运行时移入工作目录的 .trash/tasks 回收区。取消勾选可保留文件。" : "文件会保留在原位置。", ...retained.map(f => `${f.name}：${f.reason}`)].join("\n"),
+      ok: preview.running ? "停止并删除" : "删掉", danger: true,
+    });
+    if (!yes) return;
+    toast(preview.running ? "正在停止任务并清理…" : "正在删除任务…");
+    const result = await fetch(url, { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ trash_files: trashFiles, token: preview.token }) });
+    const data = await result.json();
+    if (!result.ok || !data.ok) throw Error(data.error || "删除未完成，请重试");
+    const currentRoot = typeof filesRoot !== "undefined" ? filesRoot : "";
+    const movedHere = (name, root) => (data.moved || []).some(f => f.root_key && f.root_key === (root || currentRoot) && (name === f.name || String(name || "").startsWith(f.name + "/")));
+    if (typeof pvCurrent !== "undefined" && pvCurrent && movedHere(pvCurrent, pvRoot)) closePreview(true, { now: true });
+    // The server has finished both file operations and final session saves.
+    // Until this point the row and local history must stay intact.
+    sessions = sessions.filter(s => s.id !== id);
+    saveSessions();
+    sessionQueues.delete(id);
+    attnForget(id);
+    for (const map of [sessionDirs, sessionRootFiles, sessionMadeFiles, sessionAttachDirs, sessionAttachSpots, attachPaths, sessionModels, sessionGoals]) map.delete(id);
+    if (typeof libOutCache !== "undefined") libOutCache = null;
+    if (typeof libState !== "undefined") {
+      if (libState.pick?.task === id || (libState.pick?.src === "ws" && movedHere(libState.pick.name))) libState.pick = null;
+      if (movedHere(libState.wsDir)) { libState.wsDir = ""; libState.wsOff = 0; }
+    }
+    if (sessionId === id) document.getElementById("new-task").click();
+    else renderHistory();
+    if (document.querySelector(".lib-page") && typeof renderLibPage === "function") renderLibPage();
+    if (typeof refreshFilesCache === "function") refreshFilesCache();
+    toast((data.moved || []).length ? "任务已删除，文件已移入回收区" : "任务已删除，文件保留在原位置");
+  } catch (e) { toast(e.message || "没连上服务端，任务已保留", "circle-x"); }
+  finally { histDeleting.delete(id); }
 }
 async function stopRowRun(sid) {
   if (!sid || histStopping.has(sid) || !runningSessions.has(sid)) return;

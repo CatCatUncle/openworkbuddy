@@ -88,6 +88,7 @@ function createShellBridge({ electron, getWin, pet, registerShortcuts, relaunch,
     // 用系统默认程序打开。原样交回 shell.openPath 的结果：成功是空串，失败是系统给的错误文字（不抛），
     // 服务端按这个约定判断成没成、把那句话转给用户
     "shell.openPath": async (a) => electron.shell.openPath(String(a && a.path)),
+    "shell.trashItem": async (a) => { await electron.shell.trashItem(String(a && a.path)); return true; },
     "clipboard.writeBuffer": async (a) => {
       const buf = toBuf(a && a.data);
       if (!buf) throw new Error("剪贴板数据是空的（clipboard.writeBuffer）");

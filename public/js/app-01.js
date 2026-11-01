@@ -301,10 +301,13 @@ function askConfirm(opts) {
       `<div class="ask-t">${esc(title)}</div>` +
       (o.hint ? `<div class="ask-h">${esc(o.hint)}</div>` : "") +
       ((o.items || []).length ? `<ul class="ask-li">${o.items.map((x) => `<li title="${esc(x)}">${esc(x)}</li>`).join("")}</ul>` : "") +
+      (o.check ? `<label class="ask-check"><input type="checkbox"${o.check.checked === false ? "" : " checked"}><span>${esc(o.check.label)}</span></label>` : "") +
       (o.note ? `<div class="ask-h ask-note">${esc(o.note)}</div>` : "") +
       `<div class="ask-ops"><button type="button" class="btn-plain ask-no">${esc(o.cancel || "算了")}</button>` +
       `<button type="button" class="btn-brand ask-ok${o.danger ? " is-danger" : ""}">${esc(o.ok || "确定")}</button></div></div>`;
     document.body.appendChild(wrap);
+    const check = wrap.querySelector(".ask-check input");
+    if (check) check.onchange = () => { if (o.check.onChange) o.check.onChange(check.checked); };
     function done(val) {
       if (askConfirm._close !== done) return;   // 已经收过了，别收第二遍
       askConfirm._close = null;

@@ -47,6 +47,31 @@ const { createSessionSharesRouter } = require("./src/server/routes/session-share
 const geoPlaces = require("./src/domains/geo/places"); // 行程卡查地点：设置页要它折算高德上限、存设置时解除当天停用
 const { createComposeJobs } = require("./src/domains/media/compose-jobs"); // 一键合成的任务队列：把镜头真的拼成成片
 const taskDirs = require("./src/util/task-dirs"); // 成果按对话分文件夹：哪些根下分、文件夹叫什么
+const taskDelete = require("./src/util/task-delete");
+const deletingTasks = new Set();
+const taskFileWrites = new Map();
+function taskFileWrite(req, res, next) {
+  let id;
+  try { id = String(req.body && req.body.session || (req.is("application/octet-stream") && uploadHeaders(req).session) || ""); }
+  catch (e) { return res.status(400).json({ error: e.message }); }
+  if (deletingTasks.has(id)) return res.status(409).json({ error: "正在删除此任务，请稍候" });
+  if (!id) return next();
+  taskFileWrites.set(id, (taskFileWrites.get(id) || 0) + 1);
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    const n = (taskFileWrites.get(id) || 1) - 1;
+    if (n) taskFileWrites.set(id, n); else taskFileWrites.delete(id);
+  };
+  // A disconnected upload can still be writing: the handler's promise, rather
+  // than the socket closing, releases the lease (see taskFileHandler).
+  res.locals.taskFileRelease = release;
+  next();
+}
+const taskFileHandler = fn => async (req, res) => {
+  try { await fn(req, res); } finally { if (res.locals.taskFileRelease) res.locals.taskFileRelease(); }
+};
 const prefs = require("./src/core/config/prefs"); // 按账号存的个人偏好：底层引擎 / 思考档 / 上次选的模型 / 宠物 / 快捷键
 const { previewData } = require("./src/domains/library/preview");
 const evolve = require("./src/agent/evolve");
@@ -754,15 +779,15 @@ function forgetSession(id) {
  * 用户点了删除，整段对话原样躺在 .bak 里。按文件名精确比对，别的会话一个字节都碰不到。
  * 目录从 SESS_DIR 推，不用 dataPath()：e2e / memory 两个测试把这一整段切出去单跑，注进去的就那几个依赖。
  */
-function removeSessionFiles(id) {
+function removeSessionFiles(id, strict = false) {
   const base = path.basename(sessFile(id));
   const safe = base.slice(0, -".json".length);
   // <pid>.<序号>.tmp 是后台存盘那条路的临时名（store.writeTextAtomicAsync）
   const tail = /^(?:bak|corrupt(?:-\d+)?|\d+(?:\.\d+)?\.tmp|bak\.\d+\.tmp)$/;
   const sweep = (dir, hit) => {
     let names = [];
-    try { names = fs.readdirSync(dir); } catch { return; }
-    for (const n of names) if (hit(n)) { try { fs.rmSync(path.join(dir, n), { force: true }); } catch {} }
+    try { names = fs.readdirSync(dir); } catch (e) { if (strict && e.code !== "ENOENT") throw e; return; }
+    for (const n of names) if (hit(n)) { try { fs.rmSync(path.join(dir, n), { force: true }); } catch (e) { if (strict) throw e; } }
   };
   sweep(SESS_DIR, (n) => n === base || (n.startsWith(base + ".") && tail.test(n.slice(base.length + 1))));
   sweep(path.join(path.dirname(SESS_DIR), "compact-archive"),
@@ -1500,6 +1525,10 @@ app.use(relay.createRouter({
 }));
 
 app.use(account.authGuard); // 其余 /api/* 与 /im/*（除外部回调）需要登录
+app.use("/api/session/:id", (req, res, next) => {
+  if (req.method !== "GET" && deletingTasks.has(req.params.id)) return res.status(409).json({ error: "正在删除此任务，请稍候" });
+  next();
+});
 
 // 租户工作目录 → 服务器级接口的闸 → 凭证脱敏。三段的说明都在 admin.js 里
 const tenantScopeMw = admin.tenantScope({ withWorkspace, withPolicy, getWorkspaceDir, readConfig: () => config, withLibraryBase, withLibraryDir, libraryRootOf: (u) => libraryRootOf(u) });
@@ -6502,7 +6531,7 @@ async function startPluginMcp(pluginName) {
 // - JSON + base64：老页面、脚本还在用，照收。这条受全局 express.json 60MB 的限制，大文件别走它
 // Only the desktop shell can supply source paths. The HTTP caller supplies a
 // one-use opaque grant or asks for a native picker, never an arbitrary path.
-app.post("/api/desktop/open-files", async (req, res) => {
+app.post("/api/desktop/open-files", taskFileWrite, taskFileHandler(async (req, res) => {
   const bridge = require("./src/platform/electron-bridge");
   if (bridge.mode() === "none" || !isPlatformOwner(req)) return res.status(403).json({ error: "请在本机桌面版打开文件" });
   try {
@@ -6547,8 +6576,8 @@ app.post("/api/desktop/open-files", async (req, res) => {
     });
     res.json({ ok: true, canceled: !sources.length, files, errors, root: workspaceKeyOf(importRoot) });
   } catch (error) { res.status(400).json({ error: error.message }); }
-});
-app.post("/api/upload", async (req, res) => {
+}));
+app.post("/api/upload", taskFileWrite, taskFileHandler(async (req, res) => {
   const raw = !!req.is("application/octet-stream");
   let tmp = "";
   try {
@@ -6603,7 +6632,7 @@ app.post("/api/upload", async (req, res) => {
     if (tmp) { try { fs.unlinkSync(tmp); } catch {} } // 收好了却没落成（权限、挑不出名字）：临时文件别留在用户目录里
     res.status(400).json({ error: e.message });
   }
-});
+}));
 /** 原始字节那条的元数据：前端拿 encodeURIComponent 编过。解不开的当没带 */
 function uploadHeaders(req) {
   const get = (k) => {
@@ -8282,6 +8311,7 @@ function taskBillingScope(req, res, next) {
 app.post("/api/chat", taskBillingScope, async (req, res) => {
   const { sessionId, message, mode, regen, lang, lane, shown, adopt_uploads } = req.body || {};
   if (!sessionId || !message) return res.status(400).json({ error: "缺少 sessionId 或 message" });
+  if (deletingTasks.has(sessionId)) return res.status(409).json({ error: "正在删除此任务，请稍候" });
   // shown：用户自己打的那句话。画布这类入口会在 message 前面拼一大段给模型看的操作说明，
   // 历史里、标题里、搜索里都该是人说的话，不是那段说明——模型那边照旧拿完整的 message
   let shownText = typeof shown === "string" && shown.trim() && shown !== message ? shown.trim().slice(0, 2000) : "";
@@ -9503,13 +9533,57 @@ app.post("/api/assist/model", (req, res) => {
   res.json({ ok: true, model: config.assist_model || null, engine });
 });
 
-// 删除会话（内存 + 磁盘一起删）
-app.delete("/api/session/:id", (req, res) => {
-  if (!guardSession(req, res)) return;
-  forgetSession(req.params.id);
-  removeSessionFiles(req.params.id);   // 正本 + .bak + 隔离件 + 压缩归档，一份不留
-  res.json({ ok: true });
+// Stop -> wait for final saves/tools -> revalidate folder ownership -> Trash ->
+// remove records. A failed request must leave the conversation visible.
+const taskDeletion = require("./src/server/task-delete").createTaskDeletion({
+  locks: deletingTasks,
+  lookup: id => sessions.has(id) || fs.existsSync(sessFile(id)) ? getSession(id) : null,
+  authorize: (req, s) => sessionAllowed(req.user, s),
+  snapshot: async (req, id, session) => {
+    const peers = await taskDelete.readPeers(SESS_DIR, sessions);
+    // IM records historically kept their folder in runDirs instead of session.dir.
+    for (const [sid, entry] of runDirs) if (!sid.startsWith("schedule:")) peers.push({ id: sid, root: entry.root, dir: entry.dir });
+    const own = runDirs.get(id);
+    const value = own && !session.dir ? { ...session, root: own.root, dir: own.dir } : session;
+    const busyPaths = [];
+    for (const [sid, r] of lastRuns) if (sid !== id && !r.finished && r.root) busyPaths.push(path.resolve(r.root, r.baseDir || ""));
+    for (const r of cliLive.list({ prune: false })) if (r.id !== id && r.live && r.cwd) busyPaths.push(r.cwd);
+    for (const [key, n] of runDirUse) if (n) { const [root, rel] = key.split("\0"); busyPaths.push(path.resolve(root, rel)); }
+    const fence = rootFence(req);
+    return { id, session: value, defaultRoot: dataPath("workspace"), peers, busyPaths,
+      protectedPaths: [APP_DIR, DATA_DIR, dataPath("data"), LIB_DIR, libBase(), libraryRootOf(req.user), ...allRoots()],
+      canAccess: root => !fence || fence(root) };
+  },
+  running: id => !!taskFileWrites.get(id) || activeRuns.has(id) || !!(lastRuns.get(id) && !lastRuns.get(id).finished),
+  cliRunning: id => !!(cliLive.get(id) || {}).live,
+  blocked: id => sessHold.has(id) || require("./src/agent/tools").runHeld(id) ? "此任务正由自动化或消息通道执行，请等待执行结束后再删除" : "",
+  stop: id => { const r = activeRuns.get(id) || lastRuns.get(id); if (r && !r.finished) r.ctrl.abort(); },
+  settle: async id => {
+    const result = await require("./src/agent/tools").releaseRun(id, { browser: false });
+    if (result.kept.length) throw Error("此任务还有保留运行的后台命令，请先停止这些命令，再删除任务");
+    await flushSessionSave(id);
+  },
+  remove: (id, s) => {
+    try { removeSessionFiles(id, true); } catch (e) { saveSession(id, s, { keepTime: true }); throw e; }
+    forgetSession(id);
+  },
+  invalidate: (id, moved) => {
+    for (const entry of moved) entry.root_key = workspaceKeyOf(entry.root);
+    sessMetaCache.delete(id + ".json"); sessFilesTodo.delete(id + ".json"); sessIndexDirty = true; saveSessIndex();
+    wsBrowse.walkMemo.clear();
+    if (runDirs.delete(id)) saveRunDirs();
+    cliLive.drop(id);
+    lastRuns.delete(id);
+  },
+  trashItem: (() => {
+    const bridge = require("./src/platform/electron-bridge");
+    if (bridge.isRemote()) return p => bridge.call("shell.trashItem", { path: p }, { timeoutMs: 120000 });
+    if (bridge.mode() === "inproc") return p => require("electron").shell.trashItem(p);
+    return null;
+  })(),
 });
+app.get("/api/session/:id/delete-preview", taskDeletion.preview);
+app.delete("/api/session/:id", taskDeletion.deleteTask);
 
 // 停止正在运行的任务：中断当前模型调用，agent 循环在下一个检查点收尾
 app.post("/api/chat/stop", (req, res) => {

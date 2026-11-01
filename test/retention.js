@@ -149,7 +149,7 @@ function buildSess(body = SLICE) {
     S.removeSessionFiles(id);
     ok(mine.every((p) => !exists(p)), "这条会话名下的 8 份全删了", mine.filter(exists).map((p) => path.basename(p)));
     ok(keep.every(exists), "★反向对照★ 前缀相同的别的会话、老归档、用户起名的文件全在", keep.filter((p) => !exists(p)).map((p) => path.basename(p)));
-    ok(/forgetSession\(req\.params\.id\);\s*removeSessionFiles\(req\.params\.id\);/.test(SRC),
+    ok(SRC.includes('app.delete("/api/session/:id", taskDeletion.deleteTask)') && /removeSessionFiles\(id, true\)/.test(SRC),
       "删除接口真调了 removeSessionFiles（不是定义了没人用）");
     ok(/forgetSession\(id\);\s*removeSessionFiles\(id\);/.test(SRC), "定时任务清残留那条路也调了");
   }

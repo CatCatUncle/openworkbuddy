@@ -70,7 +70,8 @@ ok(got === "并发_2.png" && read("并发.png") === "先到的那份" && read("�
 
 console.log("\n【5】接线：上传接口用它挑名字，前端跟着改名");
 const server = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
-const up = (server.match(/app\.post\("\/api\/upload"[\s\S]*?\n\}\);/) || [""])[0];
+const uploadStart = server.indexOf('app.post("/api/upload"');
+const up = server.slice(uploadStart, server.indexOf("/** 原始字节那条的元数据", uploadStart));
 ok(/uploadName\.writeUploadFresh\(/.test(up) && !/fs\.writeFileSync\(p,/.test(up), "/api/upload 经 writeUploadFresh 落盘，不再拿原名直接写");
 ok(/renamedFrom/.test(up) && /name: saved/.test(up), "改了名的回执带新名字和原名");
 const chat = fs.readFileSync(path.join(ROOT, "public/js/app-02.js"), "utf8");
@@ -199,7 +200,8 @@ console.log("\n【7】大文件不过内存：请求体流进同目录的临时�
   const libCode = server.match(/app\.post\("\/api\/library\/upload"[\s\S]*?\n\}\);/)[0];
   app.use(express.json());
   const safePath = name => { const p = path.resolve(routeDir, name); if (!p.startsWith(routeDir + path.sep)) throw Error("路径越界"); return p; };
-  vm.runInNewContext(headerCode + "\n" + up + "\n" + libCode, {
+  const leaseCode = server.slice(server.indexOf("const deletingTasks ="), server.indexOf('const prefs = require('));
+  const leases = vm.runInNewContext(leaseCode + "\n" + headerCode + "\n" + up + "\n" + libCode + "\n({ deletingTasks, taskFileWrites })", {
     app, fs, path, Buffer,
     // Exercise Windows filename policy on every host, plus real NTFS in Windows CI.
     uploadName: { ...uploads, uploadBaseName: name => uploads.uploadBaseName(name, "win32") },
@@ -210,6 +212,10 @@ console.log("\n【7】大文件不过内存：请求体流进同目录的临时�
   try {
     const zip = new (require("jszip"))(); zip.file("OFD.xml", "<OFD>公文附件</OFD>");
     const bytes = await zip.generateAsync({ type: "nodebuffer" });
+    leases.deletingTasks.add("locked");
+    const rejected = await fetch(`http://127.0.0.1:${listener.address().port}/api/upload`, { method: "POST", headers: { "Content-Type": "application/octet-stream", "X-Upload-Name": "locked.ofd", "X-Upload-Session": "locked" }, body: bytes });
+    ok(rejected.status === 409 && !fs.existsSync(path.join(routeDir, "locked.ofd")), "正在删除的任务拒绝新附件，不会重新创建文件夹");
+    leases.deletingTasks.delete("locked");
     const post = (route, name, body, json = false, replace = "") => fetch(`http://127.0.0.1:${listener.address().port}${route}`, {
       method: "POST", headers: json ? { "Content-Type": "application/json" } : { "Content-Type": "application/octet-stream", "X-Upload-Name": encodeURIComponent(name), "X-Upload-Replace": encodeURIComponent(replace) },
       body: json ? JSON.stringify({ name, data_b64: body.toString("base64") }) : body,
@@ -232,6 +238,7 @@ console.log("\n【7】大文件不过内存：请求体流进同目录的临时�
       ok(blank.status === 400 && fs.readFileSync(path.join(routeDir, "资料.ofd")).equals(bytes), "资料库空 OFD 不覆盖原有附件");
     }
     ok(!fs.readdirSync(routeDir).some(n => !/\.ofd$/i.test(n)), "目录里只有完整 OFD，没有无后缀空文件或残余占位文件", fs.readdirSync(routeDir));
+    ok(leases.taskFileWrites.size === 0, "上传成功和报错后都释放写入占用");
   } finally { await new Promise(resolve => listener.close(resolve)); }
   finish();
 })().catch((e) => { fail++; console.log("  ✗ 【7】抛了：" + (e && e.stack)); finish(); });
