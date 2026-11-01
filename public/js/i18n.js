@@ -1046,6 +1046,7 @@
       "删掉这个任务？": "Delete this task?",
       "同时清理此任务文件夹": "Also clean up this task's folder",
       "对话记录删除后无法恢复。": "The conversation cannot be restored after deletion.",
+      "会先停止任务并等待收尾。": "The task will stop and finish saving first.",
       "会先停止任务并等待收尾。对话记录删除后无法恢复。": "The task will stop and finish saving first. The conversation cannot be restored after deletion.",
       "勾选时，文件移入系统废纸篓；服务端运行时移入工作目录的 .trash/tasks 回收区。取消勾选可保留文件。": "Selected folders go to the system Trash or Recycle Bin, or .trash/tasks in server mode. Uncheck to keep the files in place.",
       "文件会保留在原位置。": "Files will stay in their original location.",

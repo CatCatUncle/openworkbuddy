@@ -270,6 +270,10 @@ Entry points are `server.js`, `cli.js` and `src/im/`; the Agent is in `src/agent
 
 ## What's new
 
+- **Nov 1** v0.18.2: deleting a task selects its dedicated folder for cleanup by default. Uncheck to keep files. Cleanup moves files to the trash and preserves project roots and shared folders.
+
+- **Nov 1** Deletion waits for task shutdown and final saves. Failures keep the conversation and show the reason; success refreshes library entries and stale previews, preventing final saves from recreating deleted tasks.
+
 - **Oct 30** Office previews add document pages, zoom and expansion. DOC/WPS and XLS/ET have built-in compatibility readers. Open With remains optional and does not change defaults. See the [format capability matrix](docs/文件预览与转换.md).
 
 - **Oct 30** Export Office, PDF and OFD to Markdown. OFD uploads retain extensions and bytes. Legacy PPT uses live-slide text; scanned pages and truncation are reported. CEB requires an authorized engine.

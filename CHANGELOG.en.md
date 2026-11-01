@@ -9,6 +9,9 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 ## 2026
 
+- **Nov 1** v0.18.2: task deletion selects its dedicated folder for cleanup by default, with an option to keep files. Desktop builds use the system Trash or Recycle Bin; server builds use `.trash/tasks/` under the original workspace with a restore manifest. Project roots, shared folders and scheduled-task output folders are retained. Historical project folders are checked against both disk and in-memory ownership.
+
+- **Nov 1** Deletion waits for shutdown, uploads and final saves, then validates the confirmed folder identity. Symlinks, replaced folders and expired confirmations are rejected. Failures retain the conversation and report any partial trash moves. Success removes records, backups and archives, refreshes library entries and stale previews, and prevents final saves from recreating deleted tasks.
 - **Oct 30** Office previews add document pages, zoom and expansion. DOC/WPS and XLS/ET have built-in compatibility readers. Open With remains optional and does not change defaults. See the [format capability matrix](docs/文件预览与转换.md).
 
 - **Oct 30** Export Office, PDF and OFD to Markdown. OFD uploads retain extensions and bytes. Legacy PPT uses live-slide text; scanned pages and truncation are reported. CEB requires an authorized engine.

@@ -17076,7 +17076,8 @@ function testSessionCacheReload() {
   // 从前这里钉的是「delete 路由里挨着写两行 delete」。现在这些表不止两张（缓存、mtime 印记、
   // 上次存盘、上次使用、谁攥着），挨个手写迟早漏一张——漏哪张哪张就变成新的只进不出。
   // 所以改成钉两件事：路由只准走 forgetSession；forgetSession 必须把这一族表全清干净。
-  assert.ok(/forgetSession\(req\.params\.id\)/.test(src),
+  const deletionHook = src.slice(src.indexOf("const taskDeletion ="), src.indexOf('app.get("/api/session/:id/delete-preview"'));
+  assert.ok(src.includes('app.delete("/api/session/:id", taskDeletion.deleteTask)') && /remove: \(id, s\) => \{[\s\S]*?forgetSession\(id\)/.test(deletionHook),
     "删会话没走 forgetSession：各处手写 delete，漏一张表那张就成了新的只进不出");
   const forget = (src.match(/function forgetSession\(id\) \{[\s\S]*?\n\}/) || [""])[0];
   assert.ok(forget, "找不到 forgetSession（改名了？）");
