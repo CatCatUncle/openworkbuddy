@@ -2479,6 +2479,7 @@ const SEARCH_VENDORS = {
   serper: ["Serper", "",         "海外", "拿 Google 的结果，中文收录一般"],
   jina:   ["Jina",   "jina_...", "海外", "结果带网页正文"],
   brave:  ["Brave",  "BSA...",   "海外", "独立索引，要绑卡"],
+  keenable: ["Keenable", "可留空", "海外", "选它之后不填 Key 也能搜，填 Key 限流更高"],
   custom: ["自定义", "可留空",   "自建", "自己填地址：POST 一个 JSON、回一个结果数组就能接"],
 };
 const searchKeyField = (id) => id === "custom" ? "custom_key" : id + "_key";

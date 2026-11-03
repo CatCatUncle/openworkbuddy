@@ -2296,6 +2296,7 @@ app.get("/api/settings", (req, res) => {
       zhipu_key: (config.search || {}).zhipu_key || "",
       qiniu_key: (config.search || {}).qiniu_key || "",
       serper_key: (config.search || {}).serper_key || "",
+      keenable_key: (config.search || {}).keenable_key || "",
       custom_key: (config.search || {}).custom_key || "",
       custom_url: (config.search || {}).custom_url || "",
       custom_query_field: (config.search || {}).custom_query_field || "",
@@ -2660,7 +2661,7 @@ app.post("/api/settings", (req, res) => {
       // 选了一家这个进程还不认的服务商（程序更新了但没重开，内存里还是老名单），
       // provider 那一句先 throw，整个保存被回滚——人刚一个一个敲进去的七八把 Key 一起没了，
       // 而界面只说了句「provider 只认这几家」，谁也想不到自己的 Key 被顺手丢了。
-      for (const k of ["jina_key", "tavily_key", "brave_key", "bocha_key", "zhipu_key", "qiniu_key", "serper_key", "custom_key", "custom_url", "custom_query_field"]) {
+      for (const k of ["jina_key", "tavily_key", "brave_key", "bocha_key", "zhipu_key", "qiniu_key", "serper_key", "keenable_key", "custom_key", "custom_url", "custom_query_field"]) {
         if (b.search[k] !== undefined) config.search[k] = String(b.search[k]).trim();
       }
       if (b.search.provider !== undefined) {

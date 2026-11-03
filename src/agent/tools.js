@@ -3713,6 +3713,22 @@ async function serperSearch(key, query, n) {
     { "X-API-KEY": key }, { q: query, num: n }), n);
 }
 
+/**
+ * Keenable。没 Key 也能搜（公共端点 /v1/search/public，限流低一些）；填了 Key 走 /v1/search。
+ * 没 Key 时只有在设置里明确选了它才会用（见 searchProviderReady），不会悄悄插进接力链。
+ */
+async function keenableSearch(key, query, n) {
+  const url = key ? "https://api.keenable.ai/v1/search" : "https://api.keenable.ai/v1/search/public";
+  const headers = { "X-Keenable-Title": "OpenWorkBuddy" };
+  if (key) headers["X-API-Key"] = key;
+  const j = await postSearch("Keenable", url, headers, { query, max_results: n });
+  return (Array.isArray(j.results) ? j.results : []).slice(0, n).map((r) => ({
+    title: r.title || "",
+    url: r.url || "",
+    desc: r.description || String(r.snippet || "").slice(0, 300),
+  })).filter((r) => r.url);
+}
+
 // 自定义：上面没列到的那些（阿里云 IQS、秘塔、火山、自建 SearXNG…）不用等我加代码。
 // 只要对方是「POST 一个 JSON、回一个结果数组」，在设置里填个地址就能接上，
 // 字段名交给上面那套去认。请求体里问题字段叫什么也能改（默认 query）。
@@ -3730,6 +3746,7 @@ async function customSearch(key, query, n, cfg) {
 const SEARCH_PROVIDERS = {
   bocha: bochaSearch, zhipu: zhipuSearch, qiniu: qiniuSearch,
   tavily: tavilySearch, serper: serperSearch, jina: jinaSearch, brave: braveSearch,
+  keenable: keenableSearch,
   custom: customSearch,
 };
 
@@ -3742,6 +3759,7 @@ function searchProviderKey(cfg, provider) {
   if (provider === "zhipu") return cfg.zhipu_key || process.env.ZHIPU_API_KEY || "";
   if (provider === "qiniu") return cfg.qiniu_key || process.env.QINIU_API_KEY || "";
   if (provider === "serper") return cfg.serper_key || process.env.SERPER_API_KEY || "";
+  if (provider === "keenable") return cfg.keenable_key || process.env.KEENABLE_API_KEY || "";
   if (provider === "custom") return cfg.custom_key || process.env.SEARCH_CUSTOM_KEY || "";
   return "";
 }
@@ -3750,6 +3768,8 @@ function searchProviderKey(cfg, provider) {
 // 有些自建接口本来就不要鉴权。只看 key 的话，填了地址的自定义会被整条跳过
 function searchProviderReady(cfg, provider, key) {
   if (provider === "custom") return !!((cfg || {}).custom_url || process.env.SEARCH_CUSTOM_URL);
+  // Keenable 不要 Key 也能用，但只在明确选了它时才走免 Key 档
+  if (provider === "keenable") return !!key || ((cfg || {}).provider || "").toLowerCase() === "keenable";
   return !!key;
 }
 

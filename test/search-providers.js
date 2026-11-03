@@ -144,6 +144,16 @@ const VENDORS = {
     ] } },
     查询串: "q",
   },
+  keenable: {
+    名: "Keenable",
+    host: "api.keenable.ai", path: "/v1/search", method: "POST", keyHeader: "x-api-key",
+    body: { query: "OpenAI", results: [
+      { title: "Keenable 的标题", url: "https://h.example/1", description: "Keenable 的摘要", snippet: "长正文" },
+      { title: "第二条", url: "https://h.example/2", description: "", snippet: "第二条正文" },
+    ] },
+    条数字段: "max_results",
+    问题字段: "query",
+  },
 };
 
 console.log("\n【一】八家各自：请求发得对不对、回来的形状认不认得出来");
@@ -222,6 +232,13 @@ console.log("\n【一】八家各自：请求发得对不对、回来的形状�
   console.log("\n【六】哪家算「配好了」");
   ok(!searchProviderReady({}, "bocha", ""), "没填 Key 的不算配好");
   ok(searchProviderReady({}, "custom", "") === false, "自定义：没填地址也不算配好");
+  ok(searchProviderReady({}, "keenable", "") === false, "Keenable：没 Key 又没明确选它，不进接力链");
+  ok(searchProviderReady({ provider: "keenable" }, "keenable", "") === true, "Keenable：明确选了它，不填 Key 也算配好（走公共端点）");
+  sent = [];
+  stub(200, { results: [{ title: "K", url: "https://h.example/1", description: "d" }] });
+  await SEARCH_PROVIDERS.keenable("", "OpenAI", 2, {});
+  ok(lastReq().url === "https://api.keenable.ai/v1/search/public" && !lastReq().headers["x-api-key"] && lastReq().headers["x-keenable-title"] === "OpenWorkBuddy",
+    "Keenable：没 Key 时打公共端点、不带 Key 头、带 X-Keenable-Title", lastReq());
   ok(searchProviderReady({ custom_url: "https://x.example/s" }, "custom", "") === true,
     "自定义：填了地址就算配好（有些自建接口本来就不要鉴权）");
   ok(searchProviderKey({ api_key: "老字段" }, "jina") === "老字段", "jina 认得老的 api_key 字段（升级上来的人不用重填）");

@@ -203,6 +203,7 @@ const BUILTIN_UNIT = {
     "zhipu":      { price: 0.03, note: "智谱 Web Search，按公开档位估，未逐条核过官网" },
     "qiniu":      { price: 0.02, note: "七牛云按 Token 计，这里按一次搜索粗估，未核" },
     "serper":     { price: $(0.002), note: "Serper 约 $2 / 1000 次，未逐条核过官网" },
+    "keenable":   { price: 0, note: "免 Key 公共档不收费；填了 Key 的按 Keenable 官网报价算，这里未核" },
     "custom":     { price: 0, note: "自建/自定义接口，按你自己的合同算，这里不猜" },
     "tavily":     { price: $(0.008) },                                  // $0.008 / 次
     "brave":      { price: $(0.005) },                                  // $5 / 1000 次

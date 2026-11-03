@@ -640,6 +640,7 @@ const KEY_SOURCES = {
   "serper": { url: "https://serper.dev/api-key", name: "Serper" },
   "jina": { url: "https://jina.ai/api-dashboard/", name: "Jina" },
   "brave": { url: "https://api-dashboard.search.brave.com/app/keys", name: "Brave" },
+  "keenable": { url: "https://keenable.ai", name: "Keenable" },
   // 地图（行程卡查地点）：高德要的是「Web服务」那种 Key，控制台建应用时选错平台会一直报 Key 不对
   "amap": { url: "https://console.amap.com/dev/key/app", name: "高德开放平台" },
   // IM：按通道 key
@@ -675,7 +676,7 @@ const ONB_TIPS = {
 // 不然新用户第一次搜索就是一次超时，而他还以为是自己装错了
 const ONB_SEARCH_NAME = {
   bocha: "博查", zhipu: "智谱", qiniu: "七牛云",
-  tavily: "Tavily", serper: "Serper", jina: "Jina", brave: "Brave Search", custom: "自定义接口",
+  tavily: "Tavily", serper: "Serper", jina: "Jina", brave: "Brave Search", keenable: "Keenable", custom: "自定义接口",
 };
 const ONB_SEARCH = {
   bocha: ["sk-...", "推荐。国内服务商，专做给大模型用的搜索，中文结果好，有免费额度。"],
@@ -685,6 +686,7 @@ const ONB_SEARCH = {
   serper: ["...", "海外，拿 Google 的结果，中文收录一般。"],
   jina: ["jina_...", "海外，注册送免费额度，结果带网页正文。"],
   brave: ["BSA...", "海外，独立索引、隐私友好；有免费档但要绑卡。"],
+  keenable: ["可留空", "海外，选它之后不填 Key 也能搜（限流低）；填 Key 限流更高。"],
   // 设置里一直有这一家，向导里以前没有：用阿里云 IQS、秘塔、自建 SearXNG 的人得先跳过、再去设置里找
   custom: ["可留空", "自己填地址：POST 一个 JSON、回一个结果数组就能接。"],
 };
