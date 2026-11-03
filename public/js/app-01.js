@@ -4120,19 +4120,51 @@ function attachOfficeReadingControls(host) {
   const reader = document.createElement("div"); reader.className = "office-reader";
   reader.innerHTML = '<div class="office-reader-tools" role="group" aria-label="文档缩放"><span class="office-zoom-value">100%</span><button type="button" data-office-zoom="less" aria-label="缩小">' + ic("minus") + '</button><button type="button" data-office-zoom="fit">适合宽度</button><button type="button" data-office-zoom="more" aria-label="放大">' + ic("plus") + '</button></div><div class="office-reader-viewport"></div>';
   doc.replaceWith(reader); const viewport = reader.lastElementChild; viewport.append(doc);
-  let zoom = 1, naturalWidth = 0;
-  reader.querySelectorAll(".office-reader-tools button").forEach(button => { button.onclick = () => {
-    const action = button.dataset.officeZoom;
-    if (!naturalWidth) naturalWidth = Math.max(viewport.clientWidth, doc.scrollWidth);
-    zoom = action === "fit" ? Math.min(1, viewport.clientWidth / naturalWidth) : Math.max(.2, Math.min(2.5, zoom + (action === "more" ? .1 : -.1)));
+  if (host._officeCleanup) host._officeCleanup();
+  let zoom = 1, naturalWidth = 0, fit = true, frame = 0, closed = false, lastWidth = -1;
+  const apply = () => {
+    frame = 0;
+    if (closed || !reader.isConnected) return;
+    const width = viewport.clientWidth;
+    if (!width) return; // 隐藏面板先不量，ResizeObserver 会在真正显示时补算。
+    lastWidth = width;
+    if (fit || !naturalWidth) {
+      doc.style.zoom = "1"; doc.style.width = "";
+      // 表格自己的横向滚动容器会掩盖真实宽度，需量当前可见工作表。
+      const tables = [...doc.querySelectorAll(".ov-scroll table")].filter(t => t.getClientRects().length);
+      naturalWidth = Math.max(width, doc.scrollWidth, ...tables.map(t => t.scrollWidth));
+      if (fit) zoom = Math.min(1, width / naturalWidth);
+    }
     doc.style.width = naturalWidth + "px"; doc.style.zoom = String(zoom);
     reader.querySelector(".office-zoom-value").textContent = Math.round(zoom * 100) + "%";
+  };
+  const schedule = () => { if (!closed && !frame) frame = requestAnimationFrame(apply); };
+  const ro = new ResizeObserver(() => {
+    if (!reader.isConnected) return cleanup();
+    if (viewport.clientWidth !== lastWidth) schedule();
+  });
+  const mo = new MutationObserver(() => { if (!reader.isConnected) cleanup(); else schedule(); });
+  const cleanup = host._officeCleanup = () => {
+    closed = true; if (frame) cancelAnimationFrame(frame);
+    ro.disconnect(); mo.disconnect(); doc.removeEventListener("load", schedule, true);
+    if (host._officeCleanup === cleanup) host._officeCleanup = null;
+  };
+  ro.observe(viewport); mo.observe(host, { childList: true }); mo.observe(doc, { childList: true, subtree: true });
+  doc.addEventListener("load", schedule, true);
+  document.fonts?.ready.then(schedule);
+  reader.querySelectorAll(".office-reader-tools button").forEach(button => { button.onclick = () => {
+    const action = button.dataset.officeZoom;
+    fit = action === "fit";
+    if (!fit) zoom = Math.max(.2, Math.min(2.5, zoom + (action === "more" ? .1 : -.1)));
+    apply();
   }; });
+  schedule();
 }
 const sheetDocuments = new Map();
 function sheetLimitNote(sh) { return sh.truncated ? `<div class="ov-note">共 ${sh.totalRows} 行 × ${sh.totalCols} 列，只显示了前 ${sh.rows.length} 行。</div>` : ""; }
 function releaseSheetDocuments(host) {
   if (!host) return;
+  if (host._officeCleanup) host._officeCleanup();
   host.querySelectorAll("[data-sheet-document]").forEach(node => sheetDocuments.delete(node.dataset.sheetDocument));
 }
 let sheetDocumentSeq = 0;
@@ -4895,7 +4927,8 @@ function fitPreviewFrame(host, opts = {}) {
   if (!fr) return;
   // 页面加载完多久还没报尺寸就算报不上来。报尺寸的脚本在 load 时一定会报一次，1.5 秒是给慢机器留的余量
   const WAIT_MS = 1500;
-  let mode = opts.fill ? "fill" : "fit";
+  let automatic = !!opts.auto;
+  let mode = automatic || opts.fill ? "fill" : "fit";
   let real = false; // fit 模式下：false = 适应宽度，true = 实际大小
   let last = null;  // 上一次报上来的 {w,h}，切换缩放比时直接复用，不用重新量
   let lastReportAt = 0;
@@ -4979,7 +5012,18 @@ function fitPreviewFrame(host, opts = {}) {
     const w = Number(e.data.w) || 0;
     const h = Number(e.data.h) || 0;
     if (mode === "fill") {
-      if (w > 0 && h > 0) { last = { w, h }; paintZoom(w, 1); }
+      if (v && Math.abs(v - fr.clientWidth) > 1) return; // 忽略侧栏展开/收起前的旧视口报数。
+      if (w > 0 && h > 0) {
+        last = { w, h };
+        // 响应式网页维持完整视口；固定宽卡片/报表明显溢出时，首次打开即缩到可用宽度。
+        // 留出边距容差，避免 body 默认边距 + 100vw 的网页触发反复缩放。
+        const avail = availOf();
+        if (automatic && avail > 0 && w > avail + Math.max(24, avail * .03)) {
+          mode = "fit";
+          reset();
+          layout(w, h);
+        } else paintZoom(w, 1);
+      }
       return;
     }
     const cur = parseFloat(fr.style.width) || 0;
@@ -4998,6 +5042,7 @@ function fitPreviewFrame(host, opts = {}) {
   window.addEventListener("message", onMsg, { signal: ac.signal });
 
   if (zoomBtn) zoomBtn.onclick = () => {
+    automatic = false; // 用户主动选择实际大小/完整视口后，不再被自动适配抢回。
     if (mode === "fill") {
       if (!last) return;
       mode = "fit";
@@ -5010,7 +5055,10 @@ function fitPreviewFrame(host, opts = {}) {
   fr.addEventListener("load", () => {
     // 第一次 load 之前宽度已经是归位的，不用再动（动了就是白闪一下）。
     // 之后的 load 是框里点链接换了一页：新页面得按可用宽度重新排、重新报
-    if (loads++ && mode === "fit") reset();
+    if (loads++) {
+      if (automatic) { last = null; fillPanel(); }
+      else if (mode === "fit") reset();
+    }
     const at = Date.now();
     // 报尺寸的脚本在 load 前后各报一次；load 之前一小会儿报过的也算这一页的
     setTimeout(() => { if (mode === "fit" && fr.isConnected && lastReportAt < at - 800) fallback(); }, WAIT_MS);
@@ -5021,10 +5069,16 @@ function fitPreviewFrame(host, opts = {}) {
       if (!fr.isConnected) return ac.abort();
       if (mode === "fit") {
         if (fell) fallback();
-        else if (availOf() !== laidAt) reset();
+        else if (availOf() !== laidAt) {
+          const previousWidth = fr.clientWidth;
+          reset();
+          // 可用宽度刚好等于 iframe 原宽时不会触发 resize 消息，仍须恢复真实占位高度。
+          if (last && Math.abs(previousWidth - availOf()) <= 1) layout(last.w, last.h);
+        }
       }
     });
     ro.observe(host);
+    ro.observe(wrap);
     ac.signal.addEventListener("abort", () => ro.disconnect(), { once: true });
   }
   if (mode === "fill") fillPanel(); else reset();
@@ -5107,10 +5161,9 @@ async function previewFile(name, root, opts) {
   if (kind === "pdf") {
     body.innerHTML = `<iframe class="pv-pdf" src="${url}" title="${esc(name)}"></iframe>`;
   } else if (kind === "iframe") {
-    // HTML 是网页，不是静态长图：给它完整面板视口，让 100vh、画布和工具栏按可用高度布局。
-    // 长文章仍可在 iframe 内滚动；需要缩小整页时再用右上角按钮切换。
+    // 响应式网页使用完整视口，固定宽内容收到尺寸后自动缩放，无需先点适配。
     body.innerHTML = `<div class="pv-fit pv-live"><iframe src="${url}&fit=1" sandbox="allow-scripts allow-popups" title="${esc(name)}"></iframe><button type="button" class="pv-zoom" hidden></button></div>`;
-    fitPreviewFrame(body, { fill: true });
+    fitPreviewFrame(body, { auto: true });
   } else if (kind === "svg") {
     // SVG 也走 iframe：mermaid 老文件的文字在 <foreignObject> 里，<img> 按安全静态模式渲染会丢字。
     // pv-fit-mid 只给 SVG：图装得下就摆正中间，装不下（长流程图）自动退回贴顶接着滚。

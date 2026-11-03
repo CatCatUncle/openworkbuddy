@@ -349,7 +349,7 @@ app.whenReady().then(async () => {
   });
   const win = new BrowserWindow({
     show: false, width: 1440, height: 900, backgroundColor: "#ffffff",
-    webPreferences: { contextIsolation: false, nodeIntegration: false, plugins: true, partition: part },
+    webPreferences: { contextIsolation: false, nodeIntegration: false, plugins: true, partition: part, backgroundThrottling: false },
   });
   await win.loadURL(`${ORIGIN}/index.html`);
   await new Promise((r) => setTimeout(r, 900));
@@ -441,6 +441,36 @@ app.whenReady().then(async () => {
   for (const [n, what] of [["明细.csv", "CSV"], ["方案.docx", "Word"], ["台账.xlsx", "Excel"], ["汇报.pptx", "PPT"], ["包.zip", "压缩包"]]) {
     const r = await at(n);
     ok(r.w / r.panelW >= 0.98, `${what} 铺满面板宽度`, Math.round(r.w / r.panelW * 100) + "%");
+  }
+
+  console.log("\n— Office 首次适配、隐藏后显示与手动缩放 —");
+  {
+    const state = await win.webContents.executeJavaScript(`(async () => {
+      const host = document.createElement("div"); host.id = "office-auto-test";
+      host.style.cssText = "width:340px;height:450px;display:none";
+      host.innerHTML = '<div class="ov-doc"><div class="ov-scroll"><table style="width:1600px"><tr><td>宽表格</td></tr></table></div></div>';
+      const body = document.getElementById("pv-body"); releaseSheetDocuments(body); body.replaceChildren(host); attachOfficeReadingControls(host);
+      const wait = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 0)))));
+      await wait(); host.style.display = "block"; await wait();
+      const doc = host.querySelector(".ov-doc"), viewport = host.querySelector(".office-reader-viewport");
+      const first = { zoom: Number(doc.style.zoom), width: doc.getBoundingClientRect().width, available: viewport.clientWidth };
+      host.style.width = "220px"; await wait(); const shrunk = Number(doc.style.zoom);
+      host.style.width = "300px"; await wait(); const expanded = Number(doc.style.zoom);
+      host.querySelector('[data-office-zoom="more"]').click(); const manual = Number(doc.style.zoom);
+      host.style.width = "260px"; await wait(); const kept = Number(doc.style.zoom);
+      host.querySelector('[data-office-zoom="fit"]').click(); const fitted = Number(doc.style.zoom);
+      host.querySelector("table").style.width = "2400px";
+      host.querySelector("table").append(document.createElement("caption")); await wait();
+      const late = Number(doc.style.zoom);
+      const cleanup = host._officeCleanup; releaseSheetDocuments(host);
+      const released = !host._officeCleanup; host.remove();
+      return {first,shrunk,expanded,manual,kept,fitted,late,released,cleanup:typeof cleanup};
+    })()`);
+    ok(state.first.zoom > 0 && state.first.zoom < 1 && state.first.width <= state.first.available + 1, "隐藏面板真正显示后自动适配宽表，不用点按钮", state.first);
+    ok(state.shrunk < state.first.zoom && state.expanded > state.shrunk, "预览栏变窄、变宽均自动重算比例", state);
+    ok(state.manual > state.expanded && state.kept === state.manual, "手动放大后改窗口宽度保留所选比例", state);
+    ok(state.fitted < state.kept && state.late < state.fitted, "重新适配及后到表格内容都能重新测量", state);
+    ok(state.released && state.cleanup === "function", "切换或关闭预览时释放尺寸与内容监听", state);
   }
 
   console.log("\n— Word 预览：序号真数出来、链接只认安全协议 —");
@@ -538,20 +568,25 @@ app.whenReady().then(async () => {
     const fromFrame = r ? r.fits.filter((f) => f.fromFrame) : [];
     const lastFit = fromFrame[fromFrame.length - 1];
     ok(lastFit && lastFit.w === 1200 && lastFit.h === 1600, "★页面自己用 postMessage 报上来 1200×1600★", r && r.fits);
-    ok(r && r.rectW === r.avail && r.rectH >= r.panelH - 2 && !r.tf,
-      "★默认使用完整面板视口，不把交互网页压成缩略图★", r && { rectW: r.rectW, rectH: r.rectH, avail: r.avail, panelH: r.panelH, tf: r.tf });
-    ok(r && !r.zoomHidden && r.zoomText === "整页适配", "尺寸上报后提供可选的整页适配按钮", r && { hidden: r.zoomHidden, text: r.zoomText });
+    ok(r && r.w === 1200 && Math.abs(scaleOf(r.tf) - r.avail / 1200) < .01 && r.rectW <= r.avail + 1,
+      "★首次打开固定宽网页自动适配，不需要点击★", r && { rectW: r.rectW, w: r.w, avail: r.avail, tf: r.tf });
+    ok(r && !r.zoomHidden && /适应宽度/.test(r.zoomText), "自动适配后直接显示真实缩放比例", r && { hidden: r.zoomHidden, text: r.zoomText });
+    await new Promise(resolve => setTimeout(resolve, 800));
+    const automaticStable = await frameState();
+    ok(automaticStable && automaticStable.fits.length === r.fits.length && automaticStable.wrapH === r.wrapH, "自动适配稳定后没有尺寸消息/布局循环");
+    const originalStyle = await win.webContents.executeJavaScript('(()=>{const wrap=document.querySelector("#pv-body .pv-fit"),style=wrap.style.cssText;wrap.style.flex="0 0 1200px";wrap.style.width="1200px";return style})()');
+    await new Promise(resolve => setTimeout(resolve, 300));
+    const fullWidth = await frameState();
+    ok(fullWidth && fullWidth.avail === 1200 && scaleOf(fullWidth.tf) === 1 && fullWidth.wrapH === 1600, "可用宽度正好等于页面原宽时也恢复完整高度，不依赖额外点击", fullWidth && {avail:fullWidth.avail,tf:fullWidth.tf,h:fullWidth.wrapH});
+    await win.webContents.executeJavaScript('document.querySelector("#pv-body .pv-fit").style.cssText=' + JSON.stringify(originalStyle));
+    await new Promise(resolve => setTimeout(resolve, 300));
 
-    // 静态宽卡片可以主动切回旧的整页适配；再次点击后恢复真正的面板视口。
+    // 自动适配后仍可主动放大细看，再切回交互视口。
     await win.webContents.executeJavaScript('document.querySelector("#pv-body .pv-zoom").click()');
     await new Promise((r2) => setTimeout(r2, 500));
     const fitted = await frameState();
-    const sc = fitted ? scaleOf(fitted.tf) : 1;
-    ok(fitted && fitted.w === 1200 && Math.abs(sc - fitted.avail / 1200) < 0.01,
-      "手动选择整页适配后按页面宽度缩放", fitted && { w: fitted.w, tf: fitted.tf, avail: fitted.avail });
-    ok(fitted && Math.abs(fitted.wrapH - Math.ceil(1600 * sc)) <= 2, "整页适配时外层高度与缩放后页面一致", fitted && { wrapH: fitted.wrapH, want: Math.ceil(1600 * sc) });
-    await win.webContents.executeJavaScript('document.querySelector("#pv-body .pv-zoom").click()');
-    await new Promise((r2) => setTimeout(r2, 300));
+    ok(fitted && fitted.w === 1200 && scaleOf(fitted.tf) === 1,
+      "自动适配后点击可切到实际大小细看", fitted && { w: fitted.w, tf: fitted.tf, avail: fitted.avail });
     await win.webContents.executeJavaScript('document.querySelector("#pv-body .pv-zoom").click()');
     await new Promise((r2) => setTimeout(r2, 300));
     const restored = await frameState();
@@ -682,8 +717,8 @@ app.whenReady().then(async () => {
     const { after: r } = await open("导航起点.html", 2500);
     const hop = seen.find((x) => /^\/pv\/[0-9a-f]+\/导航终点\.html$/.test(x.url));
     ok(hop && hop.status === 200 && !hop.cookie, "框里自己跳到同目录另一页，走的还是那条 /pv/<令牌>/", hop || seen.map((x) => x.url));
-    ok(r && r.rectW === r.avail && r.rectH >= r.panelH - 2,
-      "★跳转后的页面仍使用完整面板视口★（服务端认 Sec-Fetch-Dest: iframe 照样挂脚本）", r && { w: r.rectW, h: r.rectH, avail: r.avail, panelH: r.panelH });
+    ok(r && r.w === 1000 && r.rectW <= r.avail + 1 && /scale/.test(r.tf),
+      "★跳转后的固定宽页面也自动适配★（服务端仍保留 sandbox 和报尺寸脚本）", r && { w: r.w, rectW: r.rectW, avail: r.avail });
   }
 
   {

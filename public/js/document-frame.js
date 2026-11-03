@@ -15,8 +15,16 @@
   const msdocBaseURL = new URL("/vendor/msdoc/", document.currentScript.src).href;
   const pages = document.getElementById("pages"), status = document.getElementById("status"), scroll = document.getElementById("scroll");
   let zoom = 1, fit = true, width = 800, accepted = false;
+  let resizeFrame = 0;
+  const scheduleResize = () => {
+    if (!resizeFrame) resizeFrame = requestAnimationFrame(() => { resizeFrame = 0; resize(); });
+  };
   function resize() {
-    const z = fit ? Math.min(1, (scroll.clientWidth - 16) / width) : zoom;
+    const available = scroll.clientWidth - 16;
+    if (available <= 0) return; // 面板隐藏/切换时不保存错误的缩放比例。
+    const measured = Math.max(0, ...[...pages.querySelectorAll("section.docx,.legacy-paper,canvas")].map(page => page.offsetWidth));
+    if (measured > 0) width = measured; // 隐藏时首次量到 0 的纸张，在显示后重新测量。
+    const z = fit ? Math.min(1, available / width) : zoom;
     pages.style.zoom = String(Math.max(.15, z));
     document.getElementById("fit").textContent = fit ? (english ? "Fit width" : "适合宽度") : Math.round(z * 100) + "%";
   }
@@ -24,7 +32,7 @@
   for (const [id, delta] of [["less", -.1], ["more", .1]]) document.getElementById(id).onclick = () => {
     zoom = Math.max(.2, Math.min(2.5, (fit ? Number(pages.style.zoom) || 1 : zoom) + delta)); fit = false; resize();
   };
-  new ResizeObserver(resize).observe(scroll);
+  new ResizeObserver(scheduleResize).observe(scroll);
   addEventListener("message", async (event) => {
     const m = event.data;
     if (event.source !== parent || accepted || !m || m.type !== "owb-document" || !(m.bytes instanceof ArrayBuffer)) return;
@@ -49,7 +57,9 @@
           const size = await lib.getPageDimensions(doc, i);
           if (size.width * size.height > 4e6) throw Error("页面尺寸超出预览上限。");
           const canvas = document.createElement("canvas"); canvas.dataset.page = String(i);
-          canvas.style.width = size.width * 96 / 25.4 + "px"; canvas.style.height = size.height * 96 / 25.4 + "px";
+          const pageWidth = size.width * 96 / 25.4;
+          width = Math.max(width, pageWidth); // 混合纸张尺寸按最宽页适配，不裁掉后面的横版页。
+          canvas.style.width = pageWidth + "px"; canvas.style.height = size.height * 96 / 25.4 + "px";
           pages.append(canvas); observer.observe(canvas);
         }
         status.textContent = english ? "OFD · " + count + " pages · Signatures not verified" : "OFD · " + count + " 页 · 印章显示不代表已验签";
@@ -84,6 +94,7 @@
         status.textContent = "Word · " + sheets.length + (english ? " pages" : " 页");
       }
       resize();
+      document.fonts?.ready.then(scheduleResize);
       parent.postMessage({ type: "owb-document-ready" }, "*");
     } catch (error) {
       status.textContent = "版式预览未完成";

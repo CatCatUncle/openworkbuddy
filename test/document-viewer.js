@@ -25,6 +25,8 @@ app.whenReady().then(async () => {
     zip.file("OFD.xml", '<ofd:OFD xmlns:ofd="http://www.ofdspec.org/2016"><ofd:DocBody><ofd:DocInfo><ofd:DocID>fixture</ofd:DocID></ofd:DocInfo><ofd:DocRoot>Doc_0/Document.xml</ofd:DocRoot></ofd:DocBody></ofd:OFD>');
     zip.file("Doc_0/Document.xml", '<ofd:Document xmlns:ofd="http://www.ofdspec.org/2016"><ofd:CommonData><ofd:MaxUnitID>10</ofd:MaxUnitID><ofd:PageArea><ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox></ofd:PageArea></ofd:CommonData><ofd:Pages><ofd:Page ID="1" BaseLoc="Pages/Page_0/Content.xml"/></ofd:Pages></ofd:Document>');
     zip.file("Doc_0/Pages/Page_0/Content.xml", '<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016"><ofd:Area><ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox></ofd:Area><ofd:Content><ofd:Layer ID="2"><ofd:TextObject ID="3" Boundary="20 20 160 20" Font="0" Size="6"><ofd:TextCode X="0" Y="10">OFD Preview</ofd:TextCode></ofd:TextObject></ofd:Layer></ofd:Content></ofd:Page>');
+    zip.file("Doc_0/Document.xml", (await zip.file("Doc_0/Document.xml").async("string")).replace("</ofd:Pages>", '<ofd:Page ID="4" BaseLoc="Pages/Page_1/Content.xml"/></ofd:Pages>'));
+    zip.file("Doc_0/Pages/Page_1/Content.xml", (await zip.file("Doc_0/Pages/Page_0/Content.xml").async("string")).replace("210 297", "297 210"));
     fs.writeFileSync(path.join(tmp, "fixture.ofd"), await zip.generateAsync({ type: "nodebuffer" }));
     fs.writeFileSync(path.join(tmp, "fixture.doc"), '<html><head><meta charset="utf-8"></head><body><h1>旧版文档正文</h1><table><tr><td>兼容表格</td></tr></table><script>parent.__escaped=true</script><img src="https://example.invalid/tracker" onerror="parent.__escaped=true"><a href="javascript:alert(1)">外链</a></body></html>');
     const express = require("express"), web = express();
@@ -35,7 +37,7 @@ app.whenReady().then(async () => {
     web.use("/fixtures", express.static(tmp)); web.use(express.static(path.join(root, "public")));
     server = await new Promise(resolve => { const s = web.listen(0, "127.0.0.1", () => resolve(s)); });
     const base = "http://127.0.0.1:" + server.address().port;
-    win = new BrowserWindow({ show: false, width: 650, height: 800, webPreferences: { nodeIntegration: false, contextIsolation: true } });
+    win = new BrowserWindow({ show: false, width: 650, height: 800, webPreferences: { nodeIntegration: false, contextIsolation: true, backgroundThrottling: false } });
     win.webContents.on("console-message", (_e, level, message) => { if (Number(level) >= 2) console.log("renderer:", message); });
     await win.loadURL(base + "/harness");
     const mount = kind => win.webContents.executeJavaScript(`OWBDocumentViewer.mount(document.getElementById("host"), "/fixtures/fixture.${kind}", ${JSON.stringify(kind === "docx" ? "doc" : kind)}).then(() => true)`);
@@ -48,14 +50,28 @@ app.whenReady().then(async () => {
     (await win.webContents.capturePage()).toPNG && fs.writeFileSync("/tmp/owb-document-word.png", (await win.webContents.capturePage()).toPNG());
     const zoomed = await frame.executeJavaScript('(()=>{const p=document.getElementById("pages"), before=Number(p.style.zoom); document.getElementById("more").click(); const after=Number(p.style.zoom); document.getElementById("fit").click(); return {before,after,fit:Number(p.style.zoom)}})()');
     assert(zoomed.after > zoomed.before && Math.abs(zoomed.fit - zoomed.before) < .02, "zoom and fit both work");
+    await win.webContents.executeJavaScript('document.getElementById("host").style.width="320px"');
+    await new Promise(resolve => setTimeout(resolve, 150));
+    const narrow = await frame.executeJavaScript('({zoom:Number(document.getElementById("pages").style.zoom),paper:document.querySelector("section.docx").getBoundingClientRect().width,view:innerWidth})');
+    assert(narrow.zoom < word.zoom && narrow.paper <= narrow.view, "Word automatically refits after the preview narrows");
+    const manual = await frame.executeJavaScript('document.getElementById("more").click();Number(document.getElementById("pages").style.zoom)');
+    await win.webContents.executeJavaScript('document.getElementById("host").style.width="630px"');
+    await new Promise(resolve => setTimeout(resolve, 150));
+    assert.strictEqual(await frame.executeJavaScript('Number(document.getElementById("pages").style.zoom)'), manual, "resize preserves manual zoom");
+    await win.webContents.executeJavaScript('document.getElementById("host").style.display="none";OWBDocumentViewer.mount(document.getElementById("host"),"/fixtures/fixture.docx","doc").then(()=>true)');
+    await win.webContents.executeJavaScript('document.getElementById("host").style.display="block"');
+    await new Promise(resolve => setTimeout(resolve, 150)); frame = win.webContents.mainFrame.frames[0];
+    const revealed = await frame.executeJavaScript('({zoom:Number(document.getElementById("pages").style.zoom),paper:document.querySelector("section.docx").getBoundingClientRect().width,view:innerWidth})');
+    assert(revealed.zoom > 0 && revealed.zoom < 1 && revealed.paper <= revealed.view, "hidden initial mount measures and fits when revealed, without clicking");
     await win.webContents.executeJavaScript('OWBDocumentViewer.mount(document.getElementById("host"), "/fixtures/fixture.doc", "html-doc").then(()=>true)');
     frame = win.webContents.mainFrame.frames[0];
     const old = await frame.executeJavaScript('(()=>{const s=document.querySelector(".legacy-paper").shadowRoot;return {text:s.textContent,scripts:s.querySelectorAll("script,[onerror],[href],img[src]").length}})()');
     assert(old.text.includes("旧版文档正文") && old.text.includes("兼容表格")); assert.strictEqual(old.scripts, 0);
     assert.strictEqual(await win.webContents.executeJavaScript('!!window.__escaped'), false, "legacy HTML cannot execute in parent");
     assert(await mount("ofd")); frame = win.webContents.mainFrame.frames[0];
-    const ofd = await frame.executeJavaScript(`({canvas:document.querySelectorAll("canvas").length,status:document.getElementById("status").textContent})`);
-    assert.strictEqual(ofd.canvas, 1); assert(ofd.status.includes("OFD"));
+    const ofd = await frame.executeJavaScript(`({canvas:document.querySelectorAll("canvas").length,status:document.getElementById("status").textContent,width:Math.max(...[...document.querySelectorAll("canvas")].map(p=>p.getBoundingClientRect().width)),view:innerWidth})`);
+    assert.strictEqual(ofd.canvas, 2); assert(ofd.status.includes("OFD"));
+    assert(ofd.width <= ofd.view, "OFD mixed portrait/landscape pages fit the widest page automatically");
     let rejected = false;
     try { await win.webContents.executeJavaScript('OWBDocumentViewer.mount(document.getElementById("host"), "/fixtures/missing.docx", "doc")'); } catch { rejected = true; }
     assert(rejected, "missing document reports failure");

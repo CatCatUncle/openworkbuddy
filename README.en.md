@@ -68,6 +68,8 @@ Next, try the [core scenarios](#you-say-it-it-hands-you-the-file) or read the [u
 
 Adjust font size, theme and density from the profile menu → Appearance.
 
+Preview improvements in development fit content automatically on first display and when the preview width changes, while preserving manual zoom. See [preview controls and format limits](docs/文件预览与转换.md) (Chinese; not included in v0.18.2 installers).
+
 When deleting a task, its app-created folder is selected for cleanup by default; uncheck the option to keep its files. Desktop builds move it to the system Trash or Recycle Bin. Server-only builds move it to `.trash/tasks/` under its original workspace, with a `restore.json` recording the original location. Project roots and folders shared by other tasks are retained. Running tasks finish stopping and saving before removal; a cleanup failure keeps the conversation and shows the reason.
 
 <details open>
