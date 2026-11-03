@@ -269,6 +269,8 @@ openworkbuddy engines use claude-code # 换执行引擎：跑在你已经付过�
 
 入口分别在 `server.js`、`cli.js`、`src/im/`；Agent 在 `src/agent/agent.js`，工具在 `src/agent/tools.js` 与 `src/tools/`。会话、配置和用量记在本机 `data/`，任务文件写入项目工作区。代码分层 → [代码架构](docs/代码架构.md)；任务流程 → [实现细节](docs/实现细节.md)
 
+内置 Agent 使用模型与工具交替执行的循环，支持同批只读查询与独立媒体生成并发。开发中的进度优化会定期核对清单，区分上次确认的完成数与当前操作，防止专家子任务覆盖主进度；不按工具次数推算完成率。当前架构、Plan / Execute 与 LLMCompiler 的区别见 [Agent 执行与进度](docs/Agent执行与进度.md)（尚未包含在 v0.18.2 安装包中）。
+
 ## 最新动态
 
 - **11-01** v0.18.2：删除任务默认清理其专属文件夹，可取消勾选保留成果；文件移入回收区，项目根目录和共享目录保留。

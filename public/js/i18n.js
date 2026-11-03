@@ -28,6 +28,9 @@
   // ---------- 词典：中文原句 → 英文 ----------
   const DICT = {
     en: {
+      "历史记录未提供核对时间": "No confirmation time in this record",
+      "沿用上轮清单，待核对": "Previous checklist, awaiting review",
+      "· 待核对": "· Awaiting review",
       "PDF / 版式": "PDF / Fixed layout",
       "打开文件并对话": "Open file and chat",
       "打开文件并对话（创建工作副本）": "Open file and chat (working copy)",
@@ -3581,6 +3584,10 @@
   // 外部引擎开跑前那道闸（engines/gate.js、server.js）的话：引擎名和型号夹在中间。引擎名（本机 Codex…）再查一次词典
   const engName = (s) => { const k = String(s).trim(); return Object.prototype.hasOwnProperty.call(DICT.en, k) ? DICT.en[k] : k; };
   PATTERNS.en.push(
+    [/^清单核对时间：(.+)$/, "Checklist confirmed at $1"],
+    [/^已确认 (\d+)\/(\d+) · 清单当前项：(.+)$/, "Confirmed $1/$2 · Checklist step: $3"],
+    [/^已确认 (\d+)\/(\d+) · 下一项：(.+)$/, "Confirmed $1/$2 · Next: $3"],
+    [/^已确认 (\d+)\/(\d+) · 全部完成$/, "Confirmed $1/$2 · All complete"],
     [/^(本轮结束|连接中断|未完成|已停止|执行失败) (\S+)((?: · .+)?)$/, (m) => ({ "本轮结束": "Turn finished", "连接中断": "Connection interrupted", "未完成": "Incomplete", "已停止": "Stopped", "执行失败": "Execution failed" })[m[1]] + " " + m[2] + (m[3] || "").replace(/(\d+) 步/g, "$1 tool calls").replace(/续跑 (\d+) 轮/g, "$1 continuation rounds").replace(/产出 (\d+) 件/g, "$1 files")],
     [/^过程记录中有 (\d+) 次工具调用未成功，展开可查看详情$/, "$1 tool calls failed during execution. Expand to view details."],
     [/^进度记录：(\d+)\/(\d+) 项完成$/, "Progress record: $1/$2 items complete"],

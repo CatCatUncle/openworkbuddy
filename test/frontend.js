@@ -10878,6 +10878,36 @@ const TRAIL_CHECKS = `
   ok("全做完了就说全部完成", /3\\/3/.test(live.textContent) && /全部完成/.test(live.textContent), live.textContent);
   u9.finish();
 
+  // 主清单和现场动作分开，旧历史/子任务/迟到事件不伪造进度。
+  {
+  const uP = createTurnUI("继续完成", "craft", "s_t");
+  const pItems = [{ content: "重排时间轴", status: "in_progress" }, { content: "抽帧验收", status: "pending" }];
+  uP.handleEvent({ type: "todos", items: pItems, depth: 0, at: Date.now() - 120000 });
+  const pLive = uP.turn.querySelector(".ms-live");
+  ok("旧清单明确显示已确认完成数和待核对，不冒充实时完成率", pLive.textContent.includes("已确认 0/2") && pLive.textContent.includes("待核对"), pLive.textContent);
+  ok("清单明确提供上次确认的真实时间", uP.turn.querySelector(".ms-meta").textContent.includes("清单核对时间"));
+  uP.handleEvent({ type: "tool_use", id: "render-p", name: "run_shell", title: "渲染视频" });
+  ok("现场动作与清单当前项各自保留", uP.turn.querySelector(".act-live").textContent.includes("渲染视频") && pLive.textContent.includes("重排时间轴"));
+  uP.handleEvent({ type: "todos", depth: 1, at: Date.now(), items: [{ content: "专家事项", status: "done" }] });
+  uP.handleEvent({ type: "milestones", depth: 2, items: [{ text: "专家进度档", done: true }] });
+  ok("专家的两种进度都不能盖掉主任务清单", pLive.textContent.includes("0/2") && !uP.turn.querySelector(".ms-card").textContent.includes("专家"));
+  uP.handleEvent({ type: "todos", depth: 0, at: Date.now(), items: pItems });
+  ok("核对仍未完成时只刷新时间，不虚增完成数", pLive.textContent.includes("0/2") && !pLive.textContent.includes("待核对"));
+  uP.handleEvent({ type: "todos", depth: 0, items: [{ content: "等待输入", status: "pending" }] });
+  ok("全部待做只说下一项，不能称正在做", pLive.textContent.includes("下一项") && !pLive.textContent.includes("正在做") && !pLive.textContent.includes("清单当前项"));
+  ok("没有历史时间戳就明确未知，不能假装刚更新", uP.turn.querySelector(".ms-meta").textContent.includes("未提供核对时间"));
+  uP.handleEvent({ type: "todos", depth: 0, restored: true, at: null, items: pItems });
+  ok("续跑带回旧清单须标明待核对", uP.turn.querySelector(".ms-meta").textContent.includes("沿用上轮") && pLive.textContent.includes("待核对"));
+  uP.handleEvent({ type: "todos", depth: 0, at: Date.now(), items: [] });
+  ok("清空清单时常驻行与清单卡都撤下", pLive.hidden && !uP.turn.querySelector(".ms-card"));
+  uP.handleEvent({ type: "todos", depth: 0, at: Date.now(), items: pItems });
+  uP.finish({ interrupted: true });
+  const pEnded = pLive.textContent;
+  ok("中断后保留真实完成数，不改成全部完成", pEnded.includes("0/2") && !pEnded.includes("全部完成"));
+  uP.handleEvent({ type: "todos", depth: 0, at: Date.now(), items: [{ content: "迟到", status: "done" }] });
+  ok("结束后的迟到清单不能重开进度或覆盖历史", pLive.textContent === pEnded && !uP.turn.querySelector(".ms-card").textContent.includes("迟到"));
+  }
+
   // ---- 本机引擎那条「已启动」：是事实不是进度，得钉住，别转圈也别被正文抹掉 ----
   const u10 = createTurnUI("跑一趟", "craft", "s_t");
   u10.handleEvent({ type: "status", text: "本机 Claude Code 已启动（模型 claude-opus-5，102 个工具），不消耗 API 额度", model: "claude-opus-5" });

@@ -780,7 +780,7 @@ async function run({
       const items = (Array.isArray(item.items) ? item.items : [])
         .map((x) => ({ content: String((x && (x.text || x.content)) || "").trim(), status: x && (x.completed === true || x.status === "completed") ? "done" : "pending" }))
         .filter((x) => x.content);
-      if (items.length) emit({ type: "todos", items, depth: 0 });
+      emit({ type: "todos", items, depth: 0, at: Date.now() });
       return;
     }
     const t = toolOf(item);

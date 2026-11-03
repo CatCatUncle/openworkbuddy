@@ -286,22 +286,23 @@ async function until(fn, ms = 5000) {
   {
     const { createAgentRuntime } = require(mod("agent"));
     const { McpManager } = require(mod("mcp"));
-    const run = async (script) => {
+    const run = async (script, history = [{ role: "user", content: "给登录接口加限流" }], baseDir = "") => {
       let step = 0;
-      const seen = [];
+      const seen = [], systems = [];
       const llm = {
         provider: "mock", model: "scripted",
         async chat(args) {
           const h = (args && (args.messages || args.history)) || [];
           seen.push(JSON.stringify(h).slice(-600));
+          systems.push(args.system);
           const s = script[step++] || { text: "完了。" };
           return { text: s.text || "", usage: { prompt: 10, completion: 2 }, toolCalls: s.calls || [], stopReason: (s.calls || []).length ? "tool_use" : "end" };
         },
       };
       const rt = createAgentRuntime({ config: { agent: { max_steps: 8, tool_timeout_ms: 30000 } }, llm, mcpManager: new McpManager(), experts: [] });
       const events = [];
-      await tools.withWorkspace(WS, () => rt.runTask({ history: [{ role: "user", content: "给登录接口加限流" }], emit: (e) => events.push(e), taskLabel: "t", sessionId: "s-todo" }));
-      return { calls: step, events, seen };
+      await tools.withWorkspace(WS, () => rt.runTask({ history, emit: (e) => events.push(e), taskLabel: "t", sessionId: "s-todo", baseDir }));
+      return { calls: step, events, seen, systems };
     };
     const td = (items) => ({ calls: [{ id: "t" + Math.random().toString(36).slice(2, 7), name: "todo_write", input: { todos: items } }] });
     const a = await run([
@@ -321,6 +322,93 @@ async function until(fn, ms = 5000) {
     ok(b.calls === 2, "全勾完了就正常收尾，不多烧一轮（反向对照）", b.calls);
     const c = await run([{ text: "你好，我是助手。" }]);
     ok(c.calls === 1, "没列清单的任务不受影响（反向对照）", c.calls);
+    const blocked = await run([td([{ content: "等待必要授权", status: "pending" }]), { text: "需要用户授权。" }]);
+    ok(blocked.events.some((e) => e.type === "limit" && /任务还有 1 项没做完/.test(e.note || e.reason || "")), "核验重试用尽仍有未完成清单时，任务明确标为未完成", blocked.events.filter((e) => e.type === "limit"));
+    ok(blocked.events.filter((e) => e.type === "todos").every((e) => e.items.every((t) => t.status !== "done")), "阻塞不被框架自动勾成完成");
+    const plan = [{ content: "实现修改", status: "in_progress" }, { content: "验收", status: "pending" }];
+    const reads = Array.from({ length: 6 }, (_, i) => {
+      W(`progress-input-${i}.txt`, String(i));
+      return { id: `read-${i}`, name: "read_file", input: { path: `progress-input-${i}.txt` } };
+    });
+    const write = (id, name) => ({ id, name: "write_file", input: { path: name, content: "真实执行" } });
+    const d = await run([
+      td(plan),
+      { calls: reads },
+      { calls: [write("grace", "progress-grace.txt")] },
+      { calls: [reads[0], write("held", "progress-held.txt")] },
+      td(plan), // 尚未做完也能如实核对，不能逼模型虚报完成
+      { calls: [write("resumed", "progress-resumed.txt"), ...td(plan.map((t) => ({ ...t, status: "done" }))).calls] },
+      { text: "已核对。" },
+    ]);
+    ok(/系统·执行中进度核对/.test(d.systems[2]) && /实现修改/.test(d.systems[2]), "六个真实工具完成后，下一次模型调用直接收到清单核对要求");
+    ok(!/系统·执行中进度核对/.test(d.systems[1]) && !/系统·执行中进度核对/.test(d.systems[5]), "阈值前和核对后没有重复提醒（不额外调用判断模型）");
+    ok(fs.existsSync(path.join(WS, "progress-grace.txt")) && !fs.existsSync(path.join(WS, "progress-held.txt")), "一次提醒仍忽略后，新写入实际未执行，不只在界面提示");
+    ok(d.events.some((e) => e.type === "tool_result" && e.id === "held" && e.isError && /未执行/.test(e.preview)), "被暂缓的操作有明确结果，不冒充执行成功");
+    ok(d.events.filter((e) => e.type === "tool_result" && e.id === "read-0" && !e.isError).length === 2, "待核对期间仍允许读取证据");
+    ok(fs.existsSync(path.join(WS, "progress-resumed.txt")) && d.calls === 7, "真实核对同一未完成状态后，执行正常恢复，无额外模型调用", d.calls);
+    const updates = d.events.filter((e) => e.type === "todos");
+    ok(updates.every((e) => Number.isFinite(e.at)) && updates[1].items.every((t) => t.status !== "done"), "每次确认有真实时间戳，不按工具次数虚增完成数");
+    const history = [
+      { role: "user", content: "完成项目" },
+      { role: "assistant", toolCalls: [{ id: "old-plan", name: "todo_write", input: { todos: plan } }] },
+      { role: "tool", results: [{ id: "old-plan", content: "已更新", isError: false }] },
+      { role: "user", content: "继续给我完成" },
+    ];
+    const resumed = await run([td(plan.map((t) => ({ ...t, status: "done" }))), { text: "已完成。" }], history);
+    const restored = resumed.events.find((e) => e.type === "todos");
+    ok(restored.restored && restored.at === null && /上一轮留下/.test(resumed.systems[0]), "手动继续恢复成功的未完成清单，时间未知，不伪造刚刚更新");
+    W("PROGRESS.md", "- [ ] 实现修改\n");
+    const ms = await run([
+      { calls: [{ id: "progress-file", name: "write_file", input: { path: "PROGRESS.md", content: "- [ ] 实现修改\n- [ ] 验收\n" } }] },
+      { calls: reads },
+      { calls: [{ id: "progress-done", name: "write_file", input: { path: "PROGRESS.md", content: "- [x] 实现修改\n- [x] 验收\n" } }] },
+      { text: "已完成。" },
+    ]);
+    ok(/系统·执行中进度核对/.test(ms.systems[2]) && /PROGRESS.md/.test(ms.systems[2]), "文件型进度同样参与中途核对");
+    ok(ms.events.some((e) => e.type === "milestones" && e.items.every((i) => i.done) && e.at), "进度档写入后立即发布带时间的完成状态");
+    fs.rmSync(path.join(WS, "PROGRESS.md"));
+    const nested = await run([
+      { calls: [{ id: "nested-plan", name: "write_file", input: { path: "PROGRESS.md", content: "- [ ] 本任务\n" } }] },
+      { calls: [{ id: "other-plan", name: "write_file", input: { path: "../other-progress/PROGRESS.md", content: "- [x] 其他任务\n" } }] },
+      { calls: [{ id: "nested-done", name: "write_file", input: { path: "task-progress/PROGRESS.md", content: "- [x] 本任务\n" } }] },
+      { text: "已完成。" },
+    ], undefined, "task-progress");
+    const nestedMs = nested.events.filter((e) => e.type === "milestones");
+    ok(nestedMs.length >= 2 && nestedMs.every((e) => e.file === "task-progress/PROGRESS.md" && e.items.every((i) => i.text === "本任务")), "任务子目录两种路径都即时发布，其他任务同名文件不串进主清单", nestedMs);
+    ok(nested.events.findIndex((e) => e.type === "milestones") < nested.events.findIndex((e) => e.type === "step_start" && e.step === 2), "子目录进度写入在下次模型调用前已同步，不等待目录扫描");
+  }
+
+  console.log("\n⑧.1 长工具、历史恢复与进度时间边界");
+  {
+    const { createProgressTracker, restorePendingTodos, parseMilestones } = require(mod("progress"));
+    let now = 1000;
+    const p = createProgressTracker({ now: () => now });
+    const items = [{ content: "渲染", status: "in_progress" }];
+    const e = p.update({ type: "todos", items });
+    now += 180000;
+    ok(!p.overdue(), "一个长工具尚未返回时不因时间流逝反复催模型/中断工具");
+    p.toolFinished();
+    ok(p.overdue() && p.beforeStep().prompt && p.beforeStep().requireSync, "长工具返回后，超时清单在下个模型边界核对");
+    ok(e.at === 1000 && e.items[0].status === "in_progress", "耗时和工具完成都不改清单时间与状态");
+    p.update({ type: "todos", items });
+    ok(!p.overdue() && !p.beforeStep().requireSync, "原状态核对也能重置，不要求虚假完成");
+    p.update({ type: "todos", items: [] });
+    for (let i = 0; i < 10; i++) p.toolFinished();
+    ok(!p.overdue(), "清空清单后不残留执行约束");
+    p.update({ type: "todos", items: [{ content: "渲染", status: "done" }] });
+    now += 600000; p.toolFinished();
+    ok(!p.overdue(), "已完成清单不触发额外核对");
+    ok(parseMilestones("- [x] a\n* [ ] b\n正文").length === 2, "文件进度只提取复选项");
+    const h = [
+      { role: "assistant", toolCalls: [{ id: "old", name: "todo_write", input: { todos: items } }] },
+      { role: "tool", results: [{ id: "old", isError: false }] },
+      { role: "user", content: "继续" },
+    ];
+    ok(restorePendingTodos(h)?.length === 1, "续做时只恢复工具成功确认的计划");
+    ok(!restorePendingTodos([...h.slice(0, 2), { role: "user", content: "另外写一封邮件" }]), "新任务不复活旧清单");
+    ok(!restorePendingTodos([...h.slice(0, 2), { role: "user", content: "另外写一封邮件" }, h[2]]), "继续新任务也不能跨过任务边界捡旧计划");
+    ok(!restorePendingTodos([{ ...h[0] }, { role: "tool", results: [{ id: "old", isError: true }] }, h[2]]), "失败的 todo_write 不恢复");
+    ok(!restorePendingTodos([...h.slice(0, 2), { role: "assistant", toolCalls: [{ id: "clear", name: "todo_write", input: { todos: [] } }] }, { role: "tool", results: [{ id: "clear", isError: false }] }, h[2]]), "已清空的最新清单不会被更早记录覆盖");
   }
 
   console.log("\n⑨ 换行符和缩进风格跟着文件走");

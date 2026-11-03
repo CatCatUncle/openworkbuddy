@@ -1339,6 +1339,20 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
   const fmtStep = (ms) => (ms < 100 ? "<0.1s" : ms < 10000 ? (ms / 1000).toFixed(1) + "s" : fmtDur(ms));
   // 「此刻在干什么」那一行的状态：actNarr 是模型旁白的缓冲，actLine 是当前该显示的话
   let actNarr = "", actLine = "", actIcon = "", actPend = false;
+  let progressView = null, progressCalls = 0, finished = false;
+  const paintProgress = (now = Date.now()) => {
+    if (!progressView || !procWrap) return;
+    const { at, restored, items } = progressView;
+    const open = items.some((i) => !i.done);
+    const stale = !finished && open && (restored || progressCalls >= 6 || (at > 0 && now - at >= 90000));
+    const meta = procWrap.querySelector(".ms-meta");
+    const label = restored ? "沿用上轮清单，待核对" : at > 0
+      ? `清单核对时间：${new Date(at).toLocaleTimeString([], { hour12: false })}` : "历史记录未提供核对时间";
+    if (meta && meta.textContent !== label) meta.textContent = label;
+    const age = procWrap.querySelector(".ms-freshness");
+    const text = stale ? " · 待核对" : "";
+    if (age && age.textContent !== text) age.textContent = text;
+  };
   const paintAct = () => {
     const el = procWrap && procWrap.querySelector(".act-live");
     if (!el || el._line === actLine) return;
@@ -1381,6 +1395,7 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
         // 还没回来的卡自己也走秒。一个 setInterval 管全部，不给每张卡各开一个；
         // 用 .spinner 筛「还在跑的」，跑完的卡早就写死了最终耗时，不会被这里改回去
         const now = Date.now();
+        paintProgress(now);
         // 压缩那行也跟着走秒：它卡在「按下发送」和「第一个字」中间，是全场最容易被当成卡死的一段
         const cn = procWrap.querySelector(".compact-note.running");
         if (cn) cn.lastChild.textContent = compactRunText(cn._n || 0, now - (cn._t0 || now));
@@ -1651,6 +1666,9 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
   };
 
   function handleEvent(ev) {
+    // 专家清单只属于它的子任务；已结束的回合不被迟到清单重新拉成运行中。
+    if ((ev.type === "todos" || ev.type === "milestones") && (ev.depth > 0 || finished)) return;
+    if (ev.type === "tool_result" && !(ev.depth > 0)) { progressCalls++; paintProgress(); }
     // 进度只认还开着的卡：收过尾的那一步晚到一条（或 id 对不上），不能把卡和折叠条拉回「渲染 899/900」
     if (ev.type === "tool_progress" && !(ev.id && (body._openCards || []).some((c) => c._tid === ev.id))) return;
     // 折叠条上那行「此刻在干什么」：每条事件都先过一遍它，再走各自的渲染分支
@@ -2034,26 +2052,37 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
     } else if (ev.type === "milestones" || ev.type === "todos") {
       // 里程碑时间线：agent 每更新一次 PROGRESS.md（或 todo_write 发一张新清单），这张卡就在过程区原地刷新打勾状态
       const todo = ev.type === "todos";
-      if (todo) ev = { items: (ev.items || []).map((t) => ({ text: t.content, done: t.status === "done", doing: t.status === "in_progress" })) };
+      if (todo) ev = { ...ev, items: (ev.items || []).map((t) => ({ text: t.content, done: t.status === "done", doing: t.status === "in_progress" })) };
       const proc = ensureProc();
       let card = proc.querySelector(".ms-card");
+      const live = procWrap.querySelector(".ms-live");
+      const items = ev.items || [];
+      if (!items.length) {
+        card?.remove();
+        if (live) { live.hidden = true; live.textContent = ""; }
+        progressView = null; progressCalls = 0;
+        return;
+      }
       if (!card) {
         card = document.createElement("div");
         card.className = "ms-card";
         proc.appendChild(card);
       }
-      const items = ev.items || [];
       const doneN = items.filter((i) => i.done).length;
       card.innerHTML = `<div class="ms-head">${ic("map-pin")}${todo ? "进度" : "里程碑"} ${doneN}/${items.length}${ev.file ? ` <span class="ms-file">${esc(ev.file)}</span>` : ""}</div>` +
+        `<div class="ms-meta"></div>` +
         items.map((i) => `<div class="ms-item${i.done ? " done" : ""}${i.doing ? " doing" : ""}">${ic(i.done ? "circle-check" : i.doing ? "circle-dot" : "circle")}${esc(String(i.text || ""))}</div>`).join("");
       // 常驻那一行：折叠着也看得到进度和「现在在做哪件」——用户要的就是这个
-      const live = procWrap && procWrap.querySelector(".ms-live");
       if (live && items.length) {
         const next = items.find((i) => i.doing) || items.find((i) => !i.done);
-        live.innerHTML = ic("map-pin") + "<span></span>";
-        live.lastChild.textContent = `${doneN}/${items.length}` + (next ? ` · 正在做：${String(next.text || "").slice(0, 40)}` : " · 全部完成");
+        live.innerHTML = ic("map-pin") + `<span class="ms-summary"></span><span class="ms-freshness"></span>`;
+        live.querySelector(".ms-summary").textContent = `已确认 ${doneN}/${items.length}` + (next ? ` · ${next.doing ? "清单当前项" : "下一项"}：${String(next.text || "").slice(0, 40)}` : " · 全部完成");
         live.hidden = false;
       }
+      const at = typeof ev.at === "number" ? ev.at : Date.parse(ev.at || "");
+      progressView = { items, at: Number.isFinite(at) && at > 0 ? at : 0, restored: !!ev.restored };
+      progressCalls = 0;
+      paintProgress();
     } else if (ev.type === "error") {
       turn._failed = true;
       endRetry();
@@ -2072,6 +2101,7 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
   // opts.interrupted：这一轮没有收尾事件（跑到一半进程没了、服务重启了）。
   // 不给它一个终点的话，历史记录里这一轮会永远转着「运行中…」，而那时早就没有东西可停了
   function finish(opts) {
+    finished = true;
     endText(); // 收尾前先把最后一段合回整块，下面挪 DOM、复制、存历史都按整块来读——这行必须留在最前面
     endRetry(); // 收尾了还在倒数「3 秒后重试」就是骗人，计时器也得停
     const 断了 = !!(opts && opts.interrupted);

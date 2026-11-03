@@ -47,6 +47,7 @@ const skillGate = require("./gates/skill-gate"); // 开工之前「该照哪个�
 const recipes = require("../domains/content/recipes"); // 内容配方：开头一张表单定岔路、答案钉进系统提示词、按配方放宽上限
 const quotaMod = require("../core/billing/quota");   // 这趟任务记在谁的额度上（网页请求 / IM / 定时任务进门时挂好的那份）
 const budgetMod = require("../core/billing/budget"); // 价目闸：有限额的人不许跑没价目的远端型号
+const progressState = require("./progress"); // 执行中核对清单，不按工具次数猜完成率
 
 const DELEGATE_TOOL = {
   name: "delegate_to_expert",
@@ -678,7 +679,7 @@ function resumeNotice(patched) {
  * 跳完还找不到，退回最近那条插话 / 那句「继续」，再没有就是空串。
  * 空白压成一个空格：压缩摘要里留的指令原文就是压过的，不压的话压缩前后同一句话对不上。
  */
-const ASK_BARE_RE = /^(?:【任务类型：[^】]*】\s*)?(?:继续|接着做|接着干|接着来|接着上次进度做|continue|go on|keep going)[\s。.!！]*$/i;
+const ASK_BARE_RE = progressState.CONTINUE_RE;
 function currentAsk(history) {
   const list = Array.isArray(history) ? history : [];
   const flat = (s) => String(s).replace(/\s+/g, " ").trim();
@@ -3318,7 +3319,9 @@ function modePrompt(mode) {
     let cutStreak = 0; // 连着几次回复说到一半就断（上游半路停 / 流断了），见 cutShortWhy
     let textCarry = ""; // 正文写到一半被截、让它接着写时，前半段先存这儿，交付时跟后半段拼起来
     let openLeft = [];
-    let todoItems = null;  // todo_write 最新那张表：收尾时还有没标 done 的，同样打回     // 收尾时进度档里仍未打勾的条目，用来如实告诉用户还差什么
+    let todoItems = readOnlyMode ? null : progressState.restorePendingTodos(history);
+    const progress = progressState.createProgressTracker();
+    if (todoItems) emit({ ...progress.update({ type: "todos", items: todoItems }, { restore: true }), depth });
     // 进度档所在目录：和下面自动续跑读 PROGRESS.md 的是同一处，别让两边算出不同的路径
     const progressDir = () => { const ws = getWorkspaceDir(); return baseDir ? path.resolve(ws, baseDir) : ws; };
     let trimmedChars = 0; // 本次任务累计被上下文预算截掉的工具输出字符数
@@ -3360,6 +3363,18 @@ function modePrompt(mode) {
     // 产出发射器要在 try 外面声明：它得在 finally 里做最后一次 flush，
     // 声明在 try 里的 const 在 finally 的作用域里是看不见的（真踩过：任务跑完在收尾时炸 filesOut is not defined）
     let filesOut = null;
+    let progressFileSig = null;
+    const publishMilestones = (file, confirmed = false) => {
+      // 只认本任务的进度档，不能被同项目其他任务的 PROGRESS.md 覆盖。
+      if (path.resolve(getWorkspaceDir(), file) !== path.join(progressDir(), "PROGRESS.md")) return;
+      try {
+        const raw = fs.readFileSync(path.join(getWorkspaceDir(), file), "utf8").slice(0, 20000);
+        if (raw === progressFileSig && !confirmed) return;
+        progressFileSig = raw;
+        const items = progressState.parseMilestones(raw);
+        emit({ ...progress.update({ type: "milestones", file, items }), depth });
+      } catch {}
+    };
     try {
     // 卡循环检测：同一工具+同一入参反复拿到同一结果 = 在死路上空转。3 连提醒换思路，5 连直接拦截不执行。
     // 键里必须带结果指纹，才不会误伤「改一遍读一遍」的正常校验循环——文件改了，读回来的内容就变了，计数自动清零
@@ -3389,18 +3404,7 @@ function modePrompt(mode) {
       emit, ownership, baseDir, runToken, scan: true,
       // 长跑可见性：进度档一有更新就把里程碑清单推给前端，时间线卡片实时打勾
       after: (changed) => {
-        const progName = changed.find((n) => n.split("/").pop() === "PROGRESS.md");
-        if (!progName) return;
-        try {
-          const raw = fs.readFileSync(path.join(getWorkspaceDir(), progName), "utf8").slice(0, 20000);
-          const items = [];
-          for (const line of raw.split("\n")) {
-            const m = /^\s*[-*]\s*\[([ xX])\]\s*(.+)/.exec(line);
-            if (m) items.push({ text: m[2].trim().slice(0, 120), done: m[1] !== " " });
-            if (items.length >= 60) break;
-          }
-          if (items.length) emit({ type: "milestones", file: progName, items, depth });
-        } catch {}
+        for (const n of changed) if (n.split("/").pop() === "PROGRESS.md") publishMilestones(n);
       },
     });
 
@@ -3520,7 +3524,8 @@ function modePrompt(mode) {
       const stepSig = stepSignal([stallCtl.signal, stopSignal], Math.max(10000, deadline - Date.now()));
       const signal = stepSig.signal;
       // 每一步现拼：技能可能在上一步刚 use_skill 进来，用户可能刚答完一问、刚插了一句话
-      const sys = system + skillGate.skillBlock(loadedSkills) + recipes.pinBlock(stats.recipe) + askGate.pinBlock(stats.decided);
+      const progressCheck = readOnlyMode ? { prompt: "", requireSync: false } : progress.beforeStep();
+      const sys = system + skillGate.skillBlock(loadedSkills) + recipes.pinBlock(stats.recipe) + askGate.pinBlock(stats.decided) + progressCheck.prompt;
       const gen = tr.generation({
         name: `第 ${step + 1} 步`,
         model: L.model,
@@ -3722,7 +3727,7 @@ function modePrompt(mode) {
         if (!left.open.length && todoOpen.length && finishRetries < 2 && Date.now() < deadline - 30000 && !(stopSignal && stopSignal.aborted)) {
           finishRetries++;
           bounce(`【系统·收尾核验】你停下来了，但你自己列的进度清单里这些还没标 done：\n\n${todoOpen.slice(0, 12).map((t, i) => `${i + 1}. ${t}`).join("\n")}\n\n` +
-            `接着把它们做完，每做完一条就 todo_write 把它标成 done。确实做不了的（缺权限、缺凭证、要用户拍板），在清单里把它改成 done 并在内容后面注明「（做不了：原因）」，最终回复里单独讲清楚。清单列多了、有几条其实不用做，也照实改掉，别空着收尾。`);
+            `接着把它们做完，每做完一条就 todo_write 把它标成 done。确实做不了的（缺权限、缺凭证、要用户拍板），保留未完成状态并在内容后面注明阻塞原因，最终回复里单独讲清楚。清单列多了、有几条其实不用做，也照实移除；严禁把阻塞或取消的事项标成完成。`);
           emit({ type: "text", delta: callout.line("wait", `**还没做完，已自动打回继续做**：进度清单里还有 ${todoOpen.length} 条没打勾（${todoOpen.slice(0, 3).join("、")}${todoOpen.length > 3 ? " 等" : ""}）。`), depth });
           continue;
         }
@@ -3731,7 +3736,7 @@ function modePrompt(mode) {
           const listed = left.open.slice(0, 12).map((t, i) => `${i + 1}. ${t}`).join("\n");
           bounce(
             left.open.length
-              ? `【系统·收尾核验】你停下来了，但工作目录的 PROGRESS.md 里这些条目还没打勾：\n\n${listed}${left.open.length > 12 ? `\n…（共 ${left.open.length} 项未完成）` : ""}\n\n任务没做完不许收尾。现在接着做这些没打勾的（做完一项就 edit_file 把它改成 - [x]），绝不重做已完成的部分。如果其中某项确实做不了——缺权限、缺凭证、需要用户拍板——就把它在 PROGRESS.md 里标成 - [x] 并在条目后面注明「（做不了：原因）」，然后在最终回复里单独列一节「需要你处理」讲清楚。严禁把没做的事说成做完了。`
+              ? `【系统·收尾核验】你停下来了，但工作目录的 PROGRESS.md 里这些条目还没打勾：\n\n${listed}${left.open.length > 12 ? `\n…（共 ${left.open.length} 项未完成）` : ""}\n\n任务没做完不许收尾。现在接着做这些没打勾的（做完一项就 edit_file 把它改成 - [x]），绝不重做已完成的部分。如果其中某项确实做不了——缺权限、缺凭证、需要用户拍板——保留 - [ ] 并注明阻塞原因，在最终回复里单独讲清楚；取消的事项照实移除。严禁把没做的事说成做完了。`
               : `【系统·收尾核验】你在回复里说还有没做完的部分，但已经不再动手了。任务没做完不许收尾：现在立即把剩下的做完；如果确实做不了（缺权限、缺凭证、需要用户拍板），就明说是哪一项、卡在哪、需要用户做什么，别用「后续再补」把它糊过去。如果其实已经全部做完了，就直接明确说一句「全部完成」并给出最终交付清单。`
           );
           emit({
@@ -3761,7 +3766,7 @@ function modePrompt(mode) {
           }
         }
         // 打回额度用完还没做完 → 交给外层自动续跑：新一轮有新的步数和时间预算，比在这儿硬磨划算
-        if (left.open.length) stopNote = `任务还有 ${left.open.length} 项没做完`;
+        if (openLeft.length) stopNote = `任务还有 ${openLeft.length} 项没做完`;
         break;
       }
 
@@ -3780,11 +3785,15 @@ function modePrompt(mode) {
         const loopKey = tc.name + "\u0000" + JSON.stringify(tc.input || {});
         const seen = loopHist.get(loopKey);
         let r;
+        let ranTool = false;
         const dead = deadMedia.get(tc.name);
         // 只拦只读档：craft 档清单外的是没配的工具（它自己的处理会说「去设置里配、别重试」）、
         // 子智能体里的 delegate/explore（处理里自己拒），或者纯拼错（tools.js 报未知工具）——都有更准的话
         if (readOnlyMode && !offered.has(tc.name)) {
           r = { content: notOffered(tc.name), isError: true };
+        } else if (progressCheck.requireSync && progress.todosOverdue() &&
+                   !READ_ONLY_TOOLS.includes(tc.name) && !["todo_write", "ask_user", "use_skill", "explore", "shell_output", "shell_kill"].includes(tc.name)) {
+          r = { content: "【系统·执行中进度核对】本次操作未执行。先用 todo_write 根据已有结果核对清单，再继续此操作。未完成的保持进行中/待做；必要时可先读取核验，不能为了通过核对把未做的事标成 done。", isError: true };
         } else if (dead && dead.n >= 2) {
           // 连请求都不发了，连本地那道熔断闸也不走——直接把上次那句话奉还
           r = { content: `${dead.content}\n\n【本轮已停用 ${tc.name}】这条渠道连着拦了 ${dead.n} 次，再调也是这句话。按上面说的如实收尾，别把没拿到的结果当拿到过。`, isError: true };
@@ -3799,6 +3808,7 @@ function modePrompt(mode) {
             metadata: { depth, tool: tc.name, title: toolHeadline(tc.name, tc.input) },
           });
           try {
+            ranTool = true;
             r = await runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride: L, askUser, lang, sessionId, traceNode: sp, skillSink: loadedSkills });
           } catch (e) {
             // 工具抛出来的异常在这里就地变成一条工具结果。让它往上冒的话，下面那条
@@ -3858,7 +3868,21 @@ function modePrompt(mode) {
           ...(r.diff ? { diff: String(r.diff).slice(0, 4000) } : {}), // 改文件那几步：过程卡上直接看动了哪几行
           ...(r.ckpt ? { ckpt: r.ckpt } : {}), // 检查点 id：卡上「回退到这步之前」按的就是它
         });
-        if (Array.isArray(r.todos)) { todoItems = r.todos; emit({ type: "todos", items: r.todos, depth }); } // 进度清单：界面上画一张打勾的表
+        if (!r.isError && Array.isArray(r.todos)) {
+          todoItems = r.todos;
+          emit({ ...progress.update({ type: "todos", items: r.todos }), depth });
+        } else if (ranTool) {
+          progress.toolFinished();
+          // 写进度档后立即可见；文件扫描仍负责命令间接写入的情况，内容签名去重。
+          if (!r.isError && ["write_file", "edit_file", "multi_edit"].includes(tc.name) && String(tc.input.path || "").split(/[\\/]/).pop() === "PROGRESS.md") {
+            const rel = String(tc.input.path || "");
+            const expected = path.join(progressDir(), "PROGRESS.md");
+            if ([getWorkspaceDir(), progressDir()].some((dir) => path.resolve(dir, rel) === expected)) {
+              publishMilestones(path.relative(getWorkspaceDir(), expected), true);
+            }
+          }
+          if (progress.overdue()) r = { ...r, content: `${r.content}\n\n【系统·进度待核对】请在下一步核对并同步清单；未完成的保持原状态，不能按工具次数推算完成率。` };
+        }
         if (!r.isError) {
           const srcs = collectSources(tc.name, tc.input, r.content);
           if (srcs.length) emit({ type: "sources", items: srcs, depth });

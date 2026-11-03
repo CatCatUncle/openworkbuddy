@@ -268,6 +268,8 @@ One-shot and pipe mode **never** ask you questions, so scripts and cron don't ha
 
 Entry points are `server.js`, `cli.js` and `src/im/`; the Agent is in `src/agent/agent.js`, with tools in `src/agent/tools.js` and `src/tools/`. Sessions, config and usage are stored locally under `data/`; task files go to the project workspace. See [code architecture](docs/代码架构.md) for layers and [implementation details](docs/实现细节.md) for a task walkthrough (both Chinese).
 
+The built-in Agent alternates model decisions and tool execution, with concurrent read-only batches and independent media generation. Progress improvements in development periodically reconcile checklists, separate confirmed completion from current activity, and keep expert checklists from replacing the main plan. Tool counts never become completion percentages. See [Agent execution and progress](docs/Agent执行与进度.md) for the comparison with Plan / Execute and LLMCompiler (Chinese; not included in the v0.18.2 installers).
+
 ## What's new
 
 - **Nov 1** v0.18.2: deleting a task selects its dedicated folder for cleanup by default. Uncheck to keep files. Cleanup moves files to the trash and preserves project roots and shared folders.
