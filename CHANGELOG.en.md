@@ -9,9 +9,11 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 ## 2026
 
-- **Nov 3 (in development, unreleased)** Fixed-width web pages and Office previews fit automatically on first display. Preview resizing, reveal and content changes trigger remeasurement while preserving manual zoom. Mixed-size OFD pages fit the widest page; resize callbacks are coalesced and listeners released on close.
+- **Nov 3** v0.18.3: intermediate-file cleanup and library deletion use recoverable trash, with native desktop Trash/Recycle Bin or server-side original bytes and recovery records. Failures never fall back to permanent deletion. Generic output directory names are retained, dependency caches are unchecked by default, active work blocks cleanup, and the new UI refuses deletion through older servers.
 
-- **Nov 3 (in development, unreleased)** The built-in Agent periodically reconciles checklists and holds new actions after an ignored reminder while allowing inspection. Manual continuation restores successful unfinished checklists. Progress shows confirmation times separately from current activity, isolates expert plans, and preserves accurate empty, historical and unfinished states. Added the architecture comparison with Plan / Execute and LLMCompiler.
+- **Nov 3** Fixed-width web pages and Office previews fit automatically on first display. Preview resizing, reveal and content changes trigger remeasurement while preserving manual zoom. Mixed-size OFD pages fit the widest page; resize callbacks are coalesced and listeners released on close.
+
+- **Nov 3** The built-in Agent periodically reconciles checklists and holds new actions after an ignored reminder while allowing inspection. Manual continuation restores successful unfinished checklists. Progress shows confirmation times separately from current activity, isolates expert plans, and preserves accurate empty, historical and unfinished states. Added the architecture comparison with Plan / Execute and LLMCompiler.
 
 - **Nov 1** v0.18.2: task deletion selects its dedicated folder for cleanup by default, with an option to keep files. Desktop builds use the system Trash or Recycle Bin; server builds use `.trash/tasks/` under the original workspace with a restore manifest. Project roots, shared folders and scheduled-task output folders are retained. Historical project folders are checked against both disk and in-memory ownership.
 

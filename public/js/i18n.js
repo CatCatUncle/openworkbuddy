@@ -28,6 +28,21 @@
   // ---------- 词典：中文原句 → 英文 ----------
   const DICT = {
     en: {
+      "依赖与缓存": "Dependencies and caches",
+      "移入回收区": "Move to trash",
+      "将这些文件移入回收区？": "Move these files to trash?",
+      "移入回收区后可恢复，清空回收区前仍占用磁盘空间。": "Files can be restored. Disk space is not freed until the trash is emptied.",
+      "桌面版进入系统废纸篓/回收站；无桌面服务时保存在原目录 .trash/files，可恢复。": "Desktop: move to the system Trash or Recycle Bin. Without desktop integration, files are kept in .trash/files under the original directory for recovery.",
+      "可在系统废纸篓/回收站中恢复": "Restore from the system Trash or Recycle Bin",
+      "可从回收区恢复": "Restore from trash",
+      "可从原目录的 .trash/files 恢复，原路径见 restore.json": "Restore from .trash/files under the original directory; restore.json records the original path",
+      "已移入回收区，可恢复": "Moved to trash; recovery is available",
+      "移入回收区后可恢复": "Move to trash; recovery is available",
+      "空文件夹也会移入回收区，可恢复": "The empty folder will also move to trash and can be restored",
+      "移入回收区后可恢复；回收期间 AI 不再使用这份资料。": "This file can be restored from trash. The AI will not use it while it is in trash.",
+      "请更新并重启应用后再回收文件": "Update and restart the app before moving files to trash",
+      "此目录仍有任务或后台命令在运行，请结束后再回收文件": "A task or background command is using this directory. Wait for it to finish before moving files to trash.",
+      "服务尚未启用可恢复回收，请更新并重启应用；文件未处理": "The server does not support recoverable deletion. Update and restart the app; no files were processed.",
       "历史记录未提供核对时间": "No confirmation time in this record",
       "沿用上轮清单，待核对": "Previous checklist, awaiting review",
       "· 待核对": "· Awaiting review",
@@ -3584,6 +3599,11 @@
   // 外部引擎开跑前那道闸（engines/gate.js、server.js）的话：引擎名和型号夹在中间。引擎名（本机 Codex…）再查一次词典
   const engName = (s) => { const k = String(s).trim(); return Object.prototype.hasOwnProperty.call(DICT.en, k) ? DICT.en[k] : k; };
   PATTERNS.en.push(
+    [/^已回收 (\d+) 处中间文件（(.+?)）(?:，(\d+) 项清单已变化，未处理)?。(.+)$/, m => `Moved ${m[1]} intermediate locations to trash (${m[2]})${m[3] ? `; ${m[3]} changed entries were left untouched` : ""}. ${lookup(m[4], "en") || m[4]}`],
+    [/^已回收 (\d+) 处（(.+?)）。(.+)$/, m => `Moved ${m[1]} locations to trash (${m[2]}). ${lookup(m[3], "en") || m[3]}`],
+    [/^回收这 (\d+) 个（(.+)）$/, "Move $1 items to trash ($2)"],
+    [/^合计 (.+)，清空回收区前仍占用磁盘空间$/, "Total $1; disk space is not freed until trash is emptied"],
+    [/^里面有 (\d+\+?) 个文件，将整体移入回收区，可恢复$/, "$1 files inside. Move the folder to trash; recovery is available."],
     [/^清单核对时间：(.+)$/, "Checklist confirmed at $1"],
     [/^已确认 (\d+)\/(\d+) · 清单当前项：(.+)$/, "Confirmed $1/$2 · Checklist step: $3"],
     [/^已确认 (\d+)\/(\d+) · 下一项：(.+)$/, "Confirmed $1/$2 · Next: $3"],

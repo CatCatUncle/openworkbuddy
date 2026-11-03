@@ -10,7 +10,7 @@
  *
  *   · 该提的没提 → 用户的硬盘继续涨，他自己不会发现（2026-09-18 那次，仓库涨到 4.3 GB
  *     才被翻出来）。这种坏法很安静：界面上永远写着「没找着能清的」，全绿。
- *   · 不该提的提了 → 用户点了确定，交付物没了，而且**删就是真删**，不进回收站。
+ *   · 不该提的提了 → 用户点了确定，交付物没了，必须能从回收区恢复。
  *
  * 所以每条规则都成对写：正向证明它会响，反向证明前提不成立时它闭嘴。
  * 少了反向那一半，「一条永远返回空清单的规则」和「一条见谁删谁的规则」都能全绿。
@@ -71,6 +71,7 @@ function frames(prefix, n, size) {
   return o;
 }
 
+(async () => {
 console.log("\n① 抽帧 / 逐帧图：成片出来了才敢提");
 {
   const ws = fixture({ ...pfx("任务A/frames/", frames("f_", 30, 1000)), "任务A/成片.mp4": 5000 });
@@ -111,14 +112,23 @@ console.log("\n② 分离出来的音轨：mp3 已经转好了才敢提");
 
 console.log("\n③ 编译产物：源码还在，随时重编得出来");
 {
-  const ws = fixture({ "任务C/app.xcodeproj/project.pbxproj": 200, "任务C/build/App.app/bin": 90000, "任务C/说明.md": 100 });
+  const ws = fixture({ "任务C/app.xcodeproj/project.pbxproj": 200, "任务C/node_modules/pkg/index.js": 90000, "任务C/说明.md": 100 });
   const p = sweep.plan(ws);
-  ok(group(p, "build") && group(p, "build").bytes === 90000, "build/ 整个算进去了", group(p, "build"));
-  ok(pathsOf(p, "build").join() === "任务C/build", "认领的是目录本身，不是里面一条条文件", pathsOf(p, "build"));
+  ok(group(p, "build") && group(p, "build").bytes === 90000, "依赖目录进入候选清单", group(p, "build"));
+  ok(pathsOf(p, "build").join() === "任务C/node_modules", "认领的是目录本身，不是里面一条条文件", pathsOf(p, "build"));
 
   // 反向：一个任务里只有 build/，说明我理解错了这个目录是什么
   const ws2 = fixture({ "任务D/build/x.o": 1000 });
   ok(!group(sweep.plan(ws2), "build"), "反向对照：任务里除了 build/ 什么都没有，就不碰（多半是我看错了这个目录）");
+}
+
+console.log("\n③.1 通用输出目录不是可丢弃缓存");
+{
+  const ws = fixture({ "任务视频/说明.md": "说明", "任务视频/out/raw.mp4": "rendered-video", "任务视频/out/bgm.wav": "audio", "任务视频/dist/index.html": "site", "任务视频/build/result.pdf": "report", "任务视频/target/final.zip": "bundle" });
+  const p = sweep.plan(ws);
+  ok(!p.groups.some(g => g.items.some(i => /任务视频\/(out|dist|build|target)$/.test(i.path))), "不能仅凭 out/dist/build/target 名字回收整个成果目录");
+  const r = await sweep.apply(ws, ["任务视频/out", "任务视频/build", "任务视频/dist", "任务视频/target"]);
+  ok(r.removed.length === 0 && fs.readFileSync(path.join(ws, "任务视频/out/raw.mp4"), "utf8") === "rendered-video" && fs.readFileSync(path.join(ws, "任务视频/out/bgm.wav"), "utf8") === "audio", "复现本次 raw.mp4/bgm.wav 事故：整个 out/ 不再可清理");
 }
 
 console.log("\n④ 零碎：cookie 库、空的错误输出、抓取残渣");
@@ -194,7 +204,7 @@ console.log("\n⑤b 调试草稿：_ 开头的脚本、check_ 截图默认就勾
   ok(!pathsOf(sweep.plan(cl), "debug").length, "反向对照：checklist.png 不是 check_ 草稿", pathsOf(sweep.plan(cl), "debug"));
 
   // 真删一遍：apply 认这一组
-  const r = sweep.apply(ws, ["任务G1/_pose.js", "任务G1/check_02.png"]);
+  const r = await sweep.apply(ws, ["任务G1/_pose.js", "任务G1/check_02.png"]);
   ok(r.removed.length === 2 && !fs.existsSync(path.join(ws, "任务G1/_pose.js")) && fs.existsSync(path.join(ws, "任务G1/鹈鹕鹕飞车.html")),
     "apply 删得掉草稿，成品还在", r);
 }
@@ -240,21 +250,25 @@ console.log("\n⑧ 红线：apply() 不许信任传进来的路径");
   fs.writeFileSync(outside, "别人的东西");
   trash.push(outside);
 
-  const r = sweep.apply(ws, ["任务O/ck.db", "任务O/报告.md", "机密.txt", "../" + path.basename(outside), "/etc/hosts"]);
+  const r = await sweep.apply(ws, ["任务O/ck.db", "任务O/报告.md", "机密.txt", "../" + path.basename(outside), "/etc/hosts"]);
   ok(r.removed.join() === "任务O/ck.db", "只删了清单上那一个", r.removed);
   ok(r.skipped === 4, "另外四条一条都没动", r.skipped);
   ok(fs.existsSync(path.join(ws, "任务O/报告.md")), "★成品还在★ 报告.md 虽然被点了名，但它不在清单上");
   ok(fs.existsSync(path.join(ws, "机密.txt")), "★工作区里没被提名的文件还在★");
   ok(fs.existsSync(outside), "★工作区外面的文件还在★ ../ 那一手没得逞");
   ok(fs.existsSync("/etc/hosts"), "★绝对路径也没得逞★");
-  ok(r.bytes === 500, "报的是真腾出来的字节数", r.bytes);
-  ok(!fs.existsSync(path.join(ws, "任务O/ck.db")), "该删的是真删了（不是挪进 .trash —— 挪一下照样占着地方）");
-  ok(!fs.existsSync(path.join(ws, ".trash")), "★没有 .trash★ 用户要的是腾出空间");
+  ok(r.bytes === 500, "报的是移入回收区的字节数", r.bytes);
+  ok(!fs.existsSync(path.join(ws, "任务O/ck.db")), "原位置已移走");
+  const entry = path.join(ws, r.moved[0].trash);
+  const record = JSON.parse(fs.readFileSync(path.join(entry, "restore.json"), "utf8"));
+  ok(record.original === path.join(ws, "任务O/ck.db") && fs.statSync(path.join(entry, record.payload)).size === 500, "保留完整文件与原始路径，可以恢复");
+  fs.renameSync(path.join(entry, record.payload), record.original);
+  ok(fs.statSync(record.original).size === 500 && r.freedBytes === 0, "恢复后字节不变，回收不冒充已释放空间");
 
   // 清单是几分钟前算的，这中间文件可能已经被别处动过了
   const ws2 = fixture({ "任务P/ck.db": 500, "任务P/x.mp4": 10 });
   fs.rmSync(path.join(ws2, "任务P/ck.db"));
-  const r2 = sweep.apply(ws2, ["任务P/ck.db"]);
+  const r2 = await sweep.apply(ws2, ["任务P/ck.db"]);
   ok(r2.removed.length === 0 && r2.skipped === 1, "已经不在的文件算 skipped，不算删成功", r2);
 }
 
@@ -269,6 +283,43 @@ console.log("\n⑨ 不碰的地方");
   ok(all.includes("任务Q/ck.db"), "★反向对照★ 正常任务照常扫（证明不是整棵树都跳过了）");
 }
 
+console.log("\n⑩ 原件保留、系统回收与运行中保护");
+{
+  const fileTrash = require(mod("file-trash"));
+  const ws = fixture({ "a.txt": "original", "folder/result.mp4": "movie", "任务/ck.db": "cookie", "任务/x.mp4": "final" });
+  let failed = false;
+  try { await fileTrash.move(ws, path.join(ws, "a.txt"), { trashItem: async () => { throw Error("系统拒绝回收"); } }); } catch { failed = true; }
+  ok(failed && fs.readFileSync(path.join(ws, "a.txt"), "utf8") === "original" && !fs.existsSync(path.join(ws, ".trash")), "系统回收失败保留原件，不回退到 rm 或其他删除路径");
+  const fakeTrash = fixture({});
+  const native = await fileTrash.move(ws, path.join(ws, "a.txt"), { trashItem: async source => fs.promises.rename(source, path.join(fakeTrash, "a.txt")) });
+  ok(native.method === "system" && fs.readFileSync(path.join(fakeTrash, "a.txt"), "utf8") === "original", "桌面接口真正收到文件且原字节保留");
+  const folder = await fileTrash.move(ws, path.join(ws, "folder"), { trashItem: null });
+  const entry = path.join(ws, folder.trash), record = JSON.parse(fs.readFileSync(path.join(entry, "restore.json"), "utf8"));
+  fs.renameSync(path.join(entry, record.payload), record.original);
+  ok(fs.readFileSync(path.join(ws, "folder/result.mp4"), "utf8") === "movie", "目录整体回收后可以原样恢复含视频的目录");
+  let busy = false;
+  try { await sweep.apply(ws, ["任务/ck.db"], { beforeMove: () => { throw Object.assign(Error("仍在运行"), { status: 409 }); } }); } catch (e) { busy = e.status === 409; }
+  ok(busy && fs.existsSync(path.join(ws, "任务/ck.db")), "运行中保护在任何文件移动前拒绝清理");
+  const partial = fixture({ "任务/ck.db": "one", "任务/tmp.db": "two", "任务/x.mp4": "final" });
+  const result = await sweep.apply(partial, ["任务/ck.db", "任务/tmp.db"], { trashItem: async source => {
+    if (source.endsWith("tmp.db")) throw Error("被占用");
+    await fs.promises.rename(source, path.join(fakeTrash, "ck.db"));
+  } });
+  ok(result.removed.length === 1 && result.failed.length === 1 && fs.readFileSync(path.join(partial, "任务/tmp.db"), "utf8") === "two", "部分失败准确报告，未回收原件仍在，不把失败记为成功");
+  if (process.platform !== "win32") {
+    const linked = fixture({ "source.txt": "safe" }), outside = fixture({ "keep.txt": "outside" });
+    fs.symlinkSync(outside, path.join(linked, ".trash"), "dir");
+    let rejected = false;
+    try { await fileTrash.move(linked, path.join(linked, "source.txt"), { trashItem: null }); } catch { rejected = true; }
+    ok(rejected && fs.readFileSync(path.join(linked, "source.txt"), "utf8") === "safe" && fs.readdirSync(outside).join() === "keep.txt", "回收目录被软链替换时拒绝，不写出工作区，不动原件");
+    fs.symlinkSync(outside, path.join(linked, "alias"), "dir");
+    rejected = false;
+    try { await fileTrash.move(linked, path.join(linked, "alias/keep.txt"), { trashItem: async () => { throw Error("不应调用"); } }); } catch { rejected = true; }
+    ok(rejected && fs.existsSync(path.join(outside, "keep.txt")), "源路径含链接也不会移动外部文件");
+  }
+}
+
 for (const d of trash) { try { fs.rmSync(d, { recursive: true, force: true }); } catch {} }
 console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
 process.exit(fail ? 1 : 0);
+})().catch(error => { console.error(error); for (const d of trash) { try { fs.rmSync(d, { recursive:true, force:true }); } catch {} } process.exit(1); });

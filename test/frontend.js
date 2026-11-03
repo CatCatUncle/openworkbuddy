@@ -322,8 +322,9 @@ function openSweep(scope){ window.reopened = (window.reopened || []).concat(scop
 window.askConfirm = async () => (window.askAnswer === undefined ? true : window.askAnswer);
 window.posts = [];
 window.fetch = (url, opt) => {
+  if (String(url).includes("capabilities=1")) return Promise.resolve({json:async()=>({recoverable:window.trashCapable!==false})});
   window.posts.push({ url, body: opt && opt.body ? JSON.parse(opt.body) : null });
-  return Promise.resolve({ json: () => Promise.resolve({ ok: true, removed: ["a", "b"], bytes: 43300000, skipped: 1, files: [] }) });
+  return Promise.resolve({ json: () => Promise.resolve(window.sweepError ? { error:"回收失败", removed:["a"],files:[] } : { ok: true, removed: ["a", "b"], bytes: 43300000, skipped: 1, files: [] }) });
 };
 
 `;
@@ -336,7 +337,7 @@ const SWEEP_CHECKS = `
   // 一份贴着真回包形状的清单：逐帧图是一批（paths 数组），其余是单个（path 字符串），
   // 过程脚本那组服务端默认不勾
   const PLAN = () => ({
-    bytes: 41000000, count: 32, capped: false,
+    bytes: 41000000, count: 32, capped: false, recoverable: true,
     groups: [
       { key: "frames", label: "抽帧 / 逐帧图", on: true, count: 30, bytes: 40000000,
         items: [{ paths: ["任务A/frames/f_001.jpg", "任务A/frames/f_002.jpg"], path: "任务A/frames/f_*", count: 30, bytes: 40000000, why: "30 张连号抽帧图，这个任务的成片已经出来了" }] },
@@ -380,8 +381,8 @@ const SWEEP_CHECKS = `
   ok("★没勾的那组一条都没送★ 过程脚本还在用户手上",
     sent.body.paths.indexOf("任务A/get_cookie.js") < 0, JSON.stringify(sent.body.paths));
   ok("带上了这一轮的起点（免得把三周前的旧任务一起端上来）", sent.body.since === 1758000000000);
-  ok("删完了卡片收成一句话", card.classList.contains("done") && /腾出/.test(card.textContent), card.textContent.slice(0, 80));
-  ok("已经不在的那些也说出来了", /1 个已经不在了/.test(card.textContent), card.textContent.slice(0, 120));
+  ok("删完了卡片收成一句话", card.classList.contains("done") && /已回收/.test(card.textContent), card.textContent.slice(0, 80));
+  ok("已经不在的那些也说出来了", /1 项清单已变化/.test(card.textContent), card.textContent.slice(0, 120));
   ok("成果文件那一栏跟着刷新了", window.filesRerendered === true);
 
   // 反向对照：点「先留着」，一个字节都不许删
@@ -391,6 +392,17 @@ const SWEEP_CHECKS = `
   card2.querySelector(".sw-no").click(); await tick();
   ok("★「先留着」不发任何请求★", window.posts.length === 0, JSON.stringify(window.posts));
   ok("「先留着」之后告诉用户以后去哪找", /整理文件夹/.test(card2.textContent), card2.textContent.slice(0, 120));
+  window.posts.length = 0; window.trashCapable = false;
+  const legacyCard = makeSweepCard({ type: "sweep", ...PLAN() }); document.body.append(legacyCard);
+  legacyCard.querySelector(".sw-go").click(); await tick();
+  ok("旧服务未声明可恢复能力时，绝不发送删除请求", window.posts.length === 0 && !legacyCard.classList.contains("done"));
+  legacyCard.remove();
+  window.trashCapable = true; window.sweepError = true;
+  const failedCard = makeSweepCard({ type: "sweep", ...PLAN() }); document.body.append(failedCard);
+  failedCard.querySelector(".sw-go").click(); await tick();
+  ok("服务端部分失败不会显示回收成功", !failedCard.classList.contains("done") && (window.toasts || []).some(t => t.includes("回收失败")));
+  failedCard.remove();
+  window.sweepError = false;
 
   // ---------- 面板 ----------
   mBody.innerHTML = '<div class="sweep-panel"></div>';

@@ -68,7 +68,9 @@ Next, try the [core scenarios](#you-say-it-it-hands-you-the-file) or read the [u
 
 Adjust font size, theme and density from the profile menu → Appearance.
 
-Preview improvements in development fit content automatically on first display and when the preview width changes, while preserving manual zoom. See [preview controls and format limits](docs/文件预览与转换.md) (Chinese; not included in v0.18.2 installers).
+Preview improvements in v0.18.3 fit content automatically on first display and when the preview width changes, while preserving manual zoom. See [preview controls and format limits](docs/文件预览与转换.md) (Chinese; available in v0.18.3).
+
+Intermediate-file cleanup and library deletion now use recoverable trash: the system Trash/Recycle Bin on desktop, or `.trash/files/` with original-path records on a server. Generic output names such as `out/` no longer justify removing an entire directory; active tasks and background commands block cleanup. See [file cleanup and recovery](docs/文件清理与恢复.md) (Chinese). Disk space remains occupied until trash is emptied; native trash failures never fall back to permanent deletion.
 
 When deleting a task, its app-created folder is selected for cleanup by default; uncheck the option to keep its files. Desktop builds move it to the system Trash or Recycle Bin. Server-only builds move it to `.trash/tasks/` under its original workspace, with a `restore.json` recording the original location. Project roots and folders shared by other tasks are retained. Running tasks finish stopping and saving before removal; a cleanup failure keeps the conversation and shows the reason.
 
@@ -270,9 +272,11 @@ One-shot and pipe mode **never** ask you questions, so scripts and cron don't ha
 
 Entry points are `server.js`, `cli.js` and `src/im/`; the Agent is in `src/agent/agent.js`, with tools in `src/agent/tools.js` and `src/tools/`. Sessions, config and usage are stored locally under `data/`; task files go to the project workspace. See [code architecture](docs/代码架构.md) for layers and [implementation details](docs/实现细节.md) for a task walkthrough (both Chinese).
 
-The built-in Agent alternates model decisions and tool execution, with concurrent read-only batches and independent media generation. Progress improvements in development periodically reconcile checklists, separate confirmed completion from current activity, and keep expert checklists from replacing the main plan. Tool counts never become completion percentages. See [Agent execution and progress](docs/Agent执行与进度.md) for the comparison with Plan / Execute and LLMCompiler (Chinese; not included in the v0.18.2 installers).
+The built-in Agent alternates model decisions and tool execution, with concurrent read-only batches and independent media generation. Progress improvements in v0.18.3 periodically reconcile checklists, separate confirmed completion from current activity, and keep expert checklists from replacing the main plan. Tool counts never become completion percentages. See [Agent execution and progress](docs/Agent执行与进度.md) for the comparison with Plan / Execute and LLMCompiler (Chinese; available in v0.18.3).
 
 ## What's new
+
+- **Nov 3** v0.18.3: recoverable file cleanup protects output directories and active tasks; previews fit automatically on open, and long tasks reconcile progress during execution. See [cleanup and recovery](docs/文件清理与恢复.md) (Chinese).
 
 - **Nov 1** v0.18.2: deleting a task selects its dedicated folder for cleanup by default. Uncheck to keep files. Cleanup moves files to the trash and preserves project roots and shared folders.
 

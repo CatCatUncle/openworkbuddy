@@ -8128,6 +8128,18 @@ async function testSweepApi() {
     const anonDel = await call("POST", "/api/files/sweep", { paths: ["任务_短片/ck.db"] }, false);
     assert(anonDel.code === 401, "没登录居然能删东西（HTTP " + anonDel.code + "）：" + anonDel.body.slice(0, 120));
     assert(fs.existsSync(path.join(ws, "任务_短片/ck.db")), "没登录那一发真把文件删了");
+    const capability = await call("GET", "/api/files/sweep?capabilities=1");
+    assert(capability.json.recoverable === true, "必须明确宣告可恢复回收能力，新界面不向旧服务发送删除请求");
+    const liveDir = path.join(home, "data", "cli-live"); fs.mkdirSync(liveDir, { recursive: true });
+    const liveFile = path.join(liveDir, "sweep-busy.json");
+    fs.writeFileSync(liveFile, JSON.stringify({ pid: process.pid, beatAt: Date.now(), cwd: path.join(ws, "任务_短片"), title: "仍在渲染", user: "e2e" }));
+    const busyPlan = await call("GET", "/api/files/sweep");
+    assert(busyPlan.json.blocked, "运行中的工作区在清理面板明确禁用回收");
+    const busyDelete = await call("POST", "/api/files/sweep", { paths: ["任务_短片/ck.db"] });
+    assert(busyDelete.code === 409 && fs.existsSync(path.join(ws, "任务_短片/ck.db")), "运行中的 CLI 任务阻止回收，不动文件");
+    const busySingle = await call("POST", "/api/files/delete", { path: "任务_短片/ck.db" });
+    assert(busySingle.code === 409 && fs.existsSync(path.join(ws, "任务_短片/ck.db")), "单文件删除同样不能动运行中任务");
+    fs.unlinkSync(liveFile);
 
     // ② 清单：规则确实挂上去了
     const r = await call("GET", "/api/files/sweep");
@@ -8173,8 +8185,10 @@ async function testSweepApi() {
     assert(!fs.existsSync(path.join(ws, "任务_短片/frames/f_001.jpg")), "逐帧图没删掉");
     assert(fs.existsSync(path.join(ws, "任务_短片/成片.mp4")), "★成片被一起删了★ 这是这次任务唯一要留的东西");
     assert(fs.existsSync(path.join(ws, "任务_短片/交付说明.md")), "★交付说明被一起删了★");
-    // 删就是真删：挪进 .trash 的话用户的盘一个字节都没腾出来
-    assert(!fs.existsSync(path.join(ws, ".trash")), "★挪进 .trash 了★ 那样一点空间都没腾出来");
+    assert(del.json.moved.length === 3 && del.json.freedBytes === 0, "回收不是永久删除，不能声称已释放空间");
+    const recovered = del.json.moved.find(m => m.name === "任务_短片/ck.db");
+    const entry = path.join(ws, recovered.trash), restore = JSON.parse(fs.readFileSync(path.join(entry, "restore.json"), "utf8"));
+    assert(restore.original === path.join(ws, "任务_短片/ck.db") && fs.statSync(path.join(entry, restore.payload)).size === 800, "HTTP 清理保留原始字节与恢复路径");
     assert(Array.isArray(del.json.files), "回包里没带刷新后的产物清单，界面上那一栏会停在删之前的样子");
 
     // ⑦ 再问一遍：该空了。这一条顺带证明清单不是缓存出来的
@@ -8187,6 +8201,16 @@ async function testSweepApi() {
     const line = JSON.stringify(au.json || []);
     assert(/任务_短片\/ck\.db/.test(line) && /任务_短片\/frames/.test(line),
       "审计里没记下删了什么，只记个数目等于没记：" + line.slice(0, 400));
+    put("manual.txt", 123);
+    const single = await call("POST", "/api/files/delete", { path: "manual.txt" });
+    assert(single.code === 200 && single.json.method === "local" && fs.statSync(path.join(ws, single.json.trash, "item")).size === 123, "单文件入口也保留可恢复副本");
+    const library = path.join(home, "data", "library"); fs.mkdirSync(library, { recursive: true });
+    fs.writeFileSync(path.join(library, "original.docx"), "library-original");
+    const libraryDelete = await call("DELETE", "/api/library/file/original.docx");
+    assert(libraryDelete.code === 200 && libraryDelete.json.method === "local" && fs.readFileSync(path.join(library, libraryDelete.json.trash, "item"), "utf8") === "library-original", "资料库删除保留原文档字节");
+    fs.mkdirSync(path.join(library, "empty"));
+    const folderDelete = await call("DELETE", "/api/library/folder?dir=empty");
+    assert(folderDelete.code === 200 && folderDelete.json.method === "local" && fs.statSync(path.join(library, folderDelete.json.trash, "item")).isDirectory(), "空文件夹也进入回收区");
   } finally {
     try { booted.child.kill(); } catch {}
     try { fs.rmSync(home, { recursive: true, force: true }); } catch {}

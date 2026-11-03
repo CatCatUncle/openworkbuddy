@@ -1044,13 +1044,15 @@ async function renderLibPage() {
     });
     if (!yes) return;
     if (n) { libState.dir = dir; libState.pick = null; return renderLibPage(); }
+    const capability = await fetch("/api/files/sweep?capabilities=1").then(r => r.json()).catch(() => ({}));
+    if (!capability.recoverable) return toast("服务尚未启用可恢复回收，请更新并重启应用；文件未处理", "circle-x");
     const r = await fetch("/api/library/folder?dir=" + encodeURIComponent(dir), { method: "DELETE" })
       .then(x => x.json()).catch(() => ({ error: "网络异常" }));
     if (!r || !r.ok) return toast((r && r.error) || "删不掉", "circle-x");
     // 删的可能就是脚下这一层（操作条上那颗）。不退出去的话，下一次 renderLibPage
     // 还拿着这个已经没了的路径去问服务端，人看到的是一页空白外加一句「这个文件夹还是空的」
     if (libState.dir === dir) libState.dir = dir.split("/").slice(0, -1).join("/");
-    toast("文件夹已删掉", "circle-check");
+    toast(r.recovery || "已移入回收区，可恢复", "circle-check");
     renderLibPage();
   });
   // 删资料。删掉之后右边的预览栏可能还挂着这一份——不清掉的话，列表里已经没了、
@@ -1061,15 +1063,17 @@ async function renderLibPage() {
     const path = a.dataset.delFile;
     const yes = await askConfirm({
       title: `删掉「${path.split("/").pop()}」？`,
-      hint: "从资料库里删掉，撤不回来。之后 AI 做任务也查不到它了。",
+      hint: "移入回收区后可恢复；回收期间 AI 不再使用这份资料。",
       ok: "删掉", danger: true,
     });
     if (!yes) return;
+    const capability = await fetch("/api/files/sweep?capabilities=1").then(r => r.json()).catch(() => ({}));
+    if (!capability.recoverable) return toast("服务尚未启用可恢复回收，请更新并重启应用；文件未处理", "circle-x");
     const r = await fetch("/api/library/file/" + fpath(path), { method: "DELETE" })
       .then(x => x.json()).catch(() => ({ error: "网络异常" }));
     if (!r || !r.ok) return toast((r && r.error) || "删不掉", "circle-x");
     if (libState.pick && libState.pick.src === "lib" && libState.pick.name === path) libState.pick = null;
-    toast("已删掉", "circle-check");
+    toast(r.recovery || "已移入回收区，可恢复", "circle-check");
     renderLibPage();
   });
   // 删本地产物 / 工作区里的文件和文件夹。先让服务端验一遍（dry）：删不了的当场说，不弹确认框；
@@ -1086,17 +1090,19 @@ async function renderLibPage() {
     if (!chk || !chk.ok) return fail(chk);
     const yes = await askConfirm({
       title: `删掉「${rel.split("/").pop()}」？`,
-      hint: !chk.dir ? "删了找不回来" : chk.files ? `里面有 ${chk.files}${chk.more ? "+" : ""} 个文件，删了找不回来` : "里面是空的",
+      hint: !chk.dir ? "移入回收区后可恢复" : chk.files ? `里面有 ${chk.files}${chk.more ? "+" : ""} 个文件，将整体移入回收区，可恢复` : "空文件夹也会移入回收区，可恢复",
       ok: "删掉", danger: true,
     });
     if (!yes) return;
+    const capability = await fetch("/api/files/sweep?capabilities=1").then(r => r.json()).catch(() => ({}));
+    if (!capability.recoverable) return toast("服务尚未启用可恢复回收，请更新并重启应用；文件未处理", "circle-x");
     const r = await post(false);
     if (!r || !r.ok) return fail(r);
     const under = (p) => p === rel || String(p || "").startsWith(rel + "/");
     if (libState.pick && libState.pick.src === "ws" && under(libState.pick.name)) libState.pick = null;
     // 删的是脚下这一层（或者它的上层）：退到被删的那一格外面，不然下一趟拿着没了的路径去问
     if (libState.wsDir && under(libState.wsDir)) { libState.wsDir = rel.split("/").slice(0, -1).join("/"); libState.wsOff = 0; }
-    toast("已删掉", "circle-check");
+    toast(r.recovery || "已移入回收区，可恢复", "circle-check");
     renderLibPage();
   });
   // 任务分组：标题那一行点开/收起，右边「打开对话」直接跳回产生它的那次对话。

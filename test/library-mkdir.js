@@ -101,6 +101,7 @@ const STUB = `
   const real = window.fetch;
   window.fetch = function (u, o) {
     const s = String(u), m = ((o && o.method) || "GET").toUpperCase();
+    if (s.includes("capabilities=1")) return J({recoverable:true});
     if (s.includes("/api/library/folder") && m === "POST") {
       const b = JSON.parse(o.body);
       window.__posts.push(b);
@@ -606,7 +607,7 @@ app.whenReady().then(async () => {
     })()`);
     ok(r5.发了.length === 1 && /\/api\/library\/file\//.test(r5.发了[0]) && /报价单/.test(decodeURIComponent(r5.发了[0])),
        "★按「删掉」→ 真发了 DELETE /api/library/file/…★", r5.发了);
-    ok(/删/.test(r5.toast), "删完有回话，不是静悄悄地少了一行", r5.toast);
+    ok(/回收/.test(r5.toast), "删完有回话，不是静悄悄地少了一行", r5.toast);
 
     // 本地产物那一行的垃圾桶：先让服务端验一遍（dry），再弹框；按「算了」不真删，按「删掉」才真删
     const r6 = await run(OPENPAGE("", false) + `.then(async () => {
@@ -628,7 +629,7 @@ app.whenReady().then(async () => {
       await new Promise((r) => setTimeout(r, 200));
       return { 标题, 说明, 取消后, 确认后: window.__outDels.slice() };
     })`);
-    ok(/周报\.md/.test(r6.标题) && /找不回/.test(r6.说明), "★删本地产物也先问一句★ 标题带文件名，说明写明删了找不回来", r6);
+    ok(/周报\.md/.test(r6.标题) && /可恢复/.test(r6.说明), "★删本地产物也先问一句★ 标题带文件名，说明写明移入回收区后可恢复", r6);
     ok(r6.取消后.length === 1 && r6.取消后[0].dry === true, "★按「算了」→ 只验过一遍，没真删★", r6.取消后);
     ok(r6.确认后.length === 3 && r6.确认后[2].path === "周报.md" && !r6.确认后[2].dry,
        "★按「删掉」→ 真发了删除，删的就是那一行★", r6.确认后);

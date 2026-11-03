@@ -43,6 +43,7 @@ const TABLE = Object.freeze({
   admin: "src/domains/account/admin.js",
   agent: "src/agent/agent.js",
   progress: "src/agent/progress.js",
+  "file-trash": "src/platform/file-trash.js",
   "ask-gate": "src/agent/gates/ask-gate.js",
   "auto-update": "src/desktop/auto-update.js",
   awake: "src/platform/awake.js",

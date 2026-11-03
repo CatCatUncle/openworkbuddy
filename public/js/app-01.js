@@ -2101,8 +2101,8 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
   // opts.interrupted：这一轮没有收尾事件（跑到一半进程没了、服务重启了）。
   // 不给它一个终点的话，历史记录里这一轮会永远转着「运行中…」，而那时早就没有东西可停了
   function finish(opts) {
-    finished = true;
     endText(); // 收尾前先把最后一段合回整块，下面挪 DOM、复制、存历史都按整块来读——这行必须留在最前面
+    finished = true;
     endRetry(); // 收尾了还在倒数「3 秒后重试」就是骗人，计时器也得停
     const 断了 = !!(opts && opts.interrupted);
     const pendingTools = turn.querySelectorAll(".step-card .spinner").length;
@@ -2783,7 +2783,7 @@ let sweepSeq = 0; // 扫描是异步的，用户可能连点两下「只看这�
 async function openSweep(scope) {
   mask.classList.add("show");
   modalBox.classList.remove("wide");
-  mTitle.textContent = "整理文件夹 · 腾出空间";
+  mTitle.textContent = "整理文件夹";
   mBody.innerHTML = `<div class="sweep-panel"><div class="sw-empty">正在看你的工作区……</div></div>`;
   const seq = ++sweepSeq;
   const task = scope && scope.task ? scope.task : "";
@@ -2822,7 +2822,7 @@ function renderSweepPanel(p, task) {
       <button type="button" class="sw-re" title="重新扫一遍">${ic("refresh-cw")}</button>
     </div>
     <h4>${ic("eraser")}能清掉的中间文件</h4>
-    ${groups.length ? `<div class="sw-rows">${rows}</div>
+    ${groups.length ? `<div class="sw-rows">${rows}</div><p class="sw-why">移入回收区后可恢复，清空回收区前仍占用磁盘空间。</p>
       <div class="sw-acts"><button type="button" class="sw-go"></button>
         <button type="button" class="sw-lite sw-pick-all">全选</button>
         <button type="button" class="sw-lite sw-pick-def">回到默认</button></div>`
@@ -2845,8 +2845,10 @@ function renderSweepPanel(p, task) {
     const sel = picked();
     const n = sel.reduce((a, g) => a + g.count, 0);
     const b = sel.reduce((a, g) => a + g.bytes, 0);
-    go.textContent = n ? `清掉这 ${n} 个，腾出 ${fmtSize(b)}` : "一个都没勾";
-    go.disabled = !n;
+    go.textContent = n ? `回收这 ${n} 个（${fmtSize(b)}）` : "一个都没勾";
+    go.disabled = !n || !!p.blocked || !p.recoverable;
+    if (!p.recoverable) go.textContent = "请更新并重启应用后再回收文件";
+    if (p.blocked) go.textContent = p.blocked;
   };
   boxes.forEach((b) => b.addEventListener("change", sync));
   sync();
@@ -2871,24 +2873,26 @@ function renderSweepPanel(p, task) {
     const sel = picked();
     const paths = [];
     for (const g of sel) for (const it of g.items || []) { if (it.paths) paths.push(...it.paths); else if (it.path) paths.push(it.path); }
-    // 删是真删、不进回收站，所以这里必须拦一道。列出的是**组**不是每一条：
+    // 回收前列出具体分组，避免误把仍需保留的文件选中。
     // 一百多条路径糊在框里等于没写，反倒让人闭着眼点确定
     if (!(await askConfirm({
-      title: "这些会被直接删掉",
-      hint: "不进回收站，也找不回来。",
+      title: "将这些文件移入回收区？",
+      hint: "桌面版进入系统废纸篓/回收站；无桌面服务时保存在原目录 .trash/files，可恢复。",
       items: sel.map((g) => `${g.label || g.key}：${g.count} 个，${fmtSize(g.bytes)}`),
-      note: `一共腾出 ${fmtSize(sel.reduce((a, g) => a + g.bytes, 0))}`,
-      ok: "删掉", danger: true,
+      note: `合计 ${fmtSize(sel.reduce((a, g) => a + g.bytes, 0))}，清空回收区前仍占用磁盘空间`,
+      ok: "移入回收区", danger: true,
     }))) return;
     box.classList.add("busy");
     try {
+      const capability = await fetch("/api/files/sweep?capabilities=1").then(r => r.json());
+      if (!capability.recoverable) throw new Error("服务尚未启用可恢复回收，请更新并重启应用；文件未处理");
       const r = await fetch("/api/files/sweep", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ paths, task: task || undefined }),
       }).then((x) => x.json());
-      if (r.error) throw new Error(r.error);
       if (r.files) renderFiles(r.files);
-      toast(`腾出 ${fmtSize(r.bytes || 0)}${r.skipped ? `，${r.skipped} 个已经不在了` : ""}`, "circle-check");
+      if (r.error) throw new Error(`${r.error}；已回收 ${(r.removed || []).length} 处。${r.recovery || "请检查原位置和回收区"}`);
+      toast(`已回收 ${(r.removed || []).length} 处（${fmtSize(r.bytes || 0)}）。${r.recovery || "可从回收区恢复"}`, "circle-check");
       openSweep({ task });  // 重扫一遍：删完剩下什么，当场看见
     } catch (e) {
       box.classList.remove("busy");
@@ -2901,8 +2905,8 @@ function renderSweepPanel(p, task) {
  * 收尾问一句：这次顺手造的中间文件要不要清掉。
  *
  * 为什么是「问」不是「自动清」：判断中间物靠的是规则（成片出来了 → 逐帧图可以扔），
- * 规则会看走眼。而删是真删、不进回收站——用户要的是腾出空间，挪一下照样占着地方。
- * 既然收不回来，那就必须是用户点的头，而且点头之前得看得见清单和理由。
+ * 规则会看走眼，所以只移入回收区，用户可以恢复。
+ * 仍需用户点头，而且点头之前得看得见清单和理由。
  *
  * 为什么每组单独一个勾：几类东西的把握程度不一样。逐帧图、编译产物、cookie 库很确定；
  * 「任务目录里随手写的脚本」就没那么确定——用户完全可能就是让我写个脚本给他。
@@ -2925,7 +2929,7 @@ function makeSweepCard(ev) {
     </label>`;
   }).join("");
   card.innerHTML = `<div class="sw-hd">${ic("eraser")}<span class="sw-lb"></span></div>
-    <div class="sw-rows">${rows}</div>
+    <div class="sw-rows">${rows}</div><p class="sw-why">移入回收区后可恢复，清空回收区前仍占用磁盘空间。</p>
     <div class="sw-acts"><button type="button" class="sw-go"></button><button type="button" class="sw-no">先留着</button></div>`;
   const lb = card.querySelector(".sw-lb");
   const go = card.querySelector(".sw-go");
@@ -2938,7 +2942,7 @@ function makeSweepCard(ev) {
     const all = groups.reduce((n, g) => n + g.count, 0);
     const allB = groups.reduce((n, g) => n + g.bytes, 0);
     lb.textContent = `这一趟顺手造了 ${all} 个中间文件，占 ${fmtSize(allB)}。要清掉吗？`;
-    go.textContent = count ? `清掉这 ${count} 个（腾出 ${fmtSize(bytes)}）` : "一个都没勾";
+    go.textContent = count ? `回收这 ${count} 个（${fmtSize(bytes)}）` : "一个都没勾";
     go.disabled = !count;
   };
   boxes.forEach((b) => b.addEventListener("change", sync));
@@ -2954,20 +2958,24 @@ function makeSweepCard(ev) {
     for (const g of sel) for (const it of g.items || []) { if (it.paths) paths.push(...it.paths); else if (it.path) paths.push(it.path); }
     card.classList.add("busy");
     try {
+      const capability = await fetch("/api/files/sweep?capabilities=1").then(r => r.json());
+      if (!capability.recoverable) throw new Error("服务尚未启用可恢复回收，请更新并重启应用；文件未处理");
       const r = await fetch("/api/files/sweep", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ paths, since: ev.since, task: ev.task || undefined }),
       }).then((x) => x.json());
       card.classList.remove("busy");
-      card.classList.add("done");
-      // 报「腾出多少」，不报「删了几个」：用户关心的是空间，一开始就是为这个来的。
-      // skipped 也要说——清单是几分钟前算的，这中间文件可能已经被别处动过了
-      const skipped = r.skipped ? `，${r.skipped} 个已经不在了` : "";
-      card.querySelector(".sw-hd").innerHTML = `${ic("eraser")}<span class="sw-done">已清掉 ${(r.removed || []).length} 处中间文件，腾出 ${fmtSize(r.bytes || 0)}${skipped}。</span>`;
       if (r.files) renderFiles(r.files);
-    } catch {
+      if (r.error) throw new Error(`${r.error}；已回收 ${(r.removed || []).length} 处。${r.recovery || "请检查原位置和回收区"}`);
+      card.classList.add("done");
+      // 只报告实际回收量与恢复位置，不声称磁盘空间已释放。
+      // skipped 也要说——清单是几分钟前算的，这中间文件可能已经被别处动过了
+      const skipped = r.skipped ? `，${r.skipped} 项清单已变化，未处理` : "";
+      card.querySelector(".sw-hd").innerHTML = `${ic("eraser")}<span class="sw-done">已回收 ${(r.removed || []).length} 处中间文件（${fmtSize(r.bytes || 0)}）${skipped}。${esc(r.recovery || "可从回收区恢复")}</span>`;
+      if (r.files) renderFiles(r.files);
+    } catch (error) {
       card.classList.remove("busy");
-      toast("清理失败", "circle-x");
+      toast(error.message || "回收失败，请检查原位置和回收区", "circle-x");
     }
   };
   return card;

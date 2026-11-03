@@ -22,8 +22,8 @@
  * ② **只提议，不自作主张。** 这个模块算出一张清单交给界面，删不删是用户点的。
  *    每一组都写明「为什么认为它是中间物」，用户得能在点头之前判断我是不是看错了。
  *
- * ③ **删就是真删。** 不挪进 .trash —— 用户要的是腾出空间，挪一下照样占着地方。
- *    正因为是真删，才有前面两条兜着。
+ * ③ **只回收，不永久删除。** 桌面版进系统废纸篓；服务端保留 .trash/files 恢复记录。
+ *    清空回收区前仍占磁盘空间，不能把移走的字节数说成已经释放。
  *
  * 为什么不复用 tools.js 的 outputFiles()：它按 mtime 倒序只取最新 500 条、最深只走 3 层。
  * 而上面四宗里，anim/frames/ 在第 4 层、separated/htdemucs/full_audio/ 在第 5 层——
@@ -32,6 +32,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const fileTrash = require("../platform/file-trash");
 
 /** 走多深、看多少个文件。比 outputFiles() 放得开，但不是不设防 */
 const MAX_DEPTH = 8;
@@ -39,7 +40,7 @@ const MAX_FILES = 40000;
 
 /** 编译/依赖目录：名字本身就说明了它是产物，不用进去看 */
 const BUILD_DIRS = new Set([
-  "build", "dist", "out", "target", ".next", ".nuxt", ".parcel-cache", ".turbo",
+  ".next", ".nuxt", ".parcel-cache", ".turbo",
   "node_modules", "__pycache__", ".venv", "venv", "DerivedData", ".gradle", "Pods",
 ]);
 /** 音轨分离工具的输出目录 */
@@ -214,7 +215,7 @@ function seqDirInfo(d) {
 const GROUP_META = {
   frames: { label: "抽帧 / 逐帧图", on: true },
   stems:  { label: "分离出来的音轨", on: true },
-  build:  { label: "编译产物", on: true },
+  build:  { label: "依赖与缓存", on: false },
   scratch:{ label: "零碎（cookie 库、空的错误输出）", on: true },
   debug:  { label: "调试草稿", on: true },
   script: { label: "过程脚本", on: false },
@@ -296,7 +297,7 @@ function plan(root, opts = {}) {
       const s = dirSize(path.join(root, d.rel));
       if (s.count) add("build", {
         path: d.rel, count: s.count, bytes: s.bytes, capped: s.capped,
-        why: `${d.build}/ 是编译产物，源码还在同一个任务里，随时能重新编出来`,
+        why: `${d.build}/ 是依赖或缓存目录，请确认不再需要后再回收`,
       });
       claimed.push(d.rel);
       continue;
@@ -374,7 +375,9 @@ function plan(root, opts = {}) {
  * 换句话说，就算有人构造一个请求说「删 ../../.ssh」，它也不在 plan 里，删不动。
  * 这比逐条写路径校验可靠——校验规则会漏，「必须是我自己刚算出来的」不会。
  */
-function apply(root, paths, opts = {}) {
+async function apply(root, paths, opts = {}) {
+  root = path.resolve(root);
+  if (opts.beforeMove) opts.beforeMove();
   const p = plan(root, opts);
   const allow = new Map();
   for (const g of p.groups) for (const it of g.items) {
@@ -382,7 +385,7 @@ function apply(root, paths, opts = {}) {
     else allow.set(it.path, g.key);
   }
   const want = new Set((paths || []).map(String));
-  const removed = [];
+  const removed = [], moved = [], failed = [];
   let bytes = 0, skipped = 0;
   for (const rel of want) {
     if (!allow.has(rel)) { skipped++; continue; }
@@ -392,11 +395,11 @@ function apply(root, paths, opts = {}) {
     try {
       const st = fs.statSync(abs);
       const sz = st.isDirectory() ? dirSize(abs).bytes : st.size;
-      fs.rmSync(abs, { recursive: true, force: true });
-      removed.push(rel); bytes += sz;
-    } catch { skipped++; }
+      const result = await fileTrash.move(root, abs, opts);
+      removed.push(rel); moved.push({ name: rel, ...result }); bytes += sz;
+    } catch (error) { failed.push({ name: rel, reason: error.message || "回收失败，原文件已保留" }); }
   }
-  return { removed, bytes, skipped };
+  return { removed, moved, failed, bytes, skipped, freedBytes: 0, recovery: moved.some(m => m.method === "local") ? "可从原目录的 .trash/files 恢复，原路径见 restore.json" : "可在系统废纸篓/回收站中恢复" };
 }
 
 module.exports = { plan, apply, scan, usageOf, dirSize, taskOf, taskOfDir, _internals: { SEQ_RE, SEQ_MIN, BUILD_DIRS, STEM_DIRS, DEBUG_NAME_RE } };

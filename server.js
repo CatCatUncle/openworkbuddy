@@ -102,6 +102,7 @@ const netAddr = require("./src/util/net-addr");
 const childEnv = require("./src/platform/child-env"); // AI 起的子进程只拿最小环境变量；属主清单和「几个账号」从这里注册进去
 const toolward = require("./src/core/safety/toolward");
 const sweep = require("./src/agent/sweep");
+const fileTrash = require("./src/platform/file-trash");
 const modes = require("./src/core/config/modes"); // 执行模式的唯一真源（craft/goal/plan/ask）
 const cfgMerge = require("./src/core/config/config-merge"); // 存配置时把外面手改的那些合进来，不整份覆盖
 const cfgLint = require("./src/core/config/config-lint"); // 手改配置写错了当场说，别让人以为「改了没反应」
@@ -4852,15 +4853,16 @@ app.post("/api/library/folder", (req, res) => {
 
 // 删空文件夹。非空的不给删：这个接口的调用方是一个「删除」小链接，
 // 点错的代价不该是一整个文件夹的东西不可逆地没了
-app.delete("/api/library/folder", (req, res) => {
+app.delete("/api/library/folder", async (req, res) => {
   try {
     const rel = libRel((req.query || {}).dir || (req.body || {}).dir);
     if (!rel) return res.status(400).json({ error: "没说删哪个" });
     const abs = libPath(rel);
     if (!fs.existsSync(abs)) return res.json({ ok: true });
     if (libCount(abs)) return res.status(400).json({ error: "文件夹里还有东西，先清空再删" });
-    fs.rmdirSync(abs);
-    res.json({ ok: true });
+    assertCleanupIdle(libBase());
+    const moved = await fileTrash.move(libBase(), abs, { beforeMove: () => assertCleanupIdle(libBase()) });
+    res.json({ ok: true, ...moved });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -4958,12 +4960,14 @@ for (const [prefix, resolve] of [["/api/library", (req) => libPath(relOf(req))],
   });
 }
 
-app.delete("/api/library/file/*", (req, res) => {
+app.delete("/api/library/file/*", async (req, res) => {
   try {
     const p = libPath(relOf(req));
     if (fs.existsSync(p) && fs.statSync(p).isDirectory()) return res.status(400).json({ error: "这是文件夹，用删文件夹那个接口" });
-    fs.rmSync(p, { force: true });
-    res.json({ ok: true });
+    if (!fs.existsSync(p)) return res.json({ ok: true });
+    assertCleanupIdle(libBase());
+    const moved = await fileTrash.move(libBase(), p, { beforeMove: () => assertCleanupIdle(libBase()) });
+    res.json({ ok: true, ...moved });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -7080,7 +7084,7 @@ app.post("/api/files/tidy", (_req, res) => {
  * 跟隔壁 /api/files/tidy 的分工：tidy 管的是「同一份东西存了两遍」，证据是逐字节相同，
  * 所以它敢自己动手，只把副本挪进 .trash。这里管的是「过程留下的脚手架」，判断靠的是
  * 规则（成片出来了 → 逐帧图可以扔），规则会看走眼，所以这里**只出清单不动手**，
- * 删哪些由用户勾。而且删是真删——用户要的是腾出空间，挪进 .trash 照样占着地方。
+ * 删哪些由用户勾。仅回收：系统废纸篓或原目录 .trash/files，不提供永久删除回退。
  *
  * GET  给清单：?task= 只看一个任务，?since= 只看这个时刻之后动过的
  * POST 按清单删：body.paths 里的每一条都得在**这一刻重新算出来的**清单里，否则不删
@@ -7088,29 +7092,45 @@ app.post("/api/files/tidy", (_req, res) => {
 app.get("/api/files/sweep", (req, res) => {
   try {
     const q = req.query || {};
-    res.json(sweep.plan(getWorkspaceDir(), {
+    if (q.capabilities) return res.json({ recoverable: true });
+    let blocked = "";
+    try { assertCleanupIdle(getWorkspaceDir()); } catch (error) { blocked = error.message; }
+    res.json({ ...sweep.plan(getWorkspaceDir(), {
       task: q.task ? String(q.task) : undefined,
       since: q.since ? Number(q.since) : undefined,
       // 「整理文件夹」面板要多一份「地方花在哪了」。收尾那一句不要——
       // 它只问这一轮刚造的东西，翻出三周前的旧任务只会喧宾夺主
       usage: q.usage ? 1 : 0,
-    }));
+    }), blocked, recoverable: true });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
-app.post("/api/files/sweep", (req, res) => {
+function assertCleanupIdle(root) {
+  const canon = taskDirs.canonDir(root);
+  const runs = [...activeRuns.values()].map(r => r && r.root).filter(Boolean);
+  for (const r of cliLive.list({ prune: false })) if (r.live && r.cwd) runs.push(r.cwd);
+  for (const [key, n] of runDirUse) if (n) { const [base, rel] = key.split("\0"); runs.push(path.resolve(base, rel)); }
+  for (const job of require("./src/agent/code-tools").bgList()) if (job.exit === undefined && job.cwd) runs.push(job.cwd);
+  if (runs.some(dir => { const other = taskDirs.canonDir(dir); return insideDir(other, canon) || insideDir(canon, other); })) {
+    throw Object.assign(Error("此目录仍有任务或后台命令在运行，请结束后再回收文件"), { status: 409 });
+  }
+}
+app.post("/api/files/sweep", async (req, res) => {
   try {
     const b = req.body || {};
     const paths = Array.isArray(b.paths) ? b.paths.slice(0, 5000) : [];
     if (!paths.length) return res.status(400).json({ error: "没说要清哪些" });
-    const r = sweep.apply(getWorkspaceDir(), paths, {
+    const root = getWorkspaceDir();
+    const r = await sweep.apply(root, paths, {
       task: b.task ? String(b.task) : undefined,
       since: b.since ? Number(b.since) : undefined,
+      beforeMove: () => assertCleanupIdle(root),
     });
     // 审计要记**删了什么**，不是「删了几个」：事后有人问「我那个文件呢」，得查得出来
-    security.audit("清理中间文件", r.removed.join("、") || "（清单对不上，一个都没删）", "放行");
-    res.json({ ok: true, ...r, files: outputFiles() });
-  } catch (e) { res.status(400).json({ error: e.message }); }
+    security.audit("清理中间文件", `${r.removed.join("、") || "（没有回收成功的文件）"}；${r.recovery}${r.failed.length ? `；未回收：${r.failed.map(f => f.name).join("、")}` : ""}`, "放行");
+    wsBrowse.walkMemo.clear();
+    res.json({ ok: !r.failed.length, ...r, ...(r.failed.length ? { error: "部分文件的回收未确认，请检查原位置与回收区" } : {}), files: outputFiles() });
+  } catch (e) { res.status(e.status || 400).json({ error: e.message }); }
 });
 
 /**
@@ -7177,22 +7197,24 @@ function countFiles(dir, cap) {
 app.post("/api/files/delete", async (req, res) => {
   try {
     const { p, rel, dir } = deletableOf(req);
+    const root = getWorkspaceDir();
+    assertCleanupIdle(root);
     const n = dir ? countFiles(p, DEL_COUNT_CAP) : 1;
     const more = n > DEL_COUNT_CAP;
     if ((req.body || {}).dry) return res.json({ ok: true, dry: true, dir, files: Math.min(n, DEL_COUNT_CAP), more });
     const who = admin.multiUser() && req.user && req.user.username ? `${req.user.username}：` : "";
+    let moved;
     try {
-      if (dir) await fs.promises.rm(p, { recursive: true });
-      else await fs.promises.unlink(p);
+      moved = await fileTrash.move(root, p, { beforeMove: () => assertCleanupIdle(root) });
     } catch (e) {
       // 删到一半卡住（权限、被占用）：删掉的那部分照样记下来，报错别把绝对路径甩给界面
       wsBrowse.walkMemo.clear();
       security.audit("删除本地产物", `${who}${rel}（没删完：${(e && e.code) || "出错"}）`, "放行");
-      return res.status(500).json({ error: "没删干净，有的文件删不动", stale: true });
+      return res.status(500).json({ error: "文件回收未确认，请检查原位置与回收区后重试" });
     }
     wsBrowse.walkMemo.clear(); // 按任务、搜索那几条有几秒记忆，不清的话刷新回来它还在
     security.audit("删除本地产物", `${who}${rel}${dir ? `（文件夹，${more ? DEL_COUNT_CAP + "+" : n} 个文件）` : ""}`, "放行");
-    res.json({ ok: true, removed: rel, dir, files: Math.min(n, DEL_COUNT_CAP), more });
+    res.json({ ok: true, removed: rel, dir, files: Math.min(n, DEL_COUNT_CAP), more, ...moved });
   } catch (e) {
     // stale：东西已经不在了，界面那一行是旧的，前端据此重画
     res.status((e && e.status) || 400).json({ error: (e && e.message) || "删不掉", stale: !!(e && e.status === 404) });
