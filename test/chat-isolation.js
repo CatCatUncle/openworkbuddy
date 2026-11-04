@@ -17,7 +17,7 @@
  * C 还读了根下的 共享.md 再改它（这是「接着改旧文件」，该写回根）。判据：
  *   ① 跑到一半来回切对话：成果面板、文件清单、对话里的产出卡、预览面板、截图，只有这条对话自己的；
  *   ② 刷新页面接回来，照样只有自己的；
- *   ③ A 收尾：.tmp 里的旧文件只清 A 的，收尾那张「清掉草稿」卡只列 A 的、点了只删 A 的；
+ *   ③ A 收尾：.tmp 旧文件只清 A 的；草稿卡只列 A 的，工作区还有任务/后台命令时拒绝回收，全部停下后才回收 A 的；
  *   ④ A 跑完、B 被停下：只收它俩自己的预览服务、散户进程和标签页，C/D 的照跑；keep:true 的留着；
  *   ⑤ IM、定时任务、命令行三个入口跑完同样收：后台命令、散户进程、标签页一个不剩（画布走的是 D）。
  * 另有一段不开窗口的单元（子进程里跑）：写文件的落点、cdp 按对话分标签页，各带去掉修复的对照。
@@ -692,14 +692,13 @@ function electronMain() {
     ok(!!swA && swA.task === DIR.A && swA.paths.length > 0 && swA.paths.every((p) => p.startsWith(DIR.A + "/")) && swA.paths.includes(DIR.A + "/_shot.js"),
       "收尾那张「清掉草稿」卡：只列 A 文件夹里的", swA);
     const clicked = await js(`(() => { const b = chatCol.querySelector(".sweep-card .sw-go"); if (!b) return false; b.click(); return true; })()`);
-    const swDone = clicked && await waitFor(() => js(`!!chatCol.querySelector(".sweep-card.done")`), 8000, 150);
+    const refused = clicked && await waitFor(() => js(`!!chatCol.querySelector(".sweep-card:not(.busy):not(.done)")`), 8000, 150);
     const drafts = ["_shot.js", "_probe.js", "check_1.txt"];
-    ok(swDone && drafts.every((f) => !exists(`${DIR.A}/${f}`)) && ["B", "C", "D"].every((X) => drafts.every((f) => exists(`${DIR[X]}/${f}`))),
-      "点「清掉」：A 的草稿删了，B/C/D 同名的草稿一个没动", { clicked, swDone });
+    const busy = await api("POST", "/api/files/sweep", { paths: swA.paths, since: swA.since, task: DIR.A });
+    ok(refused && busy.status === 409 && ["A", "B", "C", "D"].every((X) => drafts.every((f) => exists(`${DIR[X]}/${f}`))),
+      "其它对话与 keep 后台服务仍在跑：回收被拒绝，四条对话的草稿都保留", { clicked, refused, status: busy.status });
     const oB = await js(`__iso.open(${J(SID.B)}, ${J(DIR.B)})`);
     ok(oB.b.sweepCards === 0, "切到 B：A 那张清理卡不跟过来", oB.b.sweepCards);
-    const forged = JSON.parse((await api("POST", "/api/files/sweep", { paths: [DIR.B + "/_shot.js"], since: swA ? swA.since : Date.now(), task: DIR.A })).text || "{}");
-    ok(forged.skipped >= 1 && !(forged.removed || []).length && exists(DIR.B + "/_shot.js"), "拿 A 的卡去删 B 的草稿：服务端对不上清单，一个都不删", forged);
     const wide = (await jget(`/api/files/sweep?since=${swA ? swA.since : 0}`)) || {};
     const widePaths = (wide.groups || []).flatMap((g) => (g.items || []).flatMap((i) => i.paths || [i.path]));
     ok(widePaths.includes(DIR.B + "/_shot.js"), "★反向对照★ 同一个起点不限任务文件夹算：B 的草稿就在清单里（收尾卡按任务文件夹圈住才没端上来）", widePaths);
@@ -727,6 +726,19 @@ function electronMain() {
     }, 8000, 200);
     const prunedCD = await waitFor(() => !exists(`${DIR.C}/.tmp/old_C.txt`) && !exists(`${DIR.D}/.tmp/old_D.txt`), 8000, 150);
     ok(cdEnded && deadCD && !tabsOf("C").some(tabOpen) && !tabsOf("D").some(tabOpen) && prunedCD, "C/D（含画布那条）跑完：各自的服务、标签页、.tmp 旧文件都收了", { cdEnded, deadCD, prunedCD });
+    // The old assertion tried to recycle while other conversations and keep:true jobs were live.
+    // Retain that negative case above; verify the positive isolation case only after explicitly stopping our own fixture job.
+    if (keepA && keepA.pid) process.kill(keepA.pid, "SIGTERM");
+    const idle = await waitFor(async () => !(await jget("/api/files/sweep")).blocked, 8000, 150);
+    ok(idle, "所有对话与测试保留服务停下后，回收入口恢复可用");
+    const retryPlan = await jget(`/api/files/sweep?since=${swA.since}&task=${encodeURIComponent(DIR.A)}`);
+    await js(`__iso.open(${J(SID.A)}, ${J(DIR.A)})`);
+    await js(`(() => { chatCol.querySelectorAll('.sweep-card').forEach(c => c.remove()); const c = makeSweepCard(${J({ ...retryPlan, since: swA.since, task: DIR.A })}); chatCol.append(c); c.querySelectorAll('input[type=checkbox]').forEach(b => { b.checked = true; b.dispatchEvent(new Event('change')); }); c.querySelector('.sw-go').click(); })()`);
+    const swDone = await waitFor(() => js(`!!chatCol.querySelector(".sweep-card.done")`), 8000, 150);
+    ok(swDone && drafts.every((f) => !exists(`${DIR.A}/${f}`)) && ["B", "C", "D"].every((X) => drafts.every((f) => exists(`${DIR[X]}/${f}`))),
+      "工作区空闲后重试：只回收 A 的草稿，B/C/D 同名文件都保留", { swDone });
+    const forged = JSON.parse((await api("POST", "/api/files/sweep", { paths: [DIR.B + "/_shot.js"], since: swA.since, task: DIR.A })).text || "{}");
+    ok(forged.skipped >= 1 && !(forged.removed || []).length && exists(DIR.B + "/_shot.js"), "空闲后拿 A 的卡去删 B：仍由清单边界拒绝，B 的草稿保留", forged);
     const fin = {};
     for (const X of ["A", "B", "C", "D"]) fin[X] = await changedOf(SID[X]);
     ok(["A", "B", "D"].every((X) => !fin[X].includes("共享.md") && !foreign(X, fin[X]).length) && fin.C.includes("共享.md") && !foreign("C", fin.C, true).length,
