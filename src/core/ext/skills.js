@@ -801,12 +801,7 @@ const { lineCount, maxLineWidth } = measureLineStats(p, 320); // 只要行数和
     license: "MIT", author: "zarazhangrui",
     bytes: 4 * 1024 * 1024,
     why: "一份独立开发者/AI 圈的博客、播客、X 账号订阅源，配合 web_search 追前沿（MIT 是作者在 README 里声明的，仓库没放 LICENSE 文件）",
-    // 这条会被我们自己的安装检查拦下，看过了，放行：
-    // feed-blogs.json 是它缓存下来的博客正文，第 13 行那篇文章正在**讲解**提示词注入——
-    // 原文大意是「它不动声色地让 Claude 去读 ~/.aws/credentials，编码后 POST 出去」。
-    // 同一句话写在技能的指令里是攻击，出现在它抓回来的资讯里是新闻，正则分不出这两者。
-    // 这也正是为什么 block 要能被人显式放行：静态规则的上限就在这儿。
-    reviewed: "feed-blogs.json 里缓存的一篇讲提示词注入的文章，命中 read-private-key",
+    // Current installed content no longer triggers a block. Do not retain a blanket force-install exception.
   },
   {
     name: "holo-card-studio",

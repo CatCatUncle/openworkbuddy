@@ -123,7 +123,7 @@ function pruneSeededPresets(config) {
 
 /** 向导给每家默认挑的对话模型：老出厂模板里那几个，目录里有的以目录第一条兜底 */
 const DEFAULT_CHAT_MODEL = {
-  ark: "doubao-seed-2-0-lite-260428", dashscope: "qwen-plus", openai: "gpt-5.2", openrouter: "deepseek/deepseek-chat",
+  ark: "doubao-seed-2-1-lite-260915", dashscope: "qwen-max", openai: "gpt-5.2", openrouter: "deepseek/deepseek-chat",
   zhipu: "glm-4-plus", anthropic: "claude-sonnet-5", deepseek: "deepseek-flash", moonshot: "kimi-k2-turbo-preview", ollama: "qwen3:8b",   // 只作未拉到清单时的候选；每家都能现查、重选和手填，验过才保存。
 };
 

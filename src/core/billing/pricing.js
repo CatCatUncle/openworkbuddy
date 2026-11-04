@@ -128,6 +128,13 @@ const BUILTIN = {
   // ── 国内厂商，官网就是人民币价，不过汇率这一道 ──
   "deepseek-chat":           { in: 2,    out: 8,    cached_in: 0.5 },
   "deepseek-reasoner":       { in: 4,    out: 16,   cached_in: 1 },
+  // 2026-11-04: https://api-docs.deepseek.com/quick_start/pricing/
+  // Use peak prices as an upper estimate: off-peak is half, and the provider invoice remains authoritative.
+  "deepseek-flash":          { in: $(0.3), out: $(1.2), cached_in: $(0.006), note: "2026-11-04 高峰估价；非高峰为半价，以服务商账单为准" },
+  "deepseek-v4-pro":         { in: $(1.32), out: $(3.96), cached_in: $(0.044), note: "2026-11-04 高峰估价；非高峰为半价，以服务商账单为准" },
+  // Official online-inference text rates, uniform through the 1M context window (2026-11-04).
+  // https://docs.volcengine.com/docs/lake-ai-service/large-model-billing?lang=zh
+  "doubao-seed-2-1-lite-260915": { in: 0.4, out: 1.35, cached_in: 0.16, note: "2026-11-04 在线文本刊例价；音频等模态另计" },
   "doubao-seed-1-6":         { in: 0.8,  out: 8 },
   "doubao-seed-1-6-flash":   { in: 0.15, out: 1.5 },
   "doubao-1-5-pro-32k":      { in: 0.8,  out: 2 },

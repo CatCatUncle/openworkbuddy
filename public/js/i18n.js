@@ -2799,6 +2799,8 @@
       "预设候选（需验活）": "Suggested models (test required)",
       "这个账号列出的对话候选（需验活）": "Listed chat candidates (test required)",
       "其它用途（非对话候选）": "Other uses (not chat models)",
+      "这个型号未在当前清单中列出，请刷新重选，或选「自己填…」验活": "This model is not in the current list. Refresh and choose again, or enter it manually and test.",
+      "当前账号清单未列出此型号；自定义接入点可手填并验活": "Not listed for this account. Custom endpoint IDs can be entered manually and tested.",
       "模型或接入点 ID，例如 ep-… / qwen3:8b": "Model or endpoint ID, e.g. ep-… / qwen3:8b",
       "正在查询这个账号的模型…": "Querying this account's models…",
       "服务商或 Key 已改变，请重新验活": "Provider or key changed. Please test again.",

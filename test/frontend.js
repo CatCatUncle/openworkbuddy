@@ -6813,6 +6813,20 @@ const GATE_CHECKS = `
   const names = [];
   const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
 
+  const discoveryForm = document.createElement("div");
+  discoveryForm.className = "ca-form";
+  discoveryForm.innerHTML = '<select class="ca-model"><optgroup data-presets><option value="retired">旧预设</option><option value="current">新预设</option></optgroup><option value="__custom__">自己填</option></select><input class="ca-custom"><div class="ca-tip"></div>';
+  document.body.append(discoveryForm);
+  const ds = discoveryForm.querySelector("select"), dt = discoveryForm.querySelector(".ca-tip");
+  injectLiveChat(ds, dt, { ok: true, complete: true, models: [{ id: "current", chat: true }] }, false);
+  ok("完整账号清单未列出的旧预设不可误选，默认使用现有型号", ds.querySelector('option[value="retired"]').disabled && ds.value === "current");
+  injectLiveChat(ds, dt, { ok: true, complete: false, models: [{ id: "current", chat: true }] }, false);
+  ok("分页/部分清单不冒充不存在，旧预设仍可验活", !ds.querySelector('option[value="retired"]').disabled);
+  ds.value = "__custom__"; ds.dataset.picked = "1"; discoveryForm.querySelector("input").value = "ep-user-selected";
+  injectLiveChat(ds, dt, { ok: true, complete: true, models: [{ id: "other", chat: true }, { id: "picture", chat: false, cap: "image", sure: true }] }, false);
+  ok("刷新不覆盖手填接入点，生图型号不可当对话误选", ds.value === "__custom__" && discoveryForm.querySelector("input").value === "ep-user-selected" && ds.querySelector('option[value="picture"]').disabled);
+  discoveryForm.remove();
+
   // 这一屏依赖的零碎（渠道预设、拿 Key 链接、头像编辑器、宠物卡）不是这次要测的东西，喂桩；
   // 被测的是「哪些控件画出来了」，桩只要不炸就行。
   ${IC_STUB}

@@ -1229,6 +1229,7 @@ function bindMedia(box, s) {
     f.querySelector(".mm-save").onclick = async () => {
       const cap = f.dataset.cap;
       const sel = f.querySelector(".mm-model").value;
+      if (f.querySelector(".mm-model").selectedOptions[0]?.disabled) return toast("这个型号未在当前清单中列出，请刷新重选，或选「自己填…」验活");
       const model = sel === "__custom__" ? f.querySelector(".mm-custom").value.trim() : sel;
       const prov = f.querySelector(".mm-prov").value;
       if (!prov) return toast("先建一个渠道，模型得挂在渠道上");
@@ -1442,7 +1443,7 @@ function fillModelSelect(f, s) {
   const others = p && mmRelay(p.kind) ? cat.filter((m) => m.kind !== p.kind) : [];
   const opt = (m) => `<option value="${esc(m.id)}">${esc(m.label)}（${esc(m.id)}）</option>`;
   sel.innerHTML =
-    (mine.length ? `<optgroup label="预设候选（需验活）">${mine.map(opt).join("")}</optgroup>` : "") +
+    (mine.length ? `<optgroup data-presets label="预设候选（需验活）">${mine.map(opt).join("")}</optgroup>` : "") +
     `<option value="__custom__">自己填…</option>` +
     (others.length ? `<optgroup label="别家的型号（这是中转网关，转发到上游就能用）">${others.map(opt).join("")}</optgroup>` : "");
   f.querySelector(".mm-custom").style.display = sel.value === "__custom__" ? "" : "none";
@@ -1490,12 +1491,13 @@ function injectLive(sel, tip, d, cap, local) {
   const title = (c) => (MEDIA_CAPS.find((x) => x.cap === c) || {}).title || "";
   const same = d.models.filter((m) => m.cap === cap);
   const rest = d.models.filter((m) => m.cap !== cap);
+  markUnlistedPresets(sel, d, same.length > 0);
   // 别的那一堆里，渠道自己说死了是干什么的（sure），就把用途写在名字后面。
   // 它们一直在这个
   // 下拉里排着队，跟能用的长得一模一样，选中了才在跑的时候炸。标出来，选之前就看得见
   const why = (m) => (!m.sure ? "" : m.cap ? `（${title(m.cap)}的）` : "（只认文字，看不了图）");
   const group = (label, list) => (list.length
-    ? `<optgroup data-live label="${label}">${list.map((m) => `<option value="${esc(m.id)}">${esc(m.id + why(m))}</option>`).join("")}</optgroup>`
+    ? `<optgroup data-live label="${label}">${list.map((m) => `<option value="${esc(m.id)}"${m.sure && m.cap !== cap ? " disabled" : ""}>${esc(m.id + why(m))}</option>`).join("")}</optgroup>`
     : "");
   // 渠道自己标的排前面，按名字猜的排后面：一组里两种成色混着，人没法判断该信哪条
   const sure = same.filter((m) => m.sure), maybe = same.filter((m) => !m.sure);
@@ -1511,6 +1513,15 @@ function injectLive(sel, tip, d, cap, local) {
   if (custom) custom.style.display = sel.value === "__custom__" ? "" : "none";
   const n = sure.length ? `，其中 ${sure.length} 个是渠道自己标明能${title(cap)}的` : "";
   tip.textContent = `从渠道拉到 ${d.models.length} 个模型${d.cached ? "（缓存）" : ""}${n}，挑不到就选「自己填…」。`;
+}
+
+/** A complete list can rule out stale presets; partial and chat-only lists cannot rule out media IDs. */
+function markUnlistedPresets(sel, d, applicable = true) {
+  const ids = new Set(d.models.map(m => m.id));
+  sel.querySelectorAll("optgroup[data-presets] option").forEach(o => {
+    o.disabled = applicable && d.complete === true && !ids.has(o.value);
+    o.title = o.disabled ? "当前账号清单未列出此型号；自定义接入点可手填并验活" : "";
+  });
 }
 
 /* ───────────────────────── 模型设置：渠道卡片 → 展开看它下面的模型 ─────────────────────────
@@ -2411,6 +2422,7 @@ function bindModels(pane, s, po) {
     };
     f.querySelector(".ca-save").onclick = async () => {
       const sel = f.querySelector(".ca-model").value;
+      if (f.querySelector(".ca-model").selectedOptions[0]?.disabled) return toast("这个型号未在当前清单中列出，请刷新重选，或选「自己填…」验活");
       const model = sel === "__custom__" ? f.querySelector(".ca-custom").value.trim() : sel;
       const chan = f.querySelector(".ca-chan").value;
       if (!chan) return toast("先建一个渠道，模型得挂在渠道上");
@@ -2475,7 +2487,7 @@ function fillChatModelSelect(f, s) {
   const others = p && mmRelay(p.kind) ? cat.filter((m) => m.kind !== p.kind) : [];
   const opt = (m) => `<option value="${esc(m.id)}">${esc(m.label)}（${esc(m.id)}）</option>`;
   sel.innerHTML =
-    (mine.length ? `<optgroup label="预设候选（需验活）">${mine.map(opt).join("")}</optgroup>` : "") +
+    (mine.length ? `<optgroup data-presets label="预设候选（需验活）">${mine.map(opt).join("")}</optgroup>` : "") +
     `<option value="__custom__">自己填…</option>` +
     (others.length ? `<optgroup label="别家的型号（这是中转网关，转发到上游就能用）">${others.map(opt).join("")}</optgroup>` : "");
   f.querySelector(".ca-custom").style.display = sel.value === "__custom__" ? "" : "none";
@@ -2493,6 +2505,7 @@ function injectLiveChat(sel, tip, d, local) {
   }
   const chatty = d.models.filter((m) => m.chat !== false && (!m.cap || m.cap === "vision")).map((m) => m.id);
   const rest = d.models.filter((m) => m.chat === false || (m.cap && m.cap !== "vision")).map((m) => m.id);
+  markUnlistedPresets(sel, d);
   const group = (label, ids) => (ids.length ? `<optgroup data-live label="${label}">${ids.map((id) => `<option value="${esc(id)}">${esc(id)}</option>`).join("")}</optgroup>` : "");
   const keep = sel.value;
   sel.querySelectorAll("optgroup[data-live]").forEach(g => g.remove());
