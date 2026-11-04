@@ -344,6 +344,43 @@ const LIST = { data: [{ id: "doubao-seedream-4" }, { id: "doubao-seedance-1" }, 
     ok(!p.error && !p.key && p.model === "", "没存过的渠道：拿不到任何存着的 Key，也没有型号可挑", p);
   }
 
+  console.log("\n【模型发现】协议、权限隔离和方舟模态");
+  {
+    const rawProbe = new Function("fetch", "AbortSignal", "pingRequest", cutFn(server, "probeModelRaw") + "\nreturn probeModelRaw;");
+    const ping = require("../src/core/model/llm").pingRequest;
+    const m = { provider: "openai", model: "retired-model", base_url: "https://ark.example/api/v3", api_key: "fixture" };
+    for (const [status, code, message] of [[404, "InvalidEndpointOrModel.NotFound", "does not exist or you do not have access"], [400, "InvalidEndpoint.ClosedEndpoint", "endpoint closed"]]) {
+      const r = await rawProbe(makeFetch(status, { error: { code, message } }), fakeAbort, ping)(m);
+      ok(r.status === status && /未开通|已关停/.test(r.error) && r.error.includes("ep-") && !/在这家服务商不存在/.test(r.error), "方舟 " + code + " 不武断归因，并给当前页修复办法", r);
+    }
+    const d = require("../src/core/model/model-discovery");
+    const base = "https://gateway.example/v1", api_key = "fixture-not-a-real-key";
+    const open = d.listRequest({ base_url: base, api_key });
+    ok(open.url === base + "/models" && open.headers.Authorization === "Bearer " + api_key, "OpenAI 兼容清单用 Bearer");
+    const ant = d.listRequest({ base_url: base, api_key, api: "anthropic" });
+    ok(ant.url === base + "/models" && ant.headers["x-api-key"] === api_key && !ant.headers.Authorization, "Claude 清单沿用 Messages 地址算法和 x-api-key，不误发 Bearer");
+    const gem = d.listRequest({ base_url: "https://gem.example/v1beta", api_key, api: "gemini" });
+    ok(gem.url === "https://gem.example/v1beta/models" && gem.headers["x-goog-api-key"] === api_key && !gem.url.includes(api_key), "Gemini 清单用 x-goog-api-key，Key 不进 URL");
+    const ollama = d.listRequest({ base_url: "http://localhost:11434/v1", api: "ollama" });
+    ok(ollama.url === "http://localhost:11434/api/tags" && !ollama.headers.Authorization, "Ollama 原生用 /api/tags，没有 Key 就不发鉴权头");
+    const a = { base_url: base, api_key: "account-a", api: "openai" };
+    ok(d.cacheKey(a) !== d.cacheKey({ ...a, api_key: "account-b" }) && d.cacheKey(a) !== d.cacheKey({ ...a, api: "anthropic" }), "同地址不同 Key/协议的清单缓存互相隔离");
+    const vl = { id: "glm-5-3-flash-260828", api_supported: { "chat/completions": true }, modalities: { input_modalities: ["text", "image"], output_modalities: ["text"] }, features: { tools: { function_calling: true } } };
+    const image = { id: "doubao-seedream-5-0-flash-260915", api_supported: { "images/generations": true }, modalities: { input_modalities: ["text", "image"], output_modalities: ["image"] } };
+    const r = await d.discover(a, makeFetch(200, { data: [vl, image, { id: "embedding-1", domain: "Embedding" }, vl] }));
+    ok(r.ok && r.complete && r.models.length === 3, "方舟的 models 清单解析并去重");
+    ok(r.models[0].cap === "vision" && r.models[0].sure && r.models[0].chat && r.models[0].tools, "方舟 nested modalities 与 API 能力被识别，GLM 看图不再靠名字猜");
+    ok(r.models[1].cap === "image" && r.models[1].chat === false && r.models[2].chat === false, "生图与 embedding 不会变成对话默认项");
+    const partial = await d.discover(a, makeFetch(200, { data: [vl], has_more: true }));
+    ok(!partial.complete, "分页清单不能冒充完整清单");
+    const native = await d.discover(a, makeFetch(200, { output: { models: [{ model: "qwen-plus", name: "显示名称" }], total: 50 } }));
+    ok(native.models[0].id === "qwen-plus" && !native.complete, "百炼原生型号用 model 字段，不把显示名称当型号");
+    const failed = await d.discover(a, makeFetch(401, { error: "invalid key" }));
+    ok(!failed.ok && failed.status === 401 && failed.models.length === 0, "未授权的 Key 不拿其它账号的缓存冒充成功");
+    const plan = require("../src/core/model/chat-models").planTemplate({}, "ark", "ep-fixture");
+    ok(plan.row.model === "ep-fixture", "云端模板可以明确选接入点 ID，不被默认型号覆盖");
+  }
+
   console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
   process.exit(fail ? 1 : 0);
 })();

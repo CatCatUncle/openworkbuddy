@@ -9014,6 +9014,9 @@ const ONB_STUBS = `
   let LIC = { licensed: false, licensee: "" }, LIC_DOWN = false;
   // 本机 Ollama 装了哪些模型：null = 它压根没跑起来
   let OLLAMA_LIST = ["llama3.2:3b", "qwen3:8b", "gemma3:12b"];
+  let HOLD_CLOUD = false, CLOUD_REPLY = null;
+  const CLOUD_LIST = [{ id: "doubao-seed-2-0-lite-260428", cap: "vision", sure: true, chat: true },
+    { id: "doubao-seedream-5-0-flash-260915", cap: "image", chat: false }, { id: "embedding-1", chat: false }];
   const GETS = []; window.__GETS = GETS;
   async function saveSettings(patch) { POSTS.push(["settings", patch]); return SETTINGS_OK; }
   window.fetch = async (url, opt) => {
@@ -9027,7 +9030,12 @@ const ONB_STUBS = `
     if (url === "/api/onboarding") { POSTS.push(["onboarding", body]); if (!ONB_POST_OK) return j({ ok: false, error: "这个 Key 上游不认（HTTP 401）" });
       const nm = body.custom ? "自定义中转" : body.kind ? (ST.templates.find((t) => t.kind === body.kind) || {}).name : body.model;
       ST = { ...ST, needs_setup: false, brain: { ok: true, via: "api", name: nm, model: "deepseek-chat" } }; return j({ ok: true, active_model: nm }); }
-    if (url === "/api/provider-models") { POSTS.push(["provider-models", body]); return j(OLLAMA_LIST === null ? { ok: false, why: "connect ECONNREFUSED", models: [] } : { ok: true, models: OLLAMA_LIST.map((id) => ({ id })) }); }
+    if (url === "/api/provider-models") { POSTS.push(["provider-models", body]);
+      if (/ark\\.cn-beijing/.test(body.base_url || "")) {
+        if (HOLD_CLOUD) return new Promise(resolve => { CLOUD_REPLY = () => resolve(j({ ok: true, models: CLOUD_LIST })); });
+        return j({ ok: true, models: CLOUD_LIST });
+      }
+      return j(OLLAMA_LIST === null ? { ok: false, why: "connect ECONNREFUSED", models: [] } : { ok: true, models: OLLAMA_LIST.map((id) => ({ id })) }); }
     if (url === "/api/engines/test") { POSTS.push(["engine-test", body]); return j(ENGINE_TEST_OK ? { ok: true, reply: "好" } : { ok: false, why: "没登录", hint: "先在终端跑 codex login" }); }
     if (url === "/api/settings" && method === "POST") { POSTS.push(["settings-raw", body]); if (body.agent && body.agent.engine) ST = { ...ST, needs_setup: false, engine: body.agent.engine, brain: { ok: true, via: "engine", name: body.agent.engine, model: "" } }; return j({ ok: true }); }
     if (url === "/api/search/test") { POSTS.push(["search-test"]); if (SEARCH_TEST_OK) ST = { ...ST, search: { provider: "tavily", has_key: true } }; return j(SEARCH_TEST_OK ? { ok: true, provider: "tavily", sample: "x" } : { ok: false, error: "tavily 返回 0 条结果" }); }
@@ -9099,7 +9107,7 @@ const ONB_CHECKS = `
   ok("★默认不停在模板里那个没装的型号上★（停在那儿点下去就是一个 404）",
      mdl().value === "llama3.2:3b" && !opts.includes("qwen3:14b"), mdl().value);
 
-  ok("选回云端时那一行收起来", (q("#onb-model").value = "DeepSeek", q("#onb-model").dispatchEvent(new Event("change")), q("#onb-mrow").hidden));
+  ok("云端也显示型号选择，旧预设出错时能在向导内修正", (q("#onb-model").value = "DeepSeek", q("#onb-model").dispatchEvent(new Event("change")), !q("#onb-mrow").hidden));
 
   // 他照着提示去 ollama pull 了一个，回来得有地方再问一遍——没有这颗，清单就永远停在
   // 他还没动手的那一刻，提示教他做的事做完了却没处生效
@@ -9152,8 +9160,8 @@ const ONB_CHECKS = `
   q("#onb-model").value = "DeepSeek"; q("#onb-model").dispatchEvent(new Event("change"));
   POSTS.length = 0; ONB_POST_OK = false;
   q("#onb-key").value = "sk-x"; q("#onb-go").click(); await tick(); await tick();
-  ok("★反向对照：云端那条路不带 model_id★",
-     POSTS.some(([k, b]) => k === "onboarding" && !("model_id" in b)), JSON.stringify(POSTS));
+  ok("云端验活也带明确的 model_id，不再锁死模板",
+     POSTS.some(([k, b]) => k === "onboarding" && b.model_id === "deepseek-chat"), JSON.stringify(POSTS));
   ONB_POST_OK = true;
   q("#onb-model").value = "DeepSeek"; q("#onb-model").dispatchEvent(new Event("change"));
 
@@ -9175,7 +9183,19 @@ const ONB_CHECKS = `
   POSTS.length = 0;
   q("#onb-key").value = "sk-bad2"; q("#onb-go").click(); await tick(); await tick();
   ok("选模板验活：POST 的是 {kind, api_key}，没有 model", POSTS.some(([k, b]) => k === "onboarding" && b.kind === "ark" && b.api_key === "sk-bad2" && !("model" in b)), JSON.stringify(POSTS));
+  q("#onb-key").dispatchEvent(new Event("change")); await tick(); await tick();
+  ok("火山账号的清单替换已失效的默认型号", mdl().value === "doubao-seed-2-0-lite-260428", mdl().value);
+  ok("对话候选不混进生图与 embedding", ![...mdl().options].some(o => /seedream|embedding/.test(o.value)));
+  POSTS.length = 0; q("#onb-go").click(); await tick(); await tick();
+  ok("真实验活用重选后的云端型号", POSTS.some(([k,b]) => k === "onboarding" && b.model_id === "doubao-seed-2-0-lite-260428"), JSON.stringify(POSTS));
+  mdl().value = "__custom__"; mdl().dispatchEvent(new Event("change")); q("#onb-mdl-custom").value = "ep-user-selected";
+  q("#onb-key").value = "another-ark-key"; q("#onb-key").dispatchEvent(new Event("change")); await tick(); await tick();
+  ok("换 Key 后的新清单不覆盖用户手填的接入点", mdl().value === "__custom__" && q("#onb-mdl-custom").value === "ep-user-selected");
+  HOLD_CLOUD = true; q("#onb-mdl-again").click(); await tick();
   q("#onb-model").value = "DeepSeek"; q("#onb-model").dispatchEvent(new Event("change"));
+  ok("切服务商会清空上一家的 Key，避免发给另一家", q("#onb-key").value === "");
+  CLOUD_REPLY(); HOLD_CLOUD = false; await tick(); await tick();
+  ok("火山的迟到响应不会盖住已切换的服务商", mdl().value === "deepseek-chat", mdl().value);
 
   // ---- 自己填地址（中转站 / 自建网关）：以前第一步没有这条路，得先跳过、进了界面再去设置里找 ----
   const cGrp = [...body.querySelectorAll("#onb-model optgroup")].find((g) => g.label.includes("列表里没有"));

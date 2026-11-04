@@ -1262,6 +1262,14 @@ async function testMediaImageInputGate() {
     assert(!assetRun.isError, assetRun.content);
     assert(seen[0].body.content.filter((item) => item.type === "image_url").every((item) => item.role === "reference_image") && seen[0].body.content.some((item) => item.image_url?.url === "asset://asset-test-character"), "已审核素材没有按 reference_image 原样传给火山");
     fresh();
+    const modernRun = await generateVideo(assetVideo, { prompt: "山间日出", duration: 7, resolution: "1080p", aspect_ratio: "16:9", filename: "modern.mp4" }, { saveDir: dir, resolveFile });
+    assert(!modernRun.isError && seen[0].body.duration === 7 && seen[0].body.resolution === "720p" && seen[0].body.ratio === "16:9" && seen[0].body.watermark === false,
+      "Seedance 2.0 Mini/Fast 必须用 JSON 参数，分辨率夹到支持的 720p：" + JSON.stringify(seen[0].body));
+    assert(!/--duration|--ratio|--resolution|--watermark/.test(seen[0].body.content[0].text), "新版请求不应继续把参数混进画面描述");
+    fresh();
+    const modernFlags = await generateVideo(assetVideo, { prompt: "山间日出 --duration 8 --ratio 9:16 --resolution 720p --watermark true", filename: "modern-flags.mp4" }, { saveDir: dir, resolveFile });
+    assert(!modernFlags.isError && seen[0].body.duration === 8 && seen[0].body.ratio === "9:16" && seen[0].body.watermark === true && seen[0].body.content[0].text === "山间日出", "用户明确写的参数应迁移到 JSON 并保留水印意图");
+    fresh();
     const badAsset = await generateVideo(assetVideo, { prompt: "p", reference_assets: ["https://not-an-asset.invalid"] }, { saveDir: dir, resolveFile });
     assert(badAsset.isError && !seen.length, "格式错误的素材引用仍然发到了上游");
     const wrongProvider = await generateVideo(vidDs, { prompt: "p", reference_assets: ["asset://asset-test-character"] }, { saveDir: dir, resolveFile });
@@ -11520,10 +11528,12 @@ async function testOnboardingWizardApi() {
     const INSTALLED = ["llama3.2:3b", "qwen3:8b", "bge-m3:latest"];
     let listHits = 0;
     let lateHits = 0;
+    let scopedHits = 0;
     const pinged = [];
     fakeOllama = http.createServer((rq, rs) => {
       const send = (code, obj) => { rs.writeHead(code, { "Content-Type": "application/json" }); rs.end(JSON.stringify(obj)); };
       if (rq.url === "/v1/models") { listHits++; return send(200, { object: "list", data: INSTALLED.map((id) => ({ id, object: "model" })) }); }
+      if (rq.url === "/scoped/models") { scopedHits++; return send(200, { data: [{ id: rq.headers.authorization === "Bearer account-b" ? "model-b" : "model-a" }] }); }
       // 「刚起来还没 pull 过东西」那一档：第一趟真回一个空 data（这是 Ollama 的真实行为，
       // 不是错误），之后才有东西。用它验空清单没被缓住
       if (rq.url === "/late/models") { lateHits++; return send(200, { object: "list", data: lateHits > 1 ? [{ id: "qwen3:8b" }] : [] }); }
@@ -11572,6 +11582,19 @@ async function testOnboardingWizardApi() {
     const ls2 = await req("POST", "/api/provider-models", { base_url: OLLAMA });
     assert(ls2.json && ls2.json.cached === true && listHits === 1,
       "10 分钟内该走缓存：向导里来回点几下服务商，不该把人家接口打一遍：cached=" + ((ls2.json || {}).cached) + " hits=" + listHits);
+
+    const scopeBase = "http://127.0.0.1:" + fakeOllama.address().port + "/scoped";
+    const scopeA = await req("POST", "/api/provider-models", { base_url: scopeBase, api_key: "account-a" });
+    const scopeB = await req("POST", "/api/provider-models", { base_url: scopeBase, api_key: "account-b" });
+    assert(scopeA.json.models[0].id === "model-a" && scopeB.json.models[0].id === "model-b" && scopedHits === 2,
+      "同地址换 Key 必须问新账号，不能拿旧账号清单冒充：" + JSON.stringify({ a: scopeA.json, b: scopeB.json, scopedHits }));
+    await req("POST", "/api/provider-models", { base_url: scopeBase, api_key: "account-b" });
+    assert(scopedHits === 2, "同一账号仍可用缓存");
+    await req("POST", "/api/provider-models", { base_url: scopeBase, api_key: "account-b", refresh: true });
+    assert(scopedHits === 3, "刷新必须绕过十分钟缓存");
+    const exfil = await req("POST", "/api/provider-models", { id: prv.id, base_url: scopeBase });
+    assert(exfil.json.ok === false && /重新填 Key/.test(exfil.json.why) && scopedHits === 3,
+      "改变目的地不能带出已存的 Key，拦截应发生在请求之前：" + exfil.body);
 
     // ★空清单不许进缓存★ Ollama 起来了但一个模型都没 pull 过时回的就是空 data（200，不是错）。
     // 缓住它，用户照着提示 ollama pull 完回来点「重新问一次」，十分钟内拿到的还是那份空的——

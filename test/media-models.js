@@ -1056,9 +1056,9 @@ async function videoParamChecks() {
   }
 
   // 精选目录上挂了可选值，界面按它出下拉
-  const seedCat = mm.CATALOG.video.find((m) => m.id === "doubao-seedance-1-0-pro-250528") || {};
-  ok(JSON.stringify(seedCat.durations) === "[5,10]" && (seedCat.resolutions || []).includes("1080p"),
-    "精选目录里 Seedance pro 带着能选的时长和档位", seedCat);
+  const seedCat = mm.CATALOG.video.find((m) => m.id === "doubao-seedance-2-0-mini-260615") || {};
+  ok(seedCat.durations?.[0] === 4 && seedCat.durations?.at(-1) === 15 && (seedCat.resolutions || []).includes("720p") && !(seedCat.resolutions || []).includes("1080p"),
+    "当前 Seedance Mini 目录只展示官方支持的 4–15 秒与 480/720p", seedCat);
 
   // ── ② 计价：按实际秒数 ─────────────────────────────────────
   eq(unitsFor("video", { duration: 10 }, null, WAN), 5, "★计价：万相要 10 秒只出 5 秒 → 记 5 秒★");

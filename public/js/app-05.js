@@ -965,6 +965,12 @@ const MEDIA_CAPS = [
 ];
 let mediaCatalog = null; // 精选目录，一次会话拉一次
 const liveModels = new Map(); // 渠道 id → 那边 /models 现拉回来的清单
+const liveModelEpoch = new Map();
+function forgetLiveModels(id) {
+  if (id == null) { for (const key of liveModelEpoch.keys()) forgetLiveModels(key); liveModels.clear(); return; }
+  liveModels.delete(id);
+  liveModelEpoch.set(id, (liveModelEpoch.get(id) || 0) + 1);
+}
 /** 展开着的渠道 id。重画时保留——存完一个模型整张卡自己合上，比不合上更烦人 */
 const openChans = new Set();
 /** 展开着的那几路能力。四张卡默认全收着：大多数人只配一两路，四段说明一起摊开正是上一版「字太多」的来源 */
@@ -1215,6 +1221,7 @@ function bindMedia(box, s) {
   box.querySelectorAll(".mm-form").forEach((f) => {
     f.querySelector(".mm-prov").onchange = () => fillModelSelect(f, s);
     f.querySelector(".mm-model").onchange = () => {
+      f.querySelector(".mm-model").dataset.picked = "1";
       const custom = f.querySelector(".mm-model").value === "__custom__";
       f.querySelector(".mm-custom").style.display = custom ? "" : "none";
       if (custom) f.querySelector(".mm-custom").focus();
@@ -1305,6 +1312,7 @@ function mmBrand(id) {
   const kinds = new Set();
   for (const cap of Object.keys(cat)) for (const m of cat[cap]) if (String(m.id).toLowerCase() === v.toLowerCase()) kinds.add(m.kind);
   if (kinds.size === 1) return [...kinds][0];
+  if (!kinds.size && (mediaCatalog || {}).legacy_model_kinds?.[v.toLowerCase()]) return mediaCatalog.legacy_model_kinds[v.toLowerCase()];
   // 目录里两家都有的，跟服务端一样接着往下认，不就此放弃
   if (v.includes("/")) return "";
   // 日期尾巴排在前缀之前：前缀是原厂的，上架的却是方舟
@@ -1322,7 +1330,7 @@ function mmInCatalog(id) {
   const cat = (mediaCatalog || {}).catalog || {};
   const kinds = new Set();
   for (const cap of Object.keys(cat)) for (const m of cat[cap]) if (String(m.id).toLowerCase() === id.toLowerCase()) kinds.add(m.kind);
-  return kinds.size === 1 ? [...kinds][0] : "";
+  return kinds.size === 1 ? [...kinds][0] : kinds.size ? "" : (mediaCatalog || {}).legacy_model_kinds?.[id.toLowerCase()] || "";
 }
 function mmKindRow(kind) {
   return ((mediaCatalog || {}).kinds || []).find((k) => k.kind === kind) || null;
@@ -1373,6 +1381,7 @@ function mmMismatch(kind, id, base) {
   if (!k || k === "ollama" || mmRelay(k)) return "";
   const v = String(id || "").trim();
   if (!v || v.includes(":")) return "";
+  if (k === "zhipu" && mmArkDated(v) && mmHint(v) === k) return "";
   const hit = mmInCatalog(v);
   if (hit) return hit === k || mmResold(k, hit) ? "" : hit;
   if (v.includes("/")) return "";
@@ -1420,6 +1429,7 @@ function fillProvSelect(f, s) {
 function fillModelSelect(f, s) {
   const cap = f.dataset.cap;
   const sel = f.querySelector(".mm-model");
+  sel.dataset.picked = "";
   const tip = f.querySelector(".mm-tip");
   const p = s.providers.find((x) => x.id === f.querySelector(".mm-prov").value);
   const cat = ((mediaCatalog || {}).catalog || {})[cap] || [];
@@ -1432,21 +1442,43 @@ function fillModelSelect(f, s) {
   const others = p && mmRelay(p.kind) ? cat.filter((m) => m.kind !== p.kind) : [];
   const opt = (m) => `<option value="${esc(m.id)}">${esc(m.label)}（${esc(m.id)}）</option>`;
   sel.innerHTML =
-    (mine.length ? `<optgroup label="这个渠道的精选">${mine.map(opt).join("")}</optgroup>` : "") +
+    (mine.length ? `<optgroup label="预设候选（需验活）">${mine.map(opt).join("")}</optgroup>` : "") +
     `<option value="__custom__">自己填…</option>` +
     (others.length ? `<optgroup label="别家的型号（这是中转网关，转发到上游就能用）">${others.map(opt).join("")}</optgroup>` : "");
   f.querySelector(".mm-custom").style.display = sel.value === "__custom__" ? "" : "none";
   tip.textContent = mine.length ? "" : "这个渠道没有精选条目，下面直接填模型名，或等一下从渠道拉回来的列表。";
   if (!p) return;
+  mmLoadModels(f, p, sel, tip, d => injectLive(sel, tip, d, cap, mmLocalProv(p)));
+}
+
+/** Shared refresh path; a late reply can only repaint the provider it was requested for. */
+function mmLoadModels(f, p, sel, tip, paint) {
+  let serial = 0;
+  const current = () => sel.isConnected && (f.querySelector(".mm-prov") || f.querySelector(".ca-chan")).value === p.id;
+  const draw = d => {
+    if (!current()) return;
+    paint(d);
+    const refresh = document.createElement("button");
+    refresh.type = "button"; refresh.className = "btn-plain"; refresh.textContent = "刷新模型列表";
+    refresh.onclick = () => ask(true);
+    tip.append(" ", refresh);
+  };
+  const ask = async force => {
+    if (force) forgetLiveModels(p.id);
+    const epoch = liveModelEpoch.get(p.id) || 0, request = ++serial;
+    if (!liveModelEpoch.has(p.id)) liveModelEpoch.set(p.id, epoch);
+    tip.textContent = "正在问渠道有哪些模型…";
+    try {
+      const d = await fetch("/api/provider-models", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: p.id, refresh: !!force }) }).then(r => r.json());
+      if (request !== serial || epoch !== liveModelEpoch.get(p.id)) return;
+      if (d && d.ok && (d.models || []).length) liveModels.set(p.id, { ...d, at: Date.now() });
+      else liveModels.delete(p.id);
+      draw(d || { ok: false });
+    } catch { if (request === serial && epoch === liveModelEpoch.get(p.id)) draw({ ok: false, why: "没连上这个渠道" }); }
+  };
   const live = liveModels.get(p.id);
-  if (live) return injectLive(sel, tip, live, cap, mmLocalProv(p));
-  tip.textContent = "正在问渠道有哪些模型…";
-  fetch("/api/provider-models", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: p.id }) })
-    .then((r) => r.json())
-    // 空清单不记进缓存。跟服务端那道缓存同一个道理：他照着提示去 ollama pull 完回来，
-    // 重新点开下拉框得真去问一次，否则提示教他做的事做完了，界面上什么都不变
-    .then((d) => { if (d && d.ok && (d.models || []).length) liveModels.set(p.id, d); if (sel.isConnected) injectLive(sel, tip, d, cap, mmLocalProv(p)); })
-    .catch(() => { tip.textContent = MM_FAIL_TIP; });
+  if (live && Date.now() - (live.at || 0) < 600000) draw(live);
+  else ask(false);
 }
 
 function injectLive(sel, tip, d, cap, local) {
@@ -1463,16 +1495,20 @@ function injectLive(sel, tip, d, cap, local) {
   // 下拉里排着队，跟能用的长得一模一样，选中了才在跑的时候炸。标出来，选之前就看得见
   const why = (m) => (!m.sure ? "" : m.cap ? `（${title(m.cap)}的）` : "（只认文字，看不了图）");
   const group = (label, list) => (list.length
-    ? `<optgroup label="${label}">${list.map((m) => `<option value="${esc(m.id)}">${esc(m.id + why(m))}</option>`).join("")}</optgroup>`
+    ? `<optgroup data-live label="${label}">${list.map((m) => `<option value="${esc(m.id)}">${esc(m.id + why(m))}</option>`).join("")}</optgroup>`
     : "");
   // 渠道自己标的排前面，按名字猜的排后面：一组里两种成色混着，人没法判断该信哪条
   const sure = same.filter((m) => m.sure), maybe = same.filter((m) => !m.sure);
   const keep = sel.value;
-  sel.insertAdjacentHTML("beforeend",
+  sel.querySelectorAll("optgroup[data-live]").forEach(g => g.remove());
+  sel.insertAdjacentHTML("afterbegin",
     group(`这个渠道能${title(cap)}的（渠道自己标的）`, sure)
     + group(`看着像${title(cap)}的（按名字猜的，不一定准）`, maybe)
     + group("这个渠道的其它模型", rest));
-  if (keep) sel.value = keep;
+  const preferred = same[0];
+  sel.value = !sel.dataset.picked && keep !== "__custom__" && preferred && !same.some(m => m.id === keep) ? preferred.id : keep;
+  const custom = sel.closest(".mm-form").querySelector(".mm-custom");
+  if (custom) custom.style.display = sel.value === "__custom__" ? "" : "none";
   const n = sure.length ? `，其中 ${sure.length} 个是渠道自己标明能${title(cap)}的` : "";
   tip.textContent = `从渠道拉到 ${d.models.length} 个模型${d.cached ? "（缓存）" : ""}${n}，挑不到就选「自己填…」。`;
 }
@@ -2135,7 +2171,7 @@ function bindModels(pane, s, po) {
     // has_key 得跟着改：这一屏判「还没填 Key」先看它（非管理员那边拿到的是掩码后的 Key，
     // 只能靠这个布尔）。不同步的话，刚填完保存，这张卡还赖在「还没填 Key」那一栏里不动
     s.providers[idx] = { ...s.providers[idx], api_key: key, has_key: !!key };
-    liveModels.delete(id); // 换了 Key，之前拉回来的模型清单就不作数了
+    forgetLiveModels(id); // 换了 Key，之前拉回来的模型清单就不作数了
     openChans.add(id);
     if (await saveAllModelTables(s, msg)) { toast("Key 已保存"); paintModels(pane, s); }
   }));
@@ -2176,7 +2212,7 @@ function bindModels(pane, s, po) {
     }))) return;
     s.providers[idx] = { ...p, api_key: "", has_key: false, key_hint: "" };
     chanTest.delete(p.id);
-    liveModels.delete(p.id);
+    forgetLiveModels(p.id);
     if (await saveAllModelTables(s, msg)) { toast("Key 已清空"); paintModels(pane, s); }
   }));
   // 「主模型出故障时换哪个」：以前排在 智能体设置 里，夹在步数上限和超时中间——选的明明是模型，
@@ -2264,7 +2300,7 @@ function bindModels(pane, s, po) {
     s.models = s.models.filter((m) => m.channel !== p.id);
     s.media_models = s.media_models.filter((m) => m.provider !== p.id);
     openChans.delete(p.id);
-    liveModels.delete(p.id);
+    forgetLiveModels(p.id);
     const extra = hitsDefault && s.models.length ? { active_model: s.models[0].name } : undefined;
     if (await saveAllModelTables(s, msg, extra)) paintModels(pane, s);
   }));
@@ -2286,7 +2322,7 @@ function bindModels(pane, s, po) {
     for (const cap of ["image", "video", "tts"]) apis[cap + "_api"] = mediaOn ? v(`pf-${cap}-api`) : "";
     const entry = { id: editP >= 0 ? s.providers[editP].id : "", name: v("pf-name"), kind, api: v("pf-api"), ...apis, base_url: v("pf-base"), api_key: key, has_key: !!key };
     if (editP >= 0) s.providers[editP] = { ...s.providers[editP], ...entry }; else s.providers.push(entry);
-    liveModels.clear(); // 换了地址或 Key，之前拉回来的清单就不作数了
+    forgetLiveModels(); // 换了地址或 Key，之前拉回来的清单就不作数了
     if (await saveAllModelTables(s, msg)) { form.style.display = "none"; paintModels(pane, s); }
   };
 
@@ -2368,6 +2404,7 @@ function bindModels(pane, s, po) {
   pane.querySelectorAll(".ca-form").forEach((f) => {
     f.querySelector(".ca-chan").onchange = () => fillChatModelSelect(f, s);
     f.querySelector(".ca-model").onchange = () => {
+      f.querySelector(".ca-model").dataset.picked = "1";
       const custom = f.querySelector(".ca-model").value === "__custom__";
       f.querySelector(".ca-custom").style.display = custom ? "" : "none";
       if (custom) f.querySelector(".ca-custom").focus();
@@ -2425,6 +2462,7 @@ function fillChanSelect(f, s, cur) {
  */
 function fillChatModelSelect(f, s) {
   const sel = f.querySelector(".ca-model");
+  sel.dataset.picked = "";
   const tip = f.querySelector(".ca-tip");
   const p = s.providers.find((x) => x.id === f.querySelector(".ca-chan").value);
   const cat = ((mediaCatalog || {}).catalog || {}).chat || [];
@@ -2437,19 +2475,13 @@ function fillChatModelSelect(f, s) {
   const others = p && mmRelay(p.kind) ? cat.filter((m) => m.kind !== p.kind) : [];
   const opt = (m) => `<option value="${esc(m.id)}">${esc(m.label)}（${esc(m.id)}）</option>`;
   sel.innerHTML =
-    (mine.length ? `<optgroup label="这个渠道的精选">${mine.map(opt).join("")}</optgroup>` : "") +
+    (mine.length ? `<optgroup label="预设候选（需验活）">${mine.map(opt).join("")}</optgroup>` : "") +
     `<option value="__custom__">自己填…</option>` +
     (others.length ? `<optgroup label="别家的型号（这是中转网关，转发到上游就能用）">${others.map(opt).join("")}</optgroup>` : "");
   f.querySelector(".ca-custom").style.display = sel.value === "__custom__" ? "" : "none";
   tip.textContent = mine.length ? "" : "这个渠道没有精选条目，下面直接填模型名，或者等一下从渠道拉回来的列表。";
   if (!p) return;
-  const live = liveModels.get(p.id);
-  if (live) return injectLiveChat(sel, tip, live, mmLocalProv(p));
-  tip.textContent = "正在问渠道有哪些模型…";
-  fetch("/api/provider-models", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: p.id }) })
-    .then((r) => r.json())
-    .then((d) => { if (d && d.ok && (d.models || []).length) liveModels.set(p.id, d); if (sel.isConnected) injectLiveChat(sel, tip, d, mmLocalProv(p)); })
-    .catch(() => { tip.textContent = MM_FAIL_TIP; });
+  mmLoadModels(f, p, sel, tip, d => injectLiveChat(sel, tip, d, mmLocalProv(p)));
 }
 
 /** 活列表里标了 cap 的（image / video / tts）显然不是对话模型，排到后面去 */
@@ -2459,13 +2491,18 @@ function injectLiveChat(sel, tip, d, local) {
     tip.textContent = mmEmptyTip(d, local);
     return;
   }
-  const chatty = d.models.filter((m) => !m.cap || m.cap === "vision").map((m) => m.id);
-  const rest = d.models.filter((m) => m.cap && m.cap !== "vision").map((m) => m.id);
-  const group = (label, ids) => (ids.length ? `<optgroup label="${label}">${ids.map((id) => `<option value="${esc(id)}">${esc(id)}</option>`).join("")}</optgroup>` : "");
+  const chatty = d.models.filter((m) => m.chat !== false && (!m.cap || m.cap === "vision")).map((m) => m.id);
+  const rest = d.models.filter((m) => m.chat === false || (m.cap && m.cap !== "vision")).map((m) => m.id);
+  const group = (label, ids) => (ids.length ? `<optgroup data-live label="${label}">${ids.map((id) => `<option value="${esc(id)}">${esc(id)}</option>`).join("")}</optgroup>` : "");
   const keep = sel.value;
-  sel.insertAdjacentHTML("beforeend", group("这个渠道现有的", chatty) + group("这个渠道的其它模型（多半是画图 / 配音的）", rest));
-  if (keep) sel.value = keep;
-  tip.textContent = `从渠道拉到 ${d.models.length} 个模型${d.cached ? "（缓存）" : ""}，挑不到就选「自己填…」。`;
+  sel.querySelectorAll("optgroup[data-live]").forEach(g => g.remove());
+  sel.insertAdjacentHTML("afterbegin", group("这个账号列出的对话候选（需验活）", chatty));
+  if (rest.length) sel.insertAdjacentHTML("beforeend", group("其它用途（非对话候选）", rest));
+  sel.querySelectorAll("optgroup").forEach(g => { if (/其它用途/.test(g.label)) [...g.children].forEach(o => (o.disabled = true)); });
+  sel.value = !sel.dataset.picked && keep !== "__custom__" && chatty.length && !chatty.includes(keep) ? chatty[0] : keep;
+  const custom = sel.closest(".ca-form").querySelector(".ca-custom");
+  if (custom) custom.style.display = sel.value === "__custom__" ? "" : "none";
+  tip.textContent = `从渠道拉到 ${d.models.length} 个模型${d.cached ? "（缓存）" : ""}；清单不代表已开通，需验活。挑不到就选「自己填…」。`;
 }
 
 // 联网搜索：八家服务商 + 自定义接口，各自独立 key。选中的那家没配好或调不通就往下顺延，

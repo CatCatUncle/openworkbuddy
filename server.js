@@ -110,6 +110,7 @@ const projectMemo = require("./src/core/memory/project-memo"); // 工作目录�
 const mediaModels = require("./src/core/model/media-models");
 const mediaHealth = require("./src/core/model/media-health"); // 连不通的媒体渠道熔断表：设置页要显示，保存时要清空 // 图/视频/语音/视觉：渠道表 + 每路多模型
 const chatModels = require("./src/core/model/chat-models");
+const modelDiscovery = require("./src/core/model/model-discovery");
 const memberModels = require("./src/core/model/member-models"); // 成员能用哪些对话模型：管理员共享的 + 自己填 Key 的 // 对话模型：渠道共用一把 Key（跟上面共用 config.providers）
 const systemOne = require("./src/core/judge/systemone"); // 判断模型（Jev）的纯逻辑：请求怎么拼、回答怎么读
 const taskVerdict = require("./src/core/automation/task-verdict"); // 定时任务裁定层的纯函数（这一轮办完没有 / 怎么问 / 怎么读）
@@ -1897,34 +1898,29 @@ app.post("/api/provider-models", async (req, res) => {
   if (!isPlatformOwner(req)) return res.status(403).json({ error: "渠道归平台管理员配", platform_only: true });
   try {
     const b = req.body || {};
-    const known = (config.providers || []).find((p) => p.id === b.id);
-    const base = String(b.base_url || (known || {}).base_url || "").trim().replace(/\/+$/, "");
-    // 掩码原样传回来时用库里那把真的：用户没重填 Key 就想看看列表，是很正常的操作
-    const rawKey = String(b.api_key == null ? "" : b.api_key).trim();
-    const key = !rawKey || /^\*+$/.test(rawKey) ? String((known || {}).api_key || "") : rawKey;
-    if (!/^https?:\/\//i.test(base)) return res.json({ ok: false, why: "接口地址得是 http(s) 开头的完整地址", models: [] });
-    const hit = modelListCache.get(base);
-    if (hit && Date.now() - hit.at < 600000) return res.json({ ok: true, cached: true, models: hit.models });
-    const r = await fetch(`${base}/models`, {
-      headers: key ? { Authorization: `Bearer ${key}` } : {},
-      signal: AbortSignal.timeout(12000),
-    });
-    if (!r.ok) return res.json({ ok: false, why: `渠道没给列表（HTTP ${r.status}）`, models: [] });
-    const j = await r.json().catch(() => ({}));
-    const raw = Array.isArray(j.data) ? j.data : Array.isArray(j.models) ? j.models : [];
-    // 渠道自己报了模态就用它报的（sure=true），没报才按名字猜。前端拿 sure 决定
-    // 敢不敢把一条拦在「看图」那一组外面——猜出来的不敢，人家自己说的敢
-    const models = raw
-      .map((m) => (typeof m === "string" ? { id: m } : m || {}))
-      .map((m) => ({ id: String(m.id || m.name || ""), ...mediaModels.capOfModel(m) }))
-      .filter((m) => m.id && !systemOne.isDecisionModel(m.id)) // 判断模型不会写字，摆进下拉只会被点中然后每趟 400
-      .map((m) => (m.sure ? { id: m.id, cap: m.cap, sure: true } : { id: m.id, cap: m.cap }))
-      .slice(0, 600);
+    // 和渠道测活共用凭据边界：改地址/协议时，绝不把库里那把 Key 送过去。
+    const plan = chatModels.testPlan(config, { ...b, model: "" });
+    if (plan.error) return res.json({ ok: false, why: plan.error, models: [] });
+    const { base, key } = plan;
+    const kind = plan.kind || mediaModels.guessKind(base);
+    const api = mediaModels.protoOfChannel({ kind, api: plan.api });
+    if (base && !/^https?:\/\//i.test(base)) return res.json({ ok: false, why: "接口地址得是 http(s) 开头的完整地址", models: [] });
+    if (!base && !["anthropic", "gemini"].includes(api)) return res.json({ ok: false, why: "还没填接口地址", models: [] });
+    const input = { base_url: mediaModels.baseForUse(base, "chat", kind), api_key: key, api };
+    const cacheKey = modelDiscovery.cacheKey(input);
+    const hit = modelListCache.get(cacheKey);
+    if (b.refresh !== true && hit && Date.now() - hit.at < 600000) return res.json({ ...hit.result, cached: true });
+    const result = await modelDiscovery.discover(input);
+    if (!result.ok) return res.json(result);
+    result.models = result.models.filter((m) => !systemOne.isDecisionModel(m.id));
     // 空清单不进缓存。它几乎不是稳定状态：Ollama 刚起来还没 pull 过东西、网关那头还在初始化，
     // 都会先回一个空的 data。缓住它，用户照着提示去 ollama pull 完回来点「重新问一次」，
     // 十分钟内拿到的还是那份空的——提示教他做的事做完了，界面上却没有任何变化
-    if (models.length) modelListCache.set(base, { at: Date.now(), models });
-    res.json({ ok: true, models });
+    if (result.models.length) {
+      if (modelListCache.size >= 100) modelListCache.delete(modelListCache.keys().next().value);
+      modelListCache.set(cacheKey, { at: Date.now(), result });
+    }
+    res.json(result);
   } catch (e) {
     // 超时、DNS 挂了、返回的不是 JSON——都算「这家没有列表」，不是错误页
     res.json({ ok: false, why: String(e.message || e).slice(0, 200), models: [] });
@@ -3088,10 +3084,12 @@ async function probeModelRaw(m, { custom = false } = {}) {
     if (r.status === 401) return out("这个 Key 上游不认（HTTP 401），检查有没有复制全、是不是这家服务商的 Key" + orig);
     if (r.status === 403) return out("上游拒绝了这次请求（HTTP 403）" + orig);
     if (r.status === 402) return out("Key 有效但余额不足 / 未开通付费（HTTP 402），去服务商控制台充值后再试" + orig);
-    // 目录里的服务商地址是我们填的，404 只能是模型名；自己填的地址两样都可能错，不替他挑一个
+    // 方舟对不存在和未授权共用 404；已关停的接入点还可能回 400。不能都说成用户写错了型号。
+    if (/InvalidEndpoint\.ClosedEndpoint|ModelNotOpen|InvalidEndpointOrModel\.NotFound|do not have access/i.test(txt))
+      return out(`模型或接入点「${m.model}」当前不可访问（HTTP ${r.status}）：可能未开通、已关停或型号不匹配。在当前页面刷新模型列表，选择已开通的型号；火山方舟也可填写控制台的 ep- 接入点 ID${orig}`);
     if (r.status === 404) return out(custom
       ? `HTTP 404：地址或模型名有一处对不上（打的是 ${url}），对照接口文档再看一眼${orig}`
-      : `模型名「${m.model}」在这家服务商不存在（HTTP 404），去 设置 → 模型 改成它支持的名字${orig}`);
+      : `模型「${m.model}」不存在或当前账号无权访问（HTTP 404），刷新模型列表后重选，并到服务商控制台确认开通状态${orig}`);
     if (r.status === 429) return out("被限流了（429），等一会儿再试，或换个渠道" + orig);
     return out(`上游返回 HTTP ${r.status}：${txt}`);
   } catch (e) {
@@ -3113,6 +3111,7 @@ async function probeModelRaw(m, { custom = false } = {}) {
 app.get("/api/onboarding", async (req, res) => {
   const models = (config.models || []).map((m) => ({
     name: m.name,
+    channel: m.channel || "", api: m.provider || "openai",
     model: m.model,
     base_url: m.base_url || "",
     local: isLocalModel(m),

@@ -118,15 +118,14 @@ const CATALOG = {
     { kind: "openrouter", id: "qwen/qwen3-max", label: "通义 Qwen3 Max（走 OpenRouter）" },
     { kind: "openrouter", id: "moonshotai/kimi-k2", label: "Kimi K2（走 OpenRouter）" },
     { kind: "openrouter", id: "z-ai/glm-4.6", label: "智谱 GLM-4.6（走 OpenRouter）" },
-    { kind: "ark", id: "doubao-seed-1-6-250615", label: "豆包 Seed 1.6（能看图）" },
-    { kind: "ark", id: "doubao-seed-1-6-flash-250715", label: "豆包 Seed 1.6 Flash（快且便宜）" },
-    { kind: "ark", id: "doubao-seed-1-6-thinking-250715", label: "豆包 Seed 1.6 Thinking（会想一会儿）" },
-    { kind: "ark", id: "doubao-1-5-pro-32k-250115", label: "豆包 1.5 Pro 32K" },
-    { kind: "ark", id: "doubao-1-5-pro-256k-250115", label: "豆包 1.5 Pro 256K（长文）" },
-    { kind: "ark", id: "doubao-1-5-lite-32k-250115", label: "豆包 1.5 Lite 32K（最便宜）" },
-    { kind: "ark", id: "deepseek-v3-250324", label: "DeepSeek V3（火山托管）" },
-    { kind: "ark", id: "deepseek-r1-250528", label: "DeepSeek R1（火山托管 · 会推理）" },
-    { kind: "ark", id: "kimi-k2-250711", label: "Kimi K2（火山托管）" },
+    // 2026-11-04 官方下线公告与 /models 核对；目录只是候选，用户自己的清单优先。
+    { kind: "ark", id: "doubao-seed-2-0-lite-260428", label: "豆包 Seed 2.0 Lite LTS（能看图）" },
+    { kind: "ark", id: "doubao-seed-2-0-mini-260428", label: "豆包 Seed 2.0 Mini LTS（快且便宜）" },
+    { kind: "ark", id: "doubao-seed-2-1-pro-260915", label: "豆包 Seed 2.1 Pro" },
+    { kind: "ark", id: "doubao-seed-2-1-lite-260915", label: "豆包 Seed 2.1 Lite" },
+    { kind: "ark", id: "deepseek-v4-flash-ga-260731", label: "DeepSeek V4 Flash（火山托管）" },
+    { kind: "ark", id: "glm-5-3-flash-260828", label: "GLM 5.3 Flash（火山托管）" },
+    { kind: "ark", id: "kimi-k3-1-pro-261024", label: "Kimi K3.1 Pro（火山托管）" },
     { kind: "dashscope", id: "qwen-max", label: "通义千问 Max" },
     { kind: "dashscope", id: "qwen-plus", label: "通义千问 Plus（便宜）" },
     { kind: "dashscope", id: "qwen-turbo", label: "通义千问 Turbo（最便宜）" },
@@ -134,8 +133,8 @@ const CATALOG = {
     { kind: "dashscope", id: "qwen-long", label: "通义千问 Long（长文）" },
     { kind: "dashscope", id: "qwq-plus", label: "通义 QwQ Plus（会推理）" },
     { kind: "dashscope", id: "deepseek-v3", label: "DeepSeek V3（百炼托管）" },
-    { kind: "deepseek", id: "deepseek-chat", label: "DeepSeek Chat" },
-    { kind: "deepseek", id: "deepseek-reasoner", label: "DeepSeek Reasoner（会想一会儿）" },
+    { kind: "deepseek", id: "deepseek-flash", label: "DeepSeek Flash" },
+    { kind: "deepseek", id: "deepseek-v4-pro", label: "DeepSeek V4 Pro" },
     { kind: "moonshot", id: "kimi-k2-0905-preview", label: "Kimi K2" },
     { kind: "moonshot", id: "kimi-k2-turbo-preview", label: "Kimi K2 Turbo（快）" },
     { kind: "moonshot", id: "moonshot-v1-128k", label: "Moonshot v1 128K（长文）" },
@@ -155,8 +154,8 @@ const CATALOG = {
     { kind: "ollama", id: "gemma3:12b", label: "Gemma 3 12B（本地跑）" },
   ],
   vision: [
-    { kind: "ark", id: "doubao-seed-1-6-250615", label: "豆包 Seed 1.6（看图 + 推理）" },
-    { kind: "ark", id: "doubao-1-5-vision-pro-250328", label: "豆包 1.5 Vision Pro" },
+    { kind: "ark", id: "doubao-seed-2-0-lite-260428", label: "豆包 Seed 2.0 Lite LTS（看图 + 推理）" },
+    { kind: "ark", id: "doubao-seed-2-1-pro-260915", label: "豆包 Seed 2.1 Pro（看图 + 推理）" },
     { kind: "dashscope", id: "qwen-vl-max", label: "通义千问 VL Max" },
     { kind: "dashscope", id: "qwen-vl-plus", label: "通义千问 VL Plus（便宜）" },
     // Gemini 官方渠道是 chat_only，看图这一路选不到它，目录里摆它的型号只会让人选完挂不上
@@ -169,8 +168,9 @@ const CATALOG = {
     { kind: "siliconflow", id: "Qwen/Qwen2.5-VL-72B-Instruct", label: "Qwen2.5-VL 72B" },
   ],
   image: [
-    { kind: "ark", id: "doubao-seedream-4-0-250828", label: "即梦 Seedream 4.0（中文标题写得对）" },
-    { kind: "ark", id: "doubao-seedream-3-0-t2i-250415", label: "即梦 Seedream 3.0" },
+    { kind: "ark", id: "doubao-seedream-5-0-flash-260915", label: "即梦 Seedream 5.0 Flash" },
+    { kind: "ark", id: "doubao-seedream-5-0-pro-260628", label: "即梦 Seedream 5.0 Pro" },
+    { kind: "ark", id: "doubao-seedream-4-5-251128", label: "即梦 Seedream 4.5" },
     { kind: "dashscope", id: "qwen-image", label: "通义千问 Image（中文海报）" },
     { kind: "dashscope", id: "wan2.2-t2i-flash", label: "通义万相 2.2 极速版" },
     { kind: "dashscope", id: "wanx2.1-t2i-turbo", label: "通义万相 2.1 Turbo" },
@@ -183,10 +183,8 @@ const CATALOG = {
   // 而视频是按条计费的异步任务，那一趟钱和几分钟全白扔。generate_video 会在发请求之前
   // 按名字把这两种对不上的组合拦下来，所以这里必须把标签写清楚，让人选之前就知道差别。
   video: [
-    { kind: "ark", id: "doubao-seedance-1-0-pro-250528", label: "Seedance 1.0 Pro（文生，画质好）" },
-    { kind: "ark", id: "doubao-seedance-1-0-lite-t2v-250428", label: "Seedance 1.0 Lite（文生，快且便宜）" },
-    { kind: "ark", id: "doubao-seedance-1-0-pro-i2v-250528", label: "Seedance 1.0 Pro 图生视频（要首帧图）" },
-    { kind: "ark", id: "doubao-seedance-1-0-lite-i2v-250428", label: "Seedance 1.0 Lite 图生视频（要首帧图）" },
+    { kind: "ark", id: "doubao-seedance-2-0-mini-260615", label: "Seedance 2.0 Mini（文生 / 图生）" },
+    { kind: "ark", id: "doubao-seedance-2-5-260628", label: "Seedance 2.5（文生 / 图生）" },
     { kind: "dashscope", id: "wan2.2-t2v-plus", label: "通义万相 2.2 文生视频 Plus" },
     { kind: "dashscope", id: "wanx2.1-t2v-turbo", label: "通义万相 2.1 Turbo（快）" },
     { kind: "dashscope", id: "wan2.2-i2v-plus", label: "通义万相 2.2 图生视频 Plus（要首帧图）" },
@@ -257,7 +255,7 @@ const MODAL = (v) => (Array.isArray(v) ? v.map((x) => String(x).toLowerCase()) :
  */
 function capOfModel(raw) {
   const id = typeof raw === "string" ? raw : String((raw && (raw.id || raw.name)) || "");
-  const a = (raw && typeof raw === "object" && raw.architecture) || (raw && typeof raw === "object" ? raw : {});
+  const a = (raw && typeof raw === "object" && (raw.architecture || raw.modalities)) || (raw && typeof raw === "object" ? raw : {});
   const inp = MODAL(a.input_modalities) || MODAL(a.input_modality);
   const out = MODAL(a.output_modalities) || MODAL(a.output_modality);
   const guess = { cap: guessCap(id), sure: false };
@@ -515,6 +513,9 @@ const SEEDANCE_ASPECTS = ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "9:21"];
 
 /** 按型号认。proto 也得对上：同叫 wan2.2 的，百炼和硅基流动是两套字段 */
 const VIDEO_SPECS = [
+  // Current Ark versions use continuous integer durations, not the old 5/10-second pair.
+  { proto: "ark", re: /seedance-2-0-(?:mini|fast)/i, durations: Array.from({ length: 12 }, (_, i) => i + 4), aspects: SEEDANCE_ASPECTS, resolutions: [480, 720], def: 5 },
+  { proto: "ark", re: /seedance-2-5/i, durations: Array.from({ length: 27 }, (_, i) => i + 4), aspects: SEEDANCE_ASPECTS, resolutions: [480, 720, 1080], def: 5 },
   { proto: "ark", re: /seedance-1-0-pro/i, durations: [5, 10], aspects: SEEDANCE_ASPECTS, resolutions: [480, 1080] },
   { proto: "ark", re: /seedance-1-0-lite/i, durations: [5, 10], aspects: SEEDANCE_ASPECTS, resolutions: [480, 720] },
   { proto: "dashscope", re: /^wan2\.2-t2v-plus/i, durations: [5], sizes: pickTiers(WAN_T2V_SIZES, [480, 1080]), defRes: 1080 },
@@ -1071,6 +1072,14 @@ const BRAND_HINTS = [
   ["^(minimax-|abab[0-9]|[ti]2v-0)", "minimax"],
 ];
 
+// Retired recommendations still occur in saved configs. Remember their origin without recommending them again.
+const LEGACY_MODEL_KINDS = Object.fromEntries([
+  "doubao-seed-1-6-250615", "doubao-seed-1-6-flash-250715", "doubao-seed-1-6-thinking-250715",
+  "doubao-1-5-pro-32k-250115", "doubao-1-5-pro-256k-250115", "doubao-1-5-lite-32k-250115",
+  "deepseek-v3-250324", "deepseek-r1-250528", "kimi-k2-250711", "doubao-1-5-vision-pro-250328",
+  "doubao-seedream-3-0-t2i-250415", "doubao-seedream-4-0-250828",
+].map(id => [id, "ark"]));
+
 /** 目录里这个 id 属于哪个 kind；同一个 id 被两家用（这种确实有）就算认不出 */
 function brandInCatalog(modelId) {
   const id = String(modelId || "").trim().toLowerCase();
@@ -1079,7 +1088,7 @@ function brandInCatalog(modelId) {
   for (const cap of Object.keys(CATALOG)) {
     for (const m of CATALOG[cap]) if (String(m.id).toLowerCase() === id) kinds.add(m.kind);
   }
-  return kinds.size === 1 ? [...kinds][0] : "";
+  return kinds.size === 1 ? [...kinds][0] : kinds.size ? "" : LEGACY_MODEL_KINDS[id] || "";
 }
 
 /**
@@ -1162,6 +1171,8 @@ function mismatch(kind, modelId, baseUrl) {
   if (!k || k === "ollama" || RELAY_KINDS.has(k)) return "";
   const id = String(modelId || "").trim();
   if (!id || id.includes(":")) return "";
+  // GLM/CogView dated IDs can be published by both Ark and Zhipu. A recommendation is not exclusive ownership.
+  if (k === "zhipu" && arkDated(id) && hintOf(id) === k) return "";
   const hit = brandInCatalog(id);
   if (hit) return hit === k || resold(k, hit) ? "" : hit;
   if (id.includes("/")) return "";
@@ -1257,6 +1268,7 @@ function clientCatalog() {
   return {
     kinds: PROVIDER_KINDS, catalog: CATALOG, caps: CAPS, cap_cn: CAP_CN, api_formats: API_FORMATS,
     brand_hints: BRAND_HINTS, kind_hosts: KIND_HOSTS,
+    legacy_model_kinds: LEGACY_MODEL_KINDS,
     media_apis: MEDIA_APIS, media_api_kinds: MEDIA_API_KINDS, media_api_hosts: MEDIA_API_HOSTS, media_api_default: MEDIA_API_DEFAULT,
   };
 }

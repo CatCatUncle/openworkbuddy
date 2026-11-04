@@ -691,7 +691,7 @@ const ONB_SEARCH = {
 // 多媒体五项的一键预设：[名字, 接口地址, 模型名, 默认音色]，点一下就填好，只剩粘 Key
 const ONB_MEDIA_PRESETS = {
   image: [["阿里云百炼 · qwen-image", "https://dashscope.aliyuncs.com/api/v1", "qwen-image"], ["OpenAI · gpt-image-1", "https://api.openai.com/v1", "gpt-image-1"]],
-  video: [["阿里云百炼 · 万相", "https://dashscope.aliyuncs.com/api/v1", "wan2.2-t2v-plus"], ["火山方舟 · Seedance", "https://ark.cn-beijing.volces.com/api/v3", "doubao-seedance-1-0-pro-250528"], ["智谱 · CogVideoX", "https://open.bigmodel.cn/api/paas/v4", "cogvideox-3"], ["MiniMax · 海螺", "https://api.minimax.chat/v1", "MiniMax-Hailuo-02"], ["硅基流动 · 万相", "https://api.siliconflow.cn/v1", "Wan-AI/Wan2.2-T2V-A14B"]],
+  video: [["阿里云百炼 · 万相", "https://dashscope.aliyuncs.com/api/v1", "wan2.2-t2v-plus"], ["火山方舟 · Seedance", "https://ark.cn-beijing.volces.com/api/v3", "doubao-seedance-2-0-mini-260615"], ["智谱 · CogVideoX", "https://open.bigmodel.cn/api/paas/v4", "cogvideox-3"], ["MiniMax · 海螺", "https://api.minimax.chat/v1", "MiniMax-Hailuo-02"], ["硅基流动 · 万相", "https://api.siliconflow.cn/v1", "Wan-AI/Wan2.2-T2V-A14B"]],
   tts: [["阿里云百炼 · qwen-tts", "https://dashscope.aliyuncs.com/api/v1", "qwen-tts", "Cherry"], ["OpenAI · gpt-4o-mini-tts", "https://api.openai.com/v1", "gpt-4o-mini-tts", "alloy"]],
   vision: [["阿里云百炼 · qwen-vl-max", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-vl-max"], ["OpenAI · gpt-5-mini", "https://api.openai.com/v1", "gpt-5-mini"]],
   // 转写只收说 /audio/transcriptions 的型号（百炼那套是异步任务，没接），所以这里没有百炼
@@ -887,9 +887,9 @@ function renderOnbBrain(body) {
       <div id="onb-cloud">
         <label class="onb-lb">服务商</label>
         <select id="onb-model">${st.models.map(m =>
-          `<option value="${esc(m.name)}" data-url="${esc(m.base_url)}" data-local="${m.local ? 1 : 0}" data-model="${esc(m.model)}">${esc(m.name)}${m.local ? "" : ` · ${esc(m.model)}`}${m.has_key ? "（已配）" : ""}</option>`).join("")}${
+          `<option value="${esc(m.name)}" data-url="${esc(m.base_url)}" data-api="${esc(m.api || "")}" data-channel="${esc(m.channel || "")}" data-local="${m.local ? 1 : 0}" data-model="${esc(m.model)}">${esc(m.name)}${m.has_key ? "（已配）" : ""}</option>`).join("")}${
           (st.templates || []).length ? `<optgroup label="${st.models.length ? "新接一家" : "选一家服务商"}">${(st.templates || []).map(t =>
-          `<option value="tpl:${esc(t.kind)}" data-url="${esc(t.base_url)}" data-local="${t.local ? 1 : 0}" data-model="${esc(t.model)}">${esc(t.name)}${t.local ? "" : ` · ${esc(t.model)}`}</option>`).join("")}</optgroup>` : ""}<optgroup label="列表里没有"><option value="${ONB_CUSTOM}" data-url="" data-local="0" data-model="">自己填地址（中转站、自建网关）</option></optgroup></select>
+          `<option value="tpl:${esc(t.kind)}" data-kind="${esc(t.kind)}" data-url="${esc(t.base_url)}" data-local="${t.local ? 1 : 0}" data-model="${esc(t.model)}">${esc(t.name)}</option>`).join("")}</optgroup>` : ""}<optgroup label="列表里没有"><option value="${ONB_CUSTOM}" data-url="" data-local="0" data-model="">自己填地址（中转站、自建网关）</option></optgroup></select>
         <div class="onb-tip" id="onb-tip"></div>
         <div id="onb-crow" hidden>
           <label class="onb-lb">接口地址</label>
@@ -900,7 +900,7 @@ function renderOnbBrain(body) {
         <div id="onb-mrow" hidden>
           <label class="onb-lb">用哪个模型</label>
           <select id="onb-mdl"></select>
-          <input id="onb-mdl-custom" placeholder="模型名，例如 qwen3:8b" autocomplete="off" spellcheck="false" hidden>
+          <input id="onb-mdl-custom" placeholder="模型或接入点 ID，例如 ep-… / qwen3:8b" autocomplete="off" spellcheck="false" hidden>
           <div class="onb-tip" id="onb-mdl-tip"></div>
         </div>
         <label class="onb-lb">API Key</label>
@@ -950,62 +950,79 @@ function renderOnbBrain(body) {
   const first = cur || st.models.find(m => !m.has_key && !m.local) || st.models[0];
   if (first) sel.value = first.name;
   else if ((st.templates || []).length) sel.value = "tpl:" + st.templates[0].kind;
-  // 本机 Ollama 跟云端不是一回事：云端那家有哪些型号是我们定的，本机只有他自己知道——
-  // 装的是 llama3.2 还是 qwen3:8b、下没下过 14b，全看他电脑上 `ollama pull` 过什么。
-  // 之前这一屏把模板里那个 qwen3:14b 当成定局，等于逼所有人去下一个 9GB 的模型，
-  // 手上明明跑着别的也用不上。所以选中本机那条时，现问一次它「你这儿都有啥」。
+  // 每家都能重选型号。预设可能退役，Key 对应的现有清单才是本次接入的候选。
   const mrow = body.querySelector("#onb-mrow");
   const mdl = body.querySelector("#onb-mdl");
   const mdlCustom = body.querySelector("#onb-mdl-custom");
   const mdlTip = body.querySelector("#onb-mdl-tip");
   const CUSTOM = "__custom__";
-  const listed = new Map();          // base_url → 那台机器上已经装了的模型名
+  const listed = new Map();
+  let modelListSeq = 0, modelListPending = Promise.resolve();
   const pickedModel = () => (mdl.value === CUSTOM ? mdlCustom.value.trim() : mdl.value.trim());
   const syncCustom = () => { mdlCustom.hidden = mdl.value !== CUSTOM; if (!mdlCustom.hidden) setTimeout(() => mdlCustom.focus(), 20); };
-  mdl.onchange = syncCustom;
-  // 「重新问一次」：他照着提示去终端 ollama serve / ollama pull 之后，得有地方回来再问一遍。
-  // 没有这颗，清单就永远停在他还没启动 Ollama 的那一刻——提示教他去做的事做完了却没处生效。
-  const againLink = ` <a href="#" id="onb-mdl-again">重新问一次</a>`;
+  mdl.onchange = () => { mdl.dataset.picked = "1"; syncCustom(); };
+  const againLink = ` <a href="#" id="onb-mdl-again">刷新列表</a>`;
   const fillModels = (url, fallback, refetch) => {
-    const has = refetch ? undefined : listed.get(url);
+    const seq = ++modelListSeq;
+    const selected = sel.value;
+    const cur = sel.selectedOptions[0];
+    const local = cur && cur.dataset.local === "1";
+    const key = local ? "" : keyEl.value.trim();
+    const preserve = mdl.dataset.picked === "1", prior = pickedModel(), wasCustom = mdl.value === CUSTOM;
+    const cacheId = JSON.stringify([selected, url, key]);
+    const has = refetch ? undefined : listed.get(cacheId);
     const opt = (id) => (id ? `<option value="${esc(id)}">${esc(id)}</option>` : "");
     const bindAgain = () => {
       const a = mdlTip.querySelector("#onb-mdl-again");
-      if (a) a.onclick = (e) => { e.preventDefault(); fillModels(url, fallback, true); };
+      if (a) a.onclick = (e) => { e.preventDefault(); fillModels(url, pickedModel() || fallback, true); };
     };
     if (has === undefined) {
       mdl.innerHTML = opt(fallback) + `<option value="${CUSTOM}">自己填…</option>`;
-      mdlTip.textContent = "正在问本机 Ollama 装了哪些模型…";
-      fetch("/api/provider-models", {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ base_url: url }),
+      if (preserve && wasCustom) { mdl.value = CUSTOM; mdlCustom.value = prior; }
+      mdl.dataset.picked = preserve ? "1" : "";
+      syncCustom();
+      if (!local && !key) {
+        mdlTip.innerHTML = `填 Key 查询。${againLink}`;
+        bindAgain(); return;
+      }
+      mdlTip.textContent = local ? "正在问本机 Ollama 装了哪些模型…" : "正在查询这个账号的模型…";
+      modelListPending = fetch("/api/provider-models", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ base_url: url, api_key: key, ...(cur.dataset.channel ? { id: cur.dataset.channel } : {}),
+          ...(cur.dataset.kind ? { kind: cur.dataset.kind } : {}), ...(cur.dataset.api ? { api: cur.dataset.api } : {}), refresh: !!refetch }),
       }).then((r) => r.json()).catch(() => ({ ok: false }))
         .then((d) => {
-          const got = (d && d.ok && Array.isArray(d.models) ? d.models : []).map((m) => String(m.id || m)).filter(Boolean);
-          // 空清单不进缓存：这一趟多半是 Ollama 还没起来，缓住了他起完再来也还是空的
-          if (got.length) listed.set(url, got);
-          else listed.delete(url);
-          // 期间他已经改选别家了，就别把 Ollama 的清单糊到人家头上
-          const cur = sel.selectedOptions[0];
-          if (!mdl.isConnected || !cur || cur.dataset.url !== url) return;
-          if (got.length) return fillModels(url, fallback);
-          // 一个都没列出来，分两种，下一步要敲的命令不一样：连都没连上要先 ollama serve，
-          // 连上了只是一个模型都没拉过，叫他再去 serve 一遍纯属瞎指挥
-          mdl.innerHTML = opt(fallback) + `<option value="${CUSTOM}">自己填…</option>`;
-          const pull = `<code>ollama pull ${esc(fallback || "qwen3:8b")}</code>`;
-          mdlTip.innerHTML = d && d.ok
-            ? `本机 Ollama 连上了，但一个模型都还没装。在终端跑 ${pull} 拉一个（约 5GB），回来点「重新问一次」。${againLink}`
-            : `没连上本机 Ollama（${esc(url)}）。先在终端跑 <code>ollama serve</code> 把它起起来，`
-              + `再 ${pull} 拉一个；已经装了别的就选「自己填…」把名字写进去。${againLink}`;
+          const rows = d && d.ok && Array.isArray(d.models) ? d.models : [];
+          const got = rows.filter(m => m.chat !== false && (!m.cap || m.cap === "vision")).map(m => String(m.id || m)).filter(Boolean);
+          if (got.length) listed.set(cacheId, got); else listed.delete(cacheId);
+          if (seq !== modelListSeq || !mdl.isConnected || sel.value !== selected || (!local && keyEl.value.trim() !== key)) return;
+          if (got.length) {
+            const keep = pickedModel(), custom = mdl.value === CUSTOM, picked = mdl.dataset.picked === "1";
+            mdl.innerHTML = got.map(opt).join("") + `<option value="${CUSTOM}">自己填…</option>`;
+            // 用户手选/手填的内容不被迟到的网络响应覆盖；未选择时才用当前清单里的候选。
+            if (custom || (picked && !got.includes(keep))) { mdl.value = CUSTOM; mdlCustom.value = keep; }
+            else mdl.value = got.includes(keep) ? keep : got[0];
+            mdlTip.innerHTML = (local ? `这台机器上装了 ${got.length} 个模型。` : `列出 ${got.length} 个对话候选，需验活确认权限和余额。`)
+              + `列表里没有想要的，选「自己填…」。${againLink}`;
+            bindAgain(); syncCustom(); return;
+          }
+          if (!local) {
+            mdlTip.innerHTML = `${esc(d && d.why || "没有返回对话候选")}；可手填已开通的模型或 ep- 接入点 ID，再验活。${againLink}`;
+          } else {
+            const pull = `<code>ollama pull ${esc(fallback || "qwen3:8b")}</code>`;
+            mdlTip.innerHTML = d && d.ok
+              ? `本机 Ollama 连上了，但一个模型都还没装。在终端跑 ${pull} 拉一个（约 5GB），回来刷新。${againLink}`
+              : `没连上本机 Ollama（${esc(url)}）。先在终端跑 <code>ollama serve</code> 把它起起来，再 ${pull}；已装别的可选「自己填…」。${againLink}`;
+          }
           bindAgain();
         });
       return;
     }
     mdl.innerHTML = has.map(opt).join("") + `<option value="${CUSTOM}">自己填…</option>`;
-    // 模板里那个默认值只在他确实装了的时候才选中——没装还默认选它，验活必然 404
-    mdl.value = has.includes(fallback) ? fallback : has[0];
-    mdlTip.innerHTML = `这台机器上装了 ${has.length} 个模型。列表里没有想要的，选「自己填…」。${againLink}`;
-    bindAgain();
-    syncCustom();
+    if (preserve && (wasCustom || !has.includes(prior))) { mdl.value = CUSTOM; mdlCustom.value = prior; }
+    else mdl.value = has.includes(fallback) ? fallback : has[0];
+    mdlTip.innerHTML = (local ? `这台机器上装了 ${has.length} 个模型。` : `列出 ${has.length} 个对话候选，需验活确认权限和余额。`) + againLink;
+    bindAgain(); syncCustom();
   };
   // 「自己填地址」：中转站、new-api / one-api、公司内网网关。以前得先跳过这一步、进了界面再去设置里找，
   // 可大脑没接上什么都干不了——最需要这条路的恰恰是第一步
@@ -1025,7 +1042,7 @@ function renderOnbBrain(body) {
     const seq = ++listSeq;
     if (!/^https?:\/\/[^/\s]+/i.test(base)) { cmodels.innerHTML = ""; ctip.textContent = ""; return; }
     const ask = (u) => fetch("/api/provider-models", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ base_url: u, api_key: key }),
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ base_url: u, api_key: key, api: cfmt.value }),
     }).then((r) => r.json()).catch(() => ({ ok: false }));
     ctip.textContent = "正在问这个地址有哪些模型…";
     let d = await ask(base);
@@ -1036,11 +1053,17 @@ function renderOnbBrain(body) {
     ctip.textContent = ids.length ? `这个地址列出了 ${ids.length} 个模型，点模型名一栏可以挑` : "没拿到模型清单，照接口文档把模型名填上";
   };
   curl.onchange = listCustom;
-  keyEl.addEventListener("change", () => { if (isCustom()) listCustom(); });
+  cfmt.onchange = listCustom;
+  keyEl.addEventListener("change", () => {
+    if (isCustom()) return listCustom();
+    const opt = sel.selectedOptions[0];
+    if (opt) fillModels(opt.dataset.url || "", pickedModel() || opt.dataset.model || "", true);
+  });
   const syncTip = () => {
     const custom = isCustom();
     crow.hidden = crow2.hidden = !custom;
     if (custom) {
+      ++modelListSeq;
       tipEl.textContent = "填中转站或自建网关给你的地址、Key 和模型名。";
       keyEl.disabled = false;
       keyEl.placeholder = "粘贴 API Key（本机接口可不填）";
@@ -1057,10 +1080,10 @@ function renderOnbBrain(body) {
       : `${ONB_TIPS[srcId] || ONB_TIPS[url] || "去这家服务商的控制台拿 API Key。"} ${keyLink(srcId)}`;
     keyEl.disabled = local;
     keyEl.placeholder = local ? "本地模型不用填" : "粘贴 API Key";
-    mrow.hidden = !local;
-    if (local) fillModels(url, (opt.dataset.model || "").trim());
+    mrow.hidden = false;
+    fillModels(url, (opt.dataset.model || "").trim());
   };
-  sel.onchange = syncTip;
+  sel.onchange = () => { keyEl.value = ""; mdl.dataset.picked = ""; ++modelListSeq; modelListPending = Promise.resolve(); syncTip(); };
   syncTip();
   // 本机 CLI 也得钉一个型号：不填就不让过，不拿 CLI 自己配置里的默认型号顶上（engines/gate.js）
   const emdl = body.querySelector("#onb-emdl");
@@ -1084,9 +1107,11 @@ function renderOnbBrain(body) {
     try {
       if (mode === "cloud") {
         go.textContent = "正在验活…（发一条真实请求，可能要十几秒）";
-        // model_id 只在本机那条路上带：云端用哪个型号是模板定好的，本机才需要他自己点名
+        const choice = sel.value, key = keyEl.value;
+        if (!isCustom()) await modelListPending;
+        if (choice !== sel.value || key !== keyEl.value) { err.textContent = "服务商或 Key 已改变，请重新验活"; return; }
         const wantModel = mrow.hidden ? "" : pickedModel();
-        if (!mrow.hidden && !wantModel) { err.textContent = "先选一个模型——本机装了哪些只有你知道，我猜不出来"; return; }
+        if (!mrow.hidden && !wantModel) { err.textContent = "先选一个模型，或选择「自己填…」填写已开通的型号"; return; }
         if (isCustom() && !curl.value.trim()) { err.textContent = "先把接口地址填上"; curl.focus(); return; }
         if (isCustom() && !cmodel.value.trim()) { err.textContent = "模型名还空着，照这家接口文档填"; cmodel.focus(); return; }
         const r = await fetch("/api/onboarding", {

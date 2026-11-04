@@ -979,6 +979,18 @@ async function generateVideo(media, input, opts = {}) {
       videoUrl = await poll(() => videoTaskCheck(proto, base, auth, taskId, askJson));
     } else if (proto === "ark") {
       // 火山方舟（Seedance 系）：contents/generations/tasks 异步 + 轮询
+      // 2.x uses top-level JSON options. Keep the old text flags only for legacy endpoints.
+      const modern = /seedance-2-[05]/i.test(cfg.model);
+      const flag = (name) => (new RegExp(`--${name}\\s+(\\S+)`, "i").exec(prompt) || [])[1];
+      const modernRes = vs.resolution ? `${vs.resolution}p` : flag("resolution");
+      const modernOpts = modern ? {
+        watermark: String(flag("watermark") || "false").toLowerCase() === "true",
+        ...(vs.duration || flag("duration") ? { duration: vs.duration || plan.seconds } : {}),
+        ...(vs.aspect || flag("ratio") ? { ratio: vs.aspect || flag("ratio") } : {}),
+        ...(modernRes ? { resolution: /^\d+$/.test(modernRes) ? `${modernRes}p` : modernRes } : {}),
+      } : {};
+      const modernText = modern ? prompt.replace(/\s*--(?:duration|ratio|resolution|watermark)\s+\S+/gi, "").trim() : "";
+      if (modern && !modernText) return { content: "视频提示词不能只有时长、画幅等参数，请补充画面描述。", isError: true };
       // 时长 / 画幅 / 分辨率同样是文本指令，接在 --watermark 后面；提示词里自己写了的 videoPlan 已经让掉了
       const arkFlags = (vs.duration ? ` --duration ${vs.duration}` : "")
         + (vs.aspect ? ` --ratio ${vs.aspect}` : "")
@@ -988,8 +1000,8 @@ async function generateVideo(media, input, opts = {}) {
         // Seedance 的参数走提示词里的文本指令，不是 JSON 字段。用户自己写了就不覆盖他的
         // 方舟这边首尾帧是同一个 content 数组里的两个 image_url 项，靠 role 区分。
         // 文字那一项原样不动：`--watermark false` 是写在提示词里的指令，挪个位置就失效了
-        body: JSON.stringify({ model: cfg.model, content: [
-          { type: "text", text: (/--watermark\b/.test(prompt) ? prompt : `${prompt} --watermark false`) + arkFlags },
+        body: JSON.stringify({ model: cfg.model, ...modernOpts, content: [
+          { type: "text", text: modern ? modernText : (/--watermark\b/.test(prompt) ? prompt : `${prompt} --watermark false`) + arkFlags },
           ...(firstUri ? [{ type: "image_url", image_url: { url: firstUri }, role: assets.length ? "reference_image" : "first_frame" }] : []),
           ...(lastUri ? [{ type: "image_url", image_url: { url: lastUri }, role: assets.length ? "reference_image" : "last_frame" }] : []),
           ...assets.map((url) => ({ type: "image_url", image_url: { url }, role: "reference_image" })),

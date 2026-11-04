@@ -276,6 +276,8 @@ The built-in Agent alternates model decisions and tool execution, with concurren
 
 ## What's new
 
+- **Nov 4** v0.18.4: model setup: choose cloud model IDs, refresh key-specific lists, and diagnose retired or unauthorized Ark endpoints. See [configuration](docs/配置模型.md).
+
 - **Nov 3** v0.18.3: recoverable file cleanup protects output directories and active tasks; previews fit automatically on open, and long tasks reconcile progress during execution. See [cleanup and recovery](docs/文件清理与恢复.md) (Chinese).
 
 - **Nov 1** v0.18.2: deleting a task selects its dedicated folder for cleanup by default. Uncheck to keep files. Cleanup moves files to the trash and preserves project roots and shared folders.

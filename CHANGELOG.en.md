@@ -9,6 +9,8 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 ## 2026
 
+- **Nov 4** v0.18.4: cloud onboarding supports selecting and refreshing models or entering Ark endpoint IDs. Discovery caches are scoped by URL, key and protocol; saved credentials cannot follow changed destinations. Fixed Claude/Gemini/Ollama discovery, Ark modality metadata and stale replies; refreshed Ark/DeepSeek defaults. Endpoint access errors distinguish unavailability from invalid IDs, and Seedance 2.x uses JSON options with current duration/resolution limits.
+
 - **Nov 3** v0.18.3: intermediate-file cleanup and library deletion use recoverable trash, with native desktop Trash/Recycle Bin or server-side original bytes and recovery records. Failures never fall back to permanent deletion. Generic output directory names are retained, dependency caches are unchecked by default, active work blocks cleanup, and the new UI refuses deletion through older servers.
 
 - **Nov 3** Fixed-width web pages and Office previews fit automatically on first display. Preview resizing, reveal and content changes trigger remeasurement while preserving manual zoom. Mixed-size OFD pages fit the widest page; resize callbacks are coalesced and listeners released on close.

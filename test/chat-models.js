@@ -516,7 +516,7 @@ console.log("\n【14】向导的服务商清单从目录来，按模板起行不
 
   const c = { models: [], providers: [], active_model: "" };
   const plan = cm.planTemplate(c, "deepseek");
-  ok(plan && plan.row.model === "deepseek-chat" && plan.row.name === "DeepSeek", "按模板算出一行", plan && plan.row);
+  ok(plan && plan.row.model === "deepseek-flash" && plan.row.name === "DeepSeek", "按当前模板算出一行", plan && plan.row);
   eq(c.models.length + c.providers.length, 0, "planTemplate 不动 config（验活失败时不许留半成品）");
   const row = cm.commitTemplate(c, plan, "sk-ds");
   eq(c.providers.length, 1, "落下去：一个渠道");
