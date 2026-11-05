@@ -9282,6 +9282,7 @@ function evalSummaryBrief(j) {
     tasks: j.tasks, full_pass: j.full_pass, checks_passed: j.checks_passed, checks_total: j.checks_total,
     tokens_total: j.tokens_total, avg_prompt_per_call: j.avg_prompt_per_call || 0,
     // 评委那段纪律原文只在明细里给，历史表 20 行每行背一遍没必要
+    candidate: j.candidate || "",
     commit: j.commit || "", judge: j.judge ? { ...j.judge, system: undefined } : null, human: j.human || null,
     results: (j.results || []).map((r) => {
       const k = r.k || 1;
@@ -9356,16 +9357,25 @@ app.post("/api/eval/start", (req, res) => {
     if (!evalSets.load(setId)) return res.status(400).json({ error: "这个评测集已经不在了" });
     args.push("--set", setId);
   }
-  spawnEval(args, model, "run");
+  // 采纳规则之前先验证：带着这条候选规则跑一轮，看对比基线有没有退步。人还是最后拍板的那个
+  const proposalId = String((req.body || {}).proposal || "").trim();
+  let candidate = "";
+  if (proposalId) {
+    const p = evolve.listProposals().find((x) => x.id === proposalId);
+    if (!p || !p.rule) return res.status(400).json({ error: "这条提案已经不在了" });
+    candidate = String(p.rule);
+    args.push("--candidate", proposalId);
+  }
+  spawnEval(args, model, "run", candidate ? { OWB_CANDIDATE_RULE: candidate } : {});
   res.json({ ok: true, model });
 });
 /** 跑批和重判共用一条子进程通道：同一时间只许一个，日志都进 evalState 给评测页轮询 */
-function spawnEval(args, model, kind) {
+function spawnEval(args, model, kind, extraEnv = {}) {
   evalState.running = true; evalState.lines = []; evalState.startedAt = Date.now(); evalState.model = model; evalState.exit = null; evalState.kind = kind;
   // nodeExec：服务端在独立服务进程里时 execPath 是 Electron Helper，换回应用本体
   const child = require("child_process").spawn(require("./src/platform/electron-bridge").nodeExec(), args, {
     cwd: appPath(),
-    env: { ...process.env, OPENWORKBUDDY_HOME: DATA_DIR, ELECTRON_RUN_AS_NODE: "1" }, // execPath 是 Electron，不加就弹新应用实例
+    env: { ...process.env, OPENWORKBUDDY_HOME: DATA_DIR, ELECTRON_RUN_AS_NODE: "1", ...extraEnv }, // execPath 是 Electron，不加就弹新应用实例
     windowsHide: true,
   });
   let buf = "";

@@ -781,6 +781,7 @@ async function renderEvolvePane(pane, { keepSignals = false } = {}) {
       ${(p.evidence || []).length ? `<details style="margin-top:4px"><summary style="cursor:pointer;font-size: 13px;color:var(--owb-text-3)">看现场原话（${p.evidence.length} 条）</summary>
         ${p.evidence.map(e => `<div style="font-size: 13px;color:var(--owb-text-2);margin:5px 0 0;padding-left:8px;border-left:2px solid var(--owb-border)"><b>${esc(e.task || "")}</b><br>${escInline(e.excerpt || "")}</div>`).join("")}</details>` : ""}
       <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="btn-plain" data-act="verify" style="height:30px;padding:0 14px;font-size: 13px" title="带着这条规则跑一轮评测，到评测页看对比基线有没有退步。会花模型费用。">先用评测验证</button>
         <button class="btn-brand" data-act="accept" style="height:30px;padding:0 14px;font-size: 13px">采纳，写进提示词</button>
         <input data-reason placeholder="驳回理由（会喂回给模型当负样本）" style="flex:1;min-width:160px;height:30px;font-size: 13px;margin:0">
         <button class="btn-plain" data-act="reject" style="height:30px;padding:0 12px;font-size: 13px">驳回</button>
@@ -861,6 +862,10 @@ async function renderEvolvePane(pane, { keepSignals = false } = {}) {
       }).then(r => r.json()).catch(() => ({ error: "网络错误" }));
       toast(r.error ? "没成：" + r.error : decision === "accept" ? "已采纳，下次任务就带上了" : "已驳回，下轮不会再提");
       renderEvolvePane(pane, { keepSignals: true });
+    };
+    card.querySelector("[data-act=verify]").onclick = async () => {
+      const r = await fetch("/api/eval/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ proposal: id }) }).then(x => x.json()).catch(() => ({ error: "网络错误" }));
+      toast(r.error ? "没开起来：" + r.error : "评测已开始。跑完到评测页看对比基线有没有退步");
     };
     card.querySelector("[data-act=accept]").onclick = () => decide("accept");
     card.querySelector("[data-act=reject]").onclick = () => decide("reject");

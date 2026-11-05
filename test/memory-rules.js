@@ -148,6 +148,15 @@ const blab = (seed, n) => {
       ok(!d.turns[1].hits.length, "普通回话不算");
     }
   }
+  {
+    console.log("\n【候选规则只进评测】");
+    ok(!evolve.promptBlock().includes("候选测试规则"), "日常任务里没有候选规则");
+    process.env.OWB_CANDIDATE_RULE = "候选测试规则：先列提纲";
+    ok(evolve.promptBlock().includes("候选测试规则"), "评测子进程带环境变量时进提示词");
+    delete process.env.OWB_CANDIDATE_RULE;
+    const srv = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+    ok(/spawnEval\(args, model, "run", candidate \? \{ OWB_CANDIDATE_RULE: candidate \}/.test(srv), "环境变量只给评测子进程，不写进服务进程");
+  }
   console.log(`\n记忆规矩优先：${pass} 通过，${fail} 失败`);
   finished = true;
   if (fail) process.exitCode = 1;

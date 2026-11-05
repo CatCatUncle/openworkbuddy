@@ -9,7 +9,7 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 ## 2026
 
-- **Nov 6** Evals add blind comparison: two runs' results side by side per task with sources hidden, revealed only after every task is judged.
+- **Nov 6** Evals add blind comparison: two runs' results side by side per task with sources hidden, revealed only after every task is judged. Self-evolution proposals can run an eval with the candidate rule and compare against the baseline before adoption.
 
 - **Nov 6** The admin console adds Member Access and Storage pages: control which connectors and skills members can use, turn on read-only task sharing within an organization, see per-account disk use and set per-member quotas. Connector setup gains built-in checks that catch download-and-run commands, key file paths and cloud metadata addresses without toolward installed.
 

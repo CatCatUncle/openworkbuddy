@@ -413,7 +413,9 @@ function rulesChars(rules) {
  * 谁往里塞一篇小作文，这儿得兜住，而且得说出来。
  */
 function promptBlock() {
-  const rules = activeRules();
+  // 待验证的候选规则：只有评测子进程会带这个环境变量，日常任务里永远是空的
+  const candidate = String(process.env.OWB_CANDIDATE_RULE || "").trim().slice(0, CAPS.ruleChars);
+  const rules = candidate ? [...activeRules(), { id: "candidate", text: candidate }] : activeRules();
   if (!rules.length) return "";
   const head = `\n\n## 从过往任务里学到的（自进化规则，N 条）\n` +
     `这些是从你自己跑砸过的任务里总结出来的，每一条背后都有具体次数，别当客套话跳过：\n`;

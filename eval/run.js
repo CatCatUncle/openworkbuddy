@@ -343,6 +343,7 @@ async function main() {
   const summary = {
     at: new Date().toISOString(), model: modelName, model_id: entry.model, repeat: REPEAT,
     ...(SET ? { set: SET.id, set_name: SET.name } : {}),
+    ...(argOf("candidate", "") ? { candidate: argOf("candidate", "") } : {}),
     tasks: results.length, full_pass: passkCount, pass1_avg: pass1Avg,
     flaky_tasks: flakyTasks, fail_code_counts: failCodeCounts,
     checks_passed: score, checks_total: totalChecks,
