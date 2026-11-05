@@ -449,6 +449,171 @@ async function runCanvasExperience({ run, win, ok }) {
   })()`);
   ok(卡片开销.before === 0 && 卡片开销.after === 1 && 卡片开销.kept === 119 && 卡片开销.options === 120, "120 张生成卡加载不逐卡扫描参考候选；展开一次才计算一次，单卡更新保留其他 119 张 DOM", 卡片开销);
 
+  console.log("\n— 创作工具：快捷面板、宫格、工作流、批量视频 —");
+  const 面板 = await run(`(async () => {
+    ${摆画布([卡片("pal1", "note", { title: "一张" }, 40, 40)])}
+    const page = document.getElementById("assist-page"); page.focus();
+    page.dispatchEvent(new KeyboardEvent("keydown", { key: "/", code: "Slash", bubbles: true }));
+    const box = document.getElementById("canvas-palette"), input = box?.querySelector("input");
+    const out = { 打开: !!box, 聚焦: document.activeElement === input, 有节点: box.querySelectorAll(".canvas-palette-row").length >= 12 };
+    input.value = "视频"; input.dispatchEvent(new Event("input"));
+    out.能搜 = [...box.querySelectorAll(".canvas-palette-row span")].some((el) => el.textContent === "视频");
+    input.value = "完全没有这一项"; input.dispatchEvent(new Event("input"));
+    out.没有时说明 = !!box.querySelector(".canvas-palette-empty");
+    input.value = "文字"; input.dispatchEvent(new Event("input"));
+    const before = canvasState.graph.getElements().length;
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    out.回车加卡 = canvasState.graph.getElements().length === before + 1;
+    out.回车后关闭 = !document.getElementById("canvas-palette");
+    canvasOpenPalette({ x: 100, y: 100 });
+    document.querySelector("#canvas-palette input").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    out.Esc关闭 = !document.getElementById("canvas-palette");
+    const typing = document.createElement("textarea"); page.appendChild(typing); typing.focus();
+    typing.dispatchEvent(new KeyboardEvent("keydown", { key: "/", code: "Slash", bubbles: true })); typing.remove();
+    out.输入时不抢 = !document.getElementById("canvas-palette");
+    return out;
+  })()`);
+  for (const [label, passed] of Object.entries(面板)) ok(passed, "快捷面板：" + label, 面板);
+
+  const 宫格算 = await run(`(() => {
+    const rects = canvasGridRects(101, 77, 3, 3), area = rects.reduce((sum, r) => sum + r.width * r.height, 0);
+    return { 九格: rects.length === 9, 不丢像素: area === 101 * 77, 首尾相接: rects[2].x + rects[2].width === 101 && rects[8].y + rects[8].height === 77 };
+  })()`);
+  for (const [label, passed] of Object.entries(宫格算)) ok(passed, "宫格切线：" + label, 宫格算);
+
+  const 宫格 = await run(`(async () => {
+    const png = await new Promise((done) => { const c = document.createElement("canvas"); c.width = 60; c.height = 40; const g = c.getContext("2d"); g.fillStyle = "#f00"; g.fillRect(0, 0, 30, 40); g.fillStyle = "#00f"; g.fillRect(30, 0, 30, 40); done(c.toDataURL("image/png")); });
+    ${摆画布([卡片("grid-src", "image", { title: "母图", path: "__DATA__" }, 40, 40)])}
+    const node = canvasState.graph.getCell("grid-src"); node.set("canvasPayload", { ...canvasPayload(node), path: png, url: png });
+    const oldFetch = window.fetch, sent = [];
+    window.fetch = async (url, options) => {
+      if (String(url) !== "/api/upload") return oldFetch(url, options);
+      sent.push({ name: decodeURIComponent(options.headers["X-Upload-Name"]), bytes: options.body.size, type: options.body.type });
+      return new Response(JSON.stringify({ name: "切片/" + sent.at(-1).name }), { status: 200 });
+    };
+    try {
+      const made = await canvasSplitGrid(node, 1, 2);
+      const links = canvasState.graph.getLinks().filter((link) => link.get("source")?.id === "grid-src");
+      const out = { 两张: made.length === 2 && sent.length === 2, 是图: sent.every((f) => f.type === "image/png" && f.bytes > 0), 命名: sent[0].name.endsWith("-1-1.png"),
+        连回原图: links.length === 2 && links.every((link) => canvasLinkRelation(link) === "split"), 原图还在: !!canvasState.graph.getCell("grid-src"), 选中结果: canvasState.selectedIds.size === 2 };
+      await new Promise((r) => setTimeout(r, 500));
+      canvasUndo(); out.一步撤销 = canvasState.graph.getElements().length === 1;
+      return out;
+    } finally { window.fetch = oldFetch; }
+  })()`);
+  for (const [label, passed] of Object.entries(宫格)) ok(passed, "宫格切分：" + label, 宫格);
+
+  const 工作流 = await run(`(async () => {
+    ${摆画布([
+      卡片("wf-a", "image", { title: "母图", prompt: "暖光产品图", model: "m1", path: "旧/图.png", generation_runs: [{ kind: "image" }], pending_jobs: [{ id: "x" }] }, 40, 40),
+      卡片("wf-b", "video", { title: "运镜", prompt: "缓慢推近", duration: 5, first_frame: "旧/图.png" }, 480, 40),
+      卡片("wf-c", "note", { title: "外面的卡" }, 40, 500)])}
+    const graph = canvasState.graph; canvasConnect(graph.getCell("wf-a"), graph.getCell("wf-b"), "first_frame"); canvasConnect(graph.getCell("wf-c"), graph.getCell("wf-b"), "input");
+    const flow = canvasWorkflowDraft([graph.getCell("wf-a"), graph.getCell("wf-b")]), a = flow.nodes[0], b = flow.nodes[1];
+    const out = { 留提示词: a.payload.prompt === "暖光产品图" && a.payload.model === "m1" && b.payload.duration === 5,
+      不带素材: !a.payload.path && !b.payload.first_frame, 不带回执: !a.payload.generation_runs && !a.payload.pending_jobs,
+      只留组内连线: flow.edges.length === 1 && flow.edges[0].relation === "first_frame", 相对位置: a.x === 0 && a.y === 0 && b.x === 440 };
+    const made = canvasInsertWorkflow({ name: "测", ...flow }, { x: 400, y: 300 });
+    out.插入两张 = made.length === 2 && graph.getElements().length === 5;
+    out.连线还在 = graph.getConnectedLinks(made[1], { inbound: true }).length === 1;
+    out.选中新卡 = made.every((node) => canvasState.selectedIds.has(node.id));
+    canvasUndo(); out.一步撤销 = graph.getElements().length === 3;
+    return out;
+  })()`);
+  for (const [label, passed] of Object.entries(工作流)) ok(passed, "工作流：" + label, 工作流);
+
+  const 批量 = await run(`(async () => {
+    const data = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+    ${摆画布([卡片("bv1", "image", { title: "一", path: "a.png" }, 40, 40), 卡片("bv2", "image", { title: "二", path: "b.png" }, 40, 400)])}
+    const graph = canvasState.graph, oldRun = canvasRunQueue, oldConfirm = window.askConfirm; let ran = null;
+    window.canvasRunQueue = async (kind, queue) => { ran = { kind, n: queue.length }; return true; };
+    try {
+      canvasState.files = [{ name: "a.png" }, { name: "b.png" }];
+      canvasSetSelection(["bv1", "bv2"]); canvasRenderSelectionTools();
+      const out = { 有按钮: !!document.querySelector("[data-canvas-batch-video]") && !!document.querySelector("[data-canvas-flow-save]") };
+      const made = canvasBatchVideo();
+      out.每图一卡 = made.length === 2 && made.every((node) => canvasKind(node) === "video");
+      out.图作首帧 = made.every((node) => canvasUpstreamInputs(node)[0]?.relation === "first_frame");
+      out.没开跑 = ran === null;
+      const blank = await canvasBatchGenerate();
+      out.没描述不开跑 = blank === false && ran === null;
+      canvasSetSelection(made.map((node) => node.id)); canvasBatchPrompt("镜头缓慢推近");
+      out.统一描述 = made.every((node) => canvasPayload(node).prompt === "镜头缓慢推近");
+      await canvasBatchGenerate();
+      out.整批进队列 = ran?.kind === "video" && ran?.n === 2;
+      const mixed = [graph.getCell("bv1"), made[0]];
+      out.混类型不批量 = canvasBatchKind(mixed) === "";
+      return out;
+    } finally { window.canvasRunQueue = oldRun; window.askConfirm = oldConfirm; }
+  })()`);
+  for (const [label, passed] of Object.entries(批量)) ok(passed, "批量做视频：" + label, 批量);
+
+  // 工程线的改动面板不属于画布，只是借这份真实页面夹具开一次 Chromium
+  console.log("\n— 工程线：工作目录条和改动面板 —");
+  const 改动 = await run(`(async () => {
+    const oldFetch = window.fetch, lane = activeLane;
+    const status = { repo: true, dir: "/工作/站点", root: "/工作/站点", name: "站点", branch: "main", more: 0, files: [
+      { path: "src/app.js", state: "modified", add: 2, del: 1 }, { path: "新文件.md", state: "new", add: 0, del: 0 }] };
+    let answer = status, asked = [], dropped = [];
+    window.fetch = async (url, options) => {
+      const u = String(url);
+      if (u === "/api/code/status") return new Response(JSON.stringify(answer), { status: 200 });
+      if (u.startsWith("/api/code/diff")) { asked.push(decodeURIComponent(u.split("path=")[1])); return new Response(JSON.stringify({ path: "x", state: "modified", text: ["diff --git a/src/app.js b/src/app.js", "@@ -1,2 +1,3 @@", " 上下文", "-旧的 <b>", "+新的", "+又一行"].join(String.fromCharCode(10)) }), { status: 200 }); }
+      if (u === "/api/code/discard") { dropped.push(JSON.parse(options.body).path); answer = { ...status, files: status.files.slice(1) }; return new Response(JSON.stringify({ ok: true }), { status: 200 }); }
+      return oldFetch(url, options);
+    };
+    const realAsk = window.askConfirm; let question = null; window.askConfirm = async (o) => { question = o; return true; };
+    try {
+      const bar = document.getElementById("code-bar"), out = {};
+      activeLane = "office"; await codeRefresh(); out.办公线不显示 = bar.hidden === true;
+      activeLane = "cli"; await codeRefresh();
+      out.工程线显示 = bar.hidden === false && bar.textContent.includes("站点") && bar.textContent.includes("main") && bar.textContent.includes("2 个改动");
+      bar.querySelector("[data-code-open]").click();
+      await new Promise((r) => setTimeout(r, 60));
+      const box = document.getElementById("code-review");
+      out.打开面板 = !!box && box.querySelectorAll("[data-code-file]").length === 2;
+      out.默认看第一个 = asked[0] === "src/app.js" && box.querySelector("[data-code-file].on")?.dataset.codeFile === "src/app.js";
+      out.增删着色 = box.querySelectorAll(".cd-add").length === 2 && box.querySelectorAll(".cd-del").length === 1 && box.querySelectorAll(".cd-hunk").length === 1;
+      out.内容转义 = !box.querySelector(".code-diff-body b") && box.querySelector(".cd-del").textContent.includes("<b>");
+      out.新文件没有放弃 = await (async () => { box.querySelectorAll("[data-code-file]")[1].click(); await new Promise((r) => setTimeout(r, 40)); return !box.querySelector("[data-code-discard]"); })();
+      box.querySelectorAll("[data-code-file]")[0].click(); await new Promise((r) => setTimeout(r, 40));
+      return out;
+    } finally { window.__codeRestore = () => { window.fetch = oldFetch; window.askConfirm = realAsk; activeLane = lane; }; window.__codeDrop = async () => {
+      const box = document.getElementById("code-review"); box.querySelector("[data-code-discard]").click(); await new Promise((r) => setTimeout(r, 60));
+      const result = { 先确认: question?.danger === true, 发了路径: dropped[0] === "src/app.js", 剩一个: document.querySelectorAll("#code-review [data-code-file]").length === 1 };
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); result.Esc关闭 = !document.getElementById("code-review");
+      answer = { repo: false, dir: "/工作/文档", name: "文档" }; await codeRefresh();
+      result.非仓库说明白 = document.getElementById("code-bar").textContent.includes("不是 git 仓库") && !document.querySelector("[data-code-open]");
+      window.__codeRestore(); await codeRefresh(); return result; }; }
+  })()`);
+  for (const [label, passed] of Object.entries(改动)) ok(passed, "改动面板：" + label, 改动);
+  if (process.env.CANVAS_SCREENSHOT) fs.writeFileSync(process.env.CANVAS_SCREENSHOT.replace(/\.png$/, "-code.png"), (await win.webContents.capturePage()).toPNG());
+  const 放弃 = await run(`window.__codeDrop()`);
+  for (const [label, passed] of Object.entries(放弃)) ok(passed, "改动面板：" + label, 放弃);
+
+  // 手动量耗时：CANVAS_PERF=1。结果随机器变化，不进回归判定
+  if (process.env.CANVAS_PERF) {
+    const 量 = await run(`(async () => {
+      const nodes = [], edges = [];
+      for (let i = 0; i < 300; i += 1) {
+        nodes.push(${"{"} id: "pf" + i, kind: i % 2 ? "image" : "note", payload: { title: "卡 " + i, prompt: "一段描述文字".repeat(6), text: "一段描述文字".repeat(6) }, position: { x: (i % 20) * 420, y: Math.floor(i / 20) * 340 } ${"}"});
+        if (i % 20) edges.push(${"{"} source: { id: "pf" + (i - 1) }, target: { id: "pf" + i }, relation: "reference" ${"}"});
+      }
+      ${摆画布([])}
+      const t0 = performance.now();
+      canvasApplySnapshot({ version: 2, updatedAt: 3000, nodes, edges }, { fromRemote: true });
+      const load = performance.now() - t0;
+      await new Promise((r) => setTimeout(r, 800));
+      const node = canvasState.graph.getCell("pf150"), at = node.position(), gaps = [];
+      for (let i = 1; i <= 60; i += 1) { const t = performance.now(); node.position(at.x + i * 4, at.y + i * 2); gaps.push(performance.now() - t); }
+      gaps.sort((a, b) => a - b);
+      const t1 = performance.now(); const snap = canvasSnapshot(); const key = canvasHistoryKey(snap); const hist = performance.now() - t1;
+      const t2 = performance.now(); canvasPersist(); const persist = performance.now() - t2;
+      return { 载入300卡: Math.round(load), 拖动一帧p50: +gaps[30].toFixed(1), 拖动一帧p95: +gaps[56].toFixed(1), 快照: +hist.toFixed(1), 存盘: +persist.toFixed(1), 连线: edges.length, 键长: key.length };
+    })()`);
+    console.log("  耗时（ms）", JSON.stringify(量));
+  }
+
   await run(`document.querySelector(".input-wrap").style.display = "none"; chatCol.classList.add("wide-page"); document.getElementById("chat-scroll").scrollTop = 0; true`);
   const 尺寸前 = win.getSize(); win.setSize(940, 900);
   const 窄窗 = await run(`(async () => { ${摆画布([])} await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame); const p = document.getElementById("assist-page"), v = p.querySelector("#canvas-viewport").getBoundingClientRect(), tools = p.querySelector(".canvas-tool-cluster").getBoundingClientRect(), head = p.querySelector(".canvas-head").getBoundingClientRect(); return { 不溢出: tools.right <= v.right && tools.left >= v.left, 不遮挡: tools.top >= head.bottom, 有样式: getComputedStyle(p.querySelector(".canvas-quick-add")).borderTopStyle === "none" }; })()`);
@@ -464,6 +629,9 @@ async function runCanvasExperience({ run, win, ok }) {
     await new Promise((done) => setTimeout(done, 160)); await saveScreenshot("-dark-en");
     await run(`(async () => { I18N.setLang("zh"); document.documentElement.dataset.theme = "light"; ${摆画布([])} document.getElementById("owb-toast")?.classList.remove("show"); const select = document.querySelector("[data-canvas-workspace-select]"); if (select) select.innerHTML = '<option value="jia">示例项目</option>'; document.querySelector("[data-canvas-board-select]").innerHTML = '<option value="main">主画布</option>'; canvasState.minimap.el.hidden = true; canvasState.minimapOpen = false; await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame); })()`);
     await saveScreenshot("-start");
+    await new Promise((done) => setTimeout(done, 1200));
+    await run(`(async () => { ${摆画布([卡片("s1", "image", { title: "人物参考", prompt: "浅色外套" }, 40, 60), 卡片("s2", "image", { title: "场景参考", prompt: "傍晚海边" }, 430, 60)])} canvasState.files = []; canvasSetSelection(["s1", "s2"]); canvasOpenPalette({ x: 500, y: 300 }); await canvasLoadWorkflows(); await new Promise((r) => setTimeout(r, 200)); })()`);
+    await saveScreenshot("-palette");
   }
 }
 

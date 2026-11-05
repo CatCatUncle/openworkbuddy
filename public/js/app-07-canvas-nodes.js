@@ -256,7 +256,7 @@ function canvasOpenContextMenu(clientX, clientY, node = null) {
   const menu = document.createElement("div"); menu.id = "canvas-context-menu"; menu.className = "canvas-context-menu";
   const media = node ? canvasMediaPath(canvasPayload(node)) || canvasEmbeddedImage(canvasPayload(node), canvasKind(node)) : "";
   menu.innerHTML = node
-    ? `<button data-canvas-context="agent">${ic("bot")}<span>交给 Agent</span></button>${media ? `<button data-canvas-context="preview">${ic("eye")}<span>右侧预览</span></button>` : ""}<button data-canvas-context="duplicate">${ic("copy")}<span>复制节点</span></button><button data-canvas-context="connect">${ic("link")}<span>连接到下游</span></button><button data-canvas-context="layout">${ic("git-branch")}<span>整理画布</span></button><span class="canvas-context-divider"></span><button class="is-danger" data-canvas-context="delete">${ic("x")}<span>删除节点</span></button>`
+    ? `<button data-canvas-context="agent">${ic("bot")}<span>交给 Agent</span></button>${media ? `<button data-canvas-context="preview">${ic("eye")}<span>右侧预览</span></button>` : ""}${media && canvasKind(node) === "image" ? `<button data-canvas-context="grid">${ic("scissors")}<span>${esc(canvasT("切成宫格"))}</span></button>` : ""}<button data-canvas-context="duplicate">${ic("copy")}<span>复制节点</span></button><button data-canvas-context="connect">${ic("link")}<span>连接到下游</span></button><button data-canvas-context="layout">${ic("git-branch")}<span>整理画布</span></button><span class="canvas-context-divider"></span><button class="is-danger" data-canvas-context="delete">${ic("x")}<span>删除节点</span></button>`
     : `<button data-canvas-context="add-note">${ic("notebook-pen")}<span>添加笔记</span></button><button data-canvas-context="add-image">${ic("image")}<span>添加参考图</span></button><button data-canvas-context="layout">${ic("git-branch")}<span>自动排版</span></button><button data-canvas-context="fit">${ic("target")}<span>适配全部节点</span></button>`;
   document.body.appendChild(menu);
   const rect = menu.getBoundingClientRect(), left = Math.max(8, Math.min(clientX, window.innerWidth - rect.width - 8)), top = Math.max(8, Math.min(clientY, window.innerHeight - rect.height - 8));
@@ -275,6 +275,7 @@ function canvasOpenContextMenu(clientX, clientY, node = null) {
     const action = button.dataset.canvasContext; close();
     if (action === "agent") canvasRunInternal(node);
     else if (action === "preview") canvasPreviewRight(media);
+    else if (action === "grid") canvasOpenGridMenu(node, clientX, clientY);
     else if (action === "duplicate") {
       canvasDuplicateSelection(node);
     }
@@ -443,7 +444,8 @@ function canvasSnapshot() {
   };
 }
 
-function canvasHistoryKey(snapshot) { return JSON.stringify({ nodes: snapshot.nodes, edges: snapshot.edges }); }
+// 卡高是量出来的，不是人改的：算进来的话，图片加载完会多记一步，第一下 ⌘Z 只退回高度
+function canvasHistoryKey(snapshot) { return JSON.stringify({ nodes: snapshot.nodes.map(({ size, ...node }) => node), edges: snapshot.edges }); }
 function canvasHistoryCommit(snapshot) {
   if (canvasState.historyMute || !snapshot) return;
   const last = canvasState.history[canvasState.historyIndex];

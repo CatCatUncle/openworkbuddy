@@ -398,6 +398,16 @@ app.delete("/api/canvas/boards/:name", (req, res) => {
     res.json({ ok: true, canvases: canvasList(), trashed: { id: t.id, name: t.name, path: `.openworkbuddy/canvas-trash/${t.id}`, deletedAt: t.deletedAt } });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
+app.get("/api/canvas/workflows", (_req, res) => res.json({ workflows: canvasStore.canvasFlowList() }));
+app.post("/api/canvas/workflows", (req, res) => {
+  try { res.json({ ok: true, workflow: canvasStore.canvasFlowSave(req.body) }); }
+  catch (error) { res.status(400).json({ error: error.message }); }
+});
+app.delete("/api/canvas/workflows/:id", (req, res) => {
+  if (!canvasStore.canvasFlowRemove(String(req.params.id))) return res.status(404).json({ error: "这个工作流已经不在了" });
+  res.json({ ok: true });
+});
+
 app.get("/api/canvas/trash", (_req, res) => {
   try { res.json({ trash: canvasStore.canvasTrashList() }); } catch (e) { res.status(400).json({ error: e.message }); }
 });

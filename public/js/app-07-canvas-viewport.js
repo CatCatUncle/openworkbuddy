@@ -195,6 +195,7 @@ function canvasRenderSelectionTools() {
   box.querySelector("[data-canvas-delete-selection]").addEventListener("click", () => canvasDeleteSelection());
   box.querySelector("[data-canvas-duplicate-selection]").addEventListener("click", () => canvasDuplicateSelection());
   box.querySelector("[data-canvas-reference-target]")?.addEventListener("change", (evt) => { const target = evt.target.value; evt.target.value = ""; if (target) canvasConnectReferences(target); });
+  canvasSelectionExtras(box, selected, images);
 }
 
 function canvasConnectReferences(targetId) {
@@ -438,6 +439,9 @@ function canvasBindViewport(page) {
       document.querySelector("[data-canvas-marquee]")?.classList.remove("is-active");
       document.querySelector("#canvas-viewport")?.classList.remove("is-marquee");
       canvasSetSelection(new Set());
+    } else if ((evt.key === "/" || evt.code === "Slash") && !command && !evt.shiftKey) {
+      // 中文输入法下这颗键出来的是「、」，所以 code 也要认
+      evt.preventDefault(); canvasOpenPalette();
     } else if ((evt.key === "Backspace" || evt.key === "Delete") && canvasState.selectedIds.size) {
       evt.preventDefault();
       canvasDeleteSelection();

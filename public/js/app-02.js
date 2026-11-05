@@ -2913,6 +2913,7 @@ async function probeRunning(tries = 4) {
 
 /** 一轮任务收尾（正常结束/出错/被停止都走这里）。opts.quiet：发起的那一页自己已经报过「完成」了，别再弹 toast */
 function endRun(sid, ui, opts) {
+  if (typeof codeRefresh === "function") codeRefresh();   // 工程线：这一轮改了什么，条上的数字跟着变
   ui.finish();
   // 这条对话名下挂着的已经是另一个回合了（重复接回时被顶掉的那份）：只收自己，别把活着的那份从账上抹掉、再报一遍「已完成」
   const cur = runningSessions.get(sid);

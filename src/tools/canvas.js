@@ -653,8 +653,58 @@ function canvasManage(input = {}, ctx = {}) {
   return { content: `不支持的画布操作：${op}`, isError: true };
 }
 
+/**
+ * 工作流：把一组卡的做法存下来，下次按 / 插回去。
+ * 只存提示词、参数和连线，素材和回执由前端删掉；这里再卡一道大小，防止文件被撑爆。
+ * 跟画布一样放在项目的 .openworkbuddy 里，所以它随项目走，也随项目隔离。
+ */
+const CANVAS_FLOW_MAX = 100;
+const CANVAS_FLOW_NODES = 100;
+const CANVAS_FLOW_BYTES = 512 * 1024;
+function canvasFlowPath() { return path.join(ws(), ".openworkbuddy", "canvas-workflows.json"); }
+function canvasFlowList() {
+  try {
+    const list = JSON.parse(fs.readFileSync(canvasFlowPath(), "utf8"));
+    return Array.isArray(list) ? list : [];
+  } catch { return []; }
+}
+function canvasFlowWrite(list) {
+  const file = canvasFlowPath(), tmp = `${file}.tmp`;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(tmp, JSON.stringify(list, null, 2));
+  fs.renameSync(tmp, file);
+}
+function canvasFlowSave(input, now = Date.now()) {
+  const name = String(input?.name || "").trim().slice(0, 60);
+  if (!name) throw new Error("工作流要有名字");
+  const raw = Array.isArray(input?.nodes) ? input.nodes : [];
+  if (!raw.length) throw new Error("工作流里没有卡片");
+  if (raw.length > CANVAS_FLOW_NODES) throw new Error(`一个工作流最多 ${CANVAS_FLOW_NODES} 张卡`);
+  const nodes = raw.map((item) => {
+    if (!CANVAS_KINDS.has(item?.kind)) throw new Error("工作流里有认不出的卡片");
+    return { key: String(item.key), kind: item.kind, payload: item.payload && typeof item.payload === "object" ? item.payload : {}, x: Number(item.x) || 0, y: Number(item.y) || 0 };
+  });
+  const keys = new Set(nodes.map((item) => item.key));
+  const edges = (Array.isArray(input?.edges) ? input.edges : [])
+    .filter((edge) => keys.has(String(edge?.source)) && keys.has(String(edge?.target)))
+    .map((edge) => ({ source: String(edge.source), target: String(edge.target), relation: CANVAS_EDGE_RELATIONS.has(edge.relation) ? edge.relation : "" }));
+  const list = canvasFlowList(), same = list.find((flow) => flow.name === name);
+  const flow = { id: same?.id || `${now.toString(36)}${Math.random().toString(36).slice(2, 8)}`, name, nodes, edges, updatedAt: now };
+  if (Buffer.byteLength(JSON.stringify(flow)) > CANVAS_FLOW_BYTES) throw new Error("工作流太大，请减少卡片或精简描述");
+  if (!same && list.length >= CANVAS_FLOW_MAX) throw new Error(`最多保存 ${CANVAS_FLOW_MAX} 个工作流，先删掉不用的`);
+  canvasFlowWrite([flow, ...list.filter((item) => item.id !== flow.id)]);
+  return flow;
+}
+function canvasFlowRemove(id) {
+  const list = canvasFlowList(), rest = list.filter((flow) => flow.id !== id);
+  if (rest.length === list.length) return false;
+  canvasFlowWrite(rest);
+  return true;
+}
+
 module.exports = {
   bindWorkspace,
+  canvasFlowList, canvasFlowSave, canvasFlowRemove,
   CANVAS_KINDS, CANVAS_EDGE_RELATIONS, CANVAS_MAX_NODES, CANVAS_MAX_EDGES, CANVAS_BAK_KEEP, CANVAS_BAK_HOURS, CANVAS_BAK_DAYS, canvasSafeName,
   canvasCurrentName, canvasSetCurrentName, canvasNormalizeState, canvasBackup, canvasReadState, canvasWriteState, canvasRotateBackups,
   canvasList, canvasManage, canvasRebasePaths, canvasStamp,

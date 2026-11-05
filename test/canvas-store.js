@@ -397,6 +397,25 @@ async function main() {
     ok(zipResponse.status === 200 && /application\/zip/.test(zipResponse.headers.get("content-type")) && exported.nodes.length === 2 && !!zip.file("导出/同名.png") && !zip.file("另一个目录/同名.png"), "真实下载 ZIP 包含可读画布 JSON 和对应素材，保留相对目录");
     const manifest = JSON.parse(await zip.file("manifest.json").async("string"));
     ok(manifest.files.length === 2 && manifest.missing.length === 1 && !JSON.stringify(manifest.files).includes(WS), "清单不写内部绝对路径，缺失一项有一条明确记录");
+    console.log("\n— 工作流：存做法，不存素材 —");
+    const base = `http://127.0.0.1:${port}`;
+    const post = (body) => fetch(`${base}/api/canvas/workflows`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const nodes = [{ key: "0", kind: "image", payload: { prompt: "暖光" }, x: 0, y: 0 }, { key: "1", kind: "video", payload: { prompt: "推近" }, x: 440, y: 0 }];
+    const saved = await (await post({ name: "产品图转视频", nodes, edges: [{ source: "0", target: "1", relation: "first_frame" }, { source: "0", target: "不存在", relation: "input" }] })).json();
+    ok(saved.ok && saved.workflow.nodes.length === 2 && saved.workflow.edges.length === 1, "存工作流，指向组外的连线丢掉", saved);
+    ok((await post({ name: "", nodes })).status === 400, "没名字拒绝");
+    ok((await post({ name: "空", nodes: [] })).status === 400, "没卡片拒绝");
+    ok((await post({ name: "怪", nodes: [{ key: "0", kind: "恶意类型", payload: {} }] })).status === 400, "认不出的卡片类型拒绝");
+    ok((await post({ name: "大", nodes: Array.from({ length: 101 }, (_, i) => ({ key: String(i), kind: "note", payload: {} })) })).status === 400, "超过 100 张拒绝");
+    ok((await post({ name: "撑", nodes: [{ key: "0", kind: "note", payload: { text: "字".repeat(300000) } }] })).status === 400, "超过大小上限拒绝");
+    const again = await (await post({ name: "产品图转视频", nodes: nodes.slice(0, 1) })).json();
+    const listed = await (await fetch(`${base}/api/canvas/workflows`)).json();
+    ok(listed.workflows.length === 1 && again.workflow.id === saved.workflow.id && listed.workflows[0].nodes.length === 1, "同名覆盖，不堆重复", listed);
+    ok(fs.existsSync(path.join(OWB, "canvas-workflows.json")), "存在项目的 .openworkbuddy 里，随项目隔离");
+    const removed = await fetch(`${base}/api/canvas/workflows/${saved.workflow.id}`, { method: "DELETE" });
+    ok(removed.status === 200 && (await fetch(`${base}/api/canvas/workflows/${saved.workflow.id}`, { method: "DELETE" })).status === 404, "删除后再删报不存在");
+    fs.writeFileSync(path.join(OWB, "canvas-workflows.json"), "不是 JSON");
+    ok(Array.isArray((await (await fetch(`${base}/api/canvas/workflows`)).json()).workflows), "文件坏了也能打开面板");
   } finally {
     server.close();
   }

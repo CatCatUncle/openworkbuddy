@@ -31,7 +31,7 @@ function canvasDestroy() {
     window.removeEventListener("pagehide", canvasState.saveHandler);
     canvasState.saveHandler = null;
   }
-  canvasContextMenuClose(); canvasPlaybackStop(); canvasState.compareClose?.();
+  canvasContextMenuClose(); canvasPlaybackStop(); canvasState.compareClose?.(); canvasToolsDestroy();
   if (canvasState.languageHandler) document.removeEventListener("owb-lang", canvasState.languageHandler);
   if (canvasState.mediaModelsHandler) document.removeEventListener("owb-media-models", canvasState.mediaModelsHandler);
   canvasState.languageHandler = null;
@@ -82,7 +82,7 @@ async function renderCanvasPage() {
     <div class="canvas-toolbar"><span class="canvas-tool-cluster" aria-label="画布创作工具">
       ${[["image", "image", "图片"], ["video", "video", "视频"], ["note", "file-text", "文字"], ["audio", "music", "声音"]].map(([kind, icon, label]) => `<button type="button" class="canvas-quick-add" data-canvas-add="${kind}">${ic(icon)}<span>${label}</span></button>`).join("")}
       <button type="button" class="canvas-quick-add" data-canvas-import>${ic("upload")}<span>导入</span></button><input type="file" data-canvas-import-file accept="image/*,video/*,audio/*" multiple hidden>
-      <details class="canvas-node-menu"><summary title="更多节点" aria-label="更多节点"><span class="canvas-menu-label">${ic("plus")}</span></summary><div class="canvas-node-menu-body">${groupedMenu}</div></details>
+      <details class="canvas-node-menu"><summary title="更多节点（按 / 搜索）" aria-label="更多节点"><span class="canvas-menu-label">${ic("plus")}</span></summary><div class="canvas-node-menu-body">${groupedMenu}</div></details>
       <details class="canvas-library"><summary title="打开素材" aria-label="打开素材"><span>${ic("folder-open")}</span></summary><div class="canvas-library-panel"><div class="canvas-library-tools"><input id="canvas-library-search" type="search" placeholder="搜索工作区素材…" /><select id="canvas-library-kind" aria-label="素材类型"><option value="all">全部类型</option><option value="image">图片</option><option value="video">视频</option><option value="audio">音频</option></select><select id="canvas-library-role" aria-label="素材用途"><option value="all">全部用途</option><option value="定妆照">定妆照</option><option value="首帧">首帧</option><option value="镜头">镜头</option><option value="配音">配音</option><option value="场景图">场景图</option><option value="其他">其他</option></select><label class="canvas-library-toggle"><input type="checkbox" id="canvas-library-orphan"><span>没人用</span></label><button class="canvas-tool-button" type="button" aria-label="刷新素材" data-library-refresh>${ic("refresh-cw")}</button></div><div id="canvas-library-items" class="canvas-library-items"></div></div></details>
       <span class="canvas-tool-divider"></span><button class="canvas-tool-button" type="button" data-canvas-history="undo" title="撤销（${accelDisplay("Mod+Z")}）" aria-label="撤销">${ic("rotate-ccw")}</button><button class="canvas-tool-button is-redo" type="button" data-canvas-history="redo" title="重做（${accelDisplay("Shift+Mod+Z")}）" aria-label="重做">${ic("rotate-ccw")}</button><button class="canvas-tool-button" type="button" data-canvas-marquee title="框选（Shift + 拖动）" aria-label="框选">${ic("square-dashed")}</button>
     </span></div>
@@ -241,7 +241,7 @@ async function renderCanvasPage() {
   // 整份传进去，别在这儿把「空的」换成 null：那样里头就只剩「现在是空的」可看，
   // 而「服务器上那份是空的、但早就有人动过」正是不该再铺起手卡的那种
   // 刷新、重启前发出去还没收到结果的那几单，铺完就挂回卡片上（摆「看结果」），赶在撤销起点之前
-  canvasRestoreOrSeed(remote); canvasBindWorkspace(page); canvasAdoptLocalJobs(); canvasHistoryReset(canvasSnapshot()); canvasStartRemoteSync();
+  canvasRestoreOrSeed(remote); canvasBindWorkspace(page); canvasBindTools(page); canvasAdoptLocalJobs(); canvasHistoryReset(canvasSnapshot()); canvasStartRemoteSync();
   // 不在的这段时间里 Agent 清空过、连删过，打开就挂「撤销」（since 在 canvasRestoreOrSeed 里按本机上回存的时间定）
   canvasOfferSnapshotUndo();
   window.setTimeout(() => { if (canvasState.graph?.getElements().length) canvasFitAll(page); }, 0);

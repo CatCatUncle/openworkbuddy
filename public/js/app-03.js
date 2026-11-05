@@ -1440,6 +1440,7 @@ const CANVAS_SCRIPTS = [
   () => loadScriptOnce("js/app-07-canvas-compose.js"),
   () => loadScriptOnce("js/app-07-canvas-timeline.js"),
   () => loadScriptOnce("js/app-07-canvas-workspace.js"),
+  () => loadScriptOnce("js/app-07-canvas-tools.js"),
   () => loadScriptOnce("js/app-07-canvas.js"),
 ];
 /** 画布那几件。有先后：joint 和 dagre 都得先在，画布本体才认得出它们；本体几片一起下、按数组顺序跑 */

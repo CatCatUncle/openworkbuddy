@@ -278,6 +278,10 @@ The built-in Agent alternates model decisions and tool execution, with concurren
 
 - **Nov 6** v0.19.0: multi-user Linux runs member commands in a system sandbox, closing a blocklist bypass that could read key files. Install bubblewrap before upgrading. See [deployment](docs/部署.md).
 
+- **Nov 6** Press / on the canvas to search nodes. Split images into grids, make videos in batches, and save card groups as reusable workflows. See [canvas](docs/无限画布使用.md).
+
+- **Nov 6** The engineering lane shows the working folder and change count, with per-file diffs and discarding one file's edits. Folders with source code run in place.
+
 - **Nov 6** The library responds immediately with tens of thousands of files because scans moved to a background thread. Concurrent tasks queue by available memory, and heavy rendering has its own limit.
 
 - **Nov 6** CLI coding sends 75% less prompt text per turn, runs in place inside source folders, and loads extra tools on demand.
@@ -299,10 +303,6 @@ The built-in Agent alternates model decisions and tool execution, with concurren
 - **Oct 30** Office previews add document pages, zoom and expansion. DOC/WPS and XLS/ET have built-in compatibility readers. Open With remains optional and does not change defaults. See the [format capability matrix](docs/文件预览与转换.md).
 
 - **Oct 30** Export Office, PDF and OFD to Markdown. OFD uploads retain extensions and bytes. Legacy PPT uses live-slide text; scanned pages and truncation are reported. CEB requires an authorized engine.
-
-- **Oct 30** Library previews use their own reading area with compact borders and separate title/actions. Old conversation drawers close, stale reads cancel, and spreadsheets load one sheet and 100 rows at a time.
-
-- **Oct 30** Inbox events stay in date order when read, including successful results. Project selection keeps shortcuts in place. CLI history has its own retention window and directory-based project ownership, with --project support.
 
 Format support and limits: [file previews and conversion](docs/文件预览与转换.md). Full history: [CHANGELOG](CHANGELOG.en.md).
 

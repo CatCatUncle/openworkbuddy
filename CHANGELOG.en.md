@@ -9,6 +9,10 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 ## 2026
 
+- **Nov 6** The canvas adds a / quick panel (or double-click empty space), image grid splitting, batch video creation and generation for selected cards, and saved workflows that keep prompts, settings and links without media or results. Measured card height no longer takes an undo step.
+
+- **Nov 6** The engineering lane adds a working-folder bar and a changes panel: folder, branch and change count above the input, per-file diffs, and discarding one file's edits. Folders with source code run in place, matching the CLI. Git calls made by the app now run in the sandbox and override repository settings that can execute commands, so an agent cannot escape through .git/config.
+
 - **Nov 6** v0.19.0: multi-user Linux now runs member commands in a bubblewrap sandbox and refuses them if isolation cannot start, closing a blocklist bypass that could read key files (reproduced locally with a test key; no production incident found). **Upgrade note:** install bubblewrap first on Linux multi-user deployments. The Docker image includes it and compose must keep SYS_ADMIN and related options, or member commands are refused. Set `security.allow_member_unsandboxed` to opt out. If you gave out member accounts before upgrading, consider rotating keys. macOS and Windows already had a system sandbox.
 
 - **Nov 6** The library responds immediately with tens of thousands of files: scans moved to a cached background thread, views paint existing content before refreshing, and listing fell from about 100ms to 5ms. Concurrent tasks queue by available memory, heavy rendering has its own limit, child processes run at lower priority, and queue time does not count against task deadlines.

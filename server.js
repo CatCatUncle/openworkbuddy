@@ -35,6 +35,7 @@ const worktree = require("./src/agent/worktree"); // 两条任务同时改一个
 const canvasRoutes = require("./src/server/routes/canvas"); // 画布读写 + 短剧素材台账 + 制片进度
 const dramaRoutes = require("./src/server/routes/drama"); // 短剧分镜表 + 一镜一镜的版本留底
 const { createComposeRouter } = require("./src/server/routes/compose"); // 一键合成的两条接口
+const { createCodeRouter } = require("./src/server/routes/code"); // 工程线的改动审阅
 const libraryRoutes = require("./src/server/routes/library"); // 资料库的封面、正文摘录、收藏
 const { createPromptTplsRouter } = require("./src/server/routes/prompt-tpls"); // 参考模板库里「我的」「公司」两层的增删改
 const { createSessionImportRouter } = require("./src/server/routes/session-import"); // 会话导入入口默认关闭
@@ -1806,6 +1807,15 @@ app.get("/api/files/tree", (req, res) => {
 app.use(canvasRoutes.createCanvasRouter({
   getWorkspaceDir, outputFiles, safePath, rootedPath, canvasList, canvasReadState, canvasWriteState, canvasNormalizeState, canvasSafeName,
   readDramaJson: dramaRoutes.readDramaJson,
+}));
+app.use(createCodeRouter({
+  getWorkspaceDir,
+  gitIn: (cwd, args, req, o) => require("./src/agent/tools").sandboxedGit(cwd, args, { sec: config.security, actor: req.user && req.user.username, ...o }),
+  isBusy: (dir) => {
+    const dirs = [...activeRuns.values()].map((r) => r.root);
+    try { for (const r of cliLive.list({ prune: false })) if (r.live) dirs.push(r.cwd); } catch {}
+    return dirs.some((d) => d && taskDirs.samePlace(d, dir));
+  },
 }));
 app.use(createComposeRouter({
   jobs: createComposeJobs({
@@ -8560,7 +8570,8 @@ app.post("/api/chat", taskBillingScope, async (req, res) => {
   // （口径见 src/util/task-dirs.js 开头）。聊到一半换了根：旧文件夹留在旧根下，这边另起一个——
   // 拿旧名字在新根下接着写，落点就成了一个没人认的同名新文件夹
   let taskBaseDir = null;
-  if (perChatHere()) {
+  // 工程线跟命令行一个口径：有源码就地读写，不然 run_shell 跑在「任务_」里找不到模块
+  if (perChatHere() && !(laneId === "cli" && taskDirs.hasSourceFiles(getWorkspaceDir()))) {
     if (!useSessionDirHere(sess)) assignSessionDir(sess, message);
     taskBaseDir = sess.dir;
   }
