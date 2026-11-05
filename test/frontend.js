@@ -2908,7 +2908,7 @@ const FB_CHECKS = `
   ok("👎 带上模式", p5.mode === "craft", JSON.stringify(p5));
   ok("👎 带上耗时/tokens/调用数", p5.elapsed_ms === 1234 && p5.tokens === 120 && p5.calls === 3, JSON.stringify(p5));
   ok("👎 带上步数和出错步数", p5.steps === 3 && p5.errors === 1, JSON.stringify(p5));
-  ok("操作条写了命中率", /缓存命中 30%/.test(t5.querySelector(".ta-meta").textContent), t5.querySelector(".ta-meta").textContent);
+  ok("命中率放在悬停提示里，这一行只留 tokens", /30%/.test(t5.querySelector(".ta-meta").title) && t5.querySelector(".ta-meta").textContent === "120 tokens", t5.querySelector(".ta-meta").title);
   // 负对照：没跑工具、没用量的回合，这些字段是 0/空串，不是 undefined
   const t6 = mk("s_ddd", "第六个", "光聊天");
   btn(t6, "up").click(); await tick();
@@ -2919,7 +2919,7 @@ const FB_CHECKS = `
   t7._userText = "第七个"; t7._usage = { model: "claude-code", provider: "claude-code", prompt: 934, completion: 10, cached: 30000, calls: 1, elapsed_ms: 1 };
   chatCol.appendChild(t7); window.makeBar(t7, t7.querySelector(".body"), "s_ddd");
   const m7 = t7.querySelector(".ta-meta");
-  ok("老口径的账命中率封顶 100%", /缓存命中 100%/.test(m7.textContent) && !/\d{3,}%/.test(m7.textContent.replace("100%", "")) && /（100%）/.test(m7.title), m7.textContent + " | " + m7.title);
+  ok("老口径的账命中率封顶 100%", /（100%）/.test(m7.title) && !/\d{4,}%/.test(m7.title), m7.textContent + " | " + m7.title);
 
   // ---- 回放：之前点过的 👍👎 要亮回来，且不重新上报；回放完了新回合不许误亮 ----
   const nBefore = window.posts.length;
@@ -11112,14 +11112,11 @@ const TRAIL_CHECKS = `
   // ---- 回复底下那排按钮：窄窗口下「重新生成」不许一字一行竖着排 ----
   const btns = [...uE.turn.querySelectorAll(".turn-actions .ta-btn")];
   ok("每颗 .ta-btn 的真样式都是 nowrap", btns.length >= 5 && btns.every((b) => getComputedStyle(b).whiteSpace === "nowrap"), btns.map((b) => getComputedStyle(b).whiteSpace).join(","));
-  // 光看样式名不够：把这一轮挤到 180px 宽，量「重新生成」那几个字实际排成了几行
+  // 按钮只有图标，窄窗口下不会再折字；排成一行、名字留在 aria-label 里给读屏
   uE.turn.style.width = "180px";
   const regen = uE.turn.querySelector('.ta-btn[data-a="regen"]');
-  const lineTops = (b) => { const t = [...b.childNodes].find((n) => n.nodeType === 3 && /重新生成/.test(n.nodeValue)); const rg = document.createRange(); rg.selectNodeContents(t); return new Set([...rg.getClientRects()].map((r) => Math.round(r.top))).size; };
-  ok("挤到 180px 宽，「重新生成」还是一行", lineTops(regen) === 1, String(lineTops(regen)));
-  regen.style.whiteSpace = "normal";
-  ok("反向对照：去掉 nowrap 同样宽度下就折成好几行（这把尺子量得出毛病）", lineTops(regen) > 1, String(lineTops(regen)));
-  regen.style.whiteSpace = "";
+  ok("挤到 180px 宽，按钮还在一行", new Set(btns.map((b) => Math.round(b.getBoundingClientRect().top))).size === 1);
+  ok("「重新生成」只有图标，名字在 aria-label", regen.textContent.trim() === "" && regen.getAttribute("aria-label") === "重新生成", regen.outerHTML.slice(0, 120));
   uE.turn.style.width = "";
 
   // ---- 每步耗时 + 收尾那笔时间账 ----
@@ -11218,7 +11215,7 @@ const TRAIL_CHECKS = `
   const texts = [...body.querySelectorAll(":scope > .a-text")];
   ok("开场白和结论都在过程区外面", texts.length === 2 && wrap.querySelector(".proc-body").querySelectorAll(":scope > .a-text").length === 0, texts.length + " / " + wrap.querySelector(".proc-body").querySelectorAll(":scope > .a-text").length);
   ok("结论排在过程区后面、开场白在前面", (texts[1].compareDocumentPosition(wrap) & Node.DOCUMENT_POSITION_PRECEDING) && (texts[0].compareDocumentPosition(wrap) & Node.DOCUMENT_POSITION_FOLLOWING));
-  ok("操作条命中率封顶 100%", /缓存命中 100%/.test(t.querySelector(".ta-meta").textContent), t.querySelector(".ta-meta").textContent);
+  ok("操作条命中率封顶 100%", /（100%）/.test(t.querySelector(".ta-meta").title), t.querySelector(".ta-meta").title);
   ok("回合结束后没有还在转的", !t.querySelector(".spinner"));
   // 点徽章：展开过程区 + 打开最近那张卡；点击不冒泡到折叠条（否则一点开又合上）
   chips(t)[0].click();
@@ -11270,7 +11267,7 @@ const TRAIL_CHECKS = `
   u4.handleEvent({ type: "tool_result", id: "y", name: "read_file", preview: "ok" });
   u4.handleEvent({ type: "usage", prompt: 31000, completion: 100, cached: 30000, calls: 1, elapsed_ms: 1000, model: "m", provider: "P" });
   u4.finish();
-  ok("正常账命中率照实算（97%）", /缓存命中 97%/.test(u4.turn.querySelector(".ta-meta").textContent), u4.turn.querySelector(".ta-meta").textContent);
+  ok("正常账命中率照实算（97%）", /（97%）/.test(u4.turn.querySelector(".ta-meta").title), u4.turn.querySelector(".ta-meta").title);
 
   // ---- 5. 没跑工具的回合：没有过程区、没有轨迹条 ----
   const u5 = createTurnUI("聊", "chat", "s_t");

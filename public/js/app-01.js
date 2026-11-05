@@ -1228,6 +1228,11 @@ function msgTimeText(at, now = new Date()) {
   const opt = { month: en ? "short" : "numeric", day: "numeric", ...(d.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }) };
   return d.toLocaleDateString(en ? "en-US" : "zh-CN", opt) + " " + hm;
 }
+/** 2028549 → 2.03M，回复下方那一行放得下 */
+function shortTokens(n) {
+  const short = (v) => v.toFixed(2).replace(/\.?0+$/, "");
+  return n >= 1e6 ? short(n / 1e6) + "M" : n >= 1000 ? short(n / 1000) + "K" : String(n);
+}
 function paintMsgTime(el, at) {
   if (!el || !at) return;
   el.textContent = msgTimeText(at);
@@ -2232,12 +2237,12 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
     const bar = document.createElement("div");
     bar.className = "turn-actions";
     bar.innerHTML =
-      `<button class="ta-btn" data-a="copy" title="复制回复">${ic("copy")}</button>` +
-      `<button class="ta-btn" data-a="quote" title="引用这条回复来追问（先选中一段就只引那一段）">${ic("text-quote")} 引用</button>` +
-      `<button class="ta-btn" data-a="up" title="有帮助">${ic("thumbs-up")}</button>` +
-      `<button class="ta-btn" data-a="down" title="没帮助">${ic("thumbs-down")}</button>` +
-      `<button class="ta-btn" data-a="regen" title="重新生成">${ic("refresh-cw")} 重新生成</button>` +
-      (typeof amPlatformOwner === "function" && amPlatformOwner() ? `<button class="ta-btn" data-a="trace" title="看这一轮调了哪些工具、花了多久">${ic("activity")} 执行过程</button>` : "") +
+      `<button class="ta-btn" data-a="copy" title="复制回复" aria-label="复制回复">${ic("copy")}</button>` +
+      `<button class="ta-btn" data-a="quote" title="引用这条回复来追问（先选中一段就只引那一段）" aria-label="引用">${ic("text-quote")}</button>` +
+      `<button class="ta-btn" data-a="up" title="有帮助" aria-label="有帮助">${ic("thumbs-up")}</button>` +
+      `<button class="ta-btn" data-a="down" title="没帮助" aria-label="没帮助">${ic("thumbs-down")}</button>` +
+      `<button class="ta-btn" data-a="regen" title="重新生成" aria-label="重新生成">${ic("refresh-cw")}</button>` +
+      (typeof amPlatformOwner === "function" && amPlatformOwner() ? `<button class="ta-btn" data-a="trace" title="看这一轮调了哪些工具、花了多久" aria-label="执行过程">${ic("activity")}</button>` : "") +
       `<time class="msg-time"></time><span class="ta-meta"></span>`;
     if (typeof paintMsgTime === "function") paintMsgTime(bar.querySelector(".msg-time"), turn.dataset.replyAt);
     const traceBtn = bar.querySelector("[data-a=trace]");
@@ -2245,20 +2250,21 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
     const u = turn._usage;
     const meta = bar.querySelector(".ta-meta");
     if (u && (u.prompt || u.completion)) {
-      meta.innerHTML = "共消耗 " + ic("sparkles") + "<span></span>";
-      meta.lastChild.textContent = ` ${(u.prompt + u.completion).toLocaleString()} tokens · ${u.provider || ""}（${u.model || ""}）`;
+      // 这一行只留数字，模型和缓存放进悬停提示：写全了太长，窄窗口还会被截成省略号
+      meta.textContent = `${typeof shortTokens === "function" ? shortTokens(u.prompt + u.completion) : u.prompt + u.completion} tokens`;
       // 命中缓存那部分便宜约一个数量级。不写出来的话，长任务里"输入 160 万 token"
       // 看着像一笔巨款，实际可能九成是缓存读；反过来命中率掉到 0 也没人察觉
       // 封顶 100%：老账本里有几笔按 Anthropic 口径记的（输入不含缓存读），不封会显示成 3209%
       const hit = u.cached ? Math.min(100, Math.round((u.cached / Math.max(1, u.prompt)) * 100)) : 0;
       meta.title =
-        `输入 ${u.prompt.toLocaleString()} + 输出 ${u.completion.toLocaleString()} tokens · ${u.calls} 次模型调用` +
+        `${u.provider || ""}（${u.model || ""}）\n` +
+        `共 ${(u.prompt + u.completion).toLocaleString()} tokens：输入 ${u.prompt.toLocaleString()} + 输出 ${u.completion.toLocaleString()} · ${u.calls} 次模型调用` +
         (u.cached ? `\n其中命中缓存 ${u.cached.toLocaleString()}（${hit}%），这部分按约 1/10 计费` : "") +
         (u.local ? "\n用本机订阅跑的，不扣积分" : "");
-      if (hit) meta.textContent += ` · 缓存命中 ${hit}%`;
     } else if (u) {
       // 本机引擎没报上用量：0 是「没记上」，不是「没花」
-      meta.textContent = `${u.provider || ""}（${u.model || ""}）${u.local ? " · 用量未记录" : ""}`;
+      meta.textContent = u.local ? "用量未记录" : "";
+      meta.title = `${u.provider || ""}（${u.model || ""}）${u.local ? " · 用量未记录" : ""}`;
     }
     if (turn._credits) {
       meta.textContent += `${meta.textContent ? " · " : ""}扣 ${turn._credits.spent} 积分（余 ${(+turn._credits.balance).toLocaleString()}）`;

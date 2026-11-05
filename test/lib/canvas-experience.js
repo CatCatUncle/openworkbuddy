@@ -591,6 +591,48 @@ async function runCanvasExperience({ run, win, ok }) {
   const 放弃 = await run(`window.__codeDrop()`);
   for (const [label, passed] of Object.entries(放弃)) ok(passed, "改动面板：" + label, 放弃);
 
+  console.log("\n— 回复下方那一行和评测集弹窗 —");
+  const 回复行 = await run(`(async () => {
+    const ui = createTurnUI("写一份周报", "craft", undefined);
+    ui.handleEvent({ type: "text", delta: "周报写好了" });
+    ui.handleEvent({ type: "usage", prompt: 2000000, completion: 28549, cached: 1700000, calls: 40, provider: "火山方舟", model: "glm-5-3-flash-260828", elapsed_ms: 1000 });
+    ui.handleEvent({ type: "done" }); ui.finish();
+    await new Promise((r) => setTimeout(r, 60));
+    const bar = ui.turn.querySelector(".turn-actions"), meta = bar?.querySelector(".ta-meta");
+    const buttons = [...bar.querySelectorAll(".ta-btn")];
+    const out = { 按钮只有图标: buttons.every((b) => !b.textContent.trim() && b.getAttribute("aria-label")), 用量够短: meta.textContent === "2.03M tokens", 模型放进提示: meta.title.includes("glm-5-3-flash-260828") && meta.title.includes("85%"),
+      没有省略: meta.scrollWidth <= meta.clientWidth + 1 };
+    const time = bar.querySelector(".msg-time"); out.时间靠右 = time.compareDocumentPosition(meta) & Node.DOCUMENT_POSITION_FOLLOWING;
+    out.时间靠右 = !!out.时间靠右 && getComputedStyle(time).marginLeft !== "6px";
+    out.短数字 = shortTokens(999) === "999" && shortTokens(12300) === "12.3K" && shortTokens(1000000) === "1M";
+    return out;
+  })()`);
+  for (const [label, passed] of Object.entries(回复行)) ok(passed, "回复行：" + label, 回复行);
+  const 评测弹窗 = await run(`(async () => {
+    const realAsk = window.askConfirm; let asked = 0, answer = false; window.askConfirm = async () => { asked += 1; return answer; };
+    try {
+      evOpenSetEditor({ name: "", tasks: [] });
+      const dlg = document.getElementById("ev-set-dialog"), out = { 是弹窗: getComputedStyle(dlg).position === "fixed" && !!dlg.querySelector("[role=dialog]"), 聚焦名称: document.activeElement?.id === "ev-set-name" };
+      dlg.querySelector("#ev-set-add").click(); out.能加题 = dlg.querySelectorAll(".ev-settask").length === 2;
+      dlg.querySelector("#ev-set-name").value = "写了一半";
+      dlg.querySelector(".st-prompt").value = "第一题";
+      dlg.querySelector("#ev-set-add").click(); out.加题不丢字 = dlg.querySelector(".st-prompt").value === "第一题" && dlg.querySelector("#ev-set-name").value === "写了一半";
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); await new Promise((r) => setTimeout(r, 20));
+      out.有内容先问 = asked === 1 && !!document.getElementById("ev-set-dialog");
+      answer = true; dlg.querySelector("#ev-set-x").click(); await new Promise((r) => setTimeout(r, 20));
+      out.确认后关闭 = !document.getElementById("ev-set-dialog");
+      asked = 0; evOpenSetEditor({ name: "", tasks: [] }); document.getElementById("ev-set-cancel").click(); await new Promise((r) => setTimeout(r, 20));
+      out.没填直接关 = asked === 0 && !document.getElementById("ev-set-dialog");
+      return out;
+    } finally { window.askConfirm = realAsk; }
+  })()`);
+  for (const [label, passed] of Object.entries(评测弹窗)) ok(passed, "评测集弹窗：" + label, 评测弹窗);
+  if (process.env.CANVAS_SCREENSHOT) {
+    await run(`(async () => { document.querySelector(".input-wrap").style.display = ""; const page = document.getElementById("assist-page"); const t = document.querySelector(".turn-actions"); t?.scrollIntoView({ block: "center" }); evOpenSetEditor({ name: "", tasks: [] }); await new Promise((r) => setTimeout(r, 120)); })()`);
+    fs.writeFileSync(process.env.CANVAS_SCREENSHOT.replace(/\.png$/, "-evset.png"), (await win.webContents.capturePage()).toPNG());
+    await run(`document.getElementById("ev-set-dialog")?.remove(); true`);
+  }
+
   // 手动量耗时：CANVAS_PERF=1。结果随机器变化，不进回归判定
   if (process.env.CANVAS_PERF) {
     const 量 = await run(`(async () => {

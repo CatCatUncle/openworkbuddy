@@ -64,16 +64,29 @@ function evReadForms(box, forms) {
 }
 
 function evOpenSetEditor(set) {
-  const box = document.getElementById("ev-set-editor");
-  if (!box) return;
+  document.getElementById("ev-set-dialog")?.remove();
+  const mask = document.createElement("div");
+  mask.id = "ev-set-dialog"; mask.className = "ask-mask ev-set-mask";
+  const title = set.id ? "编辑评测集" : "新建评测集";
+  mask.innerHTML = `<div class="ev-seteditor" role="dialog" aria-modal="true" aria-label="${esc(title)}"></div>`;
+  document.body.appendChild(mask);
+  const box = mask.firstElementChild;
   const forms = (set.tasks || []).map(evTaskToForm);
   if (!forms.length) forms.push(evTaskToForm({}));
+  const snapshot = () => { evReadForms(box, forms); return JSON.stringify([box.querySelector("#ev-set-name")?.value || "", forms]); };
+  let start = "";
+  const close = () => { mask.remove(); document.removeEventListener("keydown", onKey, true); };
+  // 题目是一条条敲出来的，手滑点到外面或按 Esc 不能全丢
+  const leave = async () => {
+    if (snapshot() === start || await askConfirm({ title: "放弃这些内容？", hint: "还没保存，关掉后填的内容会丢。", ok: "放弃", danger: true })) close();
+  };
+  const onKey = (event) => { if (event.key === "Escape" && !imeKey(event) && !document.querySelector(".ask-mask:not(.ev-set-mask)")) { event.preventDefault(); leave(); } };
+  document.addEventListener("keydown", onKey, true);
   const paint = () => {
-    box.innerHTML = `<div class="ev-seteditor">
-      <input id="ev-set-name" placeholder="评测集名称" value="${esc(set.name || "")}">
-      ${forms.map(evTaskFormHtml).join("")}
-      <div class="ev-jp-ops"><button class="btn-plain" id="ev-set-add">${ic("plus")} 加一道题</button><button class="btn-brand" id="ev-set-save">${ic("save")} 保存</button><button class="btn-plain" id="ev-set-cancel">取消</button></div>
-    </div>`;
+    const name = box.querySelector("#ev-set-name")?.value ?? (set.name || "");
+    box.innerHTML = `<header class="ev-setdlg-h"><b>${esc(title)}</b><button type="button" class="icon-btn" id="ev-set-x" aria-label="关闭">${ic("x")}</button></header>
+      <div class="ev-setdlg-b"><input id="ev-set-name" placeholder="评测集名称" value="${esc(name)}">${forms.map(evTaskFormHtml).join("")}<button class="btn-plain" id="ev-set-add">${ic("plus")} 加一道题</button></div>
+      <footer class="ev-setdlg-f"><button class="btn-plain" id="ev-set-cancel">取消</button><button class="btn-brand" id="ev-set-save">${ic("save")} 保存</button></footer>`;
     box.querySelectorAll(".st-del").forEach((a) => (a.onclick = (e) => {
       e.preventDefault();
       evReadForms(box, forms);
@@ -81,19 +94,22 @@ function evOpenSetEditor(set) {
       if (!forms.length) forms.push(evTaskToForm({}));
       paint();
     }));
-    box.querySelector("#ev-set-add").onclick = () => { evReadForms(box, forms); forms.push(evTaskToForm({})); paint(); };
-    box.querySelector("#ev-set-cancel").onclick = () => { box.innerHTML = ""; };
+    box.querySelector("#ev-set-add").onclick = () => { evReadForms(box, forms); forms.push(evTaskToForm({})); paint(); box.querySelector(".ev-setdlg-b").scrollTop = 1e6; };
+    box.querySelector("#ev-set-cancel").onclick = leave;
+    box.querySelector("#ev-set-x").onclick = leave;
     box.querySelector("#ev-set-save").onclick = async () => {
       evReadForms(box, forms);
       set.name = box.querySelector("#ev-set-name").value.trim();
       const r = await fetch("/api/eval/sets", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: set.id, name: set.name, tasks: forms.map(evFormToTask) }) }).then((x) => x.json()).catch(() => null);
       if (!r || r.error) return toast((r && r.error) || "保存失败", "circle-x");
       toast("评测集已保存", "circle-check");
-      box.innerHTML = "";
+      close();
       renderEvalSets(r.set.id);
     };
   };
   paint();
+  start = snapshot();
+  box.querySelector("#ev-set-name").focus();
 }
 
 async function evImportSet(file) {
@@ -122,8 +138,7 @@ async function renderEvalSets(pick) {
       <a class="btn-plain" href="/api/eval/sets/template" download>${ic("download")} 下载模板</a>
       <button class="btn-plain" id="ev-set-new">${ic("plus")} 新建评测集</button>
     </div>
-    ${sets.map((s) => `<div class="ev-setrow"><span>${esc(s.name)}</span><em>${s.tasks} 题</em><a href="#" class="link" data-set-edit="${esc(s.id)}">编辑</a><a href="#" class="link danger" data-set-del="${esc(s.id)}">删除</a></div>`).join("")}
-    <div id="ev-set-editor"></div>`;
+    ${sets.map((s) => `<div class="ev-setrow"><span>${esc(s.name)}</span><em>${s.tasks} 题</em><a href="#" class="link" data-set-edit="${esc(s.id)}">编辑</a><a href="#" class="link danger" data-set-del="${esc(s.id)}">删除</a></div>`).join("")}`;
   box.querySelector("#ev-set-file").onchange = (e) => { const f = e.target.files[0]; if (f) evImportSet(f); };
   box.querySelector("#ev-set-new").onclick = () => evOpenSetEditor({ name: "", tasks: [] });
   box.querySelectorAll("[data-set-edit]").forEach((a) => (a.onclick = async (e) => {
