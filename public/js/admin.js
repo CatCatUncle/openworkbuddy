@@ -3072,7 +3072,7 @@ PAGES.access = {
       ? rows.map((r) => field(esc(r.name), "", `<label class="ui-switch"><input type="checkbox" data-acc-kind="${kind}" data-acc-name="${esc(r.name)}" ${r.shared ? "checked" : ""}><i></i></label>`)).join("")
       : note(empty);
     return `<div class="ad-wrap">
-      ${note("这里只管<b>成员</b>，平台管理员不受影响。关掉后成员看不到，模型也调不到。成员不能自己安装技能和连接器。")}
+      ${note("这里只管成员，平台管理员不受影响。关掉后成员看不到，模型也调不到。成员不能自己安装技能和连接器。")}
       ${card(`${secT("任务分享", "打开后成员能把自己的任务发给同组织的同事。对方要登录，只能看，不能改。")}
         <div style="margin-top:14px">${field("允许成员分享任务", "", `<label class="ui-switch"><input type="checkbox" data-acc-kind="session_shares" ${d.session_shares ? "checked" : ""}><i></i></label>`)}</div>`)}
       ${card(`${secT("连接器", "默认开放给全部成员。")}<div style="margin-top:14px">${list("mcp", d.mcp, "还没有连接器。")}</div>`)}
@@ -3098,7 +3098,7 @@ PAGES.storage = {
     const body = (kind) => rows.filter((r) => r.kind === kind).map(line);
     const head = [{ t: "位置" }, { t: "占用", right: true }, { t: "文件数", right: true }];
     return `<div class="ad-wrap">
-      ${d.free != null ? note(`这台机器还剩 <b>${size(d.free)}</b> 可用空间。`, d.free < 5 * 1073741824) : ""}
+      ${d.free != null ? note(esc(I18N.t("这台机器还剩 {n} 可用空间。", { n: size(d.free) })), d.free < 5 * 1073741824) : ""}
       ${card(`${secT("每人配额", "超过后成员不能上传、不能发新任务，已有文件不受影响，也不会打断正在跑的任务。占用每 10 分钟量一次，所以闸门有延迟。")}
         <div style="margin-top:14px">${field("工作目录上限（MB）", "填 0 表示不限。", `<input class="ui-input" id="ad-quota" type="number" min="0" step="100" value="${d.quota_mb || 0}" style="width:120px">`)}</div>`)}
       ${cardT(secT("成员工作目录"), table(head, body("member")))}
@@ -3110,7 +3110,7 @@ PAGES.storage = {
     if (input) input.onchange = async () => {
       const r = await post("/api/admin/storage/quota", { mb: Number(input.value) }).catch((e) => ({ error: e.message }));
       if (r && r.error) { toast(r.error, true); return; }
-      toast(r.quota_mb ? `每人上限 ${r.quota_mb} MB` : "已取消配额");
+      toast(r.quota_mb ? I18N.t("每人上限 {n} MB", { n: r.quota_mb }) : "已取消配额");
     };
   },
 };
