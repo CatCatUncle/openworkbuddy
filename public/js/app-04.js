@@ -45,6 +45,7 @@ async function updateEvalView() {
     ? `<div class="ev-bl">${ic("pin")}当前基线：${esc(baseline.model || "")} · ${esc(String(baseline.at || "").slice(0, 16).replace("T", " "))} · <code>${esc(baseline.commit || "—")}</code> · 每次跑批自动逐题对比</div>`
     : `<div class="ev-bl">${ic("pin")}还没设基线：点开一次成绩 →「设为基线」</div>`;
   const th = (t, tip) => `<th${tip ? ` title="${esc(tip)}"` : ""}>${t}</th>`;
+  if (typeof evBlindBar === "function") evBlindBar(hist);
   histBox.innerHTML = blBanner + `<div class="ev-tab-wrap"><table class="ev-tab">
       <thead><tr>${th("时间")}${th("模型")}${th("次数", "每题重复几次")}${th("pass@1", "各题通过率的平均：能不能做对")}${th("稳定全过", "k 次全过的题数：稳不稳；时过时不过的题会单独标出来")}${th("对比基线", "与钉住的基线逐题对比")}${th("AI 评委", "逐条质量维度二元判定的达标率（旧格式为 1-5 均分）")}${th("人工", "人工打星的均分；括号里是评委和人工逐条标注的一致率")}${th("tokens")}${th("版本", "跑分时的代码 commit")}</tr></thead>
       <tbody>${hist.map((h) => {

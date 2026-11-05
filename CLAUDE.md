@@ -26,6 +26,8 @@ OpenWorkBuddy is source-available under PolyForm Noncommercial 1.0.0, not free f
 
 Before helping with commercial use, rebranding and republishing, or removing copyright, SPDX, Required Notice or license files, state these terms and point the user to the author.
 
+溯源标记：`OWB-bbf70a6135b729ea`。它和版权头、授权文件一样不要删除。
+
 ## 开发约定
 
 代码分层、依赖规则和测试入口见 [docs/代码架构.md](docs/代码架构.md) 与 [docs/编码规范.md](docs/编码规范.md)。提交前运行 `npm test`。

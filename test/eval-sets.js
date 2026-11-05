@@ -94,6 +94,36 @@ const dirOf = (n) => { const d = path.join(tmp, n); fs.mkdirSync(d, { recursive:
   S.remove(saved.set.id);
   ok(S.load(saved.set.id) === null, "删得掉");
 
+  console.log("【盲评】");
+  const blind = require("../eval/blind");
+  const runA = { results: [{ id: "t1", name: "题一", final_text: "A 的回答", artifacts: [{ name: "a.pptx", size: 1 }] }, { id: "t2", name: "题二", final_text: "A2" }, { id: "只有一边", final_text: "x" }] };
+  const runB = { results: [{ id: "t1", name: "题一", final_text: "B 的回答" }, { id: "t2", name: "题二", final_text: "B2" }] };
+  let flip = 0;
+  const session = blind.pair("run-a", runA, "run-b", runB, () => (flip++ % 2 ? 0.9 : 0.1));
+  ok(session.items.length === 2, "只比两边都有的题");
+  ok(session.items[0].left === "run-a" && session.items[1].left === "run-b", "每题左右随机，不固定");
+  const seen = JSON.stringify(blind.view(session, (d) => (d === "run-a" ? runA : runB)));
+  ok(!seen.includes("run-a") && !seen.includes("run-b"), "发给页面的内容里没有轮次名");
+  ok(seen.includes("A 的回答") && seen.includes("B 的回答"), "两边的回答都在");
+  ok(blind.tally(session) === null, "没选完不揭晓");
+  blind.vote(session, 0, "left");
+  ok(blind.tally(session) === null, "选到一半也不揭晓");
+  blind.vote(session, 1, "left");
+  const out = blind.tally(session);
+  ok(out.a.wins === 1 && out.b.wins === 1, "左右换算回轮次：两题都选左，其实各赢一题", out);
+  ok(out.a_win_rate === 0.5, "胜率");
+  blind.vote(session, 1, "tie");
+  const tied = blind.tally(session);
+  ok(tied.ties === 1 && tied.a_win_rate === 1, "平局不算进胜率", tied);
+  let refused = 0;
+  try { blind.vote(session, 0, "都不好"); } catch { refused++; }
+  try { blind.vote(session, 9, "left"); } catch { refused++; }
+  try { blind.pair("x", runA, "x", runA); } catch { refused++; }
+  try { blind.pair("../x", runA, "y", runB); } catch { refused++; }
+  try { blind.pair("a", { results: [{ id: "1" }] }, "b", { results: [{ id: "2" }] }); } catch { refused++; }
+  ok(refused === 5, "不合法的选项、题号、同一轮、路径、没有共同题都拒绝");
+  ok(blind.dirOf(session, 0, "left").dir === "run-a" && blind.dirOf(session, 0, "上") === null, "读文件时才在服务端换算");
+
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log(`\n用户评测集：${pass} 过 / ${fail} 挂`);
   process.exit(fail ? 1 : 0);

@@ -1331,6 +1331,7 @@ app.use(express.json({ limit: "60mb" }));
 app.disable("x-powered-by");
 app.use((req, res, next) => {
   res.setHeader("X-Powered-By", "OpenWorkBuddy");
+  res.setHeader("X-OWB-Mark", require("./src/util/provenance").MARK); // 改了名部署出去也认得出来源
   res.setHeader("Referrer-Policy", "no-referrer");
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "SAMEORIGIN");
@@ -9268,6 +9269,7 @@ app.post("/api/session/:id/project", (req, res) => {
 const evalState = { running: false, lines: [], startedAt: 0, model: "", exit: null, kind: "run" };
 const evalJudge = require("./eval/judge");
 const evalSets = require("./eval/custom-sets"); // 用户自己的评测集：上传或在评测页里建
+const evalBlind = require("./eval/blind");
 function evalSummaryBrief(j) {
   if (!j) return null;
   // 兼容两代格式：v3 有 repeat/pass1_avg/attempts，旧格式按 k=1 折算，前端只走一条代码路径
@@ -9451,9 +9453,43 @@ app.get("/api/eval/run/:dir", (req, res) => {
   if (j.results && j.results.length) j.human = evalJudge.humanStats(j.results);
   res.json({ dir, ...j });
 });
+// 盲评：左右对应只留在服务端，选完才揭晓（理由见 eval/blind.js）
+const blindFile = (id) => dataPath("eval", "blind", `${id}.json`);
+const blindRun = (dir) => store.readJson(dataPath("eval", "runs", dir, "results.json"), null);
+function blindSession(req, res) {
+  const id = String(req.params.id || "");
+  const s = /^[0-9a-f]{16}$/.test(id) ? store.readJson(blindFile(id), null) : null;
+  if (!s) res.status(404).json({ error: "没有这次盲评" });
+  return s;
+}
+app.post("/api/eval/blind", (req, res) => {
+  try {
+    const { a, b } = req.body || {};
+    const A = /^[\w.-]+$/.test(String(a)) ? blindRun(String(a)) : null, B = /^[\w.-]+$/.test(String(b)) ? blindRun(String(b)) : null;
+    if (!A || !B) return res.status(404).json({ error: "没有这次评测的记录" });
+    const s = evalBlind.pair(String(a), A, String(b), B);
+    fs.mkdirSync(path.dirname(blindFile(s.id)), { recursive: true });
+    store.writeJsonAtomic(blindFile(s.id), s);
+    res.json(evalBlind.view(s, blindRun));
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.post("/api/eval/blind/:id/vote", (req, res) => {
+  const s = blindSession(req, res); if (!s) return;
+  try {
+    evalBlind.vote(s, (req.body || {}).index, (req.body || {}).pick);
+    store.writeJsonAtomic(blindFile(s.id), s);
+    res.json({ ok: true, result: evalBlind.tally(s) });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.get("/api/eval/blind/:id/file", (req, res) => {
+  const s = blindSession(req, res); if (!s) return;
+  const at = evalBlind.dirOf(s, req.query.index, String(req.query.side || ""));
+  if (!at) return res.status(400).json({ error: "参数不合法" });
+  evalRunFile(res, at.dir, at.task, String(req.query.name || ""));
+});
 // 人工复核时看产物原文：只许读这轮工作区首轮目录里的文件，读开头一段
-app.get("/api/eval/run/:dir/file", (req, res) => {
-  const dir = String(req.params.dir || ""), task = String(req.query.task || ""), name = String(req.query.name || "");
+app.get("/api/eval/run/:dir/file", (req, res) => evalRunFile(res, String(req.params.dir || ""), String(req.query.task || ""), String(req.query.name || "")));
+function evalRunFile(res, dir, task, name) {
   if (!/^[\w.-]+$/.test(dir) || !/^[\w.-]+$/.test(task) || !name || name.includes("..") || path.isAbsolute(name)) return res.status(400).json({ error: "参数不合法" });
   const base = dataPath("eval", "runs", dir, "workspace", task);
   const file = path.resolve(base, name);
@@ -9467,7 +9503,7 @@ app.get("/api/eval/run/:dir/file", (req, res) => {
   try { fs.readSync(fd, buf, 0, buf.length, 0); } finally { fs.closeSync(fd); }
   if (buf.includes(0)) return res.json({ name, size: st.size, binary: true });
   res.json({ name, size: st.size, text: buf.toString("utf8"), truncated: st.size > LIMIT });
-});
+}
 // 人工打分：写回该次评测的 results.json，与机器分 / AI 评委分并列保存，互不覆盖
 app.post("/api/eval/human", (req, res) => {
   const b = req.body || {};

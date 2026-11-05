@@ -218,6 +218,7 @@ const TABLE = Object.freeze({
   "pptx-layout": "src/util/pptx-layout.js",
   "task-dirs": "src/util/task-dirs.js",
   "safe-git": "src/util/safe-git.js",
+  "provenance": "src/util/provenance.js",
   "timeline-cards": "src/util/timeline-cards.js",
   "timeline-compose": "src/domains/media/timeline-compose.js",
   "timeline-subs": "src/util/timeline-subs.js",

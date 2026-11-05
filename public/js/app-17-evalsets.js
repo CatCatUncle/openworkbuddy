@@ -138,3 +138,67 @@ async function renderEvalSets(pick) {
     renderEvalSets();
   }));
 }
+
+// ── 盲评：两轮成果并排看，不知道哪边是哪轮，选完才揭晓 ──────────────────────
+function evBlindBar(hist) {
+  const box = document.getElementById("ev-blind-bar"); if (!box) return;
+  const runs = hist.filter((h) => h.dir);
+  if (runs.length < 2) { box.innerHTML = ""; return; }
+  const label = (h) => `${String(h.at || "").slice(0, 16).replace("T", " ")} · ${h.model || ""}`;
+  const options = (pick) => runs.map((h, i) => `<option value="${esc(h.dir)}" ${i === pick ? "selected" : ""}>${esc(label(h))}</option>`).join("");
+  box.innerHTML = `<div class="ev-setbar"><select id="ev-blind-a" aria-label="第一轮">${options(0)}</select><select id="ev-blind-b" aria-label="第二轮">${options(1)}</select><button class="btn-plain" id="ev-blind-go">${ic("scale")} 盲评这两轮</button></div>`;
+  box.querySelector("#ev-blind-go").onclick = async () => {
+    const r = await fetch("/api/eval/blind", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ a: box.querySelector("#ev-blind-a").value, b: box.querySelector("#ev-blind-b").value }) }).catch(() => null);
+    const d = r ? await r.json().catch(() => ({})) : {};
+    if (!r || !r.ok) return toast(d.error || "盲评没开起来", "circle-x");
+    evBlindOpen(d, runs);
+  };
+}
+
+function evBlindSide(session, item, side) {
+  const data = item[side];
+  return `<section class="ev-blind-side"><h4>${side === "left" ? "A" : "B"}</h4><div class="ev-blind-text">${esc(data.text) || "（没有文字回复）"}</div>`
+    + (data.files.length ? `<div class="ev-blind-files">${data.files.map((f) => `<button type="button" class="btn-plain" data-blind-file="${esc(f.name)}" data-side="${side}">${ic("file-text")} ${esc(f.name)}</button>`).join("")}</div><pre class="ev-blind-peek" data-peek="${side}" hidden></pre>` : "")
+    + `</section>`;
+}
+
+function evBlindOpen(session, runs) {
+  const mask = document.createElement("div");
+  mask.className = "code-review ev-blind"; mask.setAttribute("role", "dialog"); mask.setAttribute("aria-modal", "true"); mask.setAttribute("aria-label", "盲评");
+  document.body.appendChild(mask);
+  const nameOf = (dir) => { const h = runs.find((x) => x.dir === dir); return h ? `${String(h.at || "").slice(0, 16).replace("T", " ")} · ${h.model || ""}` : dir; };
+  const close = () => { mask.remove(); document.removeEventListener("keydown", onKey, true); };
+  const onKey = (event) => { if (event.key === "Escape") close(); };
+  document.addEventListener("keydown", onKey, true);
+  let at = session.items.findIndex((item) => !item.pick); if (at < 0) at = 0;
+  const showResult = (r) => {
+    mask.innerHTML = `<div class="code-review-card ev-blind-card"><header><b>盲评结果</b><button type="button" class="icon-btn" data-close aria-label="关闭">${ic("x")}</button></header><div class="ev-blind-result">
+      <p>${esc(nameOf(r.a.dir))}：<b>${r.a.wins}</b> 题更好</p><p>${esc(nameOf(r.b.dir))}：<b>${r.b.wins}</b> 题更好</p><p>差不多：${r.ties} 题</p>
+      <p class="ev-blind-note">题少的时候差一两题说明不了问题，多比几轮再下结论。</p>
+      <table class="ev-tab"><tbody>${r.items.map((x) => `<tr><td>${esc(x.name)}</td><td>${x.winner ? esc(nameOf(x.winner)) : "差不多"}</td></tr>`).join("")}</tbody></table></div></div>`;
+    mask.querySelector("[data-close]").onclick = close;
+  };
+  const paint = () => {
+    const item = session.items[at];
+    mask.innerHTML = `<div class="code-review-card ev-blind-card"><header><b>${esc(item.name)}</b><span>第 ${at + 1} / ${session.items.length} 题</span><button type="button" class="icon-btn" data-close aria-label="关闭">${ic("x")}</button></header>
+      <div class="ev-blind-main">${evBlindSide(session, item, "left")}${evBlindSide(session, item, "right")}</div>
+      <footer class="ev-blind-foot"><button class="btn-plain" data-pick="left">A 更好</button><button class="btn-plain" data-pick="tie">差不多</button><button class="btn-plain" data-pick="right">B 更好</button></footer></div>`;
+    mask.querySelector("[data-close]").onclick = close;
+    mask.querySelectorAll("[data-blind-file]").forEach((button) => (button.onclick = async () => {
+      const side = button.dataset.side, peek = mask.querySelector(`[data-peek="${side}"]`);
+      const d = await fetch(`/api/eval/blind/${session.id}/file?index=${at}&side=${side}&name=${encodeURIComponent(button.dataset.blindFile)}`).then((r) => r.json()).catch(() => ({}));
+      peek.hidden = false;
+      peek.textContent = d.binary ? "这是二进制文件，这里显示不了内容。" : d.text || d.error || "读不出来";
+    }));
+    mask.querySelectorAll("[data-pick]").forEach((button) => (button.onclick = async () => {
+      const r = await fetch(`/api/eval/blind/${session.id}/vote`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ index: at, pick: button.dataset.pick }) }).catch(() => null);
+      const d = r ? await r.json().catch(() => ({})) : {};
+      if (!r || !r.ok) return toast(d.error || "没记上", "circle-x");
+      item.pick = button.dataset.pick;
+      if (d.result) return showResult(d.result);
+      at = session.items.findIndex((row) => !row.pick);
+      paint();
+    }));
+  };
+  paint();
+}

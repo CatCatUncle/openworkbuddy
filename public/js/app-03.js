@@ -2477,6 +2477,7 @@ async function renderEvalPage() {
     <div id="ev-detail"></div>
     <div>
       <div class="ev-sec">历史成绩<span>点一行看每题明细 · 打人工分 · 设为基线</span></div>
+      <div id="ev-blind-bar"></div>
       <div id="ev-hist">加载中…</div>
     </div>
   </div>`;
