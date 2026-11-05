@@ -23,6 +23,7 @@ const connectorsLendOff = () => {
 };
 /** 插件带来的连接器，本机引擎也要挂。插件坏了只是少几台，不拖累任务（哪个插件坏了、为什么，插件页上自己会报） */
 const mcpPolicy = require("../core/ext/mcp-policy"); // 连接器工具一个个设的权限：不让用的不摆，先问我的摆卡
+const memberAccess = require("../core/ext/member-access");
 const enginePluginServers = () => { try { return require("../core/ext/plugins").pluginMcpServers(); } catch { return []; } };
 const awake = require("../platform/awake"); // 睡眠治理：任务期间防睡 + 睡了顺延时限
 const engines = require("../engines"); // 底层引擎：内置循环 / 本机 Claude Code / 本机 Codex
@@ -1202,12 +1203,14 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
   }
   // 技能表走 skills.js 的签名缓存：一轮里这儿要被调 4 次以上，不再每次重读 52 个 skill.md。
   // 新建/删掉技能当场就认（save_skill 新建的立即可用），就地改写已有 skill.md 最多晚 1 秒
-  function getSkills() {
-    return loadSkills();
+  // who 给了就按这个人过滤：管理员关掉的技能，成员的目录里看不到，点名也加载不了
+  function getSkills(who) {
+    const all = loadSkills();
+    return who === undefined ? all : all.filter((s) => !memberAccess.hidden(config, "skills", s.name, who));
   }
 
   async function baseSystemPrompt(user, hint, baseDir) {
-    const skills = getSkills();
+    const skills = getSkills(user || "");
     // 用户可以给助理改名（设置 → 个性化）。名字得进提示词，不然用户喊"小秘"它一脸茫然
     // 多人服务器上成员可以给自己那个助理另起名字、另加偏好（prefs.assistantFor），按发起这趟的人取
     const mine = prefs.assistantFor(user, config);
@@ -1377,7 +1380,7 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
 
   /** 写代码那一档的稳定段。技能只列名字：要用时 use_skill 拿全文，办公那份的简介在这儿是纯开销 */
   function codeSystemPrompt(user, baseDir) {
-    const skills = getSkills();
+    const skills = getSkills(user || "");
     return codeProfile.systemPrompt({
       name: prefs.assistantFor(user, config).name,
       cwd: safeWorkspaceDir(baseDir),
@@ -1435,10 +1438,10 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
    * 记忆按账号取：共享的 + 这个人自己的。别人的偏好不该串到他头上；
    * memHint 是本次任务线索，记忆装不下提示词预算时按它挑最相关的。
    */
-  async function volatileSystemBlock({ user, memHint, projBlock, mediaReopened }) {
+  async function volatileSystemBlock({ user, memHint, projBlock, mediaReopened, projectName }) {
     let v = "";
     try {
-      v += await memory.promptBlock(user, memHint);
+      v += await memory.promptBlock(user, memHint, projectName);
     } catch (e) {
       // 记忆读不出来不该让整个任务起不来；但得留痕，不然用户只会觉得「它怎么又忘了」
       console.warn(`[agent] 长期记忆这一轮没带上：${(e && e.message) || e}`);
@@ -1523,7 +1526,7 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
         properties: Object.fromEntries(Object.entries((t.input_schema || {}).properties || {}).filter(([k]) => !["command", "args", "env"].includes(k))),
       },
     }));
-    const tools = [...base, USE_SKILL_TOOL, ASK_USER_TOOL, ...mcpManager.toolDefs((s, t) => mcpPolicy.offered(config.mcp_tool_policy, s, t))];
+    const tools = [...base, USE_SKILL_TOOL, ASK_USER_TOOL, ...mcpManager.toolDefs((s, t) => mcpPolicy.offered(config.mcp_tool_policy, s, t) && !memberAccess.hidden(config, "mcp", s, user || ""))];
     if ((config.im || {}).feishu && (config.im.feishu.app_id || config.im.feishu.doc_app_id)) tools.push(FEISHU_DOC_TOOL);
     if (botWebhookOn()) tools.push(NOTIFY_TOOL);
     // 这个人配过 Chrome 才摆：没配的摆出来只会换来一句「先去配对」。没连上也照摆，调用时会说清楚去哪开
@@ -1573,8 +1576,8 @@ function modePrompt(mode) {
    * 一份技能加载出来长什么样：目录说明 + 正文 + 配套提示。use_skill 和「开工前自动加载」共用这一份，
    * 免得两条路加载出来的技能不一样。
    */
-  function loadSkillText(name) {
-    const skills = getSkills();
+  function loadSkillText(name, who) {
+    const skills = getSkills(who);
     const skill = skills.find((s) => s.name === name);
     if (!skill) return { skill: null, text: "", skills };
     // folder 型技能自带 scripts/templates 等资源，动态告知 agent 技能目录的绝对路径
@@ -1594,7 +1597,7 @@ function modePrompt(mode) {
     return { skill, text: dirNote + skill.content + styleHint, skills };
   }
 
-  async function runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride, askUser, lang, sessionId, traceNode, skillSink }) {
+  async function runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, projectName, sec, taskLabel, runToken, baseDir, llmOverride, askUser, lang, sessionId, traceNode, skillSink }) {
     // 参数压根不是合法 JSON（llm.js 救不回来时塞了个 _raw 进来）。tools.executeTool 里早有这道闸，
     // 可 ask_user / use_skill / MCP / 委派专家这几个是在这儿就地接住的，根本走不到那儿——
     // 于是一路掉进各自的必填校验，报出来的是「question 不能为空」。模型看了以为是自己漏填了字段，
@@ -1695,7 +1698,7 @@ function modePrompt(mode) {
     }
     if (tc.name === "use_skill") {
       const name = (tc.input.name || "").trim();
-      const { skill, text, skills } = loadSkillText(name);
+      const { skill, text, skills } = loadSkillText(name, user || "");
       if (!skill) return { content: `技能不存在: ${tc.input.name}。可用: ${skills.map((s) => s.name).join(", ")}`, isError: true };
       // 有「篮子」（顶层任务传进来的 loadedSkills）就把全文放进篮子、挂到系统提示词里，
       // 工具结果只回一张回执。以前全文是作为工具结果进历史的：压缩一次就没了、trimHistory
@@ -1711,6 +1714,7 @@ function modePrompt(mode) {
       // 连接器页上设的权限：不让用的工具表里已经摘了，模型硬调也在这儿拦；先问我的摆卡等人点
       const at = mcpManager.resolve(tc.name);
       if (at) {
+        if (memberAccess.hidden(config, "mcp", at.server, user || "")) return { content: `连接器「${at.server}」管理员没有开放给你。`, isError: true };
         const no = await mcpPolicy.gate({
           pol: config.mcp_tool_policy, sec: sec || security.getSecurity(config), server: at.server, tool: at.tool, input: tc.input,
           stopSignal, deadline, source: taskLabel || "", owner: user || "", sessionId: sessionId || "",
@@ -2209,7 +2213,7 @@ function modePrompt(mode) {
         extendMs: grown(),
       };
     }
-    const callTool = () => executeTool(tc.name, tc.input, execOpts({ depth, deadline, stopSignal, taskLabel, user, baseDir, sec, sessionId, callId: tc.id, name: tc.name, emit, llmOverride }));
+    const callTool = () => executeTool(tc.name, tc.input, execOpts({ depth, deadline, stopSignal, taskLabel, user, projectName, baseDir, sec, sessionId, callId: tc.id, name: tc.name, emit, llmOverride }));
     // 截图、渲染、合成是吃内存的：几个任务一起跑时排着来，不是一起把电脑压垮
     const res = await (governor.HEAVY_TOOLS.has(tc.name) ? governor.heavy("render", { signal: stopSignal, emit, label: tc.name }, callTool) : callTool());
     if (res && res.editedFile) noteWrote(res.editedFile, runToken);
@@ -2221,7 +2225,7 @@ function modePrompt(mode) {
    * 各写各的早晚会漂：少传一个 media，generate_image 连模型都点不了名；
    * 少传一个 actor，审批卡片就跑去问了别人。
    */
-  function execOpts({ depth = 0, deadline, stopSignal, signal, taskLabel, user, baseDir, sec, sessionId, callId, name, emit, llmOverride, onSubmitted }) {
+  function execOpts({ depth = 0, deadline, stopSignal, signal, taskLabel, user, projectName = "", baseDir, sec, sessionId, callId, name, emit, llmOverride, onSubmitted }) {
     return {
       onProgress: emit ? progressSink(emit, { id: callId, name, depth }) : undefined, // 长工具（渲染 / 配音 / 合成）往回报进度；只直播不存盘
       knownTools: toolList(depth, "craft", user).map((t) => t.name), // 拼错工具名时用来给出最接近的真名
@@ -2245,7 +2249,7 @@ function modePrompt(mode) {
       hostMessage: !security.isMultiUser() || security.isPlatformAdmin(user),
       baseDir, // 相对路径读写、脚本 cwd、产物落点全在本对话的成果子目录
       // 记之前先判一句：开关 + 这一趟在干什么（判一句话是不是只在这一趟里成立，得知道这一趟是什么活）
-      memory: { user, gate: (config.agent || {}).memory_gate === true, task: taskLabel },
+      memory: { user, project: projectName, gate: (config.agent || {}).memory_gate === true, task: taskLabel },
       sessionId, // 文件检查点记在哪个会话名下：回退只认自己这个会话动过的文件
       // 上游一收单就回报任务号（生视频那条，见 media.js generateVideo）。直调接口拿它记台账：
       // 断线、重启之后还查得到「这一单收过、任务号是几」
@@ -2544,7 +2548,7 @@ function modePrompt(mode) {
    * 「已达最大步数 / 已达最大运行时间 / 已手动停止」这三种收尾原样报出去——
    * task-verdict 那层认的就是这几个词，翻译对了，假绿判定在 CLI 引擎上照样生效。
    */
-  async function runViaEngine({ backend, opts = {}, history, emit = () => {}, mode, deadline, stopSignal, baseDir, engineSession, user, projectContext, lang, sessionId, sec, taskLabel, engineImport, traceNode = tracing.noop }) {
+  async function runViaEngine({ backend, opts = {}, history, emit = () => {}, mode, deadline, stopSignal, baseDir, engineSession, user, projectContext, projectName, lang, sessionId, sec, taskLabel, engineImport, traceNode = tracing.noop }) {
     const delivery = require("../core/automation/schedule-delivery");
     const deliveryState = delivery.current();
     // 从本机导入的会话接着聊：在它原来的文件夹里跑（server 那边核过属主、核过文件夹还在）。
@@ -2751,7 +2755,7 @@ function modePrompt(mode) {
     try {
       // claude 那边实际用的档位：engine_options 里手填的 permissionMode 最大（见 claude-code.js）；只读那一趟除外
       const claudeMode = readOnly ? guard.claudeMode : opts.permissionMode || guard.claudeMode;
-      const systemPrompt = await engineSystemPrompt(cwd, mode, user, bridged, { projectContext, history, lang, engine: backend.id, claudeMode, foreignCwd: !!importCwd, canvasSession: canvasStore.canvasSessionOf(sessionId) });
+      const systemPrompt = await engineSystemPrompt(cwd, mode, user, bridged, { projectContext, projectName, history, lang, engine: backend.id, claudeMode, foreignCwd: !!importCwd, canvasSession: canvasStore.canvasSessionOf(sessionId) });
       await filesOut.ready; // 开跑前的基线必须先落定，否则引擎第一步写的文件会被当成「本来就有」
       const runWith = (resumeId) => backend.run({
         prompt: enginePrompt(history, resumeId, cwd),
@@ -3009,7 +3013,7 @@ function modePrompt(mode) {
     try { const ev = evolve.promptBlock(); if (ev) parts.push(ev.trim()); } catch {} // 规则目录读不了不该让任务起不来
     // 记忆召回线索：用户这次要的事（currentAsk，跟内置引擎同一个口径）的前 500 字，记忆超预算时按它挑最相关的
     const hint = currentAsk(extra.history || []).slice(0, 500);
-    try { const mb = await memory.promptBlock(user, hint); if (mb) parts.push(mb.trim()); } catch {}
+    try { const mb = await memory.promptBlock(user, hint, extra.projectName); if (mb) parts.push(mb.trim()); } catch {}
     if (extra.projectContext) parts.push(`\n## 当前项目的背景与规范（用户在项目设置里写的，必须遵守）\n${extra.projectContext}`);
     // 品牌档案摘要：外部 CLI 没借到 brand_kit_* 工具，所以块里给的是档案文件路径（viaTool: false）
     try { const bb = brandKit.safePromptBlock({ history: extra.history || [], lang: extra.lang, cwd: getWorkspaceDir(), viaTool: false }); if (bb) parts.push(bb.trim()); } catch {}
@@ -3142,7 +3146,7 @@ function modePrompt(mode) {
    * @param maxSteps 只给这一次任务的步数上限，不传就用全局配置
    * @returns { finalText }
    */
-  async function runTask({ history, emit = () => {}, systemPrompt, depth = 0, mode = "craft", deadline, stats, stopSignal, getInterject, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride, askUser, engineSession, engineImport, lang, sessionId, traceNode, mediaReopened, maxSteps: maxStepsOverride, engineOverride, profile }) {
+  async function runTask({ history, emit = () => {}, systemPrompt, depth = 0, mode = "craft", deadline, stats, stopSignal, getInterject, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride, askUser, engineSession, engineImport, lang, sessionId, traceNode, mediaReopened, maxSteps: maxStepsOverride, engineOverride, profile, projectName = "" }) {
     // 读历史先过 normalizeEntry：老会话里引擎回合写的 { content } 就地改成 { text }。
     // 就地改的是调用方那份会话（sess.history），下次落盘就是正式格式，这段会话从此不再带着方言走
     normalizeHistory(history);
@@ -3216,7 +3220,7 @@ function modePrompt(mode) {
           // 一个本机 CLI 就是几百 MB 的常驻进程：跟截图渲染一样按重活排
           const out = await governor.heavy("engine", { signal: stopSignal, emit, label: "本机引擎" }, () => runViaEngine({
             backend: picked.backend, opts: picked.opts,
-            history, emit, mode, deadline, stopSignal, baseDir, engineSession, engineImport, user, projectContext, lang, sessionId, sec, taskLabel, traceNode: sp,
+            history, emit, mode, deadline, stopSignal, baseDir, engineSession, engineImport, user, projectContext, projectName, lang, sessionId, sec, taskLabel, traceNode: sp,
           }));
           sp.end({ output: out.finalText || "", usage: out.usage, metadata: { stopped: out.stopped || "", engine_session: out.sessionId || "" } });
           if (ownsTrace) tr.end({ output: out.finalText || "", usage: out.usage, metadata: { engine: picked.backend.id } });
@@ -3247,7 +3251,7 @@ function modePrompt(mode) {
     const rolePrompt = coding ? codeSystemPrompt(user, baseDir) : systemPrompt;
     const stableSystem = (rolePrompt || (await coordinatorSystemPrompt(user, memHint, baseDir))) + langBlock(lang) + (coding ? codeProfile.modeBlock(mode) : modePrompt(mode));
     const quoteFirst = canvasStore.canvasSessionOf(sessionId);
-    const system = stableSystem + (await volatileSystemBlock({ user, memHint, projBlock: projBlock + brandBlock, mediaReopened }))
+    const system = stableSystem + (await volatileSystemBlock({ user, memHint, projBlock: projBlock + brandBlock, mediaReopened, projectName }))
       + (coding ? await codeProfile.gitContext((args) => require("./tools").sandboxedGit(safeWorkspaceDir(baseDir), args, { sec: config.security, actor: user })) : "")
       + (quoteFirst ? canvasStore.canvasMediaPrompt(mediaModels.resolve(config)) : "");
     const systemStableLen = stableSystem.length;
@@ -3286,7 +3290,7 @@ function modePrompt(mode) {
         }
       }
       for (const n of seen) {
-        const { skill, text } = loadSkillText(n);
+        const { skill, text } = loadSkillText(n, user || "");
         if (!skill) continue;
         loadedSkills.delete(n);
         loadedSkills.set(n, text);
@@ -3297,14 +3301,14 @@ function modePrompt(mode) {
           on: !!(config.agent || {}).skill_gate,
           ready: jev.status(config).ready,
           message: memHint,
-          skills: getSkills(),
+          skills: getSkills(user || ""),
           loaded: loadedSkills.size,
           depth,
         });
         let pick = null;
         if (rt.route === "named") pick = { name: rt.name, why: "你点了名" };
         else if (rt.route === "judge") {
-          const skills = getSkills();
+          const skills = getSkills(user || "");
           const out = await jev.askMetered(
             config,
             { state: skillGate.pickState({ message: memHint, skills }), questions: skillGate.pickQuestions(skills) },
@@ -3315,7 +3319,7 @@ function modePrompt(mode) {
           if (d) pick = { name: d.name, why: `判断模型挑的，确定度 ${systemOne.pct(d.sure)}` };
         }
         if (pick) {
-          const { skill, text } = loadSkillText(pick.name);
+          const { skill, text } = loadSkillText(pick.name, user || "");
           if (skill) {
             loadedSkills.set(pick.name, text);
             emit({ type: "status", text: `先照技能「${pick.name}」做（${pick.why}），已挂到系统提示词里`, depth });
@@ -3856,7 +3860,7 @@ function modePrompt(mode) {
           });
           try {
             ranTool = true;
-            r = await runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride: L, askUser, lang, sessionId, traceNode: sp, skillSink: loadedSkills });
+            r = await runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, projectName, sec, taskLabel, runToken, baseDir, llmOverride: L, askUser, lang, sessionId, traceNode: sp, skillSink: loadedSkills });
           } catch (e) {
             // 工具抛出来的异常在这里就地变成一条工具结果。让它往上冒的话，下面那条
             // history.push({role:"tool"}) 就跑不到，历史里留下一条配不上对的 assistant——
@@ -3901,7 +3905,7 @@ function modePrompt(mode) {
         // 刚接上的连接器，这一趟后面几步就该看得见它的工具。工具表是开跑时算一次的，不补的话
         // 「接上 X 再拿它查一下」要等用户再说一句，模型这一轮只能说「接好了但我调不了」
         if (tc.name === "add_connector" && !r.isError) {
-          for (const d of mcpManager.toolDefs((s, t) => mcpPolicy.offered(config.mcp_tool_policy, s, t))) if (!offered.has(d.name)) { tools.push(d); offered.add(d.name); }
+          for (const d of mcpManager.toolDefs((s, t) => mcpPolicy.offered(config.mcp_tool_policy, s, t) && !memberAccess.hidden(config, "mcp", s, user || ""))) if (!offered.has(d.name)) { tools.push(d); offered.add(d.name); }
         }
         if (tc.name === "look_at_image" && !r.isError) sawImage = true; // 真看成过一次，收尾就不替它复核
         emit({

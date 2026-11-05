@@ -499,6 +499,8 @@ const NAV = [
       { id: "net", icon: "globe", title: "网络设置", sub: "抓网页时放行哪些域名" },
       { id: "meter", icon: "zap", title: "计量设置", sub: "开不开用量闸门、每人每月发多少" },
       { id: "models", icon: "sparkles", title: "模型与 Key", sub: "这台服务器用哪些模型、哪把 Key", platform: true },
+      { id: "access", icon: "shield-check", title: "成员权限", sub: "哪些连接器和技能给成员用、能不能分享任务", platform: true },
+      { id: "storage", icon: "hard-drive", title: "存储", sub: "各账号占多少磁盘、每人配额", platform: true },
       { id: "apiquota", icon: "sliders-horizontal", title: "API 与额度", sub: "搜索、生图、生视频这些按次收费的接口，统一配、统一限", platform: true },
       { id: "orgs", icon: "building", title: "组织管理", sub: "新建组织、给别的组织配套餐", platform: true, owner: true },
       { id: "license", icon: "scale", title: "商业授权", sub: "授权码和使用声明", platform: true },
@@ -3063,6 +3065,56 @@ PAGES.models = {
  * 在三层菜单里重新找一遍，中途忘了要点哪一项是常事。现在那一句是链接，
  * 点了直接把工作台开在那个面板上（工作台侧 `#go=` 深链负责落地）。
  */
+PAGES.access = {
+  load: () => api("/api/admin/member-access"),
+  render: (d) => {
+    const list = (kind, rows, empty) => rows.length
+      ? rows.map((r) => field(esc(r.name), "", `<label class="ui-switch"><input type="checkbox" data-acc-kind="${kind}" data-acc-name="${esc(r.name)}" ${r.shared ? "checked" : ""}><i></i></label>`)).join("")
+      : note(empty);
+    return `<div class="ad-wrap">
+      ${note("这里只管<b>成员</b>，平台管理员不受影响。关掉后成员看不到，模型也调不到。成员不能自己安装技能和连接器。")}
+      ${card(`${secT("任务分享", "打开后成员能把自己的任务发给同组织的同事。对方要登录，只能看，不能改。")}
+        <div style="margin-top:14px">${field("允许成员分享任务", "", `<label class="ui-switch"><input type="checkbox" data-acc-kind="session_shares" ${d.session_shares ? "checked" : ""}><i></i></label>`)}</div>`)}
+      ${card(`${secT("连接器", "默认开放给全部成员。")}<div style="margin-top:14px">${list("mcp", d.mcp, "还没有连接器。")}</div>`)}
+      ${card(`${secT("技能", "默认开放给全部成员。")}<div style="margin-top:14px">${list("skills", d.skills, "还没有技能。")}</div>`)}
+    </div>`;
+  },
+  bind: (root) => {
+    root.querySelectorAll("[data-acc-kind]").forEach((box) => (box.onchange = async () => {
+      const want = box.checked;
+      const r = await post("/api/admin/member-access", { kind: box.dataset.accKind, name: box.dataset.accName || "", shared: want }).catch((e) => ({ error: e.message }));
+      if (r && r.error) { box.checked = !want; toast(r.error, true); return; }
+      toast(want ? "已开放给成员" : "已对成员关闭");
+    }));
+  },
+};
+
+PAGES.storage = {
+  load: () => api("/api/admin/storage"),
+  render: (d) => {
+    const size = (n) => (n >= 1073741824 ? (n / 1073741824).toFixed(1) + " GB" : Math.round(n / 1048576) + " MB");
+    const line = (r) => [esc(r.name), size(r.bytes), String(r.files) + (r.truncated ? "+" : "")];
+    const rows = [...d.rows].sort((a, b) => b.bytes - a.bytes);
+    const body = (kind) => rows.filter((r) => r.kind === kind).map(line);
+    const head = [{ t: "位置" }, { t: "占用", right: true }, { t: "文件数", right: true }];
+    return `<div class="ad-wrap">
+      ${d.free != null ? note(`这台机器还剩 <b>${size(d.free)}</b> 可用空间。`, d.free < 5 * 1073741824) : ""}
+      ${card(`${secT("每人配额", "超过后成员不能上传、不能发新任务，已有文件不受影响，也不会打断正在跑的任务。占用每 10 分钟量一次，所以闸门有延迟。")}
+        <div style="margin-top:14px">${field("工作目录上限（MB）", "填 0 表示不限。", `<input class="ui-input" id="ad-quota" type="number" min="0" step="100" value="${d.quota_mb || 0}" style="width:120px">`)}</div>`)}
+      ${cardT(secT("成员工作目录"), table(head, body("member")))}
+      ${cardT(secT("系统"), table(head, body("system")))}
+    </div>`;
+  },
+  bind: (root) => {
+    const input = root.querySelector("#ad-quota");
+    if (input) input.onchange = async () => {
+      const r = await post("/api/admin/storage/quota", { mb: Number(input.value) }).catch((e) => ({ error: e.message }));
+      if (r && r.error) { toast(r.error, true); return; }
+      toast(r.quota_mb ? `每人上限 ${r.quota_mb} MB` : "已取消配额");
+    };
+  },
+};
+
 PAGES.integration = {
   load: () => api("/api/admin/overview"),
   render: () => {

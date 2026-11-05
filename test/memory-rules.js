@@ -123,6 +123,31 @@ const blab = (seed, n) => {
     ok(/第 0 条规矩/.test(block), "  └ 先进门的是最早记的那几条（按记入时间，稳定，不随任务变）");
   }
 
+  console.log("\n【项目分层】");
+  {
+    const user = "project_scope_user";
+    memory.add({ text: "甲客户的合同抬头写全称", user, project: "甲客户", source: "user" });
+    memory.add({ text: "乙客户的报告用英文", user, project: "乙客户", source: "user" });
+    memory.add({ text: "我喜欢结论先行", user, source: "user" });
+    const inA = await memory.promptBlock(user, "写合同", "甲客户");
+    ok(inA.includes("甲客户的合同抬头") && inA.includes("（本项目）"), "本项目的记忆带上，并标明");
+    ok(!inA.includes("乙客户的报告"), "别的项目的记忆不跟过来");
+    ok(inA.includes("结论先行"), "全局记忆到哪都带");
+    const bare = await memory.promptBlock(user, "写合同");
+    ok(!bare.includes("甲客户的合同抬头") && bare.includes("结论先行"), "不在项目里时只带全局");
+    const same = memory.add({ text: "我喜欢结论先行", user, project: "甲客户", source: "user" });
+    ok(same.ok && !/一模一样/.test(same.note), "项目里能记一条跟全局同文的，不算重复");
+  }
+  const evolve = require(mod("evolve"));
+  {
+    console.log("\n【用户纠正算负反馈】");
+    const at = new Date().toISOString();
+    {
+      const d = evolve._internals.digestSession({ updated_at: at, transcript: [{ type: "user", text: "写周报" }, { type: "assistant", at, events: [] }, { type: "user", text: "不对，我要的是月报" }, { type: "assistant", at, events: [] }, { type: "user", text: "好的继续" }] }, "s1");
+      ok(d.turns[0].hits.some((h) => h.c.kind === "user_correction"), "下一句在纠正：记一条信号");
+      ok(!d.turns[1].hits.length, "普通回话不算");
+    }
+  }
   console.log(`\n记忆规矩优先：${pass} 通过，${fail} 失败`);
   finished = true;
   if (fail) process.exitCode = 1;

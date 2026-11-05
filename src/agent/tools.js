@@ -431,6 +431,7 @@ const TOOL_DEFS = [
       properties: {
         text: { type: "string", description: "一句话结论，如「周报只要三段：进展/问题/下周计划」" },
         shared: { type: "boolean", description: "true = 这台机器上所有账号都适用（团队约定）；默认只记给当前用户" },
+        this_project: { type: "boolean", description: "true = 只在当前项目里有效，比如这个客户的术语和口径；个人习惯不要设" },
       },
       required: ["text"],
     },
@@ -4776,7 +4777,7 @@ async function executeToolCore(name, input, opts = {}) {
           const drop = await judgeMemory(pre.text);
           if (drop) return { content: drop, isError: true };
         }
-        const r = memory.add({ text: input.text, user: opts.memory && opts.memory.user, shared: !!input.shared });
+        const r = memory.add({ text: input.text, user: opts.memory && opts.memory.user, shared: !!input.shared, project: input.this_project ? (opts.memory && opts.memory.project) || "" : "" });
         return { content: r.note, isError: !r.ok };
       }
       case "forget": {
@@ -5496,7 +5497,7 @@ const diskConnectorHost = {
     let findings = [];
     try {
       const rep = require("../core/safety/toolward").scanConnectors([entry], disk);
-      findings = (rep && rep.findings) || [];
+      findings = [...require("../core/safety/connector-guard").scan([entry]).findings, ...((rep && rep.findings) || [])];
     } catch (e) { console.warn(`[MCP] 连接器体检没跑成（不影响添加）: ${(e && e.message) || e}`); }
     const { cfgFingerprint } = require("./mcp");
     return { entry, exists: !!prev, same: !!prev && cfgFingerprint(prev) === cfgFingerprint(entry), findings };

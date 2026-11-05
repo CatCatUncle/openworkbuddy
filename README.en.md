@@ -278,6 +278,10 @@ The built-in Agent alternates model decisions and tool execution, with concurren
 
 - **Nov 6** v0.19.0: multi-user Linux runs member commands in a system sandbox, closing a blocklist bypass that could read key files. Install bubblewrap before upgrading. See [deployment](docs/部署.md).
 
+- **Nov 6** The admin console controls which connectors and skills members can use, sets storage quotas and turns on in-organization task sharing. Connector setup gains built-in checks.
+
+- **Nov 6** Memories can belong to a project, so one client's terms stay out of another client's tasks.
+
 - **Nov 6** Press / on the canvas to search nodes. Split images into grids, make videos in batches, and save card groups as reusable workflows. See [canvas](docs/无限画布使用.md).
 
 - **Nov 6** The engineering lane shows the working folder and change count, with per-file diffs and discarding one file's edits. Folders with source code run in place.
@@ -299,10 +303,6 @@ The built-in Agent alternates model decisions and tool execution, with concurren
 - **Nov 1** v0.18.2: deleting a task selects its dedicated folder for cleanup by default. Uncheck to keep files. Cleanup moves files to the trash and preserves project roots and shared folders.
 
 - **Nov 1** Deletion waits for task shutdown and final saves. Failures keep the conversation and show the reason; success refreshes library entries and stale previews, preventing final saves from recreating deleted tasks.
-
-- **Oct 30** Office previews add document pages, zoom and expansion. DOC/WPS and XLS/ET have built-in compatibility readers. Open With remains optional and does not change defaults. See the [format capability matrix](docs/文件预览与转换.md).
-
-- **Oct 30** Export Office, PDF and OFD to Markdown. OFD uploads retain extensions and bytes. Legacy PPT uses live-slide text; scanned pages and truncation are reported. CEB requires an authorized engine.
 
 Format support and limits: [file previews and conversion](docs/文件预览与转换.md). Full history: [CHANGELOG](CHANGELOG.en.md).
 

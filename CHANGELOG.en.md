@@ -9,6 +9,10 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 ## 2026
 
+- **Nov 6** The admin console adds Member Access and Storage pages: control which connectors and skills members can use, turn on read-only task sharing within an organization, see per-account disk use and set per-member quotas. Connector setup gains built-in checks that catch download-and-run commands, key file paths and cloud metadata addresses without toolward installed.
+
+- **Nov 6** Memories can belong to a project, so one client's terms stay out of another client's tasks while global memories still apply everywhere. Self-evolution now counts corrections in the next message as negative feedback instead of relying only on rarely clicked thumbs.
+
 - **Nov 6** The canvas adds a / quick panel (or double-click empty space), image grid splitting, batch video creation and generation for selected cards, and saved workflows that keep prompts, settings and links without media or results. Measured card height no longer takes an undo step.
 
 - **Nov 6** The engineering lane adds a working-folder bar and a changes panel: folder, branch and change count above the input, per-file diffs, and discarding one file's edits. Folders with source code run in place, matching the CLI. Git calls made by the app now run in the sandbox and override repository settings that can execute commands, so an agent cannot escape through .git/config.

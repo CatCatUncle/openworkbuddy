@@ -97,7 +97,9 @@ function request(port, method, route, token) {
     assert.equal((await request(port, "POST", "/api/session/s_fixture/title", memberToken)).code, 403);
     const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
     const ui = fs.readFileSync(path.join(__dirname, "../public/js/app-02.js"), "utf8");
-    assert.ok(!html.includes("app-10-share.js")); assert.ok(!ui.includes("组织内只读分享") && !ui.includes('act === "share"'));
+    assert.ok(!html.includes("app-10-share.js"));
+    // 入口只在平台管理员打开后才出现
+    assert.ok(/settingsCache\?\.session_shares \? \["share"/.test(ui));
   });
   child.kill("SIGINT"); await new Promise((r) => child.once("exit", r));
   console.log(`Session sharing: ${checks} checks passed`);

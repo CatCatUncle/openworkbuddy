@@ -36,6 +36,9 @@ const canvasRoutes = require("./src/server/routes/canvas"); // 画布读写 + �
 const dramaRoutes = require("./src/server/routes/drama"); // 短剧分镜表 + 一镜一镜的版本留底
 const { createComposeRouter } = require("./src/server/routes/compose"); // 一键合成的两条接口
 const { createCodeRouter } = require("./src/server/routes/code"); // 工程线的改动审阅
+const connectorGuard = require("./src/core/safety/connector-guard"); // 连接器接入的内置检查
+const memberAccess = require("./src/core/ext/member-access"); // 哪些连接器和技能不给成员
+const storageUsage = require("./src/domains/account/storage-usage"); // 各账号占的磁盘和配额
 const libraryRoutes = require("./src/server/routes/library"); // 资料库的封面、正文摘录、收藏
 const { createPromptTplsRouter } = require("./src/server/routes/prompt-tpls"); // 参考模板库里「我的」「公司」两层的增删改
 const { createSessionImportRouter } = require("./src/server/routes/session-import"); // 会话导入入口默认关闭
@@ -2260,6 +2263,7 @@ app.get("/api/settings", (req, res) => {
     active_model: isPlatformOwner(req) ? config.active_model : ((memberModels.defaultFor(config, modelWho(req.user)) || {}).name || ""),
     // 成员能不能自己填 Key；平台管理员在模型页那张「成员的模型」卡片上开关
     member_byok: memberModels.byokAllowed(config),
+    session_shares: config.session_shares === true && admin.multiUser(),
     model_health: healthSummary(),
     // 配着的模型里，服务商已经下线或快下线的。在设置页说，别等任务跑到那一步才报错
     model_retire: isPlatformOwner(req) ? modelRetireNotes() : [],
@@ -3840,7 +3844,8 @@ app.get("/api/mcp", (req, res) => {
   let fromPlugins = [];
   try { fromPlugins = pluginsMgr.pluginMcpServers(); } catch { /* 插件坏了不该让连接器页打不开 */ }
   const servers = (config.mcp_servers || []).map((s) => view(s, ""))
-    .concat(fromPlugins.map((s) => view(s, s.plugin)));
+    .concat(fromPlugins.map((s) => view(s, s.plugin)))
+    .filter((s) => !memberAccess.hidden(config, "mcp", s.name, req.user ? req.user.username : ""));
   res.json({
     servers, total_tools: mcpOffered(), can_toggle: isPlatformOwner(req),
     // 没设权限的工具跟着这一档走（页上要说清「先问我」在全自动下也问）
@@ -4135,12 +4140,14 @@ function normalizeMcpServer(s, i, prevByName = new Map()) {
  */
 function connectorAdvice(servers) {
   try {
-    const rep = toolward.scanConnectors(servers, config);
-    if (!rep || !rep.findings.length) return null;
+    // 内置规则先上：toolward 是可选的，没装时不能一条都不查
+    const own = connectorGuard.scan(servers), rep = toolward.scanConnectors(servers, config);
+    const findings = [...own.findings, ...((rep && rep.findings) || [])];
+    if (!findings.length) return null;
     log.warn("mcp", "连接器配置有被提醒的地方（不影响保存）", {
-      count: rep.findings.length, rules: [...new Set(rep.findings.map((f) => f.rule))].slice(0, 10),
+      count: findings.length, rules: [...new Set(findings.map((f) => f.rule))].slice(0, 10),
     });
-    return { level: rep.level, findings: rep.findings.slice(0, 8), more: Math.max(0, rep.findings.length - 8), toolward: rep.toolward };
+    return { level: own.level === "block" ? "block" : (rep && rep.level) || own.level, findings: findings.slice(0, 8), more: Math.max(0, findings.length - 8), toolward: rep ? rep.toolward : null };
   } catch (e) {
     log.warn("mcp", "连接器体检没跑成（不影响保存）", { err: e });
     return null;
@@ -6422,9 +6429,9 @@ app.post("/api/cache/clear", async (_req, res) => {
   res.json({ ok: true, freed: Math.max(0, before.total - after.total), before: before.total, after: after.total });
 });
 
-app.get("/api/skills", (_req, res) =>
+app.get("/api/skills", (req, res) =>
   // plugin 字段标出技能来自哪个 Agent Plugins 插件（本地技能没有这个字段），界面据此禁用编辑/删除
-  res.json((runtime ? runtime.getSkills() : []).map((s) => ({ name: s.name, description: s.description, plugin: s.plugin || "" })))
+  res.json((runtime ? runtime.getSkills(req.user ? req.user.username : undefined) : []).map((s) => ({ name: s.name, description: s.description, plugin: s.plugin || "" })))
 );
 // 技能管理：getSkills 每次现读磁盘，增删改/安装即热生效，无需重启
 const skillsMgr = require("./src/core/ext/skills");
@@ -6618,10 +6625,17 @@ app.post("/api/desktop/open-files", taskFileWrite, taskFileHandler(async (req, r
     res.json({ ok: true, canceled: !sources.length, files, errors, root: workspaceKeyOf(importRoot) });
   } catch (error) { res.status(400).json({ error: error.message }); }
 }));
+/** 成员的工作目录超配额时给一句话。管理员和单人模式不限 */
+function memberStorageProblem(user) {
+  if (!config.member_storage_mb || !admin.multiUser() || !user || security.isPlatformAdmin(user.username)) return "";
+  return storageUsage.quotaProblem(require("./src/domains/account/spaces").knownRootOf(user.username), config.member_storage_mb);
+}
 app.post("/api/upload", taskFileWrite, taskFileHandler(async (req, res) => {
   const raw = !!req.is("application/octet-stream");
   let tmp = "";
   try {
+    const full = memberStorageProblem(req.user);
+    if (full) return res.status(507).json({ error: full, storage_full: true });
     const { name, data_b64, session, replace } = raw ? uploadHeaders(req) : (req.body || {});
     if (!name || (!raw && !data_b64)) return res.status(400).json({ error: raw ? "缺少文件名（X-Upload-Name）" : "缺少 name 或 data_b64" });
     // basename 之后再洗一遍：控制字符和路径分隔符在文件名里没有正当用途，
@@ -8397,6 +8411,10 @@ app.post("/api/chat", taskBillingScope, async (req, res) => {
       console.warn("[预算] 钱闸没能判（本次放行）：" + (e && e.message));
     }
   }
+  {
+    const full = memberStorageProblem(req.user);
+    if (full) return res.status(507).json({ error: full, storage_full: true });
+  }
   if (activeRuns.has(sessionId)) {
     // busy：别处发起的那趟还在跑，前端据此接上它把话插进去，不甩红字
     return res.status(409).json({ busy: true, error: "该会话已有任务在运行，可用「插队」把补充说明注入当前任务。" });
@@ -8638,6 +8656,7 @@ app.post("/api/chat", taskBillingScope, async (req, res) => {
           mode: modes.agentMode(mode), // goal 是套在 craft 外面的壳，agent 只认识 ask/plan/craft
           user: user ? user.username : undefined,
           projectContext: (projectContextOf(projectFor(user)) || "") + goalCtx,
+          projectName: (projectFor(user) || {}).name || "", // 记忆按项目分：甲客户的口径不跟到乙客户
           stopSignal: runState.ctrl.signal,
           // 底层 CLI 引擎自己的会话 id：存在本项目的会话文件里，桌面端和 openworkbuddy 命令行
           // 打开同一个会话时接着同一根线程跑，不用把历史再贴一遍
@@ -9177,8 +9196,10 @@ function ownSessionOr404(req, res, notMine) {
   if (req.user && owner && owner !== req.user.username) { res.status(403).json({ error: notMine }); return null; }
   return s;
 }
-// 对话只读分享默认关闭，旧链接与新建接口均不可用。
+// 对话只读分享默认关闭，平台管理员在后台打开；关着时旧链接与新建接口都不可用。
+// 分享要求登录且同一组织，链接只能看，不授予修改、提问或启动任务的权限。
 app.use(createSessionSharesRouter({
+  enabled: () => config.session_shares === true,
   store: createShareStore(dataPath("data", "session-shares.json")),
   multiUser: () => admin.multiUser(),
   sessionOf: (id) => sessions.has(id) || fs.existsSync(sessFile(id)) ? getSession(id) : null,
@@ -9600,6 +9621,54 @@ app.post("/api/models/share", (req, res) => {
   else delete p.share_members;
   saveConfig();
   res.json({ ok: true, channel: p.id, shared: p.share_members !== false });
+});
+/** 后台「成员权限」页：哪些连接器和技能开放给成员、能不能分享任务 */
+app.get("/api/admin/member-access", (req, res) => {
+  if (!isPlatformOwner(req)) return res.status(403).json({ error: "这项设置归平台管理员", platform_only: true });
+  const off = (kind) => new Set(memberAccess.offList(config, kind));
+  const mcpOff = off("mcp"), skillOff = off("skills");
+  res.json({
+    session_shares: config.session_shares === true,
+    mcp: (config.mcp_servers || []).map((s) => ({ name: s.name, shared: !mcpOff.has(s.name) })),
+    skills: (runtime ? runtime.getSkills() : []).map((s) => ({ name: s.name, shared: !skillOff.has(s.name) })),
+  });
+});
+app.post("/api/admin/member-access", (req, res) => {
+  if (!isPlatformOwner(req)) return res.status(403).json({ error: "这项设置归平台管理员", platform_only: true });
+  try {
+    const b = req.body || {};
+    if (b.kind === "session_shares") { if (b.shared === true) config.session_shares = true; else delete config.session_shares; }
+    else memberAccess.setShared(config, b.kind, b.name, b.shared !== false);
+    saveConfig();
+    security.audit("成员权限", `${b.kind} ${b.name || ""} → ${b.shared === false ? "关闭" : "开放"}`, "放行");
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+/** 后台「存储」页：各账号工作目录和数据目录占了多少 */
+app.get("/api/admin/storage", async (req, res) => {
+  if (!isPlatformOwner(req)) return res.status(403).json({ error: "这项设置归平台管理员", platform_only: true });
+  try {
+    const spaces = require("./src/domains/account/spaces");
+    const places = [
+      ...spaces.homes().map((dir) => ({ kind: "member", name: path.basename(dir), dir })),
+      { kind: "system", name: "共享工作目录", dir: getWorkspaceDir() },
+      { kind: "system", name: "任务记录与账本", dir: dataPath("data") },
+      { kind: "system", name: "备份", dir: dataPath("backups") },
+    ];
+    const rows = [];
+    for (const place of places) rows.push({ kind: place.kind, name: place.name, ...(await storageUsage.measure(place.dir)) });
+    let free = null;
+    try { const st = fs.statfsSync(dataPath()); free = Number(st.bavail) * Number(st.bsize); } catch {}
+    res.json({ rows, free, quota_mb: Number(config.member_storage_mb) || 0 });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post("/api/admin/storage/quota", (req, res) => {
+  if (!isPlatformOwner(req)) return res.status(403).json({ error: "这项设置归平台管理员", platform_only: true });
+  const mb = Math.round(Number((req.body || {}).mb));
+  if (!Number.isFinite(mb) || mb < 0 || mb > 100 * 1024 * 1024) return res.status(400).json({ error: "配额填 0（不限）或正整数 MB" });
+  if (mb) config.member_storage_mb = mb; else delete config.member_storage_mb;
+  saveConfig();
+  res.json({ ok: true, quota_mb: mb });
 });
 /** 平台管理员：成员能不能自己填 Key。关掉之后成员已经填的留着不删，只是用不了，再打开就回来 */
 app.post("/api/models/member-byok", (req, res) => {

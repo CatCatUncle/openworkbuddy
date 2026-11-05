@@ -1463,6 +1463,16 @@ function syncSessionHeader() {
 function histCanMove(s) {
   return !projectsLocked && projects.length > 1;
 }
+/** 同组织成员登录后才打得开，只能看。复制失败时把链接摆出来，别让人以为成功了 */
+async function shareSessionRow(sid) {
+  const r = await fetch(`/api/session/${encodeURIComponent(sid)}/share`, { method: "POST" }).catch(() => null);
+  const d = r ? await r.json().catch(() => ({})) : {};
+  if (!r || !r.ok || !d.url) return toast(d.error || "分享失败", "circle-x");
+  const link = location.origin + d.url;
+  const copied = await navigator.clipboard?.writeText(link).then(() => true, () => false);
+  if (copied) toast("链接已复制。同组织成员登录后可以查看。", "link");
+  else await askText({ title: "分享链接", hint: "同组织成员登录后可以查看。", value: link, ok: "好的" });
+}
 function histMenuHtml(s, view) {
   if (view === "move") {
     const cur = projectOfSession(s);
@@ -1477,6 +1487,7 @@ function histMenuHtml(s, view) {
     ["unread", "circle-dot", st && st.unseen ? "标为已读" : "标为未读", "U"],
     ["rename", "pencil", "重命名", "R"],
     histCanMove(s) ? ["move", "folder", "移到项目…", "M"] : null,
+    settingsCache?.session_shares ? ["share", "link", "分享给同事", "S"] : null,
     ["del", "trash-2", "删除", "D"],
   ].filter(Boolean).map(([act, icon, label, key]) =>
     `<button type="button" role="menuitem" class="hm-i${act === "del" || act === "stop" ? " danger" : ""}${act === "stop" && histStopping.has(s.id) ? " is-stopping" : ""}" data-act="${act}"${act === "stop" && histStopping.has(s.id) ? ' aria-disabled="true"' : ""}${key ? ` aria-keyshortcuts="${key}"` : ""}>${ic(icon)}<span>${esc(label)}</span>${key ? `<kbd>${key}</kbd>` : ""}</button>`).join("");
@@ -1619,6 +1630,7 @@ function onHistMenuClick(e) {
   else if (act === "pin") togglePin(sid, ".hmore");
   else if (act === "unread") toggleUnread(sid);
   else if (act === "rename") renameSessionRow(sid);
+  else if (act === "share") shareSessionRow(sid);
   else if (act === "to") { if (b.getAttribute("aria-checked") !== "true") moveSessionRow(sid, b.dataset.name); }
   else if (act === "del") deleteSessionRow(sid);
 }

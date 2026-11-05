@@ -71,7 +71,7 @@ function loadGroup(group, all, tools, offered) {
 /**
  * 当前仓库的样子。开工前模型多半要先敲这两条，放进提示词省一轮。
  * 拿不到就不写：不是 git 仓库、git 没装、仓库太大超时都不是问题，这段只是省事的。
- * @param {string} cwd
+ * @param {(args: string[]) => any} run 在仓库里跑 git。必须走沙箱，理由见 tools.js sandboxedGit
  */
 async function gitContext(run) {
   const git = async (/** @type {string[]} */ args) => {

@@ -154,6 +154,8 @@ function readSessions(dir = SESS_DIR) {
 // 原文动辄几百 KB（工具输出、截图描述），体检只要这一小撮；按文件的修改时间和大小缓存，
 // 没改过的文件不再解析。以前打开「自进化」一次要把全部会话解析 6 遍（信号 1 遍 + 每条规则打分各 1 遍），
 // 668 个会话、105MB 时要 2.4 秒，点一下「采纳」又整套重来。
+const CORRECTION = /^\s*(不对|错了|不是这样|不是这个|你理解错|你搞错|重做|重来|没听懂|答非所问|这不是我要的)/;
+
 function digestSession(d, id) {
   const sessAt = Date.parse(d.updated_at || "") || 0;
   const tr = d.transcript || [];
@@ -175,6 +177,11 @@ function digestSession(d, id) {
         const c = classifyEvent(e);
         if (c) hits.push({ c, excerpt: String(e.note || e.message || e.text || "").slice(0, 200) });
       }
+    }
+    // 👍👎 很少有人点，下一句话里的纠正才是最常见的负反馈
+    const next = tr[i + 1];
+    if (next && next.type === "user" && CORRECTION.test(String(next.shown || next.text || ""))) {
+      hits.push({ c: { kind: "user_correction", key: "user_correction", actionable: "prompt", label: "用户下一句就在纠正" }, excerpt: String(next.shown || next.text).slice(0, 200) });
     }
     turns.push({ turn: i, at, task, hits });
   });
@@ -728,5 +735,5 @@ module.exports = {
   activeRules, promptBlock, retireRule,
   gateProposal, listProposals, addProposals, decideProposal,
   proposeEdits, runReview, scoreRules,
-  _internals: { classifyToolError, classifyEvent, ruleDigest, readSessions, sessionDigests, warmDigests, baselineOf, rulesChars, RULES_DIR, DATA_DIR },
+  _internals: { classifyToolError, classifyEvent, digestSession, ruleDigest, readSessions, sessionDigests, warmDigests, baselineOf, rulesChars, RULES_DIR, DATA_DIR },
 };

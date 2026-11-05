@@ -108,7 +108,7 @@ async function renderHubMcp(box) {
   hubState.mcpAdvice = null;
   const adviceBox = !adv || !po ? "" : `
     <div class="hub-desc" style="margin-top:14px;border-left:3px solid var(--owb-warn, #d97706);padding-left:10px">
-      <b>存下了，另外有 ${adv.findings.length + (adv.more || 0)} 处想让你看一眼</b>（toolward 扫描提醒，未拦截）：
+      <b>存下了，另外有 ${adv.findings.length + (adv.more || 0)} 处想让你看一眼</b>（安全检查提醒，未拦截）：
       ${adv.findings.map(f => `<div style="margin-top:4px">· ${esc(f.file)}${f.line ? ":" + f.line : ""} — ${esc(f.why)}</div>`).join("")}
       ${adv.more ? `<div style="margin-top:4px">· …另外 ${adv.more} 处</div>` : ""}
       <div style="margin-top:6px;opacity:.75">Key 和令牌已打码，没交给它。</div>
@@ -4057,7 +4057,7 @@ async function renderMemoryPane(pane) {
   const rows = items.length
     ? items.map(it => `
       <div class="mem-row">
-        <span class="mem-tag">${it.scope === m.shared_tag ? "共享" : esc(it.scope)}</span>
+        <span class="mem-tag">${it.scope === m.shared_tag ? "共享" : esc(it.scope)}</span>${it.project ? `<span class="mem-tag">${esc(it.project)}</span>` : ""}
         <span class="mem-txt">${escInline(it.text)}</span>
         <span class="mem-src">${it.source === "user" ? "手动" : "AI 记的"}</span>
         ${canDel(it) ? `<a href="#" class="link danger" data-del="${esc(it.id)}">删</a>`

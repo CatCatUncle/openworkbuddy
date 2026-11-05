@@ -15,6 +15,9 @@
  *     能去重、能删、能按账号隔离、超量丢最旧的（并且留痕，不闷声吞）。
  *
  * 注入提示词时只给「共享 + 当前这个账号自己的」，别人的记忆不会串过来。
+ *
+ * 条目还能挂在某个项目上（project 字段）：甲客户的术语和口径，不该跟到乙客户的任务里。
+ * 没挂项目的是全局条目，老数据都是这种，到哪都带。
  */
 
 const fs = require("fs");
@@ -269,14 +272,15 @@ function preflight({ text, source = "agent" } = {}) {
   return { ok: true, text: t };
 }
 
-function add({ text, user, shared = false, source = "agent" }) {
+function add({ text, user, shared = false, source = "agent", project = "" }) {
   const pre = preflight({ text, source });
   if (!pre.ok) return pre;
   const t = pre.text;
   const scope = scopeOf(user, shared);
   flushHits(); // 先把攒着的命中写下去，不然下面这次 save 会把它们原样盖掉
   const items = load();
-  const dup = items.find((x) => x.scope === scope && normalize(x.text) === normalize(t));
+  const where = String(project || "").slice(0, 60);
+  const dup = items.find((x) => x.scope === scope && (x.project || "") === where && normalize(x.text) === normalize(t));
   if (dup) return { ok: true, id: dup.id, note: "已经记过一模一样的了，没有重复写入" };
   // 不一样但很像的：多半是同一件事的新说法（用户改口了）。**不自动替换**——实测词面相似度分不清
   // 「改口」和「两件相关但不同的事」（真实数据里两种都落在 0.4~0.5），机器判不了，但调用这个工具的模型判得了。
@@ -284,7 +288,7 @@ function add({ text, user, shared = false, source = "agent" }) {
   const near = mostSimilar(t, items.filter((x) => x.scope === scope));
 
   const id = "m_" + Date.now().toString(36) + "_" + Math.floor(Math.random() * 1e6).toString(36);
-  items.push({ id, text: t, scope, source, created_at: new Date().toISOString() });
+  items.push({ id, text: t, scope, source, ...(where ? { project: where } : {}), created_at: new Date().toISOString() });
 
   // 超量了丢谁：按 keepScore 从低往高丢，不是按记入先后。
   // 丢东西必须留痕：日志里写清楚丢了哪条、为什么是它，回执里也告诉 agent。
@@ -497,12 +501,12 @@ function saveManual(content) {
 const RULE_RE = /(不要|不许|不准|不得|不能|禁止|一律|必须|绝不|永远|从不|勿|别再|别用|别帮|别替|别自|别在|别把|别往|别给|每次都|任何时候|never|always|don'?t|do not|must|should not|shouldn'?t)/i;
 function isRule(text) { return RULE_RE.test(String(text || "")); }
 
-async function promptBlock(user, hint) {
+async function promptBlock(user, hint, project = "") {
   let md = manual();
-  const all = list(user);
+  const all = list(user).filter((x) => !x.project || x.project === project);
   if (!md && !all.length) return "";
   const { kept: items, shadowed } = dedupeForPrompt(all);
-  const line = (x) => `- ${x.text}${x.scope === SHARED && user ? "（共享）" : ""}`;
+  const line = (x) => `- ${x.text}${x.project ? "（本项目）" : x.scope === SHARED && user ? "（共享）" : ""}`;
 
   let body = "";
   if (md) body += `${md}\n`;

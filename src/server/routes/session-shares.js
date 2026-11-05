@@ -9,7 +9,7 @@ function createSessionSharesRouter({ store, multiUser, sessionOf, ownerOf, orgOf
   const headers = (_req, res, next) => { res.set({ "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff" }); next(); };
   app.use(["/api/session/:id/share", "/api/session-shares"], headers);
   app.use(["/api/session/:id/share", "/api/session-shares"], (_req, res, next) => {
-    if (!enabled) return res.status(404).json({ error: "对话分享暂未开放", disabled: true });
+    if (!(typeof enabled === "function" ? enabled() : enabled)) return res.status(404).json({ error: "对话分享暂未开放", disabled: true });
     next();
   });
   const own = (req, res) => {

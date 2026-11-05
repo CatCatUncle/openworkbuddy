@@ -876,8 +876,8 @@ html[data-theme="dark"] .ui-select {
 .code-files small { display: block; margin-top: 1px; color: var(--owb-text-3); }
 .code-files p { padding: 6px 8px; color: var(--owb-text-3); font-size: 12px; }
 .code-file-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cd-n-add { color: #1a7f37; font-style: normal; }
-.cd-n-del { color: #cf222e; font-style: normal; }
+.cd-n-add { color: var(--owb-ok-text); font-style: normal; }
+.cd-n-del { color: var(--owb-err-text); font-style: normal; }
 .code-diff { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .code-diff-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 42px; padding: 6px 12px; border-bottom: 1px solid var(--owb-border); }
 .code-diff-head b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
@@ -906,7 +906,7 @@ html[data-theme="dark"] .ui-select {
 .canvas-palette-row button { display: grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--owb-text-3); cursor: pointer; }
 .canvas-palette-row button:hover { color: var(--owb-err-text); }
 .canvas-palette-empty { padding: 14px 8px; color: var(--owb-text-3); text-align: center; }
-.canvas-grid-icon { display: grid; grid-template-columns: repeat(var(--cols), 1fr); grid-template-rows: repeat(var(--rows), 1fr); gap: 1px; width: 16px; height: 16px; }
+.canvas-grid-icon { --rows: 1; --cols: 1; display: grid; grid-template-columns: repeat(var(--cols), 1fr); grid-template-rows: repeat(var(--rows), 1fr); gap: 1px; width: 16px; height: 16px; }
 .canvas-grid-icon i { background: var(--owb-text-3); }
 .canvas-context-menu { position: fixed; z-index: 4000; display: grid; min-width: 188px; padding: 6px; border: 1px solid var(--owb-border); border-radius: var(--radius-lg); background: color-mix(in srgb, var(--owb-bg) 98%, transparent); box-shadow: var(--shadow-menu); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
 .canvas-context-menu button { display: grid; grid-template-columns: 20px 1fr; align-items: center; gap: 8px; min-height: 34px; padding: 6px 9px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--owb-text); text-align: left; cursor: pointer; font: inherit; font-size: 12px; }
