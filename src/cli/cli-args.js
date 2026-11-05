@@ -56,6 +56,7 @@ const FLAGS = [
   { long: "list", type: "optnum", key: "list", arg: "[n]", fallback: 10, desc: "列出最近 n 个 CLI 会话（默认 10）" },
   { long: "model", type: "str", key: "model", arg: "<名字>", desc: "这一次用哪个模型（配置里 models 的名字或 id；不改配置）" },
   { long: "max-steps", type: "num", key: "maxSteps", arg: "<n>", max: 500, desc: "这一次最多走几步（默认按配置，上限 500）" },
+  { long: "profile", type: "str", key: "profile", arg: "<code|office>", desc: "这一次按写代码还是办公跑；不写就看目录，代码仓库里按写代码" },
   { long: "append-system", type: "str", key: "appendSystem", arg: "<文字>", desc: "给这一次追加一段规矩，比如「只用 TypeScript」" },
   { long: "json", type: "bool", key: "json", value: true, desc: "事件按 NDJSON 输出到 stdout，给脚本用" },
   { long: "quiet", short: "q", type: "bool", key: "quiet", value: true, desc: "只输出最终答案，不打进度" },

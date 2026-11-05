@@ -18,6 +18,7 @@ const path = require("path");
 const { AsyncLocalStorage } = require("async_hooks");
 const security = require("../core/safety/security");
 const mediaModels = require("../core/model/media-models"); // 图/视频/语音/视觉的多模型选择（同一把 Key 配多个型号）
+const voiceApis = require("./voice-apis"); // 豆包语音、自定义 HTTP 的配音和转写
 const genCache = require("../domains/media/gen-cache"); // 生图/生视频/配音的内容寻址缓存：同一格重跑不再烧第二次钱
 const quota = require("../core/billing/quota"); // 按次计费的第三方 API：调之前问一句额度，调完记一笔
 const winname = require("../util/winname"); // Windows 不认的文件名（保留名、控制字符）
@@ -1254,7 +1255,19 @@ async function textToSpeech(media, input, timeoutMs, saveDir, stop) {
   const headers = { "Content-Type": "application/json", Authorization: `Bearer ${mediaKey(cfg)}` };
   const signal = anySignal(stop, AbortSignal.timeout(Math.max(timeoutMs || 0, 300000)));
   let fname;
-  if (ttsApiOf(cfg) === "dashscope") {
+  const api = ttsApiOf(cfg);
+  if (api === "volc" || api === "http") {
+    // 豆包语音、自定义 HTTP：见 voice-apis.js。两边都回 Buffer，落盘这段共用
+    fname = safeOutName(input.filename, ttsExtOf(cfg), "speech");
+    const got = api === "volc"
+      ? await voiceApis.volcTts({ base, key: mediaKey(cfg), model: cfg.model, text, voice, speed: input.speed, signal })
+      : await voiceApis.httpTts({ template: (cfg.http_api || {}).tts, key: mediaKey(cfg), model: cfg.model, text, voice, speed: input.speed, signal });
+    if (got.error) return { content: `语音接口错误${got.status ? " " + got.status : ""}: ${got.error}`, isError: true, retryable: !!got.status && got.status >= 500 };
+    if (!got.audio || got.audio.length < 200) return { content: "语音接口返回的音频为空", isError: true };
+    if (stop && stop.aborted) throw stoppedError("音频没有落盘。");
+    ensureDirs();
+    fs.writeFileSync(path.join(saveDir || ws(), fname), got.audio);
+  } else if (api === "dashscope") {
     // DashScope 原生（qwen-tts / qwen3-tts-flash 系）：multimodal-generation，返回音频 URL（wav）
     fname = safeOutName(input.filename, ttsExtOf(cfg), "speech");
     const r = await fetch(`${base}/services/aigc/multimodal-generation/generation`, {
@@ -1327,6 +1340,8 @@ async function transcribeAudio(media, input, timeoutMs, resolveFile, saveDir, st
   if (st.isDirectory()) return { content: `${rel} 是个目录，不是音频文件。`, isError: true };
   if (!AUDIO_EXT.test(p)) return { content: `${rel} 不是音频 / 视频（支持 mp3 / m4a / wav / webm / mp4 / flac / ogg / aac / amr）。文本文件用 read_file。`, isError: true };
   if (st.size < 200) return { content: `${rel} 只有 ${st.size} 字节，不像是一段能转写的音频。`, isError: true };
+  const asrApi = mediaModels.mediaApiOf("asr", cfg).api;
+  if (asrApi === "volc" || asrApi === "http") return await transcribeVia(asrApi, cfg, input, p, rel, st, saveDir, stop, timeoutMs);
   if (st.size > ASR_MAX_BYTES) {
     return {
       content: `${path.basename(p)} 有 ${(st.size / 1048576).toFixed(1)}MB，超过接口 25MB 的上限，没有发出去。\n`
@@ -1372,6 +1387,32 @@ async function transcribeAudio(media, input, timeoutMs, resolveFile, saveDir, st
   if (!text) return { content: "转写接口没有返回文字（可能整段是静音，也可能这个模型不吃这种格式）：" + JSON.stringify(j).slice(0, 300), isError: true };
   if (stop && stop.aborted) throw stoppedError("转写稿没有落盘。");
 
+  return saveTranscript({ text, segs: Array.isArray(j.segments) ? j.segments.filter((x) => x && typeof x.text === "string") : [], wantSeg, cfg, input, p, rel, st, saveDir });
+}
+
+/** 豆包语音、自定义 HTTP 这两条转写：发请求在 voice-apis.js，落盘跟 OpenAI 那条共用 */
+async function transcribeVia(api, cfg, input, p, rel, st, saveDir, stop, timeoutMs) {
+  const base = String(cfg.base_url).trim().replace(/\/+$/, "");
+  const budget = Math.max(timeoutMs || 0, 180000 + Math.round(st.size / 1048576) * 20000);
+  const signal = anySignal(stop, AbortSignal.timeout(budget));
+  const buf = fs.readFileSync(p);
+  const name = path.basename(p);
+  let got;
+  try {
+    got = api === "volc"
+      ? await voiceApis.volcAsr({ base, key: mediaKey(cfg), model: cfg.model, buf, name, signal })
+      : await voiceApis.httpAsr({ template: (cfg.http_api || {}).asr, key: mediaKey(cfg), model: cfg.model, buf, name, language: String(input.language || ""), signal });
+  } catch (e) {
+    if (stop && stop.aborted) throw stoppedError();
+    return { content: `转写请求失败：${e.message}（文件 ${(st.size / 1048576).toFixed(1)}MB，等了 ${Math.round(budget / 1000)} 秒）`, isError: true };
+  }
+  if (got.error) return { content: got.error, isError: true };
+  if (!got.text) return { content: "转写接口没有返回文字（可能整段是静音）。", isError: true };
+  if (stop && stop.aborted) throw stoppedError("转写稿没有落盘。");
+  return saveTranscript({ text: got.text, segs: got.segments || [], wantSeg: !!input.with_timestamps, cfg, input, p, rel, st, saveDir });
+}
+
+function saveTranscript({ text, segs, wantSeg, cfg, input, p, rel, st, saveDir }) {
   ensureDirs();
   const stem = path.basename(p).replace(/\.[^.]+$/, "");
   const fname = safeOutName(input.filename, ".txt", stem);
@@ -1379,8 +1420,7 @@ async function transcribeAudio(media, input, timeoutMs, resolveFile, saveDir, st
   fs.writeFileSync(path.join(dir, fname), text);
   const saved = [savedAt(saveDir, fname)];
 
-  // 分段只有 verbose_json 才有。要了却没给（模型不支持）就照实说一句，别让用户以为字幕已经出好了
-  const segs = Array.isArray(j.segments) ? j.segments.filter((x) => x && typeof x.text === "string") : [];
+  // 分段不是每个接口都给。要了却没给（模型不支持）就照实说一句，别让用户以为字幕已经出好了
   let srtNote = "";
   if (wantSeg && segs.length) {
     const srtName = fname.replace(/\.txt$/i, "") + ".srt"; // 跟转写稿同名，两个文件在产出列表里挨着

@@ -124,6 +124,11 @@ const STUB = `
       ws: [{ name: "周报.md", size: 900, mtime: Date.now(), lines: [] }],
       notes: [], tasks: [],
     });
+    // 本地产物改从后台索引取，不能落进下面参考资料的通用响应。
+    if (s.includes("/api/library/all?") && s.includes("from=ws") && s.includes("limit=500")) {
+      const items = window.__bare ? [] : [{ src: "ws", path: "周报.md", size: 900, mtime: Date.now() }];
+      return J({ items, total: items.length, ws_total: items.length });
+    }
     if (s.includes("/api/library")) return J({
       // 真服务端把**请求里那一层**原样回声回来（server.js 的 /api/library 是 libRel(req.query.dir)），
       // 不是回声一个服务端自己认定的「当前层」。这儿照着来，否则前端改 libState.dir 的那些代码

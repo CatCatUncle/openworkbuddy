@@ -16,6 +16,9 @@ const { createLLM } = require("../src/core/model/llm");
 const { mapPool } = require("../src/agent/agent");
 const store = require("../src/platform/store");
 const { TASKS } = require("./tasks");
+const customSets = require("./custom-sets");
+/** 这一轮跑的是哪份题：用户评测集的轮次按它自己的题重判 */
+const tasksOf = (j) => { const set = j.set ? customSets.load(j.set) : null; return set ? customSets.toTasks(set) : TASKS; };
 const judgeLib = require("./judge");
 
 const argv = process.argv.slice(2);
@@ -46,7 +49,7 @@ async function main() {
   const wsDir = path.join(runDir, "workspace");
   const results = j.results || [];
   await mapPool(results, 2, async (res) => {
-    const task = TASKS.find((t) => t.id === res.id);
+    const task = tasksOf(j).find((t) => t.id === res.id);
     if (!task) { console.log(`   · ${res.id} 题库里已经没有这题，跳过`); return; }
     res.judge = await judgeLib.judgeOne(judgeLLM, task, res, path.join(wsDir, res.id), { system: jp.system, commonDims: jp.common_dims, turnsOf });
     console.log(res.judge && res.judge.dims ? `   ◆ ${res.id} → ${res.judge.passed}/${res.judge.total} 维达标${res.judge.unsure ? ` · ${res.judge.unsure} 条拿不准` : ""}` : `   ◆ ${res.id} → 失败：${(res.judge && res.judge.error) || "?"}`);

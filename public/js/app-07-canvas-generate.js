@@ -537,6 +537,7 @@ function canvasRegisterTask(sessionId, text) {
 function canvasTurnStart(sessionId, message, mode, shown) {
   if (typeof createTurnUI !== "function" || typeof runningSessions === "undefined") return null;
   const ui = createTurnUI(message, mode, sessionId, shown);
+  ui.liveNow?.();
   const rc = typeof makeRecCounter === "function" ? makeRecCounter() : { feed() {} };
   runningSessions.set(sessionId, { ui });
   if (typeof updateSendUI === "function") updateSendUI();

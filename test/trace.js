@@ -673,7 +673,8 @@ async function main() {
         .runTask({ history: [{ role: "user", content: "写一份周报" }], emit: (ev) => events.push(ev), taskLabel: "写一份周报", sessionId: "s1" });
       await wait(200);
       eq(lf.hits.length, 0, "反向对照：追踪关着跑完整趟任务，网络请求 0 次", lf.hits.length);
-      eq(events.filter((e) => e.type === "trace").length, 0, "  └ 也不会给前端发 trace 事件（界面上不会多出一个点不开的链接）");
+      eq(events.filter((e) => e.type === "trace" && e.url).length, 0, "  └ 也不会给前端发 trace 地址（界面上不会多出一个点不开的链接）");
+      ok(events.some((e) => e.type === "trace" && e.id), "  └ 本地账本的编号照发：回复下面的「执行过程」靠它定位");
       ok(events.some((e) => e.type === "tool_result"), "  └ 但任务本身照跑（工具结果都在）");
     }
 

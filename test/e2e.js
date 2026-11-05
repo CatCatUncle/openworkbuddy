@@ -14858,7 +14858,7 @@ function testI18n() {
   assert(/const \{ sessionId, message, mode, regen, lang, lane(, shown)?(, adopt_uploads)? \} = req\.body/.test(srv) && /lang: lang === "en" \? "en" : "zh",/.test(srv), "服务端 /api/chat 没把 lang 传给 runTask");
   // 3.3 起 system 拆成稳定段 + 易变段：langBlock 跟着模式留在稳定段末尾，projBlock 挪进易变段。
   // 钉代码行（const stableSystem = …），不钉 agent.js 里那句讲历史的注释
-  assert(/function langBlock\(lang\)/.test(ag) && /\n\s*const stableSystem = [^\n]*\+ langBlock\(lang\) \+ modePrompt\(mode\);/.test(ag)
+  assert(/function langBlock\(lang\)/.test(ag) && /\n\s*const stableSystem = [^\n]*\+ langBlock\(lang\) \+ \(coding \? codeProfile\.modeBlock\(mode\) : modePrompt\(mode\)\);/.test(ag)
     && /\n\s*const system = stableSystem \+ \(await volatileSystemBlock\(\{[^}]*projBlock/.test(ag), "agent 系统提示词没拼 langBlock");
   assert(/if \(extra\.lang\) parts\.push\(langBlock\(extra\.lang\)\)/.test(ag) && /\{ projectContext, history, lang(, [^}\n]*)? \}/.test(ag), "本机引擎（claude/codex）的系统提示词没接 lang");
   // 三处子任务：专家、专家团、explore（只读探索）。少一处，英文界面下那个子任务就回中文了

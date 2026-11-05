@@ -1170,6 +1170,7 @@ html[data-theme="dark"] .ui-select {
 .tp-step > summary::-webkit-details-marker { display: none; }
 .tp-step > summary:hover { background: var(--owb-bg-hover); border-radius: var(--radius-lg); }
 .tp-no { color: var(--owb-text-3); font: 12px/1 var(--mono); text-align: right; }
+.tp-goto { display: inline-flex; align-items: center; gap: 4px; margin-bottom: 8px; font-size: 12px; }
 .tp-kind { padding: 2px 8px; border-radius: var(--radius-full); font-size: 11px; white-space: nowrap; }
 .tp-kind.is-tool { background: var(--owb-bg-side); color: var(--owb-text-2); }
 .tp-kind.is-model { background: var(--owb-brand-weak); color: var(--owb-brand-text); }

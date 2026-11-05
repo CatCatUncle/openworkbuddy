@@ -166,12 +166,12 @@ function evTaskCard(r, dir) {
     const jIcon = !jv ? `<span class="ev-jv none" title="评委没判">—</span>` : `<span class="ev-jv${jv.pass ? "" : " is-bad"}" title="评委：${jv.pass ? "达标" : "不达标"}${jv.sure === false ? "（拿不准）" : ""}">${ic(jv.pass ? "check" : "x")}${jv.sure === false ? ic("circle-help") : ""}</span>`;
     return `<div class="ev-dimrow${clash ? " is-clash" : ""}">
       ${jIcon}
-      <span class="q">${d.common ? `<span class="ev-tag">通用</span>` : ""}${esc(d.q)}${jv && jv.note ? `<em> — ${esc(jv.note)}</em>` : ""}</span>
+      <span class="q">${d.common ? `<span class="ev-tag">通用</span>` : ""}${evWeightTag((r.criteria || [])[i])}${esc(d.q)}${jv && jv.note ? `<em> — ${esc(jv.note)}</em>` : ""}</span>
       <span class="ev-hv" role="group" aria-label="人工判定"><button class="${hv === true ? "on" : ""}" data-act="dim" data-task="${esc(r.id)}" data-i="${i}" data-v="1" title="我看是达标的">${ic("check")}</button><button class="${hv === false ? "on bad" : ""}" data-act="dim" data-task="${esc(r.id)}" data-i="${i}" data-v="0" title="我看不达标">${ic("x")}</button></span>
     </div>`;
   }).join("");
   const judgeHead = r.judge && r.judge.dims
-    ? `评委 ${r.judge.passed}/${r.judge.total} 达标`
+    ? `评委 ${r.judge.passed}/${r.judge.total} 达标${evWeighted("评委", r.judge.weighted)}${evWeighted("人工", r.human && r.human.weighted)}`
     : r.judge && r.judge.score ? `旧版评委 ${r.judge.score}/5 — ${esc(r.judge.verdict || "")}`
       : r.judge && r.judge.error ? `评委没跑成：${esc(r.judge.error)}` : "没请评委，可以自己逐条标";
   const hs = (r.human && r.human.score) || 0;
@@ -202,6 +202,18 @@ function evTaskCard(r, dir) {
       ${r.final_text ? `<details class="ev-final"><summary>最终回复</summary><pre>${esc(String(r.final_text).slice(0, 3000))}</pre></details>` : ""}
     </div>
   </div>`;
+}
+
+/** 带权重的标准：必须项和扣分项要一眼看得出，标的时候才知道这条的分量 */
+function evWeightTag(c) {
+  if (!c) return "";
+  // 扣分项的问句是「是否出现这个毛病」：✓ 表示有毛病，跟别的条目方向相反，得写在眼前
+  if (c.weight < 0) return `<span class="ev-tag" title="这条是毛病：选 ✓ 表示出现了，会扣分">扣 ${-c.weight} 分 · ✓ 表示有</span>`;
+  return `<span class="ev-tag">${c.must ? "必须" : "+" + c.weight}</span>`;
+}
+function evWeighted(who, w) {
+  if (!w) return "";
+  return ` · ${who}按标准得分 ${w.pct}%${w.gate_failed ? "（必须项没过）" : ""}`;
 }
 
 const EV_FILTERS = [["all", "全部"], ["todo", "待人工"], ["clash", "人机分歧"], ["unsure", "评委拿不准"], ["fail", "机器没过"]];
@@ -664,13 +676,55 @@ function libCollectionHtml(data, more) {
     ${more === "all" ? pages : more ? libMoreHtml(more, total - items.length) : ""}`;
 }
 
-async function renderLibPage() {
+/**
+ * 资料库的「点一下就有反应」。
+ *
+ * 2026-11 实测两万文件：点页签要等 200~750ms 才有任何变化，返回的数据才几十 KB。两处白等：
+ * 所有视图都发同一批请求（「最近」用不着工作区清单，「收藏」用不着任务索引），
+ * 而且一批全回来之前界面一动不动，人只能再点一下。
+ *
+ * 现在：① 按视图只要它画得出来所需的那几样；② 点下去当场换选中态、列表压暗；
+ * ③ 这个视图看过的话先拿上次的数据画出来，后台取新的，真变了才重画。
+ * 只有导航（切页签、切类型、进文件夹）走③——上传、删除之后的重画一律等新数据，不把刚删的东西再画回来。
+ */
+const LIB_VIEW_CACHE_MAX = 24;
+const libViewCache = new Map(); // 视图键 -> { data, json, at }
+function libViewKey(q) {
+  return JSON.stringify([libState.view, libState.dir || "", libState.wsDir || "", libState.kind || "all", libState.from, libState.allN, libState.allOff, libState.wsOff, libState.orphanN, q || ""]);
+}
+function libViewRemember(key, data) {
+  // ws 是挂着总数的数组，那两个字段 JSON 看不见：不带上的话总数变了也判成「没变」，不重画
+  const ws = data[1] || {};
+  const json = JSON.stringify([data, ws.wsTotal, ws.wsCapped]);
+  libViewCache.delete(key);
+  libViewCache.set(key, { data, json, at: Date.now() });
+  while (libViewCache.size > LIB_VIEW_CACHE_MAX) libViewCache.delete(libViewCache.keys().next().value);
+  return json;
+}
+/** 选中态先换、列表先压暗：不等网络。真画出来的时候这些节点整个被换掉，不用收尾 */
+function libMarkPending(page) {
+  const folderView = ["dir", "task", "ws"].includes(libState.view);
+  page.querySelectorAll(".lib-tab[data-view]").forEach((b) => {
+    const on = b.dataset.view === libState.view;
+    b.classList.toggle("on", on); b.setAttribute("aria-selected", String(on));
+  });
+  const folderTab = page.querySelector(".lib-tab[data-folder]");
+  if (folderTab) { folderTab.classList.toggle("on", folderView); folderTab.setAttribute("aria-selected", String(folderView)); }
+  const main = page.querySelector(".lib-main");
+  if (main) main.setAttribute("aria-busy", "true");
+}
+/** 切页签、切类型、进文件夹：能先画就先画 */
+function libNav() { return renderLibPage({ nav: true }); }
+
+async function renderLibPage(opts) {
   const page = document.getElementById("assist-page");
   if (!page) return;
+  const o = opts || {};
   const request = page._libRequest = (page._libRequest || 0) + 1;
   const initialContent = page.firstElementChild;
   clearTimeout(page._t);
   if (page.querySelector("#lb-q")?._composing) return;
+  libMarkPending(page);
   if (!settingsCache) await refreshSettingsCache().catch(() => {});
   if (request !== page._libRequest || !page.isConnected || page.firstElementChild !== initialContent) return;
   // 资料库一人一份（server.js 的 libraryRootOf），所以这一页不再分两副面孔。
@@ -703,16 +757,23 @@ async function renderLibPage() {
   let recents = [];
   try { const saved = JSON.parse(localStorage.getItem(libRecentKey()) || "[]"); if (Array.isArray(saved)) recents = saved.filter((f) => f && ["lib", "ws"].includes(f.src) && typeof f.name === "string").slice(0, 8); } catch {}
   const collectionQuery = new URLSearchParams({ kind: libState.view === "img" ? "img" : libState.kind || "all", from: libState.from, limit: String(libState.allN), offset: String(libState.allOff) });
-  const [lib, ws, out, found, tree, collection, favorites, recentStats] = await Promise.all([
+  const viewKey = libViewKey(q);
+  // 工作区最近动过的那一段只有「文件夹 · 我的资料」要摆，走已经在后台算好的清单，不再单独走一遍树
+  const wantRecentWs = libState.view === "dir" && !q;
+  const wantOutNow = libState.view === "task" && !q;
+  const loadView = () => Promise.all([
     fetch("/api/library?dir=" + encodeURIComponent(libState.dir || "")).then(r => r.json()).catch(() => ({ files: [], notes: [] })),
-    fetch("/api/files").then(r => r.json()).catch(() => []),
-    fetch("/api/library/outputs" + (libState.view === "task" && !q ? "?orphan_limit=" + LIB_ORPHAN_ALL : "")).then(r => r.json()).catch(() => ({ error: "读不到任务产出" })),
+    wantRecentWs ? fetch("/api/library/all?" + new URLSearchParams({ from: "ws", kind: libState.kind || "all", limit: "500" })).then(r => r.json()).then((j) => Object.assign((j.items || []).map((f) => ({ ...f, name: f.path })), { wsTotal: j.ws_total, wsCapped: !!j.ws_capped })).catch(() => []) : Promise.resolve([]),
+    wantOutNow ? fetch("/api/library/outputs?orphan_limit=" + LIB_ORPHAN_ALL).then(r => r.json()).catch(() => ({ error: "读不到任务产出" })) : Promise.resolve(libOutCache),
     q ? fetch("/api/library/search?q=" + encodeURIComponent(q)).then(r => r.json()).catch(() => ({ error: "搜不动了" })) : Promise.resolve(null),
     wantTree ? libTreeOf(libState.wsDir, libState.wsOff) : Promise.resolve(null),
     collectionView && !q ? fetch("/api/library/all?" + collectionQuery).then(r => r.json()).catch(() => ({ error: "文件列表读取失败" })) : Promise.resolve(null),
     libState.view === "fav" && !q ? fetch("/api/library/favorites").then(r => r.json()).catch(() => ({ error: "收藏读取失败" })) : Promise.resolve(null),
     libState.view === "rec" && !q && recents.length ? fetch("/api/library/stat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ items: recents.map((f, i) => ({ id: String(i), src: f.src, path: f.name })) }) }).then(r => r.json()).catch(() => null) : Promise.resolve(null),
   ]);
+  const cached = o.data ? null : o.nav ? libViewCache.get(viewKey) : null;
+  const viewData = o.data || (cached ? cached.data : await loadView());
+  const [lib, ws, out, found, tree, collection, favorites, recentStats] = viewData;
   // 输入已变、开始组词或已切换页面时，旧请求不能覆盖当前结果和输入状态。
   if (request !== page._libRequest || !page.isConnected || page.firstElementChild !== initialContent
     || page.querySelector("#lb-q")?._composing || libState.q !== queryValue) return;
@@ -725,6 +786,21 @@ async function renderLibPage() {
   // 接口回的是 { error } 而不是资料清单时别装作「还没有参考资料」——那是句瞎话，
   // 用户会当成自己没传过东西，而真相是这一趟根本没读成
   if (out && out.tasks) libOutCache = out;
+  const viewJson = cached ? cached.json : libViewRemember(viewKey, viewData);
+  // 「出自哪次任务」的反查和「全部 N 个」要任务索引，但不值得让列表等它：列表先出来，索引到了补一次
+  if (!wantOutNow && !q && !libOutCache && !page._libOutLoading) {
+    page._libOutLoading = true;
+    fetch("/api/library/outputs").then(r => r.json()).then((j) => {
+      page._libOutLoading = false;
+      if (j && j.tasks) { libOutCache = j; if (page._libRequest === request && page.isConnected) { libViewCache.delete(viewKey); renderLibPage(); } }
+    }).catch(() => { page._libOutLoading = false; });
+  }
+  if (cached) {
+    loadView().then((fresh) => {
+      if (page._libRequest !== request || !page.isConnected || page.querySelector("#lb-q")?._composing) return;
+      if (libViewRemember(viewKey, fresh) !== viewJson) renderLibPage({ data: fresh });
+    }).catch(() => {});
+  }
 
   const libRow = (src, f, o) => libRowHtml(src, f, { q, ...(o || {}) });
   const groupedRows = (files, src, mk) => libGroupedHtml(files, (f, order) => libRow(src, f, { ...(mk ? mk(f) : {}), order }));
@@ -749,7 +825,8 @@ async function renderLibPage() {
   const wsFiles = wsKind.slice(0, 120);
   // 工作区一共多少个文件，服务端全量数出来的。下面那段只是最近动过的一截，
   // 不说清楚的话，人会把这一百来个当成全部——「资料库没有显示我这个工作区下面的所有文件」就是这么来的
-  const wsTotal = out && typeof out.ws_total === "number" ? out.ws_total : null;
+  const wsTotal = typeof ws.wsTotal === "number" ? ws.wsTotal : out && typeof out.ws_total === "number" ? out.ws_total : null;
+  const wsCapped = typeof ws.wsTotal === "number" ? ws.wsCapped : !!(out && out.ws_capped);
   // 截没截，拿没筛过的那份跟全量比：wsTotal 不分类型，筛成「图片」后 5 张全在，也不该说成「最近动过的 5 个」
   const wsPartial = wsTotal === null || wsTotal > ws.length || wsKind.length > wsFiles.length;
   let body = "";
@@ -780,7 +857,7 @@ async function renderLibPage() {
       : ((lib.dirs || []).length ? "" : `<div class="lib-none">${libState.dir ? "这个文件夹还是空的" : libEmptyWhy()}</div>`)}
     <div class="sec lib-sec">
       <span class="lib-sec-l">本地产物<span class="n">${wsFiles.length}</span><em>${!wsPartial ? "当前项目的工作目录 · 任务自己写出来的" : `最近动过的 ${wsFiles.length} 个 · 任务自己写出来的`}</em></span>
-      ${wsTotal ? `<span class="lib-sec-acts"><a href="#" class="link" data-goto-ws title="在「工作区」里一层层点进去看">全部 ${wsTotal}${out.ws_capped ? "+" : ""} 个${ic("arrow-right")}</a></span>` : ""}
+      ${wsTotal ? `<span class="lib-sec-acts"><a href="#" class="link" data-goto-ws title="在「工作区」里一层层点进去看">全部 ${wsTotal}${wsCapped ? "+" : ""} 个${ic("arrow-right")}</a></span>` : ""}
     </div>
     ${wsFiles.length ? groupedRows(wsFiles, "ws", (f) => ({ delOut: f.name })) : '<div class="lib-none">工作目录还没有成果文件</div>'}`;
 
@@ -883,26 +960,26 @@ async function renderLibPage() {
     // 换了视图，「再显示」攒下来的条数归位：回来时又是一上来铺满几千行，那一下卡顿没人想要
     libState.wsN = LIB_CHUNK; libState.orphanN = LIB_CHUNK; libState.wsOff = 0;
     try { localStorage.setItem("owb_lib_view", libState.view); localStorage.setItem("owb_lib_fold", libState.fold); } catch {}
-    renderLibPage();
+    libNav();
   });
   const folderTab = page.querySelector("[data-folder]");
   if (folderTab) folderTab.onclick = () => {
     libState.view = libState.fold; libState.pick = null;
     try { localStorage.setItem("owb_lib_view", libState.view); } catch {}
-    renderLibPage();
+    libNav();
   };
   const source = page.querySelector("#lb-from");
   if (source) source.onchange = () => {
     libState.from = source.value; libState.allN = LIB_CHUNK; libState.favN = LIB_CHUNK; libState.allOff = 0; libState.pick = null;
     try { localStorage.setItem("owb_lib_from", libState.from); } catch {}
-    renderLibPage();
+    libNav();
   };
   const nb = page.querySelector('.lib-tab[data-src="notes"]');
   if (nb) nb.onclick = () => { libState.pick = { src: "notes", name: "" }; renderLibPage(); };
   page.querySelectorAll(".lib-kind").forEach(b => b.onclick = () => {
     libState.kind = b.dataset.kind; libState.allN = LIB_CHUNK; libState.favN = LIB_CHUNK; libState.allOff = 0;
     if (libState.view === "img" && libState.kind !== "img") libState.view = "all";
-    renderLibPage();
+    libNav();
   });
   // 摆法和分组都记到本地：这一页每个人的用法差很远——有人一直用列表找文档，有人一直用画廊过图
   page.querySelectorAll(".lib-md").forEach(b => b.onclick = () => {
@@ -952,7 +1029,7 @@ async function renderLibPage() {
     libState.dir = el.dataset.dir || "";
     libState.pick = null;
     libState.view = "dir";
-    renderLibPage();
+    libNav();
   });
   // 工作区：进一层 / 从面包屑退回去。跟上面同一个道理，换层就把右边的预览清掉
   page.querySelectorAll("[data-wsdir]").forEach(el => el.onclick = (e) => {
@@ -962,7 +1039,7 @@ async function renderLibPage() {
     libState.wsOff = 0;
     libState.pick = null;
     libState.view = "ws";
-    renderLibPage();
+    libNav();
   });
   // 文件夹行是 div：鼠标点得进去，Tab 却不停、Enter 不理，纯键盘的人一层都下不去。
   // 补上 Tab 停得住、Enter/空格等于点（面包屑本来就是 <a>）。不进方向键那条：

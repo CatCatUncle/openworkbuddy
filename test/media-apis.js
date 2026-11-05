@@ -174,8 +174,8 @@ function dsMedia(ns, model, extra) {
 function pureChecks() {
   section("【一】三路接口表、判断顺序：渠道上选的 > 模型条目的 protocol > 渠道类型 > 地址 > 默认");
   const ids = (cap) => mm.MEDIA_APIS[cap].map((f) => f.id).join(",");
-  ok(ids("image") === "openai,dashscope-sync,dashscope-async" && ids("video") === mm.VIDEO_PROTOS.join(",") && ids("tts") === "openai,dashscope",
-    "可选项只有已经接好的协议：生图三种、视频五家（跟 VIDEO_PROTOS 一字不差）、配音两种", [ids("image"), ids("video"), ids("tts")]);
+  ok(ids("image") === "openai,dashscope-sync,dashscope-async" && ids("video") === mm.VIDEO_PROTOS.join(",") && ids("tts") === "openai,dashscope,volc,http",
+    "可选项只有已经接好的协议：生图三种、视频五家（跟 VIDEO_PROTOS 一字不差）、配音四种", [ids("image"), ids("video"), ids("tts")]);
 
   const of = (cap, c) => mm.mediaApiOf(cap, c);
   const ds = { kind: "dashscope", base_url: "https://dashscope.aliyuncs.com/api/v1" };
@@ -458,7 +458,7 @@ async function imageWays(saveDir) {
 
 // ── 四、表单与文案 ──────────────────────────────────────
 async function formAndCopy() {
-  section("【四】表单：「自动」那一项说的走法跟服务端同一套；对话专用渠道藏起来；保存带上三个值");
+  section("【四】表单：「自动」那一项说的走法跟服务端同一套；对话专用渠道藏起来；保存带上四个值");
   const app05 = fs.readFileSync(path.join(ROOT, "public", "js", "app-05.js"), "utf8");
   const head = app05.indexOf("function mmAutoApi(");
   ok(head >= 0, "app-05.js 里有 mmAutoApi");
@@ -474,20 +474,20 @@ async function formAndCopy() {
     "https://gw.mycorp.com/ark/api/v3", "https://open.bigmodel.cn/api/paas/v4", "https://api.minimaxi.com/v1", "https://api.siliconflow.cn/v1", "https://relay.example.com/v1"];
   const kinds = mm.PROVIDER_KINDS.filter((k) => !k.chat_only && !k.decide_only).map((k) => k.kind);
   const bad = [];
-  for (const cap of ["image", "video", "tts"]) for (const kind of kinds) for (const base of bases) {
+  for (const cap of ["image", "video", "tts", "asr"]) for (const kind of kinds) for (const base of bases) {
     const w = mm.mediaApiOf(cap, { kind, base_url: base, model: "" });
     const want = cap === "image" && (w.from === "kind" || w.from === "host") && /^dashscope/.test(w.api) ? "百炼，按型号分同步/异步"
       : (mm.MEDIA_APIS[cap].find((f) => f.id === w.api) || {}).short || "认不出，要选一个";
     const saw = auto(cap, kind, base);
     if (saw !== want) bad.push({ cap, kind, base, saw, want });
   }
-  ok(!bad.length, `★「自动（…）」跟服务端 mediaApiOf 逐格对得上（${3 * kinds.length * bases.length} 格）★`, bad.slice(0, 4));
+  ok(!bad.length, `★「自动（…）」跟服务端 mediaApiOf 逐格对得上（${4 * kinds.length * bases.length} 格）★`, bad.slice(0, 4));
   ok(auto("video", "newapi", "https://relay.example.com/v1") === "认不出，要选一个" && auto("image", "newapi", "https://relay.example.com/v1") === "OpenAI 兼容",
     "中转：视频说「认不出，要选一个」，生图说 OpenAI 兼容");
 
-  ok(/<div id="pf-media-apis">\$\{\["image", "video", "tts"\]\.map\(\(cap\) => `[\s\S]{0,80}<select id="pf-\$\{cap\}-api"/.test(app05), "渠道表单上有三个下拉（生图 / 视频 / 配音）");
-  ok(/style\.display = row\.chat_only \|\| row\.decide_only \? "none" : ""/.test(app05), "对话专用 / 只判断的渠道：三个下拉整组藏起来");
-  ok(/apis\[cap \+ "_api"\] = mediaOn \? v\(`pf-\$\{cap\}-api`\) : ""/.test(app05) && /api: v\("pf-api"\), \.\.\.apis,/.test(app05), "点保存：三个值跟着渠道一起存（藏着时存空 = 自动）");
+  ok(/<div id="pf-media-apis">\$\{\["image", "video", "tts", "asr"\]\.map\(\(cap\) => `[\s\S]{0,80}<select id="pf-\$\{cap\}-api"/.test(app05), "渠道表单上有四个下拉（生图 / 视频 / 配音 / 转写）");
+  ok(/style\.display = row\.chat_only \|\| row\.decide_only \? "none" : ""/.test(app05), "对话专用 / 只判断的渠道：四个下拉整组藏起来");
+  ok(/apis\[cap \+ "_api"\] = mediaOn \? v\(`pf-\$\{cap\}-api`\) : ""/.test(app05) && /api: v\("pf-api"\), \.\.\.apis,/.test(app05), "点保存：四个值跟着渠道一起存（藏着时存空 = 自动）");
   ok(/\.value = \(p && p\[cap \+ "_api"\]\) \|\| ""/.test(app05), "编辑已有渠道：下拉回填存着的值");
   ok(/chanTest\.set\(id, \{[^}]*partial: !!d\.partial, note: d\.note \|\| ""/.test(app05) && /if \(t\.ok && t\.partial\) return `<span class="ch-pill is-half"/.test(app05),
     "渠道「测一下」只验了一半：卡上显示半格，不说「真发了一次请求」");
@@ -496,8 +496,8 @@ async function formAndCopy() {
 
   section("文案：新加的字都有英文，没有拿中文原样顶上的");
   const zh = [];
-  for (const cap of ["image", "video", "tts"]) for (const f of mm.MEDIA_APIS[cap]) zh.push(f.label, f.short);
-  for (const [, cn] of Object.entries({ image: "生图接口", video: "视频接口", tts: "配音接口" })) zh.push(`${cn}：自动`);
+  for (const cap of ["image", "video", "tts", "asr"]) for (const f of mm.MEDIA_APIS[cap]) zh.push(f.label, f.short);
+  for (const [, cn] of Object.entries({ image: "生图接口", video: "视频接口", tts: "配音接口", asr: "转写接口" })) zh.push(`${cn}：自动`);
   zh.push("这条渠道出图走哪种接口", "这条渠道出视频走哪种接口", "这条渠道配音走哪种接口", "百炼，按型号分同步/异步", "认不出，要选一个", "只验了一半");
   for (const m of app05.matchAll(/hint: "([^"]*「(?:生图|视频|配音)接口」[^"]*)"/g)) zh.push(m[1]);
   const missing = [...new Set(zh)].filter((s) => { const en = I18N.lookup(s, "en"); return !en || en === s || /[一-鿿]/.test(en); });

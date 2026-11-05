@@ -679,8 +679,8 @@ const has = (p) => fs.existsSync(p);
     ok(/withWorkspace\(run\.root, \(\) => \{ adoptUploads\(sess, req\.user, adopt_uploads\); settlePendingUploads\(sess, run\.baseDir\); \}\);/.test(srv),
       "插话带的附件：按这趟钉住的根搬，不按这条请求此刻的根（人可能已经切到别的项目了）");
     ok(/let inPlaceRoot = opts\.workspace \? getWorkspaceDir\(\) : "";/.test(cli) && /setWorkspaceDir\(target\); inPlaceRoot = getWorkspaceDir\(\);/.test(cli)
-      && /layouts: config\.folder_layouts \|\| \{\}, inPlace: !!inPlaceRoot && taskDirs\.samePlace\(inPlaceRoot, root\)/.test(cli),
-      "命令行：-C / /cd 点名的目录就地读写，设置里明说过的照样优先（跟网页端同一张表）");
+      && /layouts: config\.folder_layouts \|\| \{\}, inPlace: \(!!inPlaceRoot && taskDirs\.samePlace\(inPlaceRoot, root\)\) \|\| taskDirs\.hasSourceFiles\(root\)/.test(cli),
+      "命令行：点名目录或有源码时就地读写，设置里明说过的照样优先（跟网页端同一张表）");
     ok(/\$\{safeWorkspaceDir\(baseDir\)\}\$\{dirNotes\(baseDir\)\}/.test(agentSrc)
       && /function dirNotes\(baseDir\) \{ return worktreeLine\(\) \+ userFolderLine\(baseDir\); \}/.test(agentSrc)
       && /function userFolderLine\(baseDir\) \{\s*if \(!baseDir\) return "";[\s\S]{0,400}appRoot\(root, anchors\)\) return "";/.test(agentSrc),

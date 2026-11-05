@@ -25,7 +25,12 @@
  * Windows 上没有 sandbox-exec，换成系统自带的「完整性级别」（下半截 wrapWin / preflightWin，小助手在 native/owb-sandbox）：
  * 命令降到低级别跑，写不了普通文件；Key、账本那几处另打「低级别不许读」的标记；工作区打「低级别能写」的标记。
  * 跟 macOS 比少两样：挡不住连 OpenWorkBuddy 自己的端口，多人用时各组织的工作区不互相藏。
- * Linux 上没有，档位再怎么设都是不套。
+ *
+ * Linux 上用 bubblewrap（文件末尾 wrapLinux / preflightLinux）：挂载命名空间里把 Key、账本那几处盖掉，
+ * 工作区以外的租户目录也盖掉，再开独立的 PID 命名空间（/proc 里看不到服务进程的环境和命令行）。
+ * 企业服务器绝大多数是 Linux，以前这里什么都不套：文件黑名单看的是命令原文，
+ * `open('con'+'fig.json')` 拼一下就过去了。这是用测试 Key 本地复现的漏洞，不是线上事故。
+ * 跟 macOS 比少一样：挡不住连 OpenWorkBuddy 自己的端口（接口照样要鉴权，没有 cookie 什么也拿不到）。
  */
 const fs = require("fs");
 const path = require("path");
@@ -475,8 +480,137 @@ function _setBin(p) {
   preflights.clear();
 }
 
+// ==== Linux：bubblewrap ====
+/** @type {string|null} 测试用：换一个 bwrap 路径；空串 = 模拟这台机器上没有 */
+let BWRAP_OVERRIDE = null;
+const BWRAP_PATHS = ["/usr/bin/bwrap", "/bin/bwrap", "/usr/local/bin/bwrap"];
+/** 这几样是沙箱外的服务入口，进了沙箱还连得上就等于没隔离：docker 能起特权容器，用户总线能替它开程序 */
+const LINUX_HOST_SOCKETS = ["/var/run/docker.sock", "/run/docker.sock", "/run/containerd", "/run/podman", "/run/user", "/run/dbus"];
+
+function bwrapBin() {
+  if (BWRAP_OVERRIDE !== null) return BWRAP_OVERRIDE;
+  return BWRAP_PATHS.find((p) => { try { return fs.statSync(p).isFile(); } catch { return false; } }) || "";
+}
+
+/**
+ * 数据根下要盖掉的东西，口径跟 macOS profileText 那几条 deny 一模一样：
+ * config.json*（含 .bak）、data/、backups/、secrets*。
+ * 只列真实存在的：bwrap 在只读层上不能给不存在的路径建挂载点，会当场失败。
+ * @param {string} data 真实路径
+ */
+function linuxSecrets(data) {
+  const dirs = [], files = [];
+  let names = [];
+  try { names = fs.readdirSync(data, { withFileTypes: true }).map((e) => e.name); } catch {}
+  for (const n of names) {
+    const abs = path.join(data, n);
+    let st;
+    try { st = fs.lstatSync(abs); } catch { continue; }
+    const hit = n === "data" || n === "backups" || n.startsWith("config.json") || n.startsWith("secrets");
+    if (!hit) continue;
+    if (st.isDirectory()) dirs.push(abs);
+    else files.push(abs); // 软链接也盖：盖的是这个名字，不是它指向的那份
+  }
+  return { dirs, files };
+}
+
+/**
+ * bwrap 的参数。**顺序就是规则**：后写的挂载盖住先写的，所以「盖 Key」永远排在「放开工作区」后面，
+ * 工作区哪怕被配到了数据根里面，也盖不过这几条。
+ * 根是 --bind 不是 --ro-bind：跟 macOS 的 allow default 同一个思路，只做黑名单，装依赖、写缓存、git 照常。
+ * @param {WrapOpts} o
+ */
+function bwrapArgs({ data, app, home = null, writable = [], hide = [], hardened = true }) {
+  const dataR = absReal(data, "数据根");
+  const appR = absReal(app, "应用目录");
+  const A = [
+    "--die-with-parent", "--new-session", // new-session：挡 TIOCSTI 往外层终端塞字
+    "--unshare-pid", "--unshare-ipc", "--unshare-uts", // PID 命名空间：/proc 里没有服务进程，读不到它的环境和命令行
+    "--bind", "/", "/",
+    "--dev", "/dev",
+    "--proc", "/proc",
+  ];
+  // 应用目录只读；数据根和应用目录是同一处（开发态）时，工作区在下面再放开
+  A.push("--ro-bind", appR, appR);
+  const plugins = path.join(dataR, "plugins");
+  if (fs.existsSync(plugins)) A.push("--ro-bind", plugins, plugins); // 服务端会当代码加载的目录
+  for (const w of writable) { const r = absReal(w, "工作区"); A.push("--bind", r, r); }
+  for (const h of hide) { const r = absReal(h, "隐藏目录"); if (fs.existsSync(r)) A.push("--tmpfs", r); }
+  if (home) {
+    const homeR = absReal(home, "主目录");
+    for (const rel of [...PERSIST_SUBPATHS, ...PERSIST_FILES]) {
+      const p = path.join(homeR, rel);
+      if (fs.existsSync(p)) A.push("--ro-bind", p, p); // 沙箱外会自动执行的文件：不许写
+    }
+  }
+  if (hardened) {
+    for (const p of LINUX_HOST_SOCKETS) {
+      let st;
+      try { st = fs.statSync(p); } catch { continue; }
+      if (st.isDirectory()) A.push("--tmpfs", p); else A.push("--ro-bind", "/dev/null", p);
+    }
+  }
+  const { dirs, files } = linuxSecrets(dataR);
+  for (const d of dirs) A.push("--tmpfs", d);
+  for (const f of files) A.push("--ro-bind", "/dev/null", f);
+  return A;
+}
+
+/**
+ * 把一条命令包进 bubblewrap。跟 wrap 一样：路径不合法直接 throw，调用方不许接住后改成不套沙箱跑。
+ * @param {string} bin @param {string[]} args @param {WrapOpts} o
+ */
+function wrapLinux(bin, args, o) {
+  const bw = bwrapBin();
+  if (!bw) throw new Error("这台机器没装 bubblewrap");
+  return { bin: bw, args: [...bwrapArgs(o), "--", bin, ...args] };
+}
+
+/**
+ * 预检：空命令必须成功，读金丝雀必须失败——两条都对上才算立起来了。
+ * Docker 默认的 seccomp 不让建命名空间，这时第一条就过不了，原因原样交给设置页。
+ * 没有挂缓存到 profile 文本这一说，按整串参数缓存。
+ * @param {WrapOpts} o
+ */
+function preflightLinux(o) {
+  const bw = bwrapBin();
+  if (!bw) return Promise.resolve({ ok: false, reason: "这台机器没装 bubblewrap（apt install bubblewrap）", warn: [] });
+  const canary = path.join(o.data, "data", "sandbox-canary");
+  try {
+    fs.mkdirSync(path.dirname(canary), { recursive: true });
+    fs.writeFileSync(canary, "sandbox canary\n");
+  } catch (e) {
+    return Promise.resolve({ ok: false, reason: `写不了金丝雀文件 ${canary}：${/** @type {any} */ (e).code || e}`, warn: [] });
+  }
+  let w0, w1;
+  try {
+    w0 = wrapLinux("/bin/true", [], o);
+    w1 = wrapLinux("/bin/cat", [canary], o);
+  } catch (e) {
+    return Promise.resolve({ ok: false, reason: String((e && /** @type {any} */ (e).message) || e), warn: [] });
+  }
+  const key = "linux\0" + crypto.createHash("sha256").update(w0.args.join("\0")).digest("hex");
+  const hit = preflights.get(key);
+  if (hit) return hit;
+  const p = (async () => {
+    const a = await probe(w0);
+    if (a.spawnError) return { ok: false, reason: `bubblewrap 起不来：${a.spawnError}`, warn: [] };
+    if (a.code !== 0) return { ok: false, reason: `空命令退出码 ${a.code}：${firstLine(a.err)}。在容器里要放开命名空间，见 docs/部署.md`, warn: [] };
+    const b = await probe(w1);
+    if (b.code === 0) return { ok: false, reason: "金丝雀文件读到了，规则没生效", warn: [] };
+    if (!/No such file|Permission denied|Operation not permitted/.test(b.err)) return { ok: false, reason: `读金丝雀退出码 ${b.code}：${firstLine(b.err)}`, warn: [] };
+    return { ok: true, reason: "", warn: linkWarnings(o.data) };
+  })();
+  preflights.set(key, p);
+  return p;
+}
+
+/** 测试用：换一个 bwrap 路径（传 null 复原，传空串模拟没装） @param {string|null} p */
+function _setBwrap(p) { BWRAP_OVERRIDE = p; preflights.clear(); }
+
 module.exports = {
   get SANDBOX_EXEC() { return SANDBOX_EXEC; },
   MODES, real, ancestors, isUnder, hideAround, profileText, absReal, wrap, supported, effectiveMode, preflight, resetPreflight, _setBin,
+  bwrapArgs, linuxSecrets, wrapLinux, preflightLinux, bwrapBin, _setBwrap,
   WIN_EXIT, winHelper, winQuote, lowDirs, lowEnv, wrapWin, winWorkspaceProblem, winLabelArgs, preflightWin, _setWinHelper,
 };

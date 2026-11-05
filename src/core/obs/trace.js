@@ -224,7 +224,7 @@ function localReadEvents(config, { budgetBytes = 48 * 1024 * 1024, roots = [], l
   for (const f of picked.reverse()) out.push(...readEventsOf(f));  // 翻回「老的在前」
   return out;
 }
-function localTraceList(config, { limit = 50, traceId = "", roots = [], legacyDirs = [] } = {}) {
+function localTraceList(config, { limit = 50, traceId = "", sessionId = "", roots = [], legacyDirs = [] } = {}) {
   const traces = new Map();
   const ensure = (id) => {
     // 名字先留空。默认成「任务」的话，下面「名字是不是空的」就永远判不出来，
@@ -315,7 +315,8 @@ function localTraceList(config, { limit = 50, traceId = "", roots = [], legacyDi
   // 只留条数；点进某一趟走的是带 traceId 的这条路，那儿原样全给。
   // 名字、第几轮上面都已经算完了，放在最后清才不会把它们清成空的
   const slim = (o) => (Array.isArray(o.input) ? { ...o, input: null, input_messages: o.input.length } : o);
-  return out.slice(0, Math.max(1, Math.min(200, Number(limit) || 50)))
+  // 按会话筛要在截断之前：从回复跳过来找的可能是一个月前那趟，排不进最近两百条
+  return (sessionId ? out.filter((t) => t.sessionId === sessionId) : out).slice(0, Math.max(1, Math.min(200, Number(limit) || 50)))
     .map((t) => ({ ...slim(t), observations: t.observations.map(slim) }));
 }
 function localTraceClear(config, options) {

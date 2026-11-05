@@ -23,6 +23,8 @@
  * npm link 后可直接用 `openworkbuddy "任务"`。
  */
 
+// 这趟跑在本机终端、当前系统用户自己的权限下（tools.js memberMustSandbox 据此区分「没账号的服务端请求」）。不进子进程环境
+process.env.OWB_ENTRY = "cli";
 // Node 太老 / 依赖没装：排在所有 require 最前面，不然用户拿到的是一句 Cannot find module
 require("./src/platform/boot-check").enforce({ rootDir: __dirname });
 
@@ -1723,13 +1725,24 @@ const taskDirs = require("./src/util/task-dirs");
 // 刚往根上放、还没发出去的东西：拷进来的附件、粘贴图、存成文件的长文本。
 // 跟网页端先传上来的附件一样，发出去那一刻搬进这条会话的那格
 const strayUploads = new Set();
+/**
+ * 这一趟按写代码还是按办公跑。--profile 点名的算数；没点名看目录：代码仓库或有源码的文件夹按写代码。
+ * 在 ~/Documents 里让它写周报还是办公那一档，成果文件、配图、交付规矩都在
+ */
+function runProfile() {
+  if (opts.profile === "code" || opts.profile === "office") return opts.profile;
+  const root = getWorkspaceDir();
+  return taskDirs.looksLikeRepo(root) || taskDirs.hasSourceFiles(root) ? "code" : "office";
+}
 /** 这一趟的成果文件夹（相对工作目录）；摊在根上的那种根返回 null，就地读写 */
 function chatDirHere(asked) {
   const root = getWorkspaceDir();
   const anchors = {
     workspace: dataPath("workspace"), projects: dataPath("projects"), tenants: require("./src/domains/account/org").tenantsDir(),
     homes: require("./src/domains/account/spaces").homes(),
-    layouts: config.folder_layouts || {}, inPlace: !!inPlaceRoot && taskDirs.samePlace(inPlaceRoot, root),
+    // 文件夹里有源码就地读写。以前只认 package.json、.git 这些：一个放着几个脚本的文件夹会套一层「任务_」，
+    // read_file 能回落到根上读到文件，run_shell 却跑在那一格里，`node test.js` 直接找不到模块
+    layouts: config.folder_layouts || {}, inPlace: (!!inPlaceRoot && taskDirs.samePlace(inPlaceRoot, root)) || taskDirs.hasSourceFiles(root),
   };
   if (!taskDirs.perChatRoot(root, anchors)) return null;
   if (!taskDirs.useSessDirAt(sess, root, dataPath("workspace"))) taskDirs.newSessDir(sess, root, dataPath("workspace"), asked);
@@ -1903,6 +1916,7 @@ async function runOnceIn(runtime, text, mode, interactive, shown) {
       // 进行中的目标注进任务上下文：agent 每一轮都对着验收标准干活，不跑偏
       projectContext: [projectMemo.memoContext(getWorkspaceDir()), goalKit.contextFor(sess.goal), cliSurface.promptBlock(), opts.appendSystem].filter(Boolean).join("\n\n") || undefined,
       maxSteps: opts.maxSteps || undefined, // --max-steps：只管这一次
+      profile: runProfile(), // 在项目里写代码走精简那一档，见 src/agent/code-profile.js
       emit: makeEmit(state),
       mode: modes.agentMode(mode), // goal 在外面那层循环里，agent 只认识 ask/plan/craft
       user: owner ? owner.username : undefined, // 记忆按人取，命令行走管理员这本账

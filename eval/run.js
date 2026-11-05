@@ -46,11 +46,17 @@ const { McpManager } = require("../src/agent/mcp");
 const { setWorkspaceDir } = require("../src/agent/tools");
 const memory = require("../src/core/memory/memory");
 const store = require("../src/platform/store");
-const { TASKS } = require("./tasks");
+const { TASKS: BUILTIN } = require("./tasks");
+const customSets = require("./custom-sets");
 
 const argv = process.argv.slice(2);
 const argOf = (k, d) => { const i = argv.indexOf("--" + k); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
 const hasFlag = (k) => argv.includes("--" + k);
+// --set <id>：跑用户自己的评测集（评测页建的、上传的），不跑内置题
+const SET_ID = argOf("set", "");
+const SET = SET_ID ? customSets.load(SET_ID) : null;
+if (SET_ID && !SET) { console.error(`没有这个评测集：${SET_ID}`); process.exit(1); }
+const TASKS = SET ? customSets.toTasks(SET) : BUILTIN;
 const TASK_TIMEOUT = (+argOf("timeout", 0) || 360) * 1000; // 每题上限，默认 6 分钟
 const CONCURRENCY = Math.max(1, +argOf("concurrency", 2) || 2);
 const REPEAT = Math.max(1, Math.min(5, Math.round(+argOf("repeat", 1)) || 1));
@@ -336,6 +342,7 @@ async function main() {
 
   const summary = {
     at: new Date().toISOString(), model: modelName, model_id: entry.model, repeat: REPEAT,
+    ...(SET ? { set: SET.id, set_name: SET.name } : {}),
     tasks: results.length, full_pass: passkCount, pass1_avg: pass1Avg,
     flaky_tasks: flakyTasks, fail_code_counts: failCodeCounts,
     checks_passed: score, checks_total: totalChecks,

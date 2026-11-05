@@ -19,6 +19,7 @@
 /** 五路能力的中文名，报错和界面共用一套说法 */
 const CAP_CN = { image: "图像模型", video: "视频模型", tts: "语音模型", vision: "视觉模型", asr: "转写模型" };
 // asr 排在 tts 后面：新加的一路挂在最后，老配置文件的字段顺序不会因为升级而整体重排。
+const retired = require("./retired-models"); // 服务商宣布下线的型号
 const CAPS = ["vision", "image", "video", "tts", "asr"];
 
 /**
@@ -31,6 +32,8 @@ const PROVIDER_KINDS = [
   // resells：这家平台**原名照搬**上架了哪几家的型号（百炼模型列表里 glm-5.2、kimi-k3、MiniMax-M3、
   // deepseek-v4.1-flash 都是原厂的名字）。这几家的型号挂在百炼渠道上是对的，不判挂错。
   // 只写官方模型列表上见得到的，没见到的宁可不写——写多了，真挂错的就拦不住了。
+  // media_only：语音专用的地址，发不了对话。Key 填控制台的 API Key，老版控制台写成「AppID:Token」
+  { kind: "volc_speech", label: "豆包语音（火山引擎 配音 / 转写）", base_url: "https://openspeech.bytedance.com", key_url: "https://console.volcengine.com/speech/new", media_only: true },
   { kind: "dashscope", label: "阿里云百炼（通义 / 万相 / Qwen-TTS）", base_url: "https://dashscope.aliyuncs.com/api/v1", key_url: "https://bailian.console.aliyun.com/", resells: ["zhipu", "moonshot", "minimax", "deepseek"] },
   { kind: "openai", label: "OpenAI 官方", base_url: "https://api.openai.com/v1", key_url: "https://platform.openai.com/api-keys" },
   // needs_slash：型号名必须是「厂商/型号」。裸写 gpt-4o 在这儿必然 400，那是写法错，不是挂错家
@@ -123,6 +126,7 @@ const CATALOG = {
     { kind: "ark", id: "doubao-seed-2-0-mini-260428", label: "豆包 Seed 2.0 Mini LTS（快且便宜）" },
     { kind: "ark", id: "doubao-seed-2-1-pro-260915", label: "豆包 Seed 2.1 Pro" },
     { kind: "ark", id: "doubao-seed-2-1-lite-260915", label: "豆包 Seed 2.1 Lite" },
+    { kind: "ark", id: "doubao-seed-evolving", label: "豆包 Seed Evolving（官方滚动版，不用跟着换型号）" },
     { kind: "ark", id: "deepseek-v4-flash-ga-260731", label: "DeepSeek V4 Flash（火山托管）" },
     { kind: "ark", id: "glm-5-3-flash-260828", label: "GLM 5.3 Flash（火山托管）" },
     { kind: "ark", id: "kimi-k3-1-pro-261024", label: "Kimi K3.1 Pro（火山托管）" },
@@ -170,7 +174,6 @@ const CATALOG = {
   image: [
     { kind: "ark", id: "doubao-seedream-5-0-flash-260915", label: "即梦 Seedream 5.0 Flash" },
     { kind: "ark", id: "doubao-seedream-5-0-pro-260628", label: "即梦 Seedream 5.0 Pro" },
-    { kind: "ark", id: "doubao-seedream-4-5-251128", label: "即梦 Seedream 4.5" },
     { kind: "dashscope", id: "qwen-image", label: "通义千问 Image（中文海报）" },
     { kind: "dashscope", id: "wan2.2-t2i-flash", label: "通义万相 2.2 极速版" },
     { kind: "dashscope", id: "wanx2.1-t2i-turbo", label: "通义万相 2.1 Turbo" },
@@ -201,12 +204,15 @@ const CATALOG = {
   // 通义百炼的 ASR 是另一套：先上传文件、再轮询异步任务，和这里的一次 multipart 完全不同协议。
   // 没实现就不往目录里摆——摆上去等于让人选一个必然报错的选项。
   asr: [
+    { kind: "volc_speech", id: "volc.bigasr.auc_turbo", label: "豆包录音识别 极速版（需单独开通，≤2 小时 ≤100MB）" },
     { kind: "openai", id: "gpt-4o-transcribe", label: "GPT-4o Transcribe（最准）" },
     { kind: "openai", id: "gpt-4o-mini-transcribe", label: "GPT-4o mini Transcribe（快且便宜）" },
     { kind: "openai", id: "whisper-1", label: "Whisper（老牌，便宜）" },
     { kind: "siliconflow", id: "FunAudioLLM/SenseVoiceSmall", label: "SenseVoice Small（中文快，开源）" },
   ],
   tts: [
+    { kind: "volc_speech", id: "seed-tts-2.0", label: "豆包语音合成 2.0（中文自然）", voices: ["zh_female_vv_uranus_bigtts", "zh_female_xiaohe_uranus_bigtts", "zh_male_m191_uranus_bigtts", "zh_male_taocheng_uranus_bigtts", "zh_male_liufei_uranus_bigtts", "zh_female_sophie_uranus_bigtts"] },
+    { kind: "volc_speech", id: "seed-tts-1.0", label: "豆包语音合成 1.0", voices: ["zh_female_shuangkuaisisi_moon_bigtts", "zh_female_linjianvhai_moon_bigtts", "zh_male_yangguangqingnian_moon_bigtts", "zh_male_yuanboxiaoshu_moon_bigtts"] },
     { kind: "dashscope", id: "qwen3-tts-flash", label: "通义 Qwen3-TTS Flash（中文自然）", voices: ["Cherry", "Serena", "Ethan", "Chelsie"] },
     { kind: "dashscope", id: "qwen-tts", label: "通义 Qwen-TTS", voices: ["Cherry", "Serena", "Ethan", "Chelsie"] },
     { kind: "openai", id: "gpt-4o-mini-tts", label: "GPT-4o mini TTS（能听指令调语气）", voices: ["alloy", "ash", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"] },
@@ -321,6 +327,7 @@ function providerKeyOf(p) {
  * 表随 /api/model-catalog 下发（跟 BRAND_HINTS 一样），两边不各抄一份。
  */
 const KIND_HOSTS = [
+  ["openspeech\\.bytedance", "volc_speech"],
   ["ark\\.|volces\\.com", "ark"],
   ["dashscope|\\.maas\\.aliyuncs\\.com", "dashscope"],
   ["openrouter", "openrouter"],
@@ -386,10 +393,17 @@ const MEDIA_APIS = {
   tts: [
     { id: "openai", label: "OpenAI 兼容（/audio/speech）", short: "OpenAI 兼容" },
     { id: "dashscope", label: "千问 TTS（multimodal-generation）", short: "千问 TTS" },
+    { id: "volc", label: "豆包语音（/api/v3/tts/unidirectional）", short: "豆包语音" },
+    { id: "http", label: "自定义 HTTP（按模板发）", short: "自定义 HTTP" },
+  ],
+  asr: [
+    { id: "openai", label: "OpenAI 兼容（/audio/transcriptions）", short: "OpenAI 兼容" },
+    { id: "volc", label: "豆包录音识别（recognize/flash）", short: "豆包语音" },
+    { id: "http", label: "自定义 HTTP（按模板发）", short: "自定义 HTTP" },
   ],
 };
-/** 渠道上存这三路选择的字段名 */
-const MEDIA_API_FIELD = { image: "image_api", video: "video_api", tts: "tts_api" };
+/** 渠道上存这几路选择的字段名 */
+const MEDIA_API_FIELD = { image: "image_api", video: "video_api", tts: "tts_api", asr: "asr_api" };
 const isMediaApi = (cap, v) => !!MEDIA_APIS[cap] && MEDIA_APIS[cap].some((f) => f.id === v);
 /**
  * 没手选时按渠道类型、再按地址认。生图写的 "dashscope" 不是某一种接口，是「百炼这一家」——
@@ -399,10 +413,12 @@ const isMediaApi = (cap, v) => !!MEDIA_APIS[cap] && MEDIA_APIS[cap].some((f) => 
  */
 const MEDIA_API_KINDS = {
   dashscope: { image: "dashscope", video: "dashscope", tts: "dashscope" },
+  volc_speech: { tts: "volc", asr: "volc" },
   ark: { video: "ark" }, zhipu: { video: "zhipu" }, minimax: { video: "minimax" }, siliconflow: { video: "siliconflow" },
 };
 /** @type {Array<[string, Record<string, string>]>} 每行：地址正则的源码、认出来后各路走哪种 */
 const MEDIA_API_HOSTS = [
+  ["openspeech\\.bytedance", { tts: "volc", asr: "volc" }],
   ["dashscope|\\.maas\\.aliyuncs\\.com", { image: "dashscope", video: "dashscope", tts: "dashscope" }],
   ["volces|\\/ark\\b|ark\\.", { video: "ark" }],
   ["bigmodel|zhipu", { video: "zhipu" }],
@@ -410,7 +426,7 @@ const MEDIA_API_HOSTS = [
   ["siliconflow", { video: "siliconflow" }],
 ];
 /** 都认不出时：生图、配音按最通用的 OpenAI 兼容发；视频没有通用的那一种，宁可不发 */
-const MEDIA_API_DEFAULT = { image: "openai", video: "", tts: "openai" };
+const MEDIA_API_DEFAULT = { image: "openai", video: "", tts: "openai", asr: "openai" };
 
 /**
  * 万相的老几代文生图（wanx-v1、wanx2.x / wan2.0–2.5 的 *-t2i-*）只有异步任务接口：
@@ -462,12 +478,14 @@ function videoProtoOf(cfg) {
 function chosenApi(cap, p) {
   const f = /** @type {any} */ (MEDIA_API_FIELD)[cap];
   const v = f && p ? String(p[f] || "").trim() : "";
-  return f && isMediaApi(cap, v) ? { [f]: v } : {};
+  if (!f || !isMediaApi(cap, v)) return {};
+  // 自定义 HTTP 的模板跟着接口选择一起走：只在选了它的时候带上
+  return v === "http" && p.http_api ? { [f]: v, http_api: p.http_api } : { [f]: v };
 }
 /** 保存渠道时收哪几个媒体接口字段：只认表里有的；只聊天 / 只判断的渠道画不了图，一个都不收 */
 function mediaApisOf(p) {
   if (!p || !canHost(p.kind, "image")) return {};
-  return { ...chosenApi("image", p), ...chosenApi("video", p), ...chosenApi("tts", p) };
+  return { ...chosenApi("image", p), ...chosenApi("video", p), ...chosenApi("tts", p), ...chosenApi("asr", p) };
 }
 /** 一个型号名看着是不是生图 / 视频 / 配音的——测活那边靠它决定别拿它去发对话请求 */
 function mediaCapOf(modelId) {
@@ -991,6 +1009,18 @@ function resolve(config) {
   return { ...(config.media || {}), list };
 }
 
+/**
+ * 默认那条失败后接着试谁：同一能力下其余的，按设置里摆的顺序。
+ * 已下线的型号不试，试了只是多等一个报错。
+ * @param {any} media resolve() 的结果 @param {string} cap @param {any} start 已经试过的那条
+ */
+function fallbackOrder(media, cap, start) {
+  const list = ((media && media.list) || []).filter((m) => m.cap === cap && m.base_url && m.model);
+  const skip = start ? start.id || start.name : "";
+  return list.filter((m) => (m.id || m.name) !== skip && !(start && m.model === start.model && m.base_url === start.base_url))
+    .filter((m) => { const r = retired.retirementOf(m.model); return !(r && r.gone); });
+}
+
 /** 挑不到就报错并把可选项列出来——绝不悄悄退回默认那条（用户点名要哪个就是哪个） */
 class MediaPickError extends Error {}
 
@@ -1032,7 +1062,8 @@ function pick(media, cap, want) {
 
 /** 界面上给某个渠道列候选模型：精选目录里属于这个 kind 的那些 */
 function catalogFor(cap, kind) {
-  return (CATALOG[cap] || []).filter((m) => !kind || m.kind === kind);
+  // 已下线、快下线的不再推荐：目录是给人挑新型号的，挑到一个三周后关停的等于埋雷
+  return (CATALOG[cap] || []).filter((m) => (!kind || m.kind === kind) && retired.recommendable(m.id));
 }
 
 /**
@@ -1266,7 +1297,7 @@ function rehomeMismatched(providers, models, warnings) {
 /** 设置页要的那份目录：规则表都从这儿下发，前端照同一张表判，不各抄一份 */
 function clientCatalog() {
   return {
-    kinds: PROVIDER_KINDS, catalog: CATALOG, caps: CAPS, cap_cn: CAP_CN, api_formats: API_FORMATS,
+    kinds: PROVIDER_KINDS, catalog: Object.fromEntries(Object.keys(CATALOG).map((cap) => [cap, catalogFor(cap)])), caps: CAPS, cap_cn: CAP_CN, api_formats: API_FORMATS,
     brand_hints: BRAND_HINTS, kind_hosts: KIND_HOSTS,
     legacy_model_kinds: LEGACY_MODEL_KINDS,
     media_apis: MEDIA_APIS, media_api_kinds: MEDIA_API_KINDS, media_api_hosts: MEDIA_API_HOSTS, media_api_default: MEDIA_API_DEFAULT,
@@ -1274,6 +1305,7 @@ function clientCatalog() {
 }
 
 module.exports = {
+  fallbackOrder,
   CAPS, CAP_CN, PROVIDER_KINDS, CATALOG,
   guessCap, capOfModel, guessKind, baseOfKind, catalogFor, protoOfKind, API_FORMATS, isApiFormat, normApi, protoOfChannel, videoProtoOf, VIDEO_PROTOS, VIDEO_PROTO_CN,
   MEDIA_APIS, MEDIA_API_FIELD, MEDIA_API_KINDS, MEDIA_API_HOSTS, MEDIA_API_DEFAULT, isMediaApi, mediaApiOf, chosenApi, mediaApisOf, mediaCapOf, WAN_ASYNC_T2I,

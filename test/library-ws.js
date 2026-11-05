@@ -736,8 +736,13 @@ const LIST = { appDataDir: APPDATA };
     const at = src.indexOf('app.get("/api/files/tree"');
     const route = src.slice(at, src.indexOf("\n});", at));
     ok(at > 0 && /getWorkspaceDir\(\)/.test(route) && /appDataDir: dataPath\("data"\)/.test(route), "tree 路由：根是 getWorkspaceDir()（租户作用域），藏的是 dataPath(\"data\")");
-    const n = (src.match(/walkAllCached\(\s*(getWorkspaceDir\(\)|wsRoot)\s*,\s*\{\s*appDataDir: dataPath\("data"\)\s*\}\)/g) || []).length;
-    ok(n >= 2, `outputs 和搜索都走带记忆的全量（找到 ${n} 处）`);
+    const n = (src.match(/wsIndex\.walk\(\s*(getWorkspaceDir\(\)|wsRoot)\s*,\s*\{\s*appDataDir: dataPath\("data"\)\s*\}\)/g) || []).length;
+    ok(n >= 2, `outputs 和搜索都走后台线程的全量（找到 ${n} 处）`);
+    ok(!/walkAllCached\(/.test(src), "server.js 不再在主线程走全量");
+    const html = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
+    ok(/\.lib-page\[data-prev="on"\] \.lib-side, \.lib-page\[data-prev="on"\] \.lib-main \{ max-height:55vh; \}/.test(html) && !/\n\s*\.lib-side, \.lib-main \{ max-height:55vh; \}/.test(html), "★只有开着预览才让出半屏★ 笔记本宽度下列表曾只有上半屏，下面空一大块");
+    ok(!/owb-nav-max/.test(html), "侧栏导航不限到某一项：页签不能被藏进滚动区");
+    ok(/@media \(hover: hover\) \{ \.lib-it \.lib-del \{ opacity: \.2; \} \}/.test(html), "垃圾桶平时压淡但看得见，靠近才清楚");
     // 存盘那份（历史回放靠它重建产出卡）：第 4 层往下的产出在 turn_files 里，裁的时候得一起算上。
     // 切 server.js 的真源码来跑，宠物、存盘两个副作用换成空的
     const r0 = src.indexOf("function recordingEmit(");

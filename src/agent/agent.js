@@ -43,6 +43,8 @@ const jev = require("../core/judge/jev");            // 判断模型（Jev）：
 const systemOne = require("../core/judge/systemone"); // 判断模型的纯逻辑：排版、确定度闸、算钱
 const continueGate = require("./gates/continue-gate"); // 续跑之前那道闸的纯判据（只出题、读答案，一个字的网络不发）
 const askGate = require("./gates/ask-gate");   // 弹给用户那一问之前那道闸的纯判据（同上，不发网络）
+const codeProfile = require("./code-profile"); // 写代码那一档：只讲写代码的提示词 + 只摆写代码的工具
+const governor = require("../core/automation/run-governor"); // 同时跑几个任务、几件重活：只排队不杀
 const skillGate = require("./gates/skill-gate"); // 开工之前「该照哪个技能做」的纯判据，以及已加载技能挂进系统提示词那一段（同上，不发网络）
 const recipes = require("../domains/content/recipes"); // 内容配方：开头一张表单定岔路、答案钉进系统提示词、按配方放宽上限
 const quotaMod = require("../core/billing/quota");   // 这趟任务记在谁的额度上（网页请求 / IM / 定时任务进门时挂好的那份）
@@ -979,6 +981,23 @@ function backupUnpriced(next, name) {
  * 一次模型调用的用量记进这趟任务的账：总数一份，再按渠道分开记一份。
  * 中途换过备用渠道的，两段各按各的价目记账——全按主渠道的价算，备用那条更贵时预算就少扣了。
  */
+/**
+ * 一次模型调用的速度。
+ *   ttft_ms    发出请求到第一个 token：模型排队和读提示词花的时间，提示词太长、渠道太忙都体现在这里
+ *   tpot_ms    之后每个输出 token 平均多久：生成速度本身
+ *   tokens_per_s  同一件事换个说法，看着直观
+ * 不流式的渠道没有「第一个 token」，这几项留空，不拿总耗时冒充。
+ * @param {number} startAt @param {number} firstAt @param {number} endAt @param {any} usage
+ */
+function tokenTiming(startAt, firstAt, endAt, usage) {
+  if (!firstAt) return undefined;
+  const out = { ttft_ms: firstAt - startAt };
+  const n = +(usage && usage.completion) || 0;
+  const gen = endAt - firstAt;
+  if (n > 1 && gen > 0) return { ...out, tpot_ms: +(gen / (n - 1)).toFixed(1), tokens_per_s: +((n - 1) / (gen / 1000)).toFixed(1) };
+  return out;
+}
+
 function tallyUsage(stats, u, lm) {
   if (!stats || !u) return;
   stats.prompt += u.prompt || 0;
@@ -1160,6 +1179,7 @@ function shellNote(platform = process.platform) {
 }
 
 function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = [], llmFactory, expertsFor }) {
+  governor.configure(config, { multiUser: () => security.isMultiUser() });
   // 上次没收完的视频（服务重启、进程被杀）开张后接着收，只排一次（engines/harvest.js）
   harvest.sweepSoon({ media: () => mediaModels.resolve(config) });
   // 备用渠道换道要现造一个 LLM 客户端；懒 require 避免环形依赖，测试时可注入假工厂做零 token 验证
@@ -1353,6 +1373,18 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
     // 每轮都可能不一样，挪到了易变段（见 volatileSystemBlock）。hint 参数留着是为了调用方不用改
     try { p += evolve.promptBlock(); } catch {} // 规则目录读不了不该让整个任务起不来
     return p;
+  }
+
+  /** 写代码那一档的稳定段。技能只列名字：要用时 use_skill 拿全文，办公那份的简介在这儿是纯开销 */
+  function codeSystemPrompt(user, baseDir) {
+    const skills = getSkills();
+    return codeProfile.systemPrompt({
+      name: prefs.assistantFor(user, config).name,
+      cwd: safeWorkspaceDir(baseDir),
+      osLine: { darwin: "macOS", win32: "Windows", linux: "Linux" }[process.platform] || process.platform,
+      shell: shellNote(),
+      skillsBlock: skills.length ? `\n\n## 技能\n任务对得上就先 use_skill 加载：${skills.map((s) => s.name).join("、")}` : "",
+    });
   }
 
   async function coordinatorSystemPrompt(user, hint, baseDir) {
@@ -2177,7 +2209,9 @@ function modePrompt(mode) {
         extendMs: grown(),
       };
     }
-    const res = await executeTool(tc.name, tc.input, execOpts({ depth, deadline, stopSignal, taskLabel, user, baseDir, sec, sessionId, callId: tc.id, name: tc.name, emit, llmOverride }));
+    const callTool = () => executeTool(tc.name, tc.input, execOpts({ depth, deadline, stopSignal, taskLabel, user, baseDir, sec, sessionId, callId: tc.id, name: tc.name, emit, llmOverride }));
+    // 截图、渲染、合成是吃内存的：几个任务一起跑时排着来，不是一起把电脑压垮
+    const res = await (governor.HEAVY_TOOLS.has(tc.name) ? governor.heavy("render", { signal: stopSignal, emit, label: tc.name }, callTool) : callTool());
     if (res && res.editedFile) noteWrote(res.editedFile, runToken);
     return res;
   }
@@ -3108,7 +3142,7 @@ function modePrompt(mode) {
    * @param maxSteps 只给这一次任务的步数上限，不传就用全局配置
    * @returns { finalText }
    */
-  async function runTask({ history, emit = () => {}, systemPrompt, depth = 0, mode = "craft", deadline, stats, stopSignal, getInterject, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride, askUser, engineSession, engineImport, lang, sessionId, traceNode, mediaReopened, maxSteps: maxStepsOverride, engineOverride }) {
+  async function runTask({ history, emit = () => {}, systemPrompt, depth = 0, mode = "craft", deadline, stats, stopSignal, getInterject, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride, askUser, engineSession, engineImport, lang, sessionId, traceNode, mediaReopened, maxSteps: maxStepsOverride, engineOverride, profile }) {
     // 读历史先过 normalizeEntry：老会话里引擎回合写的 { content } 就地改成 { text }。
     // 就地改的是调用方那份会话（sess.history），下次落盘就是正式格式，这段会话从此不再带着方言走
     normalizeHistory(history);
@@ -3134,7 +3168,8 @@ function modePrompt(mode) {
         })
       : tracing.noop);
     // 链接开工就给，不等跑完——长任务里最想点开看的恰恰是跑到一半的时候
-    if (ownsTrace && tr.enabled) emit({ type: "trace", url: tr.url, id: tr.id, depth: 0 });
+    // id 始终发：本地账本一直在记，回复下面那颗「执行过程」靠它精确定位。url 只有开了 Langfuse 才有
+    if (ownsTrace && tr.id) emit({ type: "trace", url: tr.enabled ? tr.url : "", id: tr.id, depth: 0 });
     // 回复开头就说断在哪：网页上是正文第一条提示条，IM / 定时任务读的是 finalText，收尾时同样拼在最前面
     if (resumeNote) emit({ type: "text", delta: resumeNote, depth });
     const withResumeNote = (text) => (resumeNote ? (text ? `${resumeNote.trim()}\n\n${text}` : resumeNote.trim()) : text);
@@ -3178,10 +3213,11 @@ function modePrompt(mode) {
           },
         });
         try {
-          const out = await runViaEngine({
+          // 一个本机 CLI 就是几百 MB 的常驻进程：跟截图渲染一样按重活排
+          const out = await governor.heavy("engine", { signal: stopSignal, emit, label: "本机引擎" }, () => runViaEngine({
             backend: picked.backend, opts: picked.opts,
             history, emit, mode, deadline, stopSignal, baseDir, engineSession, engineImport, user, projectContext, lang, sessionId, sec, taskLabel, traceNode: sp,
-          });
+          }));
           sp.end({ output: out.finalText || "", usage: out.usage, metadata: { stopped: out.stopped || "", engine_session: out.sessionId || "" } });
           if (ownsTrace) tr.end({ output: out.finalText || "", usage: out.usage, metadata: { engine: picked.backend.id } });
           if (resumeNote) out.finalText = withResumeNote(out.finalText || "");
@@ -3206,14 +3242,20 @@ function modePrompt(mode) {
     // 媒体状态、时间）。以前是 `…提示词 + projBlock + langBlock(lang) + modePrompt(mode) + 媒体状态`，
     // 记忆和项目块夹在中间，换一句话问、换一个项目，后面的语言/模式连同前缀缓存一起作废。
     // stableSystem 的长度一路带给 L.chat（systemStableLen），Anthropic 通道在这里打缓存断点
-    const stableSystem = (systemPrompt || (await coordinatorSystemPrompt(user, memHint, baseDir))) + langBlock(lang) + modePrompt(mode);
+    // 写代码那一档（命令行在项目里、桌面工程线）：调用方点名的 systemPrompt、专家子任务不走这条
+    const coding = profile === "code" && depth === 0 && !systemPrompt;
+    const rolePrompt = coding ? codeSystemPrompt(user, baseDir) : systemPrompt;
+    const stableSystem = (rolePrompt || (await coordinatorSystemPrompt(user, memHint, baseDir))) + langBlock(lang) + (coding ? codeProfile.modeBlock(mode) : modePrompt(mode));
     const quoteFirst = canvasStore.canvasSessionOf(sessionId);
     const system = stableSystem + (await volatileSystemBlock({ user, memHint, projBlock: projBlock + brandBlock, mediaReopened }))
+      + (coding ? codeProfile.gitContext(safeWorkspaceDir(baseDir)) : "")
       + (quoteFirst ? canvasStore.canvasMediaPrompt(mediaModels.resolve(config)) : "");
     const systemStableLen = stableSystem.length;
     // 画布任务（s_canvas_ 会话）不摆生图 / 生视频 / 配音：那边先交清单、用户点「开跑」才生成。
     // 摆着就是让模型先调一次、吃一条「请先报价」再改道；硬调了也照样拦（tools.js executeToolCore）
-    const tools = toolList(depth, mode, user).filter((t) => !(quoteFirst && canvasStore.CANVAS_QUOTE_FIRST.includes(t.name)));
+    const allTools = toolList(depth, mode, user).filter((t) => !(quoteFirst && canvasStore.CANVAS_QUOTE_FIRST.includes(t.name)));
+    // 只看不动的两档本来就只有读的工具，不用再筛，也没有 load_tools（叫回来的多半是写的）
+    const tools = coding && mode === "craft" ? codeProfile.pickTools(allTools) : allTools;
     // 这一轮真摆给模型的工具名。只读档（ask/plan）清单外的一律不执行（见 runOne）：以前全靠「不摆写工具」，
     // 模型硬编一个 write_file 照样写成功；探索子智能体跑的就是 ask 档，不拦它的只读是一句空话
     const readOnlyMode = mode === "ask" || mode === "plan";
@@ -3534,6 +3576,8 @@ function modePrompt(mode) {
         metadata: { depth, step: step + 1, failed_over: failedOver },
       });
       let result;
+      const callAt = Date.now();
+      let firstAt = 0; // 第一个 token 回来的时刻。纯调工具、会思考的模型没有正文，所以看流上任何活动，不只看 text
       try {
         result = await L.chat({
           system: sys,
@@ -3541,11 +3585,11 @@ function modePrompt(mode) {
           history,
           tools,
           signal,
-          onActivity,
+          onActivity: () => { if (!firstAt) firstAt = Date.now(); onActivity(); },
           // 重试时 llm.js 会给第二个参数 { kind:"retry", attempt, total, delayMs }，原样挂在事件的 retry 上，
           // 新前端拿它画倒计时；老前端只读 text，不受影响
           onStatus: (text, info) => emit({ type: "status", text, depth, ...retryField(info) }),
-          onTextDelta: (delta) => emit({ type: "text", delta, depth }),
+          onTextDelta: (delta) => { if (!firstAt) firstAt = Date.now(); emit({ type: "text", delta, depth }); },
         });
         // 这一步到底干了什么：说了什么话 + 要调哪几个工具。只记正文的话，纯调工具的那些步
         // 在 trace 上会是一片空白，看的人会以为模型这一步什么都没吐
@@ -3553,6 +3597,7 @@ function modePrompt(mode) {
           output: [result.text || "", ...(result.toolCalls || []).map((t) => `→ 调用 ${t.name}(${JSON.stringify(t.input || {})})`)]
             .filter(Boolean).join("\n"),
           usage: result.usage,
+          metadata: tokenTiming(callAt, firstAt, Date.now(), result.usage),
         });
       } catch (e) {
         gen.end({ error: (e && e.message) || String(e) });
@@ -3789,7 +3834,9 @@ function modePrompt(mode) {
         const dead = deadMedia.get(tc.name);
         // 只拦只读档：craft 档清单外的是没配的工具（它自己的处理会说「去设置里配、别重试」）、
         // 子智能体里的 delegate/explore（处理里自己拒），或者纯拼错（tools.js 报未知工具）——都有更准的话
-        if (readOnlyMode && !offered.has(tc.name)) {
+        if (tc.name === "load_tools" && offered.has("load_tools")) {
+          r = codeProfile.loadGroup(String((tc.input || {}).group || ""), allTools, tools, offered);
+        } else if (readOnlyMode && !offered.has(tc.name)) {
           r = { content: notOffered(tc.name), isError: true };
         } else if (progressCheck.requireSync && progress.todosOverdue() &&
                    !READ_ONLY_TOOLS.includes(tc.name) && !["todo_write", "ask_user", "use_skill", "explore", "shell_output", "shell_kill"].includes(tc.name)) {
@@ -4084,7 +4131,8 @@ function modePrompt(mode) {
     }));
   }
 
-  return { runTask, getSkills, toolList, runTool, DIRECT_TOOLS, compactHistory };
+  // 对外的入口过一道名额：网页、IM、定时任务都从这儿进。里面的子智能体直接调 runTask，不用排
+  return { runTask: (args) => governor.admit(args, runTask), getSkills, toolList, runTool, DIRECT_TOOLS, compactHistory };
 }
 
 // 并发上限：抓页面是等网络，开太多既没有更快，还容易被对方站点当成扫站封 IP
@@ -5059,4 +5107,4 @@ function makeOwnership() {
   return { claimBaseDir, inForeignDir, mine, wrote, writerOf, _dirOwners: dirOwners, _fileClaims: fileClaims, _writes: writes };
 }
 
-module.exports = { createAgentRuntime, contextBudgetChars, spillToolResult, retryField, SPILL_OVER, SPILL_KEEP, splitParallelRuns, toolHeadline, resultOutcome, missingDeliverables, unseenVisualClaims, unfinishedMilestones, UNFINISHED_RE, trimHistory, historyChars, collectSources, mapPool, PARALLEL_MAX, GEN_TOOLS, DIRECT_TOOLS, GEN_PARALLEL_MAX, makeOwnership, makeFilesEmitter, cedeTo, wroteName, stepSignal, scanOutputs, sweepPlanOffThread, _scan: { stats: scanStats, scanTree, snapOf, filesOf, hubs: scanHubs, runScan, BROKEN_MAX: SCAN_BROKEN_MAX, broken: () => scanBroken, setBroken: (n) => { scanBroken = n; }, worker: () => scanWorker }, deadLoop, findCycle, pausedMediaBlock, reopenedMediaBlock, stopNotice, DEAD_LOOP_LIMITS, TRUNC_STOP, CUT_STOP, cutShortWhy, currentAsk, normalizeEntry, normalizeHistory, closeDanglingCalls, resumeNotice, INTERRUPTED_RESULT, REDO_SAFE_TOOLS, activeChannel, shellNote, shownButNoImage, engineDeliveryNotes, engineHeartbeat, quietFor, _beat: { set: (ms) => { ENGINE_BEAT_MS = ms; } } };
+module.exports = { tokenTiming, createAgentRuntime, contextBudgetChars, spillToolResult, retryField, SPILL_OVER, SPILL_KEEP, splitParallelRuns, toolHeadline, resultOutcome, missingDeliverables, unseenVisualClaims, unfinishedMilestones, UNFINISHED_RE, trimHistory, historyChars, collectSources, mapPool, PARALLEL_MAX, GEN_TOOLS, DIRECT_TOOLS, GEN_PARALLEL_MAX, makeOwnership, makeFilesEmitter, cedeTo, wroteName, stepSignal, scanOutputs, sweepPlanOffThread, _scan: { stats: scanStats, scanTree, snapOf, filesOf, hubs: scanHubs, runScan, BROKEN_MAX: SCAN_BROKEN_MAX, broken: () => scanBroken, setBroken: (n) => { scanBroken = n; }, worker: () => scanWorker }, deadLoop, findCycle, pausedMediaBlock, reopenedMediaBlock, stopNotice, DEAD_LOOP_LIMITS, TRUNC_STOP, CUT_STOP, cutShortWhy, currentAsk, normalizeEntry, normalizeHistory, closeDanglingCalls, resumeNotice, INTERRUPTED_RESULT, REDO_SAFE_TOOLS, activeChannel, shellNote, shownButNoImage, engineDeliveryNotes, engineHeartbeat, quietFor, _beat: { set: (ms) => { ENGINE_BEAT_MS = ms; } } };

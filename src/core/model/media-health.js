@@ -179,4 +179,23 @@ function list() {
   return out;
 }
 
-module.exports = { gate, record, reset, reopen, list, statusOf, looksBroke, looksNoModel, fingerprint, HARD, IGNORE, SOFT_LIMIT, SOFT_COOL_MS, HARD_COOL_MS, _bucket: bucket };
+/**
+ * 这次失败换下一个模型试有没有用。
+ * 用户配了好几个生图 / 生视频模型，就是要这个挂了用下一个。但有两种情况绝不能换：
+ *   · 钱可能已经花了：任务提交出去、结果还不知道。再发一条就是重复扣费；
+ *   · 内容被审核拦了：换个模型重发等于绕审核，而且多半也过不了。
+ * 其余看是不是渠道那头的问题：Key、余额、型号下线、限流、服务挂了、连不上。
+ * 参数不对（400）不换：那是这次输入的事，下一个模型照样报错，白花一次请求。
+ * @param {{ isError?: boolean, stopped?: boolean, content?: any, submitted?: any, mediaBreaker?: boolean } | null | undefined} res
+ */
+function worthNextModel(res) {
+  if (!res || !res.isError || res.stopped || res.submitted) return false; // submitted：上游收了单，再发就是第二单
+  if (res.mediaBreaker) return true; // 闸门已经判过这条渠道不通，请求都没发
+  const t = String(res.content || "");
+  if (/状态未知|已提交|任务号|还在跑|看结果|先别重|不要重复/.test(t)) return false;
+  if (/Sensitive|PrivacyInformation|审核|违规|敏感|content.?(policy|filter)|moderation/i.test(t)) return false;
+  const s = statusOf(t);
+  return looksBroke(t) || looksNoModel(t) || looksNetwork(t) || [401, 402, 403, 404, 408, 429, 500, 502, 503, 504].includes(s);
+}
+
+module.exports = { worthNextModel, gate, record, reset, reopen, list, statusOf, looksBroke, looksNoModel, fingerprint, HARD, IGNORE, SOFT_LIMIT, SOFT_COOL_MS, HARD_COOL_MS, _bucket: bucket };

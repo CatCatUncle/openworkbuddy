@@ -2877,6 +2877,11 @@ PAGES.models = {
 
     return `<div class="ad-wrap">
       ${note("这几项配的是<b>整台服务器</b>，不是单个组织——一个部署一套 Key，所有组织的任务都花它。改完立刻生效，<b>已经在跑</b>的任务用的还是旧的那把。")}
+      ${(s.model_retire || []).map((m) => note(esc(m.note), true)).join("")}
+      ${card(`${secT("成员能用哪些模型", "Key 永远只存在服务器上，成员的接口和任务都拿不到原文。没共享的渠道，成员连名字都看不到。")}
+        <div style="margin-top:14px">
+          ${field("允许成员加自己的模型", "开：成员能用企业共享的模型，也能填自己的 Key 用别的模型，花的是他自己的钱。关：只能用企业配好的这些。", `<label class="ui-switch"><input type="checkbox" id="ad-byok" ${s.member_byok ? "checked" : ""} ${rw ? "" : "disabled"}><i></i></label>`)}
+        </div>`)}
       ${!models.length ? note(`<b>还没有对话模型</b>。${rw ? goModels("去工作台添加") : ""}`, true)
         : noKeyNow ? note(`默认模型「<b>${esc(s.active_model)}</b>」的渠道<b>没填 Key</b>，任务会失败。`, true) : ""}
 
@@ -2908,6 +2913,13 @@ PAGES.models = {
     </div>`;
   },
   bind: (root, d) => {
+    const byok = root.querySelector("#ad-byok");
+    if (byok) byok.onchange = async () => {
+      const want = byok.checked;
+      const r = await post("/api/models/member-byok", { allowed: want }).catch((e) => ({ error: e.message }));
+      if (r && r.error) { byok.checked = !want; toast(r.error, true); return; }
+      toast(want ? "成员现在可以加自己的模型" : "成员现在只能用企业配好的模型");
+    };
     // 填完 Key 想核一眼填的是不是那把。默认是 password：后台常常是开着投屏在讲的
     const keys = new Map([...root.querySelectorAll(".ad-key")].map((i) => [i.dataset.pk, i]));
     root.querySelectorAll("[data-peek]").forEach((b) => (b.onclick = () => {

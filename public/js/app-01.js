@@ -1211,6 +1211,30 @@ function splitUploadNames(list, known = () => false) {
   return out;
 }
 
+/**
+ * 消息时间，悬停时显示。今天只写钟点，近的写昨天，同一年不写年份：
+ * 看对话时想知道的是「这是什么时候的事」，不是一串完整时间戳。完整的放在 title 里。
+ * @param {string|number} at @param {Date} [now]
+ */
+function msgTimeText(at, now = new Date()) {
+  const d = new Date(at);
+  if (Number.isNaN(d.getTime())) return "";
+  const en = I18N.getLang() === "en";
+  const hm = d.toLocaleTimeString(en ? "en-US" : "zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
+  const day = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const ago = Math.round((day(now) - day(d)) / 86400000);
+  if (ago === 0) return hm;
+  if (ago === 1) return (en ? "Yesterday " : "昨天 ") + hm;
+  const opt = { month: en ? "short" : "numeric", day: "numeric", ...(d.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }) };
+  return d.toLocaleDateString(en ? "en-US" : "zh-CN", opt) + " " + hm;
+}
+function paintMsgTime(el, at) {
+  if (!el || !at) return;
+  el.textContent = msgTimeText(at);
+  el.dateTime = new Date(at).toISOString();
+  el.title = new Date(at).toLocaleString();
+}
+
 function createTurnUI(userText, turnMode, forSid, shown, into) {
   const turnSid = forSid !== undefined ? forSid : sessionId; // 本回合归属的会话：后台任务的事件不许影响用户已切走的界面
   const turn = document.createElement("div");
@@ -1218,7 +1242,7 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
   const av = avatarBits(assistant.avatar, assistant.name);
   // 气泡外面套一层 .u-stack：右对齐那一列里，除了气泡还要竖着摞「我发的图」那一排缩略图。
   // 宽度限制（78%）从气泡挪到了这一列身上，气泡和缩略图排现在共用同一条右边线
-  turn.innerHTML = `<div class="u-msg"><button class="u-copy" title="复制我的输入">⧉</button><div class="u-stack"><div class="bubble" translate="no"></div></div></div>
+  turn.innerHTML = `<div class="u-msg"><button class="u-copy" title="复制我的输入">⧉</button><div class="u-stack"><div class="bubble" translate="no"></div><time class="msg-time"></time></div></div>
     <div class="a-msg"><div class="avatar${av.cls ? " " + av.cls : ""}">${av.html}</div><div class="body"></div></div>`;
   // 气泡里不许出现给模型看的协议原文。两样东西要折起来：
   // ① 开头那一坨 `> `：那是「我引了它上一条里的哪句话」。原样糊出来，人得先翻过一屏
@@ -1929,6 +1953,7 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
       // 这趟任务在 Langfuse 上的地址，开了执行追踪才会来。来了就挂在回复下面——
       // 不然用户还得自己去 Langfuse 的列表里翻，猜哪条 trace 是刚才那趟
       if (/^https?:\/\//i.test(String(ev.url || ""))) turn._trace = String(ev.url);
+      if (ev.id) turn._traceId = String(ev.id); // 本地账本里的编号，「执行过程」按它精确定位
     } else if (ev.type === "dir") {
       // 本对话的成果子文件夹（只发直播不进回放；回放/续接场景由 /api/session 的 dir 字段补上）
       if (ev.dir && sessionDirs.get(turnSid) !== ev.dir) {
@@ -2103,6 +2128,7 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
   function finish(opts) {
     endText(); // 收尾前先把最后一段合回整块，下面挪 DOM、复制、存历史都按整块来读——这行必须留在最前面
     finished = true;
+    if (turn._liveTime && !turn.dataset.replyAt) turn.dataset.replyAt = new Date().toISOString();
     endRetry(); // 收尾了还在倒数「3 秒后重试」就是骗人，计时器也得停
     const 断了 = !!(opts && opts.interrupted);
     const pendingTools = turn.querySelectorAll(".step-card .spinner").length;
@@ -2211,7 +2237,11 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
       `<button class="ta-btn" data-a="up" title="有帮助">${ic("thumbs-up")}</button>` +
       `<button class="ta-btn" data-a="down" title="没帮助">${ic("thumbs-down")}</button>` +
       `<button class="ta-btn" data-a="regen" title="重新生成">${ic("refresh-cw")} 重新生成</button>` +
-      `<span class="ta-meta"></span>`;
+      (typeof amPlatformOwner === "function" && amPlatformOwner() ? `<button class="ta-btn" data-a="trace" title="看这一轮调了哪些工具、花了多久">${ic("activity")} 执行过程</button>` : "") +
+      `<time class="msg-time"></time><span class="ta-meta"></span>`;
+    if (typeof paintMsgTime === "function") paintMsgTime(bar.querySelector(".msg-time"), turn.dataset.replyAt);
+    const traceBtn = bar.querySelector("[data-a=trace]");
+    if (traceBtn) traceBtn.onclick = () => openTraceOfTurn(turn, turnSid);
     const u = turn._usage;
     const meta = bar.querySelector(".ta-meta");
     if (u && (u.prompt || u.completion)) {
@@ -2389,7 +2419,14 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
       paintStream(el);
     }
   };
-  return { handleEvent, finish, turn, body, sid: turnSid, markPendingInterject, stats, flush };
+  /** 回放用：这一轮记录里的时间。直播时不调，按当下算 */
+  function setTimes(userAt, replyAt) {
+    if (userAt) { turn.dataset.userAt = userAt; if (typeof paintMsgTime === "function") paintMsgTime(turn.querySelector(".u-msg .msg-time"), userAt); }
+    if (replyAt) turn.dataset.replyAt = replyAt;
+  }
+  /** 直播的这一轮：按当下记。回放绝不能走这里，老记录没存时间就不显示，不拿「现在」冒充 */
+  function liveNow() { turn._liveTime = true; setTimes(new Date().toISOString()); }
+  return { handleEvent, finish, turn, body, sid: turnSid, markPendingInterject, stats, flush, setTimes, liveNow };
 }
 
 // ---- 折叠条上那行「此刻在干什么」 ----------------------------------------

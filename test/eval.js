@@ -79,6 +79,43 @@ console.log("\n【2】★空目录喂进去，没有一条 check 该亮绿★ �
   }
 }
 
+// ---- 办公三题的正对照：用真库造真文件。判不出对的 check 跟判不出错的一样没用，只是没人发现 ----
+async function officeGold() {
+  const dirOf = (n) => { const d = path.join(TMP, "gold-" + n); fs.mkdirSync(d, { recursive: true }); return d; };
+  const red = (id, dir) => TASKS.find((t) => t.id === id).checks(dir).filter((c) => !c.ok);
+
+  const PptxGen = require("pptxgenjs");
+  const pptx = new PptxGen();
+  pptx.layout = "LAYOUT_16x9";
+  for (const t of ["示例网站上线 项目进展汇报", "本周完成：上线产品页；修复移动端菜单", "当前进展：正在补充用户指南", "下周计划：完成英文版；收集 5 条试用反馈"]) pptx.addSlide().addText(t, { x: 1, y: 1, w: 8, h: 2 });
+  const d1 = dirOf("pptx");
+  await pptx.writeFile({ fileName: path.join(d1, "project-update.pptx") });
+  let r = red("office-pptx", d1);
+  ok(r.length === 0, "office-pptx 标准答案全过", r.map((c) => c.name + "｜" + c.note).join("\n"));
+
+  const ExcelJS = require("exceljs");
+  const book = new ExcelJS.Workbook();
+  book.addWorksheet("明细").addRows([["订单号", "部门", "金额"], ["A001", "市场部", 1200.5]]);
+  book.addWorksheet("汇总").addRows([["部门", "合计"], ["市场部", 2000.5], ["研发部", 3450.25], ["销售部", 4000], ["总计", 9450.75]]);
+  const d2 = dirOf("xlsx");
+  await book.xlsx.writeFile(path.join(d2, "汇总.xlsx"));
+  r = red("office-xlsx", d2);
+  ok(r.length === 0, "office-xlsx 标准答案全过", r.map((c) => c.name + "｜" + c.note).join("\n"));
+
+  const { Document, Packer, Paragraph, HeadingLevel } = require("docx");
+  const doc = new Document({ sections: [{ children: [
+    new Paragraph({ text: "决议", heading: HeadingLevel.HEADING_1 }), new Paragraph("官网改版方案通过，预算不超过 5 万。"),
+    new Paragraph({ text: "待办", heading: HeadingLevel.HEADING_1 }), new Paragraph("小李：写新版文案，11 月 20 日前。"), new Paragraph("老张：接入支付，11 月 25 日前。"),
+  ] }] });
+  const d3 = dirOf("docx");
+  fs.writeFileSync(path.join(d3, "纪要.docx"), await Packer.toBuffer(doc));
+  r = red("office-docx", d3);
+  ok(r.length === 0, "office-docx 标准答案全过", r.map((c) => c.name + "｜" + c.note).join("\n"));
+  // 反向：改坏一处必须红
+  fs.writeFileSync(path.join(d1, "project-update.pptx"), "不是 zip");
+  ok(red("office-pptx", d1).length > 0, "★反向对照★ 扩展名对、内容是假的：判红");
+}
+
 // ---- ③ 正对照：新题给标准答案，必须全过 ----
 console.log("\n【3】新补的三道题，喂标准答案要全过（判不出对的 check 也是坏 check）");
 {
@@ -297,6 +334,9 @@ console.log("\n【10】评委 + 人工评测");
   ok(/过程记录/.test(m) && /一致率/.test(m) && /重判/.test(m), "方法论文档写了过程记录、人工一致率、重判");
 }
 
-fs.rmSync(TMP, { recursive: true, force: true });
-console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
-process.exit(fail ? 1 : 0);
+console.log("\n【办公三题】真库造真文件，判分要认得出");
+officeGold().catch((e) => ok(false, "办公题标准答案造得出来", String((e && e.stack) || e))).finally(() => {
+  fs.rmSync(TMP, { recursive: true, force: true });
+  console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
+  process.exit(fail ? 1 : 0);
+});

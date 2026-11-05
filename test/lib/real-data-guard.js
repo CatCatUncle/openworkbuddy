@@ -54,7 +54,7 @@ function realHome() {
  * 把 writeJsonAtomic 的 .<pid>.tmp、.bak、.corrupt-* 一并带上。
  */
 const DEV_DIRS = ["data", "workspace", "accounts", "skills", "plugins", "projects", "prefs", "backups", "logs",
-  path.join("eval", "runs"), ".openworkbuddy", "openworkbuddy-data", ".builtin-skills"];
+  path.join("eval", "runs"), path.join("eval", "sets"), ".openworkbuddy", "openworkbuddy-data", ".builtin-skills"];
 const DEV_FILES = ["config.json", "schedules.json", "experts.json", path.join("eval", "baseline.json"), path.join("eval", "judge-prompt.json")];
 
 // 按字面比路径会被绕过去：macOS / Windows 默认不分大小写，$R/DATA/audit.json 就是 $R/data/audit.json；

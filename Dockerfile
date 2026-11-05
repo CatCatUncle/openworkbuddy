@@ -13,9 +13,9 @@ FROM node:20-bookworm-slim
 
 # agent 常用的外部程序：python 跑技能脚本、git/curl 取东西、
 # fonts-noto-cjk 是为了生成的 Word/PPT 里中文不变方块。
-# 不需要就删这段，镜像能小一截。
+# bubblewrap 是 Linux 上的系统沙箱（src/platform/sandbox.js）：多人共用时成员的命令没有它就不跑，这个不能删。
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      python3 python3-pip ca-certificates git curl fonts-noto-cjk \
+      python3 python3-pip ca-certificates git curl fonts-noto-cjk bubblewrap \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

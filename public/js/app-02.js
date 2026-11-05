@@ -1968,6 +1968,14 @@ function splitTurns(transcript) {
   return turns;
 }
 
+/** 这个时刻落在第几轮：开始时间不晚于它的最后一轮。任务开跑比用户消息落盘晚一点点，留 5 秒余量 */
+function turnIndexAt(turns, at) {
+  const t = new Date(at).getTime() + 5000;
+  let hit = null;
+  turns.forEach((turn, i) => { const s = new Date((turn[0] || {}).at || 0).getTime(); if (s && s <= t) hit = i; });
+  return hit;
+}
+
 /** 回放若干轮，into 见 createTurnUI。返回最后那一问没等到回答的回合，要不要标「中断」由调用点定 */
 function replayTurns(turns, sid, into) {
   let ui = null, 未收尾 = null, bad = 0;
@@ -1975,8 +1983,10 @@ function replayTurns(turns, sid, into) {
     for (const entry of turn) {
       if (entry.type === "user") {
         ui = createTurnUI(entry.text, entry.mode, undefined, entry.shown, into);
+        ui.setTimes(entry.at);
         未收尾 = ui;
       } else if (entry.type === "assistant" && ui) {
+        ui.setTimes(null, entry.done_at || entry.at); // 老记录没存完成时间，用这一轮开始的时间
         // 一条事件画挂了只丢这一条：以前整段回放跟着停，后半截对话和正在跑的那一轮都没接上
         for (const ev of entry.events || []) {
           try { ui.handleEvent(ev); } catch (e) { if (!bad++) console.warn("[回放] " + sid + " 有事件没画出来：" + (ev && ev.type), e); }
@@ -2169,7 +2179,9 @@ async function openSession(id, opts) {
     chatCol.innerHTML = '<div style="text-align:center;color:var(--owb-text-3);font-size: 13px;padding:20px">该任务还没有保存的对话记录（可能创建于旧版本），继续对话即可。</div>';
   }
   updateSendUI();
-  const want = opts && Number.isInteger(opts.turn) && opts.turn >= 0 ? opts.turn : null;
+  // 从执行追踪跳回来带的是时间不是序号：trace 记的轮次遇到压缩和插话会错位，时间不会
+  const at = opts && opts.at ? turnIndexAt(turns, opts.at) : null;
+  const want = at != null ? at : opts && Number.isInteger(opts.turn) && opts.turn >= 0 ? opts.turn : null;
   if (want != null && jumpToTurn(want)) return; // 跳过去了就别再一脚滚到底把人甩开
   scrollBottom(true);
 }
@@ -2409,6 +2421,24 @@ function openProjectMenu(anchor, name) {
     }
   });
 }
+/**
+ * 侧栏直接列几个能点的项目：切项目是高频动作，得一眼看到、一下点到。
+ * 当前项目一定在里面——它不在常用前几个时占第一行，不用再单独写一行「当前 · xxx」。
+ *
+ * 行数跟窗口高度走：页签要始终露在外面。实测（真页面量的）窗口 830 高放得下四行，
+ * 每少一行省 36px；固定四行的话 680 高的笔记本上「资料库」「更多」会被挤进内部滚动。
+ * @param {number} [h]
+ */
+function projectRowsMax(h = window.innerHeight) {
+  return h >= 830 ? 4 : h >= 794 ? 3 : h >= 758 ? 2 : 1;
+}
+function sidebarProjects() {
+  const max = projectRowsMax();
+  const quick = quickProjects();
+  const active = quick.find((p) => p.name === activeProject);
+  const rows = quick.slice(0, max);
+  return !active || rows.includes(active) ? rows : [active, ...rows.slice(0, max - 1)];
+}
 function renderProjects() {
   const box = document.getElementById("proj-list");
   if (!box) return;
@@ -2419,8 +2449,9 @@ function renderProjects() {
   if (head) head.style.display = projectsLocked ? "none" : "";
   box.style.display = projectsLocked ? "none" : "";
   if (projectsLocked) { box.innerHTML = ""; return; }
-  box.innerHTML = `<div class="proj-context" title="${esc(activeProject || "")}"><span>当前</span> · <span translate="no">${esc(activeProject || "未选择")}</span></div>` + quickProjects().slice(0, 5).map(projectRowHtml).join("")
-    + (projects.length ? `<button type="button" id="proj-all" class="proj-all" aria-haspopup="dialog" aria-expanded="false"><span>查看全部</span><span class="proj-count">${projects.length}</span>${ic("chevron-right")}</button>` : "");
+  // 都摆下了就不用「全部项目」这一行：多一行没有多一点信息
+  box.innerHTML = sidebarProjects().map(projectRowHtml).join("")
+    + (projects.length > projectRowsMax() ? `<button type="button" id="proj-all" class="proj-all" aria-haspopup="dialog" aria-expanded="false"><span>全部项目</span><span class="proj-count">${projects.length}</span>${ic("chevron-right")}</button>` : "");
   bindProjectRows(box);
   const all = box.querySelector("#proj-all");
   if (all) all.onclick = () => openAllProjects(all);
@@ -2435,6 +2466,12 @@ document.getElementById("proj-add").onclick = (e) => {
   e.stopPropagation();
   openProjEditor(null);
 };
+// 窗口拉高拉矮时行数跟着变；只在跨过档位时重画，拖动窗口的每一帧不用都重排
+let projectRowsShown = projectRowsMax();
+window.addEventListener("resize", () => {
+  const rows = projectRowsMax();
+  if (rows !== projectRowsShown) { projectRowsShown = rows; renderProjects(); }
+});
 refreshProjects();
 
 // ================= 发送（运行中按钮变「停止」） =================
@@ -3014,6 +3051,8 @@ async function reattachOne(sid) {
   // createTurnUI 对眼前这条会把新回合直接挂到最后，以前挂完再找「最后一轮」，删掉的正是活的那份，留下一轮死的
   const stale = sid === sessionId ? [...chatCol.querySelectorAll(".turn")].pop() || null : null;
   const ui = createTurnUI(t[lastUser].text, t[lastUser].mode, sid, t[lastUser].shown);
+  ui.setTimes?.(t[lastUser].at); // 接回还在跑的那一轮：发送时间用记录里的
+  if (ui.turn) ui.turn._liveTime = true;
   const rc = makeRecCounter();
   let bad = 0;
   isReplaying = true;
@@ -3069,6 +3108,7 @@ async function adoptBusyRun(sid, text, mode, shown, ui, adopt) {
 async function runTurn(sid, text, mode, regen, shown, retried, adopt) {
   if (runningSessions.has(sid)) { qOf(sid).push({ text, mode, adopt }); if (sid === sessionId) renderQueueBar(); return; }
   const ui = createTurnUI(text, mode, sid, shown);
+  ui.liveNow?.();
   runningSessions.set(sid, { ui });
   updateSendUI();
   if (sid === sessionId) scrollBottom(true);

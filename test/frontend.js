@@ -5253,11 +5253,14 @@ const DEAD_CHECKS = `
     }
     // 工作目录里的成果文件。分组和摆法这两块要靠它：三种类型（文档/表格/图片）、
     // 两个时间段（今天 / 很久以前），刚好能验出「按类型」和「按时间」分出来的堆对不对
-    if (url === "/api/files") return j([
+    const WS_ROWS = [
       { name: "设计稿.png", size: 30000, mtime: new Date().toISOString() },
       { name: "数据.csv", size: 2048, mtime: new Date().toISOString() },
       { name: "月报.md", size: 4096, mtime: "2026-01-05T00:00:00Z" },
-    ]);
+    ];
+    if (url === "/api/files") return j(WS_ROWS);
+    // 文件夹页那段「最近动过」走后台算好的全量清单，不再单独走一遍树
+    if (url.startsWith("/api/library/all?") && url.includes("from=ws") && url.includes("limit=500")) return j({ items: WS_ROWS.map((f) => ({ src: "ws", path: f.name, size: f.size, mtime: f.mtime, fav: false })), total: WS_ROWS.length });
     // 「按任务看产出」的数据源。服务端把 transcript 里的 files 事件倒过来读了一遍：
     // 一组 = 一次对话，组里是那次对话真正写出来的文件；orphans 是工作目录里没人认领的那些
     // 「按任务」那一栏会带 ?orphan_limit= 要未归属的全量，比对时去掉查询串
@@ -6313,6 +6316,7 @@ const LIBWS_CHECKS = `
     }
     if (u === "/api/library" || u.startsWith("/api/library?")) return j({ dir: "", crumbs: [], dirs: [], files: [], notes: [] });
     if (u === "/api/files") return j(WSF);
+    if (u.startsWith("/api/library/all?") && u.includes("from=ws") && u.includes("limit=500")) return j({ items: WSF.map((f) => ({ src: "ws", path: f.name, size: f.size, mtime: f.mtime, fav: false })), total: WSF.length, ws_total: wsTotal, ws_capped: wsCapped });
     if (u.split("?")[0] === "/api/library/outputs") {
       outHits.push(u);
       const all = u.includes("orphan_limit=");
@@ -6577,7 +6581,8 @@ const LIBWS_CHECKS = `
   await renderLibPage();
   ok("工作区大到数不完（撞了两万的线）：未归属的数后面挂个 +，不装成精确数", secOf("未归属").textContent.includes("700+ 个"), secOf("未归属").textContent);
   page.querySelector('.lib-tab[data-view="dir"]').click();
-  await until(() => !!page.querySelector("[data-goto-ws]"));
+  // 看过的视图先拿上次的数据画，后台取到新的再换：等换完再比
+  await until(() => /20000\+/.test((page.querySelector("[data-goto-ws]") || {}).textContent || ""));
   ok("  ← 「全部」那条也挂 +", page.querySelector("[data-goto-ws]").textContent.trim() === "全部 20000+ 个",
      page.querySelector("[data-goto-ws]").textContent);
   wsCapped = false; wsTotal = 1712;
@@ -14089,8 +14094,13 @@ const SIDEBAR_CHECKS = `
   };
   hist.innerHTML = Array.from({ length: 200 }, (_, i) =>
     '<div class="hist-item"><span class="ht">第 ' + i + ' 趟活儿，标题还挺长的免得被省略号吃掉</span></div>').join("");
-  // 项目也塞几个：真实场景里导航自己也不短
-  document.getElementById("proj-list").innerHTML = Array.from({ length: 5 }, (_, i) =>
+  const projHead = $('.side-nav [data-view="proj"]');
+  const libEntry = $('.side-nav [data-view="lib"]');
+  ok("项目位于导航最上方，项目列表紧跟标题", $('.side-nav.top').firstElementChild === projHead && projHead.nextElementSibling.id === "proj-list");
+  ok("资料库在主导航下方，直接可见", libEntry.parentElement === $('.side-nav.top') && libEntry.nextElementSibling.id === "more-toggle");
+  ok("更多继续收纳模板、评测和追踪", [...$('#more-box').querySelectorAll('[data-view]')].map(el => el.dataset.view).join(',') === "prompts,eval,trace");
+  // 矮窗口按真实侧栏只露一个项目；其他导航全部展开，仍要有内部滚动。
+  document.getElementById("proj-list").innerHTML = Array.from({ length: 1 }, (_, i) =>
     '<div class="proj-item"><button type="button" class="proj-switch"><span class="pn">项目 ' + i + '</span></button></div>').join("");
   document.getElementById("more-box").classList.add("open");   // 「更多」展开，导航最高的那档
 
@@ -14150,6 +14160,11 @@ const SIDEBAR_CHECKS = `
   ok("导航和历史之间有那条拖拽线", !!h && h.getAttribute("role") === "separator"
      && h.getAttribute("aria-orientation") === "horizontal");
   initHistResizer();
+  const defaultBottom = nav.getBoundingClientRect().bottom;
+  const automationBottom = $('[data-view="autom"]').getBoundingClientRect().bottom;
+  // 页签不许被藏进滚动区：用户最早提的就是「看不到下面的 tab」
+  const moreEl = document.getElementById("more-toggle");
+  ok("默认所有入口都露在外面，不用滚动", !moreEl || moreEl.getBoundingClientRect().bottom <= nav.getBoundingClientRect().bottom + 1, G());
   const drag = (dy) => {
     const y0 = h.getBoundingClientRect().top;
     h.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, clientY: y0, pointerId: 1 }));
@@ -14183,6 +14198,8 @@ const SIDEBAR_CHECKS = `
   ok("回自适应之后导航又拿回了内容高度", nav.getBoundingClientRect().height >= 120,
      String(nav.getBoundingClientRect().height));
   // 键盘也得能推：这条线是 role=separator + tabindex=0，只能鼠标拖的话键盘用户就没这功能
+  // 矮屏默认只留 56px，先给键盘步长留空间，避免触底夹取被误判成少走了 48px。
+  setHistH(120);
   const h2 = hist.getBoundingClientRect().height;
   h.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowUp" }));
   ok("按 ↑ 一次，历史高 16px", Math.abs(hist.getBoundingClientRect().height - (h2 + 16)) <= 1,
@@ -15546,6 +15563,7 @@ const PROJ_CHECKS = `
   const head = document.querySelector('.side-nav [data-view="proj"]');
   const box = document.getElementById("proj-list");
   const hist = document.getElementById("history");
+  Object.defineProperty(window, "innerHeight", { value: 900, configurable: true }); // 测试窗口矮，这里按正常高度算
   // 一个老用户的侧栏：早年的会话根本没记项目名，后来的记的是「默认项目」
   const SESS = [
     { id: "s1", title: "整理季度数据", at: 3 },
@@ -15606,15 +15624,25 @@ const PROJ_CHECKS = `
   ok("新建项目仍可从菜单移除", !!document.querySelector('.proj-popover [data-act="remove"]'));
   closeProjectPopover();
 
-  // 快捷区有上限且顺序固定；当前项目在独立文字行显示，点击不会挤换快捷项。
+  // 快捷区最多四行且顺序固定；当前项目不在前四时占第一行，不再单独摆一行文字。
   projects = Array.from({ length: 12 }, (_, i) => ({ name: "项目 " + i, folder: "p" + i }));
   activeProject = "项目 11";
   projectQuickPrefs({ pinned: [], recent: ["项目 8"] });
   renderProjects();
-  ok("侧栏五个固定快捷项目，另行显示当前项目", box.querySelectorAll(".proj-item").length === 5 && box.querySelector('.proj-context').textContent.includes("项目 11") && [...box.querySelectorAll('.proj-item')].map(e=>e.dataset.name).join(',') === '项目 0,项目 1,项目 2,项目 3,项目 4');
+  ok("侧栏列四个可点的项目，当前项目不在前四时占第一行", box.querySelectorAll(".proj-item").length === 4 && [...box.querySelectorAll('.proj-item')].map(e=>e.dataset.name).join(',') === '项目 11,项目 0,项目 1,项目 2' && box.querySelector('.proj-item.active').dataset.name === "项目 11");
+  activeProject = "项目 1"; renderProjects();
   const fixedOrder = [...box.querySelectorAll('.proj-item')].map(e=>e.dataset.name).join(',');
-  activeProject = "项目 3"; rememberProject("项目 3"); renderProjects();
-  ok("切换项目只变选中态，快捷项次序不变", box.querySelector('.proj-item.active').dataset.name === "项目 3" && [...box.querySelectorAll('.proj-item')].map(e=>e.dataset.name).join(',') === fixedOrder);
+  activeProject = "项目 2"; rememberProject("项目 2"); renderProjects();
+  ok("切换项目只变选中态，快捷项次序不变", box.querySelector('.proj-item.active').dataset.name === "项目 2" && [...box.querySelectorAll('.proj-item')].map(e=>e.dataset.name).join(',') === fixedOrder);
+  ok("项目多时才有「全部项目」入口", !!box.querySelector("#proj-all"));
+  ok("★矮窗口少列几行★ 页签要露在外面", projectRowsMax(860) === 4 && projectRowsMax(800) === 3 && projectRowsMax(760) === 2 && projectRowsMax(680) === 1);
+  Object.defineProperty(window, "innerHeight", { value: 680, configurable: true }); renderProjects();
+  ok("最矮也留着当前项目", box.querySelectorAll(".proj-item").length === 1 && box.querySelector(".proj-item").dataset.name === "项目 2" && !!box.querySelector("#proj-all"));
+  Object.defineProperty(window, "innerHeight", { value: 900, configurable: true }); renderProjects();
+  const allProjects = projects;
+  projects = allProjects.slice(0, 3); activeProject = "项目 1"; renderProjects();
+  ok("都摆得下就不多占一行", box.querySelectorAll(".proj-item").length === 3 && !box.querySelector("#proj-all"));
+  projects = allProjects;
   activeProject = "项目 11"; renderProjects();
   ok("快捷区没有独立滚动条", !/auto|scroll/.test(getComputedStyle(box).overflowY));
   box.querySelector("#proj-all").click();
@@ -15626,10 +15654,26 @@ const PROJ_CHECKS = `
   ok("能搜到快捷区以外的项目", document.querySelectorAll('.proj-results .proj-item').length === 1 && document.querySelector('.proj-results .proj-item').dataset.name === "项目 9");
   document.querySelector('.proj-results .proj-more').click();
   document.querySelector('.proj-popover [data-act="pin"]').click();
-  ok("从完整列表置顶后进入快捷区，当前项目仍在", projectQuickPrefs().pinned.includes("项目 9") && !![...box.querySelectorAll(".proj-item")].find(e => e.dataset.name === "项目 9") && box.querySelector('.proj-context').textContent.includes("项目 11"));
+  ok("从完整列表置顶后进入快捷区，当前项目仍在", projectQuickPrefs().pinned.includes("项目 9") && !![...box.querySelectorAll(".proj-item")].find(e => e.dataset.name === "项目 9") && box.querySelector('.proj-item.active').dataset.name === "项目 11");
   box.querySelector("#proj-all").click();
   document.querySelector('.proj-search input').dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   ok("Esc 关闭面板并返回入口焦点", !document.querySelector('.proj-popover') && document.activeElement.id === "proj-all");
+
+  const originalFetch = fetch;
+  const switches = [];
+  let newTasks = 0;
+  fetch = async (url, options) => {
+    if (url === "/api/projects/switch") switches.push(JSON.parse(options.body).name);
+    return { ok: true, json: async () => [] };
+  };
+  document.getElementById("new-task").onclick = () => newTasks++;
+  box.querySelector('.proj-item[data-name="项目 9"] .proj-switch').click();
+  for (let i = 0; i < 20 && !newTasks; i++) await new Promise(r => setTimeout(r, 5));
+  ok("点击可选项目实际切换工作目录并进入新任务", switches.join() === "项目 9" && activeProject === "项目 9" && newTasks === 1 && box.querySelector('.proj-item.active').dataset.name === "项目 9");
+  box.querySelector('.proj-item.active .proj-switch').click();
+  ok("点击当前项目不重复切换、不额外建任务", switches.length === 1 && newTasks === 1);
+  fetch = originalFetch;
+  document.getElementById("new-task").onclick = null;
 
   // ---- 回到 locked：状态能来回切，不是只在首次加载对 ----
   __PROJ_REPLY = { projects: [], active: "", locked: true };

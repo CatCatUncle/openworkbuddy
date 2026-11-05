@@ -158,6 +158,7 @@ async function renderAccount() {
 
 // ================= 登录 / 注册 =================
 let authMode = "login"; // login | register | pair
+let authSetup = false; // 开服第一个账号：要输两遍密码、建完给一张「记下来」的卡
 let canRegister = false; // 管理员开了才给注册入口，省得点进去再被拒
 /**
  * 邀请码：管理后台生成、发给人、人拿它注册——这条路后端一直是通的
@@ -209,11 +210,16 @@ function applyAuthMode(setup) {
   // 有人从手机历史里点开旧的配对链接 —— 底下那半张脸已经是配对表单了
   // （用户名密码都收起来了、码也填好了、按钮写着「连接」），
   // 上面标题却还在说「创建管理员账号」，副标题教人怎么开管理员号。两句话互相打架。
-  document.getElementById("auth-title").textContent = pair ? "用配对码连接" : setup ? "创建管理员账号" : reg ? "注册" : "登录";
+  authSetup = !!setup && !pair;
+  document.getElementById("auth-pass2").style.display = authSetup ? "" : "none";
+  const ownerNote = document.getElementById("auth-owner-note");
+  ownerNote.style.display = authSetup ? "" : "none";
+  if (authSetup) ownerNote.innerHTML = `<div><b>这个账号是超级管理员。</b>模型 Key、成员、企业设置都归它管，一台服务只有一个。</div><div>请把用户名和密码记好。这里没有邮箱找回，忘了只能到这台机器上用命令重置。</div>`;
+  document.getElementById("auth-title").textContent = pair ? "用配对码连接" : setup ? "创建超级管理员账号" : reg ? "注册" : "登录";
   document.getElementById("auth-sub").textContent = pair
     ? "在已登录的电脑上打开 设置 → 安全 → 远程访问，生成配对码填这里。"
     : setup
-    ? "首次使用：第一个注册的账号就是管理员（能开号、能改全局设置）"
+    ? "首次使用：第一个注册的账号就是超级管理员"
     : reg
     ? invitePrefill
       ? "用管理员给你的邀请码开号，角色和部门都按他设好的来"
@@ -296,6 +302,8 @@ function forgotHintHtml() {
     <code>openworkbuddy passwd your-username</code>
     <div>会显示一个新密码，登录后到「设置 → 账号」改掉。</div>
     <div>用别人的服务器？请管理员在后台「成员」里重置。</div>
+    <div>忘了用户名、不知道谁是超级管理员？敲这句查：</div>
+    <code>openworkbuddy owner</code>
     <div>手机也丢了、二次验证进不去？在同一台机器上再敲一句这个：</div>
     <code>openworkbuddy 2fa your-username --off</code>`;
 }
@@ -316,6 +324,7 @@ async function submitAuth() {
   const errEl = document.getElementById("auth-err");
   if (!username || !password) { errEl.textContent = "用户名和密码都要填"; return; }
   if (twoFaStep && !code) { errEl.textContent = "把验证器上的 6 位数字填进来"; return; }
+  if (authSetup && password !== document.getElementById("auth-pass2").value) { errEl.textContent = "两次输入的密码不一样，再看一眼"; return; }
   const reg = authMode === "register";
   const go = document.getElementById("auth-go");
   go.disabled = true; // scrypt 要算一会儿，不锁住的话用户会连点，服务端那边就多几次限流计数
@@ -330,6 +339,7 @@ async function submitAuth() {
     // 剩 0 条的时候手机再丢一次就真进不来了，而这件事没人会主动去查
     const left = resp.headers.get("X-Recovery-Left");
     if (left !== null) { try { sessionStorage.setItem("owb-recovery-left", left); } catch {} }
+    if (authSetup) return showOwnerSaved(username);
     return location.reload(); // 带上 cookie 重新初始化整个界面（最省事也最不易漏）
   }
   if (d.need_2fa) {
@@ -357,6 +367,25 @@ async function submitAuth() {
     document.getElementById("auth-invite").style.display = "";
     document.getElementById("auth-invite").focus();
   }
+}
+/**
+ * 超级管理员建好了：停在这一页说清楚，再进主界面。
+ * 这个账号忘了密码没人能替他重置，而这是他唯一一次会认真看这句话的时机。
+ * 用户名写在卡上，密码不写：截图、录屏都可能留下来。
+ */
+function showOwnerSaved(username) {
+  const card = document.querySelector("#auth-mask .auth-card");
+  card.innerHTML = `<h2>超级管理员已创建</h2>
+    <div class="auth-owner-note">
+      <div>用户名：<b translate="no">${esc(username)}</b></div>
+      <div>现在把用户名和密码存进密码管理器。</div>
+      <div>忘了密码，在运行这个服务的电脑上开终端敲：</div>
+      <code translate="no">openworkbuddy passwd ${esc(username)}</code>
+      <div>忘了用户名，敲这句查：</div>
+      <code translate="no">openworkbuddy owner</code>
+    </div>
+    <button type="button" id="auth-owner-ok" class="btn-brand" style="width:100%;margin-top:12px">记好了，开始使用</button>`;
+  document.getElementById("auth-owner-ok").onclick = () => location.reload();
 }
 /**
  * 拿配对码换一条设备令牌。
@@ -2420,6 +2449,7 @@ async function renderEvalPage() {
   // 每张只说清「凭什么算过」。控件自己归一张卡，别再跟标题挤在一行里换行乱飞。
   page.innerHTML = `<div class="ev">
     <div class="ev-run">
+      <label class="ev-f"><span>评测集</span><select id="ev-set"><option value="">内置题库</option></select></label>
       <label class="ev-f"><span>被测模型</span><select id="ev-model">${opts(cur)}</select></label>
       <label class="ev-f"><span>每题次数</span><select id="ev-repeat" title="重复跑才看得出稳定性，费用按次数翻倍">
         <option value="1">1 次 · 最快</option><option value="3">3 次 · 测稳定</option><option value="5">5 次 · 严格</option>
@@ -2437,6 +2467,7 @@ async function renderEvalPage() {
       <div class="ev-line"><b>${ic("user")}人工评测</b><p>打开一轮成绩，逐题打星、逐条标${ic("check")}${ic("x")}；<em>和评委对账</em>，算出评委靠不靠谱。</p></div>
     </div>
     <div class="ev-jp" id="ev-jp" hidden></div>
+    <div id="ev-sets"></div>
     <div>
       <div class="ev-sec">用户反馈<span>近 30 天对话里的 ${ic("thumbs-up")}${ic("thumbs-down")}</span></div>
       <div id="ev-fb">加载中…</div>
@@ -2449,6 +2480,7 @@ async function renderEvalPage() {
     </div>
   </div>`;
   renderFeedbackSummary();
+  renderEvalSets();
   // 评委和被测同一个模型：自偏好是 LLM 评委最出名的偏差之一，选的当下就说
   const selfWarn = () => {
     const a = document.getElementById("ev-model").value, b = document.getElementById("ev-judge").value;
@@ -2472,6 +2504,8 @@ async function renderEvalPage() {
     const judge = document.getElementById("ev-judge").value;
     const repeat = +document.getElementById("ev-repeat").value || 1;
     const body = { model, repeat };
+    const evalSet = document.getElementById("ev-set").value;
+    if (evalSet) body.set = evalSet;
     if (judge) body.judge = judge;
     const r = await fetch("/api/eval/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((x) => x.json()).catch(() => null);
     if (!r || r.error) return toast(((r && r.error) || "启动失败"), "circle-x");

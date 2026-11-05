@@ -233,12 +233,12 @@ git clone https://github.com/CatCatUncle/openworkbuddy.git && cd openworkbuddy
 bash deploy.sh --domain buddy.example.com # Docker + automatic HTTPS
 ```
 
-Multi-tenant, with seats, quotas and one-click offboarding. **Register the admin first** — the first account becomes super admin.
+Multi-tenant, with seats, quotas and one-click offboarding. **Register the admin first** — the first account becomes super admin, so keep that password safe. Members cannot read company keys, and the admin console decides whether they may add their own models. Direct Linux installs need bubblewrap first.
 → [部署](docs/部署.md) · [ops handbook](deploy/README.md) · [多人协作](docs/多人协作.md) · [账号与部署运维](docs/账号与部署运维.md) (Chinese)
 
 ## Models: DeepSeek, Qwen, Kimi, Ollama, Claude Code, Codex
 
-**Settings → Models**: pick a preset (OpenAI / Anthropic / OpenRouter / DeepSeek / Qwen / Zhipu / Kimi / Volcengine Ark / Ollama), paste the key, save — it applies immediately. Image, voice and video models have their own table. Reference → [配置模型](docs/配置模型.md) (Chinese)
+**Settings → Models**: pick a preset (OpenAI / Anthropic / OpenRouter / DeepSeek / Qwen / Zhipu / Kimi / Volcengine Ark / Ollama), paste the key, save — it applies immediately. Image, voice, transcription and video models have their own table, tried in order when several are set; retired models warn ahead of shutdown. Reference → [配置模型](docs/配置模型.md) (Chinese)
 
 Assistant mode can also select local Codex, Claude Code, or a configured API model. It follows your current engine by default; changing its selection does not change scheduled task settings.
 
@@ -249,7 +249,7 @@ Assistant mode can also select local Codex, Claude Code, or a configured API mod
 
 `openworkbuddy` shares **one** set of config, skills, memory, connectors and sessions with the desktop app — start something in the terminal and you can watch it and chime in from your phone; stop halfway on the desktop and `openworkbuddy resume` picks it up.
 
-The default display keeps one progress line, the final answer and files actually changed in the current turn. Use `/details` for tool output, `/usage` for token usage, and `/verbose on` for detailed activity. Say “open it” after creating a page to open the session's result with a local application, or use `/open 1` and `/open subdirectory/index.html`.
+Inside a source folder it uses a lean coding profile and edits in place. The default display keeps one progress line, the final answer and files actually changed in the current turn. Use `/details` for tool output, `/usage` for token usage, and `/verbose on` for detailed activity. Say “open it” after creating a page to open the session's result with a local application, or use `/open 1` and `/open subdirectory/index.html`.
 
 ```bash
 npm link # once: install the global command (or just run `node cli.js …`)
@@ -276,6 +276,18 @@ The built-in Agent alternates model decisions and tool execution, with concurren
 
 ## What's new
 
+- **Nov 6** v0.19.0: multi-user Linux runs member commands in a system sandbox, closing a blocklist bypass that could read key files. Install bubblewrap before upgrading. See [deployment](docs/部署.md).
+
+- **Nov 6** The library responds immediately with tens of thousands of files because scans moved to a background thread. Concurrent tasks queue by available memory, and heavy rendering has its own limit.
+
+- **Nov 6** CLI coding sends 75% less prompt text per turn, runs in place inside source folders, and loads extra tools on demand.
+
+- **Nov 6** Eval sets can be uploaded as CSV, Excel or TXT, or built in the app, with weights, required items and penalties. Human and judge agreement reports Cohen's kappa.
+
+- **Nov 6** Retired Ark models warn ahead of shutdown; image and video generation fall back in order. Doubao voice, transcription and custom speech APIs are added; test them against your account first.
+
+- **Nov 6** Hover a message to see its time, jump from a reply to its trace and back, and read TTFT and TPOT in traces. The sidebar lists projects directly without pushing tabs away.
+
 - **Nov 4** v0.18.4: model setup: choose cloud model IDs, refresh key-specific lists, and diagnose retired or unauthorized Ark endpoints. See [configuration](docs/配置模型.md).
 
 - **Nov 3** v0.18.3: recoverable file cleanup protects output directories and active tasks; previews fit automatically on open, and long tasks reconcile progress during execution. See [cleanup and recovery](docs/文件清理与恢复.md) (Chinese).
@@ -292,23 +304,11 @@ The built-in Agent alternates model decisions and tool execution, with concurren
 
 - **Oct 30** Inbox events stay in date order when read, including successful results. Project selection keeps shortcuts in place. CLI history has its own retention window and directory-based project ownership, with --project support.
 
-- **Oct 30** Temporary approvals are scoped to account and task. External files can be imported as working copies; legacy output links recover only with matching path, size and modification-time evidence.
-
-- **Oct 29** Library grouping and layout switches now update locally without reloading directory or task indexes. File rows, thumbnails and previews are reused, and offscreen layout work is reduced.
-
-- **Oct 29** Automation editing now gives instructions a larger area that grows with content, scrolls long tasks, and keeps Save visible on smaller windows.
-
-- **Oct 29** The sidebar shows up to five current and frequent projects, with pins, recent use and full-list search. The picker opens beside the Projects heading; editing and removal move into a row menu.
-
-- **Oct 27** Fixed same-name image mix-ups on the canvas. Thumbnails and previews stay bound to the original file and project; missing files are never substituted, and late file lists are ignored after project switches.
-
-- **Oct 27** The mobile app UI adapts to the visible viewport, uses horizontal settings tabs and full-screen file previews, and closes navigation after selection.
-
 Format support and limits: [file previews and conversion](docs/文件预览与转换.md). Full history: [CHANGELOG](CHANGELOG.en.md).
 
 ## ⚠️ This agent has a shell
 
-It runs commands, edits files and goes online, so there are command approvals, file blocklists, a URL allowlist, an audit log and four permission levels; on macOS and Windows its commands also run in a system sandbox that can't read your Keys or ledger. Third-party skills get a static check before install and risky ones are refused by default — but it isn't antivirus; read the `skill.md` yourself.
+It runs commands, edits files and goes online, so there are command approvals, file blocklists, a URL allowlist, an audit log and four permission levels; on macOS and Windows its commands also run in a system sandbox that can't read your Keys or ledger; multi-user Linux uses bubblewrap and refuses member commands if isolation cannot start. Third-party skills get a static check before install and risky ones are refused by default — but it isn't antivirus; read the `skill.md` yourself.
 **Read [安全](docs/安全.md) before exposing it to the internet** — defaults are tuned for local use.
 
 ## Contributing

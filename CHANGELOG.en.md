@@ -9,6 +9,18 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 ## 2026
 
+- **Nov 6** v0.19.0: multi-user Linux now runs member commands in a bubblewrap sandbox and refuses them if isolation cannot start, closing a blocklist bypass that could read key files (reproduced locally with a test key; no production incident found). **Upgrade note:** install bubblewrap first on Linux multi-user deployments. The Docker image includes it and compose must keep SYS_ADMIN and related options, or member commands are refused. Set `security.allow_member_unsandboxed` to opt out. If you gave out member accounts before upgrading, consider rotating keys. macOS and Windows already had a system sandbox.
+
+- **Nov 6** The library responds immediately with tens of thousands of files: scans moved to a cached background thread, views paint existing content before refreshing, and listing fell from about 100ms to 5ms. Concurrent tasks queue by available memory, heavy rendering has its own limit, child processes run at lower priority, and queue time does not count against task deadlines.
+
+- **Nov 6** CLI coding profile: 75% less prompt text per turn (49,635 to 12,643 characters), tools down from 44 to 23 with load_tools on demand, in-place runs inside source folders, and a --profile flag.
+
+- **Nov 6** Eval sets can be uploaded as CSV, Excel, TXT or JSON, or built in the app. Criteria support weights, required items and penalties with HealthBench-style scoring, and human and judge agreement reports Cohen's kappa. Three office tasks cover PPT, Word and Excel.
+
+- **Nov 6** Built-in Ark retirement table warns ahead of shutdown and hides retired models; image and video generation fall back in order without resubmitting accepted or moderated jobs. Doubao voice, transcription and custom speech APIs are added, built from the official docs; test them against your account first. Admins can control member-supplied models, and first owner setup asks for the password twice with a reminder.
+
+- **Nov 6** Hover a message to see its time, jump from a reply to its trace and back, and read TTFT, TPOT and tok/s in traces. The sidebar lists projects directly without pushing tabs away, sized to window height. AGENTS.md adds a licensing notice for AI assistants.
+
 - **Nov 4** v0.18.4: cloud onboarding supports selecting and refreshing models or entering Ark endpoint IDs. Discovery caches are scoped by URL, key and protocol; saved credentials cannot follow changed destinations. Fixed Claude/Gemini/Ollama discovery, Ark modality metadata and stale replies; refreshed Ark/DeepSeek defaults. Endpoint access errors distinguish unavailability from invalid IDs, and Seedance 2.x uses JSON options with current duration/resolution limits.
 
 - **Nov 3** v0.18.3: intermediate-file cleanup and library deletion use recoverable trash, with native desktop Trash/Recycle Bin or server-side original bytes and recovery records. Failures never fall back to permanent deletion. Generic output directory names are retained, dependency caches are unchecked by default, active work blocks cleanup, and the new UI refuses deletion through older servers.

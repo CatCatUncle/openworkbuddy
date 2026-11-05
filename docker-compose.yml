@@ -27,6 +27,14 @@ services:
       # 填了却没挂：等于把限流闸拆给外网（伪造一行头就是一个新 IP）——所以只在真有反代时填。
       # deploy.sh --domain 起 caddy 时会自动填 1。
       OPENWORKBUDDY_TRUST_PROXY: ${OPENWORKBUDDY_TRUST_PROXY:-0}
+    # 系统沙箱要建挂载命名空间，Docker 默认不给。三行缺一样都立不起来（在真容器里逐项试过）。
+    # 进沙箱之前 bubblewrap 把能力全部丢掉，agent 的命令拿不到 SYS_ADMIN；这几项放开的是服务进程这一层。
+    # 删掉这几行服务照常起，但多人共用时成员的命令一律拒绝执行（宁可不跑，不把 Key 交出去）。
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
     volumes:
       - ${OPENWORKBUDDY_DATA:-./openworkbuddy-data}:/data
     ports:

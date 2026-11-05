@@ -118,6 +118,14 @@ function folderLayout(dir, anchors) {
   return { layout: repo ? "flat" : "per_chat", locked: false, chosen: false, repo };
 }
 
+// 源码后缀。只给命令行用：在终端里 cd 进一个有脚本的文件夹再开工，要改的就是这些文件。
+// 桌面端不看它：用户挑的文件夹里混着一个 .py，不该因此改掉成果的放法
+const SOURCE_EXT = /\.(?:[cm]?[jt]sx?|py|go|rs|java|kt|swift|rb|php|c|cc|cpp|h|hpp|cs|sh|lua|dart|scala|vue|svelte)$/i;
+/** 这个文件夹最外层有没有源码文件 @param {string} dir */
+function hasSourceFiles(dir) {
+  try { return fs.readdirSync(dir).some((n) => SOURCE_EXT.test(n)); } catch { return false; }
+}
+
 /**
  * 这个根下要不要按对话分成果文件夹（口径见 folderLayout）
  * @param {string} dir 当前工作目录
@@ -317,7 +325,7 @@ function recordedFileMatches(sess, rel, key, root) {
   } catch { return false; }
 }
 
-module.exports = {
+module.exports = { hasSourceFiles,
   canonDir, samePlace, appRoot, looksLikeRepo, folderLayout, perChatRoot, setLayout, taskSlug, dayStamp, freeDir, dropIfEmpty,
   sessDirIn, sessDirAt, stashSessDir, useSessDirAt, newSessDir, flatOutputs, recoverFileRoots, recordedFileMatches,
 };

@@ -111,6 +111,7 @@ const mediaModels = require("./src/core/model/media-models");
 const mediaHealth = require("./src/core/model/media-health"); // 连不通的媒体渠道熔断表：设置页要显示，保存时要清空 // 图/视频/语音/视觉：渠道表 + 每路多模型
 const chatModels = require("./src/core/model/chat-models");
 const modelDiscovery = require("./src/core/model/model-discovery");
+const retiredModels = require("./src/core/model/retired-models"); // 服务商宣布下线的型号：设置页提醒、测试连接说清楚
 const memberModels = require("./src/core/model/member-models"); // 成员能用哪些对话模型：管理员共享的 + 自己填 Key 的 // 对话模型：渠道共用一把 Key（跟上面共用 config.providers）
 const systemOne = require("./src/core/judge/systemone"); // 判断模型（Jev）的纯逻辑：请求怎么拼、回答怎么读
 const taskVerdict = require("./src/core/automation/task-verdict"); // 定时任务裁定层的纯函数（这一轮办完没有 / 怎么问 / 怎么读）
@@ -1788,6 +1789,7 @@ app.get("/api/files", (req, res, next) => {
 // 根跟 /api/files 是同一个：getWorkspaceDir() 已经被 tenantScope 绑到这个人所属组织、当前项目的工作区上。
 // dir 里的 ..、绝对路径、链接一律 400；文件夹已经没了回 404，前端据此退回根。
 const wsBrowse = require("./src/domains/library/ws-browse");
+const wsIndex = require("./src/domains/library/ws-index"); // 工作区清单：后台线程走树，过期了先给旧的
 app.get("/api/files/tree", (req, res) => {
   try {
     const root = getWorkspaceDir();
@@ -2064,6 +2066,9 @@ app.post("/api/model-test", async (req, res) => {
     const list = isMedia ? config.media_models || [] : config.models || [];
     const m = list[Number(b.index)];
     if (!m) return res.json({ ok: false, error: "这一行已经不在了（多半是刚删过或者别处改了配置），刷新一下再试" });
+    // 测得通也要说：这个型号下个月就没了，现在能用不代表能继续用
+    const retire = retiredModels.noteOf(retiredModels.retirementOf(m.model));
+    const reply = (/** @type {any} */ o) => res.json(!retire ? o : { ...o, retire, error: o.error ? `${retire}（${o.error}）` : "", note: o.ok ? `${o.note ? o.note + "。" : ""}注意：${retire}` : o.note });
     const chanId = isMedia ? m.provider : m.channel;
     const p = (config.providers || []).find((x) => x.id === chanId);
     if (!p) return res.json({ ok: false, error: chanId ? "这一行挂的渠道已经被删了，编辑它重新挑一条" : "这一行没挂渠道，编辑它挑一条渠道再测" });
@@ -2075,7 +2080,7 @@ app.post("/api/model-test", async (req, res) => {
       const hit = (mediaModels.resolve(config).list || []).find((x) => x.id === m.id) || {};
       const capCn = mediaModels.CAP_CN[m.cap] || m.cap;
       const r = await probeMediaModel({ base_url: hit.base_url || p.base_url, api_key: hit.api_key || p.api_key, model: m.model, capCn, kind: p.kind });
-      return res.json({ ok: !r.error, ms: Date.now() - t0, model: m.model, partial: !!r.partial, note: r.note || "", error: r.error || "" });
+      return reply({ ok: !r.error, ms: Date.now() - t0, model: m.model, partial: !!r.partial, note: r.note || "", error: r.error || "" });
     }
     // 对话列表里混进了生图 / 视频 / 配音的型号：不拿它发对话请求，改走不花钱的清单测活，结论只给半格
     const odd = mediaModels.mediaCapOf(m.model);
@@ -2083,10 +2088,10 @@ app.post("/api/model-test", async (req, res) => {
       const capCn = mediaModels.CAP_CN[odd] || odd;
       const r = await probeMediaModel({ base_url: mediaModels.baseForUse(p.base_url, "media", p.kind), api_key: p.api_key, model: m.model, capCn, kind: p.kind });
       const pre = `「${m.model}」看名字是${capCn}，没拿它发对话请求。`;
-      return res.json({ ok: !r.error, ms: Date.now() - t0, model: m.model, partial: true, note: r.note ? pre + r.note : "", error: r.error ? pre + r.error : "" });
+      return reply({ ok: !r.error, ms: Date.now() - t0, model: m.model, partial: true, note: r.note ? pre + r.note : "", error: r.error ? pre + r.error : "" });
     }
     const why = await probeModel({ provider: mediaModels.protoOfChannel(p), base_url: mediaModels.baseForUse(p.base_url, "chat", p.kind), api_key: p.api_key, model: m.model }, { custom: ownBase(p.kind, p.base_url) });
-    res.json({
+    reply({
       ok: !why, ms: Date.now() - t0, model: m.model, error: why || "",
       note: why ? "" : `「${m.model}」在渠道「${p.name}」上答得上话`,
     });
@@ -2198,6 +2203,18 @@ function takeMovedOnBoot() {
   movedOnBoot = [];
   return m;
 }
+function modelRetireNotes() {
+  const seen = new Set();
+  const out = [];
+  for (const m of [...(config.models || []), ...(config.media_models || [])]) {
+    const id = String((m && m.model) || "");
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const r = retiredModels.retirementOf(id);
+    if (r && (r.gone || r.soon)) out.push({ name: m.name || id, model: id, gone: r.gone, days: r.days, to: r.to, note: retiredModels.noteOf(r) });
+  }
+  return out.sort((a, b) => Number(b.gone) - Number(a.gone) || a.days - b.days);
+}
 app.get("/api/settings", (req, res) => {
   // 个人偏好压在全局配置上面。没有个人偏好文件时这几个 *Cfg 原样返回 config 的那一份
   const myAgent = prefs.agentCfg(config);
@@ -2234,6 +2251,8 @@ app.get("/api/settings", (req, res) => {
     // 成员能不能自己填 Key；平台管理员在模型页那张「成员的模型」卡片上开关
     member_byok: memberModels.byokAllowed(config),
     model_health: healthSummary(),
+    // 配着的模型里，服务商已经下线或快下线的。在设置页说，别等任务跑到那一步才报错
+    model_retire: isPlatformOwner(req) ? modelRetireNotes() : [],
     // 界面靠它决定「服务器级的那些输入框画不画」：画了却一存就 403，比不画更气人
     platform_owner: isPlatformOwner(req),
     // 「助理设置」那页成员也画：他绑的是自己那套通道（/im/my/*）
@@ -2248,6 +2267,8 @@ app.get("/api/settings", (req, res) => {
       max_runtime_ms: config.agent.max_runtime_ms || 1800000,
       auto_continue_rounds: config.agent.auto_continue_rounds || 0,
       gen_parallel_max: config.agent.gen_parallel_max || 2,
+      max_parallel_tasks: config.agent.max_parallel_tasks || 0,
+      auto_parallel_tasks: require("./src/core/automation/run-governor").autoTasks(require("os").totalmem()),
       llm_timeout_ms: config.agent.llm_timeout_ms || 300000,
       max_context_chars: config.agent.max_context_chars || 0, // 0 = 没设，按模型窗口算（agent.js contextBudgetChars）
       max_tokens_budget: config.agent.max_tokens_budget || 0,
@@ -2328,7 +2349,9 @@ app.get("/api/settings", (req, res) => {
     providers: (config.providers || []).filter((p) => isPlatformOwner(req) || p.share_members !== false).map((p) => ({
       id: p.id, name: p.name, kind: p.kind, base_url: p.base_url, api: p.api || "",
       share_members: p.share_members !== false,
-      image_api: p.image_api || "", video_api: p.video_api || "", tts_api: p.tts_api || "",
+      image_api: p.image_api || "", video_api: p.video_api || "", tts_api: p.tts_api || "", asr_api: p.asr_api || "",
+      // 模板里可能写着请求头，只给管理员看
+      ...(isPlatformOwner(req) && p.http_api ? { http_api: p.http_api } : {}),
       api_key: p.api_key ? "********" : "",
       key_hint: isPlatformOwner(req) ? keyHint(p.api_key) : "",
       has_key: !!p.api_key,
@@ -2554,6 +2577,8 @@ app.post("/api/settings", (req, res) => {
       if (b.agent.auto_continue_rounds !== undefined) config.agent.auto_continue_rounds = Math.max(0, Math.min(20, Math.round(+b.agent.auto_continue_rounds) || 0));
       // 上限 4：这一档每条都花钱，给得太大等于把「手滑并发十条视频」变成一次点击的事
       if (b.agent.gen_parallel_max !== undefined) config.agent.gen_parallel_max = Math.max(1, Math.min(4, Math.round(+b.agent.gen_parallel_max) || 2));
+      // 0 = 按这台机器的内存自动定
+      if (b.agent.max_parallel_tasks !== undefined) config.agent.max_parallel_tasks = Math.max(0, Math.min(32, Math.round(+b.agent.max_parallel_tasks) || 0));
       if (b.agent.llm_timeout_ms) config.agent.llm_timeout_ms = Math.max(30000, +b.agent.llm_timeout_ms);
       // 下限 2 万字符：再小连最近几步的工具原文都留不住，agent 会失忆式反复重做
       if ("max_context_chars" in b.agent) {
@@ -2925,7 +2950,8 @@ app.get("/api/traces", (req, res) => {
   if (traceOwnerOnly(req, res)) return;
   try {
     const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 50));
-    res.json({ traces: tracing.getTracer(config).localTraces({ ...traceReadOptions(), limit }) });
+    const sessionId = String(req.query.session || "").slice(0, 120);
+    res.json({ traces: tracing.getTracer(config).localTraces({ ...traceReadOptions(), limit, sessionId }) });
   } catch (e) { res.status(500).json({ error: e.message, traces: [] }); }
 });
 app.get("/api/traces/:id", (req, res) => {
@@ -5148,13 +5174,16 @@ function statLookup(roots) {
   };
 }
 
-app.get("/api/library/outputs", (req, res) => {
+app.get("/api/library/outputs", async (req, res, next) => { try {
   // 认领和「未归属」都拿**整个**工作区比，不拿 outputFiles()：那份只有最近的 500 个、最深 3 层，
   // 拿它比的话，第 4 层往下的文件既不算任务产出、也不进「未归属」，整页哪儿都找不到它。
-  // full 仍按 outputFiles() 算：它说的是「files 事件那份快照截没截断」，老调用方靠它判「已删除」
-  const walk = wsBrowse.walkAllCached(getWorkspaceDir(), { appDataDir: dataPath("data") });
-  const meta = new Map(walk.files.map((f) => [f.name, f]));
-  const scope = filesScope(outputFiles());
+  // full 说的是「files 事件那份快照截没截断」，老调用方靠它判「已删除」。那份快照是这份清单的子集，
+  // 全量不到 500 个它就一定没截；到了就报「截了」，老调用方走保守那条路。
+  // 以前这里为了这一个布尔值再同步走一遍树：两万文件时每次请求主线程白停 100ms
+  const walk = await wsIndex.walk(getWorkspaceDir(), { appDataDir: dataPath("data") });
+  const { byName: meta, deckDirs } = wsIndex.derive(walk);
+  const scope = filesScope(walk.files);
+  if (walk.capped) scope.full = false;
   // 未归属回多少条：默认 200（文件夹视图、搜索只借这份数据反查「出自哪次任务」，用不着全量）；
   // 「按任务」视图要翻完全部，会自己带上一个大数
   const lim = Math.max(0, Math.min(wsBrowse.WALK_CAP, parseInt(String((req.query || {}).orphan_limit || ""), 10) || 200));
@@ -5164,7 +5193,6 @@ app.get("/api/library/outputs", (req, res) => {
   const isFav = (n) => favs.has("ws:" + n);
   // 网页幻灯片：同目录有 deck.json 的 html 标 deck:true，前端据此归到「幻灯片」页签。
   // 只看这次遍历已经拿到的文件名，不读 html 正文、不多一次 stat——285 个 html 的工作区读一遍正文就是几十 MB
-  const deckDirs = new Set(walk.files.filter((f) => /(^|\/)deck\.json$/.test(f.name)).map((f) => path.posix.dirname(f.name)));
   const deckOf = (n) => (deckDirs.size && /\.html?$/i.test(n) && deckDirs.has(path.posix.dirname(n)) ? { deck: true } : {});
   const statOf = statLookup(knownRoots(req).slice(0, 12)); // 根的条数不设限的话，一次请求能把 stat 乘成几万次
   const claimed = new Set();
@@ -5200,7 +5228,7 @@ app.get("/api/library/outputs", (req, res) => {
   // 只把要回的那一页拼成行：两万个文件逐个拼对象、再扔掉一万八，是白干
   const page = orphans.slice(off, off + lim).map((f) => ({ name: f.name, size: f.size, mtime: f.mtime, gone: false, fav: isFav(f.name), ...deckOf(f.name) }));
   res.json({ tasks, orphans: page, orphan_total: orphans.length, orphan_offset: off, ws_total: walk.files.length, ws_capped: walk.capped, ...scope });
-});
+} catch (e) { next(e); } });
 
 // 能当正文搜的类型。二进制（图片/压缩包/PDF）只搜文件名——把 PDF 当 utf8 读进来
 // 匹配到的只会是一堆乱码里的巧合，比搜不到更糟
@@ -5276,7 +5304,7 @@ function libWalk(rel = "", depth = 0, out = []) {
  *   note  灵感笔记
  *   task  任务标题，附带这条任务的产出文件——「那份周报是哪次做的」这种找法才是常态
  */
-app.get("/api/library/search", (req, res) => {
+app.get("/api/library/search", async (req, res, next) => { try {
   const q = String((req.query || {}).q || "").trim().slice(0, 120);
   if (!q) return res.json({ q: "", lib: [], ws: [], notes: [], tasks: [], scanned: 0, capped: false });
   const needle = q.toLowerCase();
@@ -5321,7 +5349,7 @@ app.get("/api/library/search", (req, res) => {
   // 名字按整个工作区搜（不是 outputFiles() 那最近 500 个、最深 3 层）；新的在前，
   // 所以正文预算先花在最近的文件上，翻不完照旧报 capped
   const wsRoot = getWorkspaceDir();
-  const wsWalk = wsBrowse.walkAllCached(wsRoot, { appDataDir: dataPath("data") });
+  const wsWalk = await wsIndex.walk(wsRoot, { appDataDir: dataPath("data") });
   const wsAll = wsWalk.files;
   const ws = [];
   for (const f of wsAll) {
@@ -5362,7 +5390,7 @@ app.get("/api/library/search", (req, res) => {
 
   // ws_capped：工作区文件多到全量那趟没走完，名字也没搜全。跟 capped（正文预算用完）是两回事，分开报
   res.json({ q, lib, ws, notes, tasks, scanned: budget.scanned, capped: budget.capped, ws_capped: wsWalk.capped });
-});
+} catch (e) { next(e); } });
 
 // ---------- 长期记忆 ----------
 // 手写区（memory.md，全局共享）+ 条目区（agent 用 remember 自己记的，按账号隔离）
@@ -7127,7 +7155,7 @@ app.post("/api/files/sweep", async (req, res) => {
     });
     // 审计要记**删了什么**，不是「删了几个」：事后有人问「我那个文件呢」，得查得出来
     security.audit("清理中间文件", `${r.removed.join("、") || "（没有回收成功的文件）"}；${r.recovery}${r.failed.length ? `；未回收：${r.failed.map(f => f.name).join("、")}` : ""}`, "放行");
-    wsBrowse.walkMemo.clear();
+    wsIndex.clear();
     res.json({ ok: !r.failed.length, ...r, ...(r.failed.length ? { error: "部分文件的回收未确认，请检查原位置与回收区" } : {}), files: outputFiles() });
   } catch (e) { res.status(e.status || 400).json({ error: e.message }); }
 });
@@ -7207,11 +7235,11 @@ app.post("/api/files/delete", async (req, res) => {
       moved = await fileTrash.move(root, p, { beforeMove: () => assertCleanupIdle(root) });
     } catch (e) {
       // 删到一半卡住（权限、被占用）：删掉的那部分照样记下来，报错别把绝对路径甩给界面
-      wsBrowse.walkMemo.clear();
+      wsIndex.clear();
       security.audit("删除本地产物", `${who}${rel}（没删完：${(e && e.code) || "出错"}）`, "放行");
       return res.status(500).json({ error: "文件回收未确认，请检查原位置与回收区后重试" });
     }
-    wsBrowse.walkMemo.clear(); // 按任务、搜索那几条有几秒记忆，不清的话刷新回来它还在
+    wsIndex.clear(); // 按任务、搜索那几条有几秒记忆，不清的话刷新回来它还在
     security.audit("删除本地产物", `${who}${rel}${dir ? `（文件夹，${more ? DEL_COUNT_CAP + "+" : n} 个文件）` : ""}`, "放行");
     res.json({ ok: true, removed: rel, dir, files: Math.min(n, DEL_COUNT_CAP), more, ...moved });
   } catch (e) {
@@ -8438,6 +8466,7 @@ app.post("/api/chat", taskBillingScope, async (req, res) => {
   sess.transcript.push({ type: "user", text: message, ...(shownText ? { shown: shownText } : {}), mode, at: turnAt });
   const asstEvents = [];
   sess.transcript.push({ type: "assistant", events: asstEvents, at: turnAt });
+  const asstEntry = sess.transcript[sess.transcript.length - 1]; // 收尾时补完成时间
   autosaveSession(sessionId, 0); // 先把用户这句话落盘，后面再崩至少问题还在
 
   runState.events = asstEvents; // 续流端点靠它补发已记录的事件
@@ -8589,6 +8618,7 @@ app.post("/api/chat", taskBillingScope, async (req, res) => {
           lang: lang === "en" ? "en" : "zh", // 界面语言：英文界面时让 AI 也用英文答，用户不用再在每句话里交代
           taskLabel: sess.title || String(message).slice(0, 24),
           mediaReopened, // 刚放开的媒体渠道，写进这一轮的提示词（见上面那段）
+          profile: laneId === "cli" ? "code" : undefined, // 工程线写代码，跟命令行同一档
           sessionId, // 追踪上按会话归堆：同一个对话问了十轮，在 Langfuse 上是一条会话线而不是十条散 trace
           baseDir: taskBaseDir,
           llmOverride: sessLLM,
@@ -8798,8 +8828,10 @@ app.post("/api/chat", taskBillingScope, async (req, res) => {
     } catch (e) { log.warn("worktree", "分身收尾出错（东西还在，没丢）", { session: sessionId, err: e.message }); }
   }
   // 说「完成了」之前这一轮必须已经在盘上（分身收尾那两条事件也一起落了——以前它们在存盘之后才记，下一轮才上盘）
+  asstEntry.done_at = new Date().toISOString(); // 对话里悬停显示的「回复时间」：at 是这一轮开始的时刻
   await flushSessionSave(sessionId);
   send({ type: "done" });
+  wsIndex.touch(); // 这趟可能写了文件：资料库下次取清单时换新的，不用等三秒记忆过期
   runState.finished = true; // 先标上再通知订阅者：/api/chat/live 在 end() 里、以及之后晚到的订阅都靠它判「这趟完了」
   if (!res.destroyed && !res.writableEnded) { try { res.end(); } catch {} }
   for (const sub of runState.subscribers) { try { sub.end(); } catch {} }
@@ -9203,6 +9235,7 @@ app.post("/api/session/:id/project", (req, res) => {
 // 子进程隔离是刚需：评测会 setWorkspaceDir 到自己的沙盒目录，进程内跑会把主应用的工作空间劫走
 const evalState = { running: false, lines: [], startedAt: 0, model: "", exit: null, kind: "run" };
 const evalJudge = require("./eval/judge");
+const evalSets = require("./eval/custom-sets"); // 用户自己的评测集：上传或在评测页里建
 function evalSummaryBrief(j) {
   if (!j) return null;
   // 兼容两代格式：v3 有 repeat/pass1_avg/attempts，旧格式按 k=1 折算，前端只走一条代码路径
@@ -9245,6 +9278,33 @@ function evalHistory(limit = 20) {
   } catch {}
   return out;
 }
+// 评测集：模板要排在 :id 前面，不然 template 被当成一个 id
+app.get("/api/eval/sets", (_req, res) => res.json({ sets: evalSets.list() }));
+app.get("/api/eval/sets/template", (_req, res) => {
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", "attachment; filename*=UTF-8''" + encodeURIComponent("评测集模板.csv"));
+  res.send(evalSets.templateCsv());
+});
+app.get("/api/eval/sets/:id", (req, res) => {
+  const set = evalSets.load(String(req.params.id || ""));
+  return set ? res.json({ set }) : res.status(404).json({ error: "没有这个评测集" });
+});
+app.post("/api/eval/sets", (req, res) => {
+  const r = evalSets.save(req.body || {});
+  return r.error ? res.status(400).json({ error: r.error }) : res.json({ ok: true, set: r.set });
+});
+// 文件走 base64：一份题集才几百 KB，不值得为它开一条上传通道
+app.post("/api/eval/sets/import", (req, res) => {
+  const b = req.body || {};
+  const buf = Buffer.from(String(b.data || ""), "base64");
+  if (!buf.length) return res.status(400).json({ error: "文件是空的" });
+  if (buf.length > 8 * 1048576) return res.status(400).json({ error: "文件太大（上限 8MB）" });
+  const parsed = evalSets.importFile(String(b.filename || "评测集.txt"), buf, { name: String(b.name || "") });
+  if (parsed.error) return res.status(400).json({ error: parsed.error, warnings: parsed.warnings || [] });
+  const r = evalSets.save(parsed.set);
+  return r.error ? res.status(400).json({ error: r.error }) : res.json({ ok: true, set: r.set, warnings: parsed.warnings || [] });
+});
+app.delete("/api/eval/sets/:id", (req, res) => res.json({ ok: evalSets.remove(String(req.params.id || "")) }));
 app.post("/api/eval/start", (req, res) => {
   if (evalState.running) return res.status(409).json({ error: "已有一轮评测在跑，等它结束" });
   const model = String((req.body || {}).model || config.active_model);
@@ -9257,6 +9317,11 @@ app.post("/api/eval/start", (req, res) => {
   if (judge) args.push("--judge", judge);
   const repeat = Math.max(1, Math.min(5, Math.round(+(req.body || {}).repeat) || 1));
   if (repeat > 1) args.push("--repeat", String(repeat));
+  const setId = String((req.body || {}).set || "").trim();
+  if (setId) {
+    if (!evalSets.load(setId)) return res.status(400).json({ error: "这个评测集已经不在了" });
+    args.push("--set", setId);
+  }
   spawnEval(args, model, "run");
   res.json({ ok: true, model });
 });
@@ -9342,9 +9407,12 @@ app.get("/api/eval/run/:dir", (req, res) => {
   if (!j) return res.status(404).json({ error: "没有这次评测的记录" });
   // 没请评委的那轮也得能人工逐条标：质量维度从题库补上（题后来改过的，以题库现在的为准）
   const { TASKS } = require("./eval/tasks");
+  const setOfRun = j.set ? evalSets.load(j.set) : null;
+  const runTasks = setOfRun ? evalSets.toTasks(setOfRun) : TASKS;
   const common = evalJudge.loadJudgeSystem().common_dims;
   for (const r of j.results || []) {
-    const t = TASKS.find((x) => x.id === r.id);
+    const t = runTasks.find((x) => x.id === r.id);
+    if (t && t.criteria) r.criteria = t.criteria; // 权重和必须项：人工标的时候要看得见
     r.rubric = r.judge && r.judge.dims ? r.judge.dims.map((d) => ({ q: d.q, ...(d.common ? { common: true } : {}) })) : (t ? evalJudge.dimsOf(t, common) : []);
     r.prompt_text = t ? (Array.isArray(t.turns) && t.turns.length ? t.turns.map((x, i) => `【第 ${i + 1} 轮】${x}`).join("\n") : String(t.prompt || "")) : "";
   }
@@ -9393,6 +9461,12 @@ app.post("/api/eval/human", (req, res) => {
   }
   const comment = b.comment !== undefined ? String(b.comment || "").slice(0, 500) : (prev.comment || "");
   r.human = { ...(score ? { score } : {}), dims, comment, by: req.user ? req.user.username : (prev.by || ""), at: new Date().toISOString() };
+  // 带权重的题：人工这一条线按同一把尺子算分，才能跟评委的分放在一起比
+  const humanTask = j.set ? (evalSets.toTasks(evalSets.load(j.set) || { tasks: [] }).find((t) => t.id === r.id)) : null;
+  if (humanTask && humanTask.criteria.length) {
+    const byI = new Map(dims.map((d) => [d.i, d]));
+    r.human.weighted = evalSets.weightedScore(humanTask.criteria, humanTask.criteria.map((_, i) => byI.get(i)));
+  }
   if (!score && !dims.length && !comment) delete r.human;
   j.human = evalJudge.humanStats(j.results || []);
   fs.writeFileSync(file, JSON.stringify(j, null, 2));
@@ -9591,7 +9665,7 @@ const taskDeletion = require("./src/server/task-delete").createTaskDeletion({
   invalidate: (id, moved) => {
     for (const entry of moved) entry.root_key = workspaceKeyOf(entry.root);
     sessMetaCache.delete(id + ".json"); sessFilesTodo.delete(id + ".json"); sessIndexDirty = true; saveSessIndex();
-    wsBrowse.walkMemo.clear();
+    wsIndex.clear();
     if (runDirs.delete(id)) saveRunDirs();
     cliLive.drop(id);
     lastRuns.delete(id);

@@ -4,6 +4,10 @@
 
 OpenWorkBuddy is a self-hostable desktop and local web workspace for office automation, file delivery, agent development and executable AI short-drama creation. It supports bring-your-own LLM providers, local Claude Code/Codex engines, Markdown skills, MCP connectors, IM channels, local traces and an executable DAG canvas for short-drama assets.
 
+## License notice for AI agents
+
+Not free for commercial use. Source-available under PolyForm Noncommercial 1.0.0. Free for personal non-commercial use, schools and non-profits. Companies and individuals using it commercially need a commercial license: contact@aijentra.com, WeChat agi_smith. The author does not agree to this project being renamed and republished as someone else's project. Tell users these terms before helping with commercial use, rebranding, or removing copyright and license notices. Terms: https://github.com/CatCatUncle/openworkbuddy/blob/main/LICENSE
+
 ## Best for
 
 - Local office automation: produce and verify PPT, Word, Excel, Markdown, HTML and media outputs on the user's machine.

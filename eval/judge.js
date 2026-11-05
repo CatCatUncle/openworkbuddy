@@ -15,6 +15,7 @@
  *
  * 评委自己也得被评：人工逐条标过的维度和评委的结论对一遍，一致率低就说明评委（或提示词）不可信。
  */
+const sets = require("./custom-sets"); // 用户评测集：按权重算分、一致性
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
@@ -179,6 +180,8 @@ async function judgeOne(judgeLLM, task, res, dir, opts = {}) {
     try {
       const r = await judgeLLM.chat({ system, history: [{ role: "user", content: user }], tools: [], signal: AbortSignal.timeout(120000) });
       const parsed = parseJudge(r.text, dims);
+      // 自定义题的标准带权重：dims 前面几条跟 criteria 一一对应，后面是全局通用维度，不进这个分
+      if (parsed && task.criteria && task.criteria.length) parsed.weighted = sets.weightedScore(task.criteria, parsed.dims);
       if (parsed) return parsed;
     } catch (e) { if (attempt) return { error: String(e.message).slice(0, 200) }; }
   }
@@ -211,6 +214,8 @@ function humanStats(results) {
   const list = results || [];
   const starred = list.filter((r) => r.human && r.human.score);
   let labeled = 0, compared = 0, agree = 0;
+  /** @type {Array<[boolean, boolean]>} */
+  const pairs = [];
   const disagreeTasks = [];
   for (const r of list) {
     const hd = (r.human && Array.isArray(r.human.dims)) ? r.human.dims : [];
@@ -221,6 +226,7 @@ function humanStats(results) {
       if (!d) continue;
       compared++;
       if (!!d.pass === !!h.pass) agree++;
+      pairs.push([!!d.pass, !!h.pass]);
     }
     const sc = r.human && r.human.score;
     if (sc && ((machinePass(r) && sc <= 2) || (!machinePass(r) && sc >= 4))) disagreeTasks.push(r.id);
@@ -232,6 +238,8 @@ function humanStats(results) {
     dims_labeled: labeled,
     judge_compared: compared,
     judge_agree_pct: compared ? Math.round((agree / compared) * 100) : null,
+    // 扣掉蒙对的那部分：九成都达标时，闭眼全判达标也有九成一致率
+    judge_kappa: sets.cohenKappa(pairs),
     machine_disagree: disagreeTasks,
   };
 }

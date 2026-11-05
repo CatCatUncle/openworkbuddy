@@ -1,129 +1,129 @@
 <?xml version='1.0' encoding='utf-8'?>
-<ns0:urlset xmlns:html="http://www.w3.org/1999/xhtml" xmlns:ns0="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <ns0:url>
-    <ns0:loc>https://catcatuncle.github.io/openworkbuddy/</ns0:loc>
-    <ns0:lastmod>2026-10-16</ns0:lastmod>
+<urlset xmlns:html="http://www.w3.org/1999/xhtml" xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://catcatuncle.github.io/openworkbuddy/</loc>
+    <lastmod>2026-10-16</lastmod>
     <html:link rel="alternate" hreflang="en" href="https://catcatuncle.github.io/openworkbuddy/" />
     <html:link rel="alternate" hreflang="zh-CN" href="https://catcatuncle.github.io/openworkbuddy/zh/" />
     <html:link rel="alternate" hreflang="x-default" href="https://catcatuncle.github.io/openworkbuddy/" />
-  </ns0:url>
-  <ns0:url>
-    <ns0:loc>https://catcatuncle.github.io/openworkbuddy/zh/</ns0:loc>
-    <ns0:lastmod>2026-10-16</ns0:lastmod>
+  </url>
+  <url>
+    <loc>https://catcatuncle.github.io/openworkbuddy/zh/</loc>
+    <lastmod>2026-10-16</lastmod>
     <html:link rel="alternate" hreflang="en" href="https://catcatuncle.github.io/openworkbuddy/" />
     <html:link rel="alternate" hreflang="zh-CN" href="https://catcatuncle.github.io/openworkbuddy/zh/" />
     <html:link rel="alternate" hreflang="x-default" href="https://catcatuncle.github.io/openworkbuddy/" />
-  </ns0:url>
-  <ns0:url>
-    <ns0:loc>https://catcatuncle.github.io/openworkbuddy/guides/user.html</ns0:loc>
-    <ns0:lastmod>2026-10-16</ns0:lastmod>
+  </url>
+  <url>
+    <loc>https://catcatuncle.github.io/openworkbuddy/guides/user.html</loc>
+    <lastmod>2026-10-16</lastmod>
     <html:link rel="alternate" hreflang="en" href="https://catcatuncle.github.io/openworkbuddy/guides/user.html" />
     <html:link rel="alternate" hreflang="zh-CN" href="https://catcatuncle.github.io/openworkbuddy/zh/guides/user.html" />
     <html:link rel="alternate" hreflang="x-default" href="https://catcatuncle.github.io/openworkbuddy/guides/user.html" />
-  </ns0:url>
-  <ns0:url>
-    <ns0:loc>https://catcatuncle.github.io/openworkbuddy/zh/guides/user.html</ns0:loc>
-    <ns0:lastmod>2026-10-16</ns0:lastmod>
+  </url>
+  <url>
+    <loc>https://catcatuncle.github.io/openworkbuddy/zh/guides/user.html</loc>
+    <lastmod>2026-10-16</lastmod>
     <html:link rel="alternate" hreflang="en" href="https://catcatuncle.github.io/openworkbuddy/guides/user.html" />
     <html:link rel="alternate" hreflang="zh-CN" href="https://catcatuncle.github.io/openworkbuddy/zh/guides/user.html" />
     <html:link rel="alternate" hreflang="x-default" href="https://catcatuncle.github.io/openworkbuddy/guides/user.html" />
-  </ns0:url>
-  <ns0:url>
-    <ns0:loc>https://catcatuncle.github.io/openworkbuddy/guides/developer.html</ns0:loc>
-    <ns0:lastmod>2026-10-16</ns0:lastmod>
+  </url>
+  <url>
+    <loc>https://catcatuncle.github.io/openworkbuddy/guides/developer.html</loc>
+    <lastmod>2026-10-16</lastmod>
     <html:link rel="alternate" hreflang="en" href="https://catcatuncle.github.io/openworkbuddy/guides/developer.html" />
     <html:link rel="alternate" hreflang="zh-CN" href="https://catcatuncle.github.io/openworkbuddy/zh/guides/developer.html" />
     <html:link rel="alternate" hreflang="x-default" href="https://catcatuncle.github.io/openworkbuddy/guides/developer.html" />
-  </ns0:url>
-  <ns0:url>
-    <ns0:loc>https://catcatuncle.github.io/openworkbuddy/zh/guides/developer.html</ns0:loc>
-    <ns0:lastmod>2026-10-16</ns0:lastmod>
+  </url>
+  <url>
+    <loc>https://catcatuncle.github.io/openworkbuddy/zh/guides/developer.html</loc>
+    <lastmod>2026-10-16</lastmod>
     <html:link rel="alternate" hreflang="en" href="https://catcatuncle.github.io/openworkbuddy/guides/developer.html" />
     <html:link rel="alternate" hreflang="zh-CN" href="https://catcatuncle.github.io/openworkbuddy/zh/guides/developer.html" />
     <html:link rel="alternate" hreflang="x-default" href="https://catcatuncle.github.io/openworkbuddy/guides/developer.html" />
-  </ns0:url>
-  <ns0:url>
-    <ns0:loc>https://catcatuncle.github.io/openworkbuddy/alternatives/</ns0:loc>
-    <ns0:lastmod>2026-10-16</ns0:lastmod>
+  </url>
+  <url>
+    <loc>https://catcatuncle.github.io/openworkbuddy/alternatives/</loc>
+    <lastmod>2026-10-16</lastmod>
     <html:link rel="alternate" hreflang="en" href="https://catcatuncle.github.io/openworkbuddy/alternatives/" />
     <html:link rel="alternate" hreflang="zh-CN" href="https://catcatuncle.github.io/openworkbuddy/zh/alternatives/" />
     <html:link rel="alternate" hreflang="x-default" href="https://catcatuncle.github.io/openworkbuddy/alternatives/" />
-  </ns0:url>
-  <ns0:url>
-    <ns0:loc>https://catcatuncle.github.io/openworkbuddy/zh/alternatives/</ns0:loc>
-    <ns0:lastmod>2026-10-16</ns0:lastmod>
+  </url>
+  <url>
+    <loc>https://catcatuncle.github.io/openworkbuddy/zh/alternatives/</loc>
+    <lastmod>2026-10-16</lastmod>
     <html:link rel="alternate" hreflang="en" href="https://catcatuncle.github.io/openworkbuddy/alternatives/" />
     <html:link rel="alternate" hreflang="zh-CN" href="https://catcatuncle.github.io/openworkbuddy/zh/alternatives/" />
     <html:link rel="alternate" hreflang="x-default" href="https://catcatuncle.github.io/openworkbuddy/alternatives/" />
-  </ns0:url>
-  <ns0:url>
-    <ns0:loc>https://catcatuncle.github.io/openworkbuddy/alternatives/claude-cowork/</ns0:loc>
-    <ns0:lastmod>2026-10-16</ns0:lastmod>
+  </url>
+  <url>
+    <loc>https://catcatuncle.github.io/openworkbuddy/alternatives/claude-cowork/</loc>
+    <lastmod>2026-10-16</lastmod>
     <html:link rel="alternate" hreflang="en" href="https://catcatuncle.github.io/openworkbuddy/alternatives/claude-cowork/" />
     <html:link rel="alternate" hreflang="zh-CN" href="https://catcatuncle.github.io/openworkbuddy/zh/alternatives/claude-cowork/" />
     <html:link rel="alternate" hreflang="x-default" href="https://catcatuncle.github.io/openworkbuddy/alternatives/claude-cowork/" />
-  </ns0:url>
-  <ns0:url>
-    <ns0:loc>https://catcatuncle.github.io/openworkbuddy/zh/alternatives/claude-cowork/</ns0:loc>
-    <ns0:lastmod>2026-10-16</ns0:lastmod>
+  </url>
+  <url>
+    <loc>https://catcatuncle.github.io/openworkbuddy/zh/alternatives/claude-cowork/</loc>
+    <lastmod>2026-10-16</lastmod>
     <html:link rel="alternate" hreflang="en" href="https://catcatuncle.github.io/openworkbuddy/alternatives/claude-cowork/" />
     <html:link rel="alternate" hreflang="zh-CN" href="https://catcatuncle.github.io/openworkbuddy/zh/alternatives/claude-cowork/" />
     <html:link rel="alternate" hreflang="x-default" href="https://catcatuncle.github.io/openworkbuddy/alternatives/claude-cowork/" />
-  </ns0:url>
-  <ns0:url>
-    <ns0:loc>https://catcatuncle.github.io/openworkbuddy/alternatives/codex/</ns0:loc>
-    <ns0:lastmod>2026-10-16</ns0:lastmod>
+  </url>
+  <url>
+    <loc>https://catcatuncle.github.io/openworkbuddy/alternatives/codex/</loc>
+    <lastmod>2026-10-16</lastmod>
     <html:link rel="alternate" hreflang="en" href="https://catcatuncle.github.io/openworkbuddy/alternatives/codex/" />
     <html:link rel="alternate" hreflang="zh-CN" href="https://catcatuncle.github.io/openworkbuddy/zh/alternatives/codex/" />
     <html:link rel="alternate" hreflang="x-default" href="https://catcatuncle.github.io/openworkbuddy/alternatives/codex/" />
-  </ns0:url>
-  <ns0:url>
-    <ns0:loc>https://catcatuncle.github.io/openworkbuddy/zh/alternatives/codex/</ns0:loc>
-    <ns0:lastmod>2026-10-16</ns0:lastmod>
+  </url>
+  <url>
+    <loc>https://catcatuncle.github.io/openworkbuddy/zh/alternatives/codex/</loc>
+    <lastmod>2026-10-16</lastmod>
     <html:link rel="alternate" hreflang="en" href="https://catcatuncle.github.io/openworkbuddy/alternatives/codex/" />
     <html:link rel="alternate" hreflang="zh-CN" href="https://catcatuncle.github.io/openworkbuddy/zh/alternatives/codex/" />
     <html:link rel="alternate" hreflang="x-default" href="https://catcatuncle.github.io/openworkbuddy/alternatives/codex/" />
-  </ns0:url>
-  <ns0:url>
-    <ns0:loc>https://catcatuncle.github.io/openworkbuddy/alternatives/doubao/</ns0:loc>
-    <ns0:lastmod>2026-10-16</ns0:lastmod>
+  </url>
+  <url>
+    <loc>https://catcatuncle.github.io/openworkbuddy/alternatives/doubao/</loc>
+    <lastmod>2026-10-16</lastmod>
     <html:link rel="alternate" hreflang="en" href="https://catcatuncle.github.io/openworkbuddy/alternatives/doubao/" />
     <html:link rel="alternate" hreflang="zh-CN" href="https://catcatuncle.github.io/openworkbuddy/zh/alternatives/doubao/" />
     <html:link rel="alternate" hreflang="x-default" href="https://catcatuncle.github.io/openworkbuddy/alternatives/doubao/" />
-  </ns0:url>
-  <ns0:url>
-    <ns0:loc>https://catcatuncle.github.io/openworkbuddy/zh/alternatives/doubao/</ns0:loc>
-    <ns0:lastmod>2026-10-16</ns0:lastmod>
+  </url>
+  <url>
+    <loc>https://catcatuncle.github.io/openworkbuddy/zh/alternatives/doubao/</loc>
+    <lastmod>2026-10-16</lastmod>
     <html:link rel="alternate" hreflang="en" href="https://catcatuncle.github.io/openworkbuddy/alternatives/doubao/" />
     <html:link rel="alternate" hreflang="zh-CN" href="https://catcatuncle.github.io/openworkbuddy/zh/alternatives/doubao/" />
     <html:link rel="alternate" hreflang="x-default" href="https://catcatuncle.github.io/openworkbuddy/alternatives/doubao/" />
-  </ns0:url>
-  <ns0:url>
-    <ns0:loc>https://catcatuncle.github.io/openworkbuddy/alternatives/qwen/</ns0:loc>
-    <ns0:lastmod>2026-10-16</ns0:lastmod>
+  </url>
+  <url>
+    <loc>https://catcatuncle.github.io/openworkbuddy/alternatives/qwen/</loc>
+    <lastmod>2026-10-16</lastmod>
     <html:link rel="alternate" hreflang="en" href="https://catcatuncle.github.io/openworkbuddy/alternatives/qwen/" />
     <html:link rel="alternate" hreflang="zh-CN" href="https://catcatuncle.github.io/openworkbuddy/zh/alternatives/qwen/" />
     <html:link rel="alternate" hreflang="x-default" href="https://catcatuncle.github.io/openworkbuddy/alternatives/qwen/" />
-  </ns0:url>
-  <ns0:url>
-    <ns0:loc>https://catcatuncle.github.io/openworkbuddy/zh/alternatives/qwen/</ns0:loc>
-    <ns0:lastmod>2026-10-16</ns0:lastmod>
+  </url>
+  <url>
+    <loc>https://catcatuncle.github.io/openworkbuddy/zh/alternatives/qwen/</loc>
+    <lastmod>2026-10-16</lastmod>
     <html:link rel="alternate" hreflang="en" href="https://catcatuncle.github.io/openworkbuddy/alternatives/qwen/" />
     <html:link rel="alternate" hreflang="zh-CN" href="https://catcatuncle.github.io/openworkbuddy/zh/alternatives/qwen/" />
     <html:link rel="alternate" hreflang="x-default" href="https://catcatuncle.github.io/openworkbuddy/alternatives/qwen/" />
-  </ns0:url>
-  <ns0:url>
-    <ns0:loc>https://catcatuncle.github.io/openworkbuddy/alternatives/deepseek-agent/</ns0:loc>
-    <ns0:lastmod>2026-10-16</ns0:lastmod>
+  </url>
+  <url>
+    <loc>https://catcatuncle.github.io/openworkbuddy/alternatives/deepseek-agent/</loc>
+    <lastmod>2026-10-16</lastmod>
     <html:link rel="alternate" hreflang="en" href="https://catcatuncle.github.io/openworkbuddy/alternatives/deepseek-agent/" />
     <html:link rel="alternate" hreflang="zh-CN" href="https://catcatuncle.github.io/openworkbuddy/zh/alternatives/deepseek-agent/" />
     <html:link rel="alternate" hreflang="x-default" href="https://catcatuncle.github.io/openworkbuddy/alternatives/deepseek-agent/" />
-  </ns0:url>
-  <ns0:url>
-    <ns0:loc>https://catcatuncle.github.io/openworkbuddy/zh/alternatives/deepseek-agent/</ns0:loc>
-    <ns0:lastmod>2026-10-16</ns0:lastmod>
+  </url>
+  <url>
+    <loc>https://catcatuncle.github.io/openworkbuddy/zh/alternatives/deepseek-agent/</loc>
+    <lastmod>2026-10-16</lastmod>
     <html:link rel="alternate" hreflang="en" href="https://catcatuncle.github.io/openworkbuddy/alternatives/deepseek-agent/" />
     <html:link rel="alternate" hreflang="zh-CN" href="https://catcatuncle.github.io/openworkbuddy/zh/alternatives/deepseek-agent/" />
     <html:link rel="alternate" hreflang="x-default" href="https://catcatuncle.github.io/openworkbuddy/alternatives/deepseek-agent/" />
-  </ns0:url>
-</ns0:urlset>
+  </url>
+</urlset>

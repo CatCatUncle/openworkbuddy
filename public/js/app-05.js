@@ -1350,8 +1350,8 @@ function mmGuessKind(base) {
   return "custom";
 }
 /** 渠道表单上生图 / 视频 / 配音三个下拉的名字和悬停说明 */
-const MM_API_CN = { image: "生图接口", video: "视频接口", tts: "配音接口" };
-const MM_API_TITLE = { image: "这条渠道出图走哪种接口", video: "这条渠道出视频走哪种接口", tts: "这条渠道配音走哪种接口" };
+const MM_API_CN = { image: "生图接口", video: "视频接口", tts: "配音接口", asr: "转写接口" };
+const MM_API_TITLE = { image: "这条渠道出图走哪种接口", video: "这条渠道出视频走哪种接口", tts: "这条渠道配音走哪种接口", asr: "转写走哪种接口。自动 = 按渠道类型和地址认" };
 /**
  * 三个下拉的「自动」会走哪种。跟服务端 mediaApiOf 同一套表（渠道类型 → 地址 → 默认），表随目录下发，
  * 两边不各抄一份。生图认到百炼只知道是这一家：同步还是异步看型号，服务端按型号再分。
@@ -1632,6 +1632,7 @@ function paintModels(pane, s) {
     </div>
     <div class="model-route-grid">${tiles.join("")}</div>
     ${warns.map((w) => `<div class="model-route-warn">${ic("triangle-alert")}<span>${esc(w)}</span></div>`).join("")}
+    ${(s.model_retire || []).map((m) => `<div class="model-route-warn">${ic("triangle-alert")}<span>${esc(m.note)}</span></div>`).join("")}
     <div class="model-route-note">${po
       ? "先在「渠道与 Key」填好 Key，再到「按能力配置」挂模型。一个 Key 六路共用。"
       : "服务器当前的模型路由。对话模型可在输入框临时切换，其余由平台管理员维护。"}</div>
@@ -1660,11 +1661,14 @@ function paintModels(pane, s) {
         <option value="">接口格式：跟着类型走</option>
         ${((mediaCatalog || {}).api_formats || []).map((f) => `<option value="${esc(f.id)}">${esc(f.label)}</option>`).join("")}
       </select>
-      <div id="pf-media-apis">${["image", "video", "tts"].map((cap) => `
+      <div id="pf-media-apis">${["image", "video", "tts", "asr"].map((cap) => `
         <select id="pf-${cap}-api" title="${esc(MM_API_TITLE[cap])}">
           <option value="">${esc(MM_API_CN[cap])}：自动</option>
           ${((((mediaCatalog || {}).media_apis || {})[cap]) || []).map((f) => `<option value="${esc(f.id)}">${esc(f.label)}</option>`).join("")}
         </select>`).join("")}
+        <textarea id="pf-http" rows="9" style="display:none;width:100%;font-family:var(--font-mono);font-size:12px" placeholder='自定义接口模板（JSON）。{{key}} {{text}} {{voice}} {{model}} 发请求时替换，例如：
+{"tts":{"url":"https://api.example.com/tts","headers":{"Authorization":"Bearer {{key}}"},"body":{"text":"{{text}}","voice":"{{voice}}"},"audio":"binary"},
+ "asr":{"url":"https://api.example.com/asr","headers":{"Authorization":"Bearer {{key}}"},"upload":"multipart:file","text":"result.text"}}'></textarea>
       </div>
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
         <input id="pf-key" type="password" placeholder="API Key" autocomplete="off" style="flex:1;min-width:0;margin:0">
@@ -2249,7 +2253,9 @@ function bindModels(pane, s, po) {
     keyEl.value = "";
     keyEl.placeholder = p && p.key_hint ? `已装 ${p.key_hint}，留空就不动它` : "API Key";
     pane.querySelector("#pf-key-src").innerHTML = kindKeyLink((p && p.kind) || "", (p && p.base_url) || "");
-    for (const cap of ["image", "video", "tts"]) pane.querySelector(`#pf-${cap}-api`).value = (p && p[cap + "_api"]) || "";
+    for (const cap of ["image", "video", "tts", "asr"]) pane.querySelector(`#pf-${cap}-api`).value = (p && p[cap + "_api"]) || "";
+    pane.querySelector("#pf-http").value = p && p.http_api ? JSON.stringify(p.http_api, null, 2) : "";
+    syncHttpBox();
     relayTip();
     fillMediaApis();
   };
@@ -2330,13 +2336,24 @@ function bindModels(pane, s, po) {
     // 三个下拉藏着（对话专用的渠道）就存空 = 自动；服务端那头也不收这种渠道上的值
     const mediaOn = pane.querySelector("#pf-media-apis").style.display !== "none";
     const apis = {};
-    for (const cap of ["image", "video", "tts"]) apis[cap + "_api"] = mediaOn ? v(`pf-${cap}-api`) : "";
+    for (const cap of ["image", "video", "tts", "asr"]) apis[cap + "_api"] = mediaOn ? v(`pf-${cap}-api`) : "";
+    const httpRaw = mediaOn && (apis.tts_api === "http" || apis.asr_api === "http") ? v("pf-http").trim() : "";
+    if (httpRaw) {
+      try { apis.http_api = JSON.parse(httpRaw); }
+      catch { toast("自定义接口模板不是合法的 JSON", "circle-x"); return; }
+    }
     const entry = { id: editP >= 0 ? s.providers[editP].id : "", name: v("pf-name"), kind, api: v("pf-api"), ...apis, base_url: v("pf-base"), api_key: key, has_key: !!key };
     if (editP >= 0) s.providers[editP] = { ...s.providers[editP], ...entry }; else s.providers.push(entry);
     forgetLiveModels(); // 换了地址或 Key，之前拉回来的清单就不作数了
     if (await saveAllModelTables(s, msg)) { form.style.display = "none"; paintModels(pane, s); }
   };
 
+  // 选了自定义 HTTP 才摆模板框：平时那块地方不该多一个看不懂的大文本框
+  function syncHttpBox() {
+    const box = pane.querySelector("#pf-http");
+    if (box) box.style.display = ["tts", "asr"].some((c) => (pane.querySelector(`#pf-${c}-api`) || {}).value === "http") ? "" : "none";
+  }
+  for (const c of ["tts", "asr"]) { const sel = pane.querySelector(`#pf-${c}-api`); if (sel) sel.addEventListener("change", syncHttpBox); }
   pane.querySelectorAll("input[name=active]").forEach((r) => (r.onchange = async () => {
     const name = s.models[+r.dataset.i].name;
     const saved = await saveSettings({ active_model: name }, msg);
@@ -2752,7 +2769,9 @@ function traceObsStats(trace) {
   const toolMs = tools.reduce((sum, item) => sum + traceObsDuration(item), 0);
   const modelMs = generations.reduce((sum, item) => sum + traceObsDuration(item), 0);
   const slowest = observations.reduce((best, item) => traceObsDuration(item) > traceObsDuration(best) ? item : best, null);
-  return { observations, tools, generations, toolMs, modelMs, slowest };
+  // 速度按调用平均。没记到的（不流式的渠道、这项功能之前跑的）不算进去，一条都没有就是 null
+  const avg = (k) => { const v = generations.map((g) => (g.metadata || {})[k]).filter((x) => typeof x === "number"); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
+  return { observations, tools, generations, toolMs, modelMs, slowest, ttft: avg("ttft_ms"), tpot: avg("tpot_ms"), tps: avg("tokens_per_s") };
 }
 function traceTimeRange(item) {
   if (!item?.startTime) return "时间未记录";
@@ -2806,11 +2825,15 @@ function traceStepHtml(item, children, depth, ctx) {
   const usage = traceUsage({ observations: [item] });
   const model = item.model || (item.metadata && item.metadata.model) || "";
   const bare = String(item.name || "").replace(/^工具\s*/, "");
-  const name = gen ? (model || "模型调用") : ((item.metadata && item.metadata.tool) || bare || "工具");
-  const kind = gen ? ["is-model", "模型"] : /^专家|^外部引擎/.test(bare) ? ["is-agent", "子任务"] : ["is-tool", "工具"];
+  // 「外部引擎 本机 Claude Code」太长，这一行放不下会被截成省略号。前半截归到类型标签上
+  const engine = /^外部引擎\s*/.test(bare);
+  const name = gen ? (model || "模型调用") : ((item.metadata && item.metadata.tool) || bare.replace(/^外部引擎\s*/, "") || "工具");
+  const kind = gen ? ["is-model", "模型"] : engine ? ["is-agent", "外部引擎"] : /^专家/.test(bare) ? ["is-agent", "子任务"] : ["is-tool", "工具"];
   const target = traceTargetText(item);
   const pct = ctx.max > 0 ? Math.max(2, Math.round((dur / ctx.max) * 100)) : 0;
-  const tokens = usage.input || usage.output ? ` · <b>${usage.input.toLocaleString()}</b> in / <b>${usage.output.toLocaleString()}</b> out` : "";
+  const md = item.metadata || {};
+  const speed = [md.ttft_ms != null ? `TTFT <b>${traceFmtDuration(md.ttft_ms)}</b>` : "", md.tpot_ms != null ? `TPOT <b>${md.tpot_ms}ms</b>` : "", md.tokens_per_s != null ? `<b>${md.tokens_per_s}</b> tok/s` : ""].filter(Boolean).join(" · ");
+  const tokens = (usage.input || usage.output ? ` · <b>${usage.input.toLocaleString()}</b> in / <b>${usage.output.toLocaleString()}</b> out` : "") + (speed ? " · " + speed : "");
   const n = ++ctx.n;
   const nested = (children.get(item.id) || []).map((kid) => traceStepHtml(kid, children, depth + 1, ctx)).join("");
   return `<details class="tp-step${bad ? " is-error" : ""}" style="--trace-depth:${Math.min(depth, 6)}">
@@ -2838,6 +2861,7 @@ function renderTraceDetail(box, trace) {
   const [statusCls, statusText] = TRACE_STATUS[trace.status] || TRACE_STATUS.completed;
   const cell = (b, t, title) => `<div${title ? ` title="${esc(title)}"` : ""}><b>${b}</b><span>${esc(t)}</span></div>`;
   box.innerHTML = `<div class="tp-detail">
+    ${trace.sessionId ? `<a href="#" class="link tp-goto" id="tp-goto">${ic("message-circle")} 回到这段对话</a>` : ""}
     <div class="tp-dhead"><div><b${trace.name_derived ? ' class="is-said"' : ""}>${esc(trace.name || "（没留下名字）")}</b><small>${[trace.startTime ? new Date(trace.startTime).toLocaleString() : "-", Number(trace.turn) > 1 ? `第 ${trace.turn} 轮` : "", trace.id].filter(Boolean).map((b) => `<span>${esc(b)}</span>`).join(" · ")}</small></div><span class="tp-pill ${statusCls}">${esc(statusText)}</span></div>
     <div class="tp-sum">
       ${cell(esc(traceFmtDuration(total)), "总耗时")}
@@ -2848,6 +2872,9 @@ function renderTraceDetail(box, trace) {
       ${cell(usage.input + usage.output ? (usage.input + usage.output).toLocaleString() : "—", "Token",
         usage.input + usage.output ? `${usage.input.toLocaleString()} 进 / ${usage.output.toLocaleString()} 出` : "这趟没记到 token 账（模型渠道没回用量，或是在记账修好之前跑的）")}
       ${cell(esc(slow), "最慢的一步", stats.slowest ? traceFmtDuration(traceObsDuration(stats.slowest)) : "")}
+      ${stats.ttft != null ? cell(esc(traceFmtDuration(stats.ttft)), "TTFT 首字平均", "发出请求到第一个 token 的平均耗时。提示词太长、渠道太忙都会变慢") : ""}
+      ${stats.tpot != null ? cell(`${stats.tpot.toFixed(1)}ms`, "TPOT 每 token", "第一个 token 之后，每输出一个 token 平均多久") : ""}
+      ${stats.tps != null ? cell(stats.tps.toFixed(1), "tok/s 输出速度", "每秒输出多少 token") : ""}
     </div>
     ${models.length ? `<div class="tp-models">用到的模型${models.map((m) => `<i>${esc(m)}</i>`).join("")}</div>` : ""}
     <div class="tp-steps">
@@ -2856,6 +2883,8 @@ function renderTraceDetail(box, trace) {
     </div>
     <div class="tp-io">${traceFold("任务输入（完整提示词）", trace.input)}${trace.output ? `<details open class="is-final"><summary>最终回复</summary><pre>${esc(traceJson(trace.output))}</pre></details>` : ""}</div>
   </div>`;
+  const goto = box.querySelector("#tp-goto");
+  if (goto) goto.onclick = (e) => { e.preventDefault(); openSession(trace.sessionId, { at: trace.startTime }); };
 }
 
 // ================= 更多 → 执行追踪（整页） =================
@@ -2864,6 +2893,27 @@ let traceSel = "";
 let traceQuery = "";
 let traceOnlyBad = false;
 let traceRefreshTimer = null;
+/**
+ * 从回复下面点进来：定位到这一轮的那条记录。
+ * 新对话记着编号；老对话按时间找，落在这一轮开始和下一轮开始之间的第一条。找不到就说找不到，不跳到别的任务上。
+ */
+async function openTraceOfTurn(turn, sid) {
+  let id = turn._traceId || "";
+  if (!id) {
+    const d = await fetch("/api/traces?limit=200&session=" + encodeURIComponent(sid)).then((r) => r.json()).catch(() => null);
+    const next = turn.nextElementSibling && turn.nextElementSibling.dataset.userAt;
+    id = traceForTurn((d && d.traces) || [], turn.dataset.userAt, next);
+  }
+  if (!id) return toast("这一轮没留下执行记录", "circle-alert");
+  traceSel = id; traceQuery = ""; traceOnlyBad = false;
+  openPageView("trace");
+}
+function traceForTurn(list, at, nextAt) {
+  const from = new Date(at).getTime() - 5000;
+  const to = nextAt ? new Date(nextAt).getTime() : Infinity;
+  const hits = list.map((t) => ({ id: t.id, s: new Date(t.startTime).getTime() })).filter((t) => t.s >= from && t.s < to).sort((a, b) => a.s - b.s);
+  return hits.length ? hits[0].id : "";
+}
 /** 搜索匹配到任务名、工具名，也匹配路径——「我上次写的那个报告在哪一趟任务里」靠这个找 */
 function traceHit(t, q) {
   if (!q) return true;
@@ -3296,6 +3346,9 @@ async function renderAgentPane(pane, s) {
       <div class="f">出图 / 出视频 / 配音同时跑几条</div>
       <div class="d" style="margin-bottom:6px">1–4，默认 2。填 1 就一条条排队</div>
       <input id="ag-genpar" type="number" min="1" max="4" value="${s.agent.gen_parallel_max || 2}">
+      <div class="f">同时跑几个任务</div>
+      <div class="d" style="margin-bottom:6px">留空 = 按这台电脑的内存定（现在是 ${s.agent.auto_parallel_tasks || 5} 个）。多出来的自动排队，不会中断，任务时间从开始执行算起</div>
+      <input id="ag-maxpar" type="number" min="1" max="32" placeholder="自动" value="${s.agent.max_parallel_tasks || ""}">
       <div class="f">主模型出故障时换哪个</div>
       <div class="d" style="margin-bottom:6px">${fo ? `现在是 <b>${esc(fo)}</b>。` : "没设：出故障直接报错。"}
         <a class="link" id="ag-goto-failover" href="#">去 设置 → 模型 → 对话 里改</a></div>
@@ -3349,6 +3402,7 @@ async function renderAgentPane(pane, s) {
       // 留空 = 0 = 不设上限、按模型窗口算。以前空着也存 12 万，200k 窗口的模型被悄悄卡在 12 万
       max_context_chars: Math.round(+pane.querySelector("#ag-ctx").value * 1000) || 0,
       gen_parallel_max: +pane.querySelector("#ag-genpar").value,
+      max_parallel_tasks: +pane.querySelector("#ag-maxpar").value || 0,
       max_tokens_budget: Math.round(+pane.querySelector("#ag-tokbudget").value * 10000) || 0,
       second_opinion: pane.querySelector("#ag-second").checked,
       push_gate: pane.querySelector("#ag-pgate").checked,

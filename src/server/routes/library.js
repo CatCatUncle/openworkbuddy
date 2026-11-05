@@ -29,6 +29,7 @@ const libFavs = require("../../domains/library/lib-favs");
 const libPins = require("../../domains/library/lib-pins");
 const libKinds = require("../../domains/library/lib-kinds");
 const wsBrowse = require("../../domains/library/ws-browse");
+const wsIndex = require("../../domains/library/ws-index");
 
 // 下面这几个由 createLibraryRouter(deps) 填上
 let libraryRootOf, rootedPath, rootOfResolved, getWorkspaceDir, safePathIn, workspaceKeyOf;
@@ -39,6 +40,15 @@ let appDataDir = "";
 let coverQueue = null;
 
 const app = express.Router({ caseSensitive: true });
+
+// 资料库清单的短记忆。一次重画并发打好几条接口，翻页、切筛选也都在这几秒之内
+const libMemo = wsBrowse.createMemo(wsIndex.FRESH_MS);
+// 文件增删改都走这几条路：下一次一定读新的，不把刚删的东西再画回来
+app.use((req, _res, next) => {
+  if (req.method !== "GET" && req.method !== "HEAD" && /^\/api\/(library|files|upload)/.test(req.path)
+    && !/^\/api\/library\/(covers|excerpts|stat)$/.test(req.path)) { wsIndex.clear(); libMemo.clear(); }
+  next();
+});
 
 const EXCERPT_MAX_ITEMS = 40;
 const EXCERPT_HEAD_BYTES = 16 * 1024;
@@ -293,7 +303,7 @@ function deckDirsOf(paths) {
  * 类型和来源在这儿筛完再切页——前端只拿一页（默认 300），几千个文件也不整包往回拉。
  * 两边各有自己的上限（资料库 4000、工作区 WALK_CAP），撞了就带 *_capped，界面照实说「只列了一部分」。
  */
-app.get("/api/library/all", (req, res) => {
+app.get("/api/library/all", async (req, res) => {
   const q = req.query || {};
   const kind = typeof q.kind === "string" && libKinds.KIND_KEYS.includes(q.kind) ? q.kind : "all";
   const from = q.from === "lib" || q.from === "ws" ? q.from : "all";
@@ -304,24 +314,33 @@ app.get("/api/library/all", (req, res) => {
   /** @type {{ files: ReadonlyArray<{ name: string, size: number, mtime: string }>, capped: boolean }} */
   let ws = { files: [], capped: false };
   try {
-    if (from !== "ws") lib = libWalk() || [];
-    if (from !== "lib") ws = wsBrowse.walkAllCached(getWorkspaceDir(), { appDataDir });
+    if (from !== "ws") lib = libMemo.get(libraryRootOf(req.user), () => libWalk() || []);
+    if (from !== "lib") ws = await wsIndex.walk(getWorkspaceDir(), { appDataDir });
   } catch { return res.status(500).json({ error: "文件列表读取失败，请确认目录仍然可访问" }); }
   const libDecks = deckDirsOf(lib.map((f) => f.path));
-  const wsDecks = deckDirsOf(ws.files.map((f) => f.name));
+  const wsDecks = wsIndex.derive(ws).deckDirs;
+  const deckAt = (p, decks) => decks.size > 0 && /\.html?$/i.test(p) && decks.has(path.posix.dirname(p));
+  const keep = (p, decks) => kind === "all" || libKinds.kindOk(kind, p, { deck: deckAt(p, decks) });
+  // 只给要回的这一页拼行。以前两万条逐个建对象、再整体排序，一页只回六十条：每次请求白干 45ms。
+  // 工作区那份本来就是新的在前，资料库那份最多四千条排一下，两边归并到这一页为止
+  const libHits = lib.filter((f) => keep(f.path, libDecks)).sort((a, b) => (a.mtime < b.mtime ? 1 : a.mtime > b.mtime ? -1 : 0));
+  const wsHits = kind === "all" ? ws.files : ws.files.filter((f) => keep(f.name, wsDecks));
+  const total = libHits.length + wsHits.length;
+  offset = Math.min(offset, Math.max(0, Math.ceil(total / limit) - 1) * limit);
   const row = (src, p, f, decks) => {
     const it = { src, path: p, size: f.size || 0, mtime: f.mtime || "", fav: favs.has(src + ":" + p) };
-    if (decks.size && /\.html?$/i.test(p) && decks.has(path.posix.dirname(p))) it.deck = true;
+    if (deckAt(p, decks)) it.deck = true;
     return it;
   };
-  const all = [
-    ...lib.map((f) => row("lib", f.path, f, libDecks)),
-    ...ws.files.map((f) => row("ws", f.name, f, wsDecks)),
-  ].filter((it) => libKinds.kindOk(kind, it.path, it));
-  all.sort((a, b) => (a.mtime < b.mtime ? 1 : a.mtime > b.mtime ? -1 : 0));
-  offset = Math.min(offset, Math.max(0, Math.ceil(all.length / limit) - 1) * limit);
+  const items = [];
+  for (let i = 0, a = 0, b = 0; i < offset + limit && (a < libHits.length || b < wsHits.length); i++) {
+    // 时间相同资料库在前，跟以前「先摆资料库再稳定排序」一个结果
+    const takeLib = b >= wsHits.length || (a < libHits.length && !(String(libHits[a].mtime || "") < String(wsHits[b].mtime || "")));
+    if (takeLib) { const f = libHits[a++]; if (i >= offset) items.push(row("lib", f.path, f, libDecks)); }
+    else { const f = wsHits[b++]; if (i >= offset) items.push(row("ws", f.name, f, wsDecks)); }
+  }
   res.json({
-    items: all.slice(offset, offset + limit), total: all.length, offset, limit,
+    items, total, offset, limit,
     lib_total: lib.length, ws_total: ws.files.length, lib_capped: lib.length >= LIB_WALK_CAP, ws_capped: !!ws.capped,
   });
 });

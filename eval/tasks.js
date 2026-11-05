@@ -34,6 +34,18 @@ function htmlIntact(t) {
   return (t.match(/<script[\s>]/gi) || []).length === (t.match(/<\/script>/gi) || []).length;
 }
 
+// 办公成果都是 zip 包。判分读真文件内容：文字要在里面、页数要对，不是看扩展名
+const { readZip } = require("../src/domains/library/zip-reader");
+function zipParts(dir, name) {
+  try {
+    const z = readZip(path.join(dir, name));
+    return Object.fromEntries(z.entries.filter((e) => !e.dir && /\.xml$/.test(e.name)).map((e) => [e.name, z.text(e.name)]));
+  } catch { return null; }
+}
+const partText = (parts, re) => Object.keys(parts || {}).filter((n) => re.test(n)).map((n) => parts[n]).join("\n");
+/** 去掉标签拼成纯文字：一个词可能被切进好几个 <a:t>，按原文匹配会漏 */
+const plain = (xml) => String(xml).replace(/<[^>]+>/g, "");
+
 const SALES_CSV = "品类,金额\n水果,120\n蔬菜,80\n水果,99.5\n饮料,45\n蔬菜,60\n水果,141.5\n饮料,88\n蔬菜,69\n";
 
 const TASKS = [
@@ -514,6 +526,83 @@ const TASKS = [
         ck("★记忆第 1 条：一个 emoji 都没有★", !!t && !/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}]/u.test(t)),
         ck("★记忆第 2 条：结尾那行落款在★", /——\s*海川科技数据组/.test(t)),
         ck("★记忆第 3 条：日期没写成「9月19日」★", !!t && !/\d+\s*月\s*\d+\s*日/.test(t)),
+      ];
+    },
+  },
+  // ---- 办公交付：产品的主业。以前题库里一道都没有，分数高不说明 PPT 做得好 ----
+  {
+    id: "office-pptx",
+    name: "项目汇报 PPT（办公）",
+    level: 2, kind: "办公",
+    rubric: [
+      "只用了题面给的事实，没有补造数据",
+      "交付前真的检查过文件（读回来或列出页数），不是写完就说好了",
+    ],
+    prompt: "请做一份 4 页的项目汇报 PPT，保存为 project-update.pptx。第 1 页封面：示例网站上线，项目进展汇报。第 2 页本周完成：上线产品页；修复移动端菜单。第 3 页当前进展：正在补充用户指南。第 4 页下周计划：完成英文版；收集 5 条试用反馈。要求 16:9、中文、正文是可编辑文字，保留原始事实，不补造数据。",
+    inputs: {},
+    checks(dir) {
+      const parts = zipParts(dir, "project-update.pptx");
+      const slides = Object.keys(parts || {}).filter((n) => /^ppt\/slides\/slide\d+\.xml$/.test(n));
+      const text = plain(partText(parts, /^ppt\/slides\/slide\d+\.xml$/));
+      const pres = partText(parts, /^ppt\/presentation\.xml$/);
+      const size = /<p:sldSz[^>]*cx="(\d+)"[^>]*cy="(\d+)"/.exec(pres);
+      return [
+        ck("project-update.pptx 存在且可解析", !!parts && slides.length > 0),
+        ck("正好 4 页", slides.length === 4, `实际 ${slides.length} 页`),
+        ck("16:9", !!size && Math.abs(+size[1] / +size[2] - 16 / 9) < 0.02, size ? `${size[1]}x${size[2]}` : ""),
+        ck("文字是可编辑文本，事实都在", ["产品页", "移动端菜单", "用户指南", "英文版"].every((k) => text.includes(k)) && /5\s*条/.test(text), text.slice(0, 120)),
+      ];
+    },
+  },
+  {
+    id: "office-xlsx",
+    name: "Excel 汇总表（办公）",
+    level: 2, kind: "办公",
+    rubric: [
+      "汇总数字是算出来的（公式或代码），不是手填",
+      "表头清楚，别人打开就看得懂",
+    ],
+    prompt: "当前目录有 订单.csv（订单号,部门,金额）。做一个 汇总.xlsx：第一张工作表「明细」放全部订单，第二张工作表「汇总」按部门列出合计金额，再加一行「总计」。金额用数字格式，不要写成文字。",
+    inputs: { "订单.csv": "订单号,部门,金额\nA001,市场部,1200.5\nA002,研发部,3000\nA003,市场部,800\nA004,销售部,1500\nA005,研发部,450.25\nA006,销售部,2500\n" },
+    checks(dir) {
+      const parts = zipParts(dir, "汇总.xlsx");
+      const book = partText(parts, /^xl\/workbook\.xml$/);
+      const names = [...book.matchAll(/<sheet[^>]*name="([^"]+)"/g)].map((m) => m[1]);
+      const sheets = partText(parts, /^xl\/worksheets\/sheet\d+\.xml$/);
+      const strs = plain(partText(parts, /^xl\/sharedStrings\.xml$/)) + plain(sheets);
+      // 缓存值或公式都算：exceljs 写公式时可能没有计算结果，那就得看到 SUM 一类的公式
+      const has = (n) => new RegExp(`<v>\\s*${n}(\\.0+)?\\s*</v>`).test(sheets);
+      const formula = /<f>[^<]*(SUM|SUMIF)/i.test(sheets);
+      return [
+        ck("汇总.xlsx 存在且可解析", !!parts && names.length > 0),
+        ck("有「明细」和「汇总」两张表", names.includes("明细") && names.includes("汇总"), names.join("、")),
+        ck("三个部门和总计都在", ["市场部", "研发部", "销售部", "总计"].every((k) => strs.includes(k))),
+        ck("金额是数字：部门合计对得上（或用公式算）", formula || (has("2000\\.5") && has("3450\\.25") && has("4000"))),
+        ck("总计对得上（或用公式算）", formula || has("9450\\.75")),
+      ];
+    },
+  },
+  {
+    id: "office-docx",
+    name: "Word 会议纪要（办公）",
+    level: 2, kind: "办公",
+    rubric: [
+      "待办事项的负责人和日期跟原文一致，没有张冠李戴",
+      "没有写进会议里没说过的内容",
+    ],
+    prompt: "当前目录有 会议记录.txt。整理成一份 纪要.docx：用 Word 标题样式分出「决议」和「待办」两节。待办要写清负责人和截止日期。",
+    inputs: { "会议记录.txt": "周二例会。老王说官网改版方案通过了，下周一开始做。小李负责写新版文案，11 月 20 日前交。老张负责接入支付，11 月 25 日前完成。大家同意预算不超过 5 万。闲聊：午饭吃什么没定。\n" },
+    checks(dir) {
+      const parts = zipParts(dir, "纪要.docx");
+      const xml = partText(parts, /^word\/document\.xml$/);
+      const text = plain(xml);
+      return [
+        ck("纪要.docx 存在且可解析", !!parts && !!xml),
+        ck("用了 Word 标题样式", /<w:pStyle w:val="(Heading|heading|标题)[^"]*"/.test(xml)),
+        ck("决议和待办两节都在", text.includes("决议") && text.includes("待办")),
+        ck("待办的人和日期都在", ["小李", "老张"].every((k) => text.includes(k)) && /11\s*月\s*20/.test(text) && /11\s*月\s*25/.test(text)),
+        ck("决议写对了：改版通过、预算 5 万", text.includes("改版") && /5\s*万/.test(text)),
+        ck("闲聊没写进去", !!text && !text.includes("午饭")),
       ];
     },
   },

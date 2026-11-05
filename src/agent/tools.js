@@ -1160,31 +1160,54 @@ function sandboxOpts(sec) {
  *   verbatim：args 已按 cmd 的规矩拼好，原样接上
  */
 /**
+ * 成员的命令必须进沙箱，隔离立不起来就不跑。
+ *
+ * 文件黑名单看的是命令原文，换个写法就过去了（`open('con'+'fig.json')`，用测试 Key 本地复现过）；
+ * 真正拦得住的只有内核。所以多人共用时，**不是平台管理员的人**跑命令一律按 required：
+ * 设置里写着 auto / off 也一样——那两档是属主给自己定的，定不到别人头上。
+ * 属主自己的任务照原档位：Key 本来就是他的，没必要因为这台机器没装 bubblewrap 就连定时任务都跑不了。
+ * 真要放开（内网单一团队、接受这个风险）写 security.allow_member_unsandboxed: true，名字就是提醒。
+ */
+function memberMustSandbox(who, sec) {
+  if (!security.isMultiUser()) return false;
+  if (sec && sec.allow_member_unsandboxed === true) return false;
+  const name = who && typeof who === "object" ? (who.username || who.name || who.id) : who;
+  // 没有账号的那趟：只有本机终端里的 openworkbuddy 才算（它跑在当前系统用户自己的权限下，本来就读得到这些文件）。
+  // 服务端里摸不到账号就按成员算：判错了只是这条命令不跑，反过来是把 Key 交出去
+  if (!name) return process.env.OWB_ENTRY !== "cli";
+  return !security.isPlatformAdmin(name);
+}
+
+/**
  * 这一趟命令怎么包：{ wrap } 就照着包好再 spawn，{ error } 就别跑了。sandboxed：真套上了
  * auto：立不起来照常跑，记一笔、设置页看得到；required：立不起来就不跑；off：不包。
  * 没设过的档位：多人用的 Mac 按 required，其余按 auto（Linux 上没有这层，不能因此一条命令都跑不了）
  * @returns {Promise<{ wrap: WrapFn, sandboxed?: boolean, error?: undefined } | { error: string, wrap?: undefined, sandboxed?: undefined }>}
  */
-async function sandboxFor(sec) {
+async function sandboxFor(sec, who) {
   // 沙箱安全总开关关了：命令也不套系统沙箱
-  const mode = security.sandboxOff(sec) ? "off" : sandbox.effectiveMode(sec.sandbox, security.isMultiUser() && process.platform === "darwin");
+  const mode = memberMustSandbox(who, sec) ? "required"
+    : security.sandboxOff(sec) ? "off" : sandbox.effectiveMode(sec.sandbox, security.isMultiUser() && process.platform === "darwin");
   /** @type {WrapFn} */
   const asIs = (bin, args) => ({ bin, args });
   const bare = { wrap: asIs };
   if (mode === "off") { noteSandbox({ mode, ok: false, reason: "已关闭" }); return bare; }
   const win = process.platform === "win32";
+  const linux = process.platform === "linux";
   let pf;
-  if (process.platform !== "darwin" && !win) pf = { ok: false, reason: "系统沙箱只有 macOS 和 Windows 上有", warn: [] };
+  if (process.platform !== "darwin" && !win && !linux) pf = { ok: false, reason: "这个系统上没有系统沙箱", warn: [] };
   else {
     let o = null;
     try { o = sandboxOpts(sec); } catch (e) { pf = { ok: false, reason: String(/** @type {any} */ (e).message || e), warn: [] }; }
     if (o) {
       const opts = o;
-      pf = await (win ? sandbox.preflightWin(opts) : sandbox.preflight(opts));
+      pf = await (win ? sandbox.preflightWin(opts) : linux ? sandbox.preflightLinux(opts) : sandbox.preflight(opts));
       if (pf.ok) {
         noteSandbox({ mode, ...pf });
         /** @type {WrapFn} */
-        const wrap = win ? (bin, args, wo) => sandbox.wrapWin(bin, args, { ...wo, home: opts.home || undefined }) : (bin, args) => sandbox.wrap(bin, args, opts);
+        const wrap = win ? (bin, args, wo) => sandbox.wrapWin(bin, args, { ...wo, home: opts.home || undefined })
+          : linux ? (bin, args) => sandbox.wrapLinux(bin, args, opts)
+          : (bin, args) => sandbox.wrap(bin, args, opts);
         return { wrap, sandboxed: true };
       }
     }
@@ -1207,6 +1230,23 @@ function warmSandbox(sec) {
   return sandboxFor(sec || security.DEFAULTS).then(() => sandboxStatus(), () => sandboxStatus());
 }
 
+/**
+ * AI 跑的命令让着界面：优先级降一档，电脑忙的时候先卡它，不卡窗口和打字。
+ * 后面它再起的子进程跟着继承。设不上就算了（权限不够、进程已经退了），命令照常跑
+ * @param {import("child_process").ChildProcess} child
+ */
+function yieldToUi(child) {
+  try { if (child && child.pid) require("os").setPriority(child.pid, 10); } catch {}
+}
+
+/** @param {string} bin @param {string[]} args @param {object} o */
+function spawnLow(bin, args, o) {
+  // 不加 windowsHide：三处调用方传的 o 里都带着，这里只是加一步降优先级
+  const c = spawn(bin, args, o);
+  yieldToUi(c);
+  return c;
+}
+
 /** box：sandboxFor 给的包法，不传就不包 */
 function runNode(code, timeoutMs, cwd, stopSignal, session = "", box = null) {
   ensureDirs();
@@ -1227,7 +1267,7 @@ function runNode(code, timeoutMs, cwd, stopSignal, session = "", box = null) {
     const nodeBin = require("../platform/electron-bridge").nodeExec();
     /** @type {Wrapped} */
     const w = box ? box.wrap(nodeBin, [file]) : { bin: nodeBin, args: [file] };
-    const child = spawn(w.bin, w.args, {
+    const child = spawnLow(w.bin, w.args, {
       cwd: cwd || ws(),
       // 自成进程组，好让 killTree 能连着孙子进程一起收（脚本里再 spawn 是常事）
       detached: process.platform !== "win32",
@@ -1519,7 +1559,7 @@ function runShell(command, timeoutMs, cwd, stopSignal, session = "", box = null)
     const sh = pickShell(command);
     /** @type {Wrapped} */
     const w = box ? box.wrap(sh.bin, sh.args, { verbatim: !!sh.opts.windowsVerbatimArguments }) : { bin: sh.bin, args: sh.args };
-    const child = spawn(w.bin, w.args, {
+    const child = spawnLow(w.bin, w.args, {
       cwd: cwd || ws(),
       // 同 runNode：整组一起杀，否则 `npm install` 那一窝会活过「让我停下」。超时也一样，见 armTimeout
       detached: process.platform !== "win32",
@@ -2394,7 +2434,7 @@ function startBackground(cmd, cwd, opts, keep = false, box = null) {
       const sh = pickShell(cmd);
       /** @type {Wrapped} */
       const w = box ? box.wrap(sh.bin, sh.args, { verbatim: !!sh.opts.windowsVerbatimArguments }) : { bin: sh.bin, args: sh.args };
-      return spawn(w.bin, w.args, {
+      return spawnLow(w.bin, w.args, {
         cwd: cwd || ws(),
         detached: process.platform !== "win32",
         stdio: ["ignore", "pipe", "pipe"],
@@ -4004,6 +4044,39 @@ async function viaMedia(cap, opts, input, run, hold) {
   return res;
 }
 
+/**
+ * 生图、生视频配了好几个模型时按顺序试：默认那条挂了换下一条。
+ *
+ * 只在没点名型号时换。点了名就是要这个，换成别的是静默改结果，宁可如实报错。
+ * 每一条各过各的额度闸（价钱不一样），各记各的渠道健康账。
+ * 换了要说：用户得知道这张图是谁画的，风格和价钱都可能不同。
+ * @param {"image"|"video"} cap @param {any} opts @param {any} input
+ * @param {(inp: any) => Promise<any>} tryOnce
+ */
+async function mediaInOrder(cap, opts, input, tryOnce) {
+  const first = await tryOnce(input);
+  if ((input && input.model) || !mediaHealth.worthNextModel(first)) return first;
+  const media = (opts || {}).media;
+  let start = null;
+  try { start = mediaModels.pick(media, cap); } catch {}
+  const rest = mediaModels.fallbackOrder(media, cap, start);
+  if (!rest.length) return first;
+  const tried = [`${start ? start.name || start.model : "默认模型"}：${firstLine(first.content)}`];
+  let last = first;
+  for (const m of rest) {
+    if (opts.stopSignal && opts.stopSignal.aborted) return last;
+    const res = await tryOnce({ ...input, model: m.name });
+    if (res && !res.isError) {
+      return { ...res, content: `（${start ? start.name || start.model : "默认模型"}没成功，已按设置里的顺序改用 ${m.name}。交付时告诉用户这一条换了模型。）\n${res.content}`, fellBack: m.name };
+    }
+    last = res;
+    tried.push(`${m.name}：${firstLine(res && res.content)}`);
+    if (!mediaHealth.worthNextModel(res)) break; // 内容被拦、已下单：后面的也不试
+  }
+  return { ...last, content: `${String(last.content || "")}\n\n按顺序试过：\n${tried.map((t) => "- " + t).join("\n")}` };
+}
+const firstLine = (/** @type {any} */ t) => String(t || "").split("\n")[0].slice(0, 120);
+
 // 画布状态的读写 / 规整 / 备份和 canvas 工具：在 src/tools/canvas.js
 
 /** 工具跑完之后：改了文件就跑 after_edit 钩子，输出接在回执后面（钩子见 hooks.js） */
@@ -4281,7 +4354,7 @@ async function executeToolCore(name, input, opts = {}) {
         // modeGated：只看不动/每步都问是用户当场选的档，闸门总开关关着也得照档办
         const blocked = await passGate(await judgeRisk(security.checkCode(sec, code), "代码", code), "代码", code, { force: modeGated() });
         if (blocked) return blocked;
-        const box = await sandboxFor(sec);
+        const box = await sandboxFor(sec, opts.actor);
         if (box.error) { security.audit("命令拦截", "run_node（系统沙箱没立起来）", "拦截"); return { content: box.error, isError: true }; }
         return await runNode(code, timeoutMs, fileBase, opts.stopSignal, opts.sessionId || "", box);
       }
@@ -4295,7 +4368,7 @@ async function executeToolCore(name, input, opts = {}) {
         if (blocked) return blocked;
         const hookSays = await HK.beforeShell(opts.hooks, cmd, { cwd: fileBase, stopSignal: opts.stopSignal });
         if (hookSays) { security.audit("命令执行", cmd, "钩子拦截"); return { content: hookSays, isError: true }; }
-        const box = await sandboxFor(sec);
+        const box = await sandboxFor(sec, opts.actor);
         if (box.error) { security.audit("命令拦截", cmd + "（系统沙箱没立起来）", "拦截"); return { content: box.error, isError: true }; }
         security.audit("命令执行", cmd, "放行");
         return await require("../core/automation/schedule-delivery").runShell(input, () => input.background
@@ -4930,18 +5003,20 @@ async function executeToolCore(name, input, opts = {}) {
         // 看图的额度闸在里面问：要等挑完渠道（主模型自己看，还是单配的那条）才知道按谁的价
         return await withStop(opts, (stop) => viaMedia("vision", opts, input, () => lookAtImage(opts, input, timeoutMs, resolveFile, stop,
           { gate: (c) => quotaGate("vision", c) })));
-      case "generate_image": {
-        const g = mediaGate("image", opts, input, unitsFor("image", input));
-        if (g.bad) return g.bad;
-        return await withStop(opts, (stop) => viaMedia("image", opts, input, () => withGenCache("generate_image", "image", opts, input, fileBase, resolveFile, g.hold,
-          () => generateImage(opts.media, input, timeoutMs, fileBase, resolveFile, stop)), g.hold));
-      }
-      case "generate_video": {
-        const g = mediaGate("video", opts, input, (cfg) => unitsFor("video", input, null, cfg));
-        if (g.bad) return g.bad;
-        return await withStop(opts, (stop) => viaMedia("video", opts, input, () => withGenCache("generate_video", "video", opts, input, fileBase, resolveFile, g.hold,
-          () => generateVideo(opts.media, input, { ...opts, saveDir: fileBase, resolveFile, signal: stop })), g.hold));
-      }
+      case "generate_image":
+        return await mediaInOrder("image", opts, input, async (inp) => {
+          const g = mediaGate("image", opts, inp, unitsFor("image", inp));
+          if (g.bad) return g.bad;
+          return await withStop(opts, (stop) => viaMedia("image", opts, inp, () => withGenCache("generate_image", "image", opts, inp, fileBase, resolveFile, g.hold,
+            () => generateImage(opts.media, inp, timeoutMs, fileBase, resolveFile, stop)), g.hold));
+        });
+      case "generate_video":
+        return await mediaInOrder("video", opts, input, async (inp) => {
+          const g = mediaGate("video", opts, inp, (cfg) => unitsFor("video", inp, null, cfg));
+          if (g.bad) return g.bad;
+          return await withStop(opts, (stop) => viaMedia("video", opts, inp, () => withGenCache("generate_video", "video", opts, inp, fileBase, resolveFile, g.hold,
+            () => generateVideo(opts.media, inp, { ...opts, saveDir: fileBase, resolveFile, signal: stop })), g.hold));
+        });
       case "html_to_image":
         // 单张原样交给 media.htmlToImage；html_files[] 批量一张张串行截，每张报一次进度
         return await withStop(opts, (stop) => require("../tools/motion").htmlToImageBatch(input, resolveFile, fileBase, { signal: stop, onProgress: opts.onProgress }));
@@ -5427,4 +5502,4 @@ const diskConnectorHost = {
 };
 
 module.exports = {
-  _internals: { setDepsAppDir: (d) => { depsAppDir = d; }, depsGuardEnv, searchBodyError, searchHttpError, toItems, pickHits, SEARCH_HTTP_HINT, searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, execCheck, extCheck, EXT_CHECK_MAX, openHiddenWeb, hiddenWeb, WEB_PARTITION, checkPage, runShell, runNode, startBackground, sandboxFor, sandboxOpts, sandboxDeniedHint, trackBgGroup, noteStray, strays, psRows, verifiedPgids, reapStrays, reapStraysAtExit, strayFile, saveStrays, auditHtml, savedAt, markDuplicates, pickShell, winTextEnv, fetchRetry, nearestTool, viaMedia, lookAtImage, pickEye, mainCanSee, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, unitsFor, anySignal, sleepFor, videoPlan: mediaModels.videoPlan, editFile, planEdit, planMulti, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, WIN_PYTHON_HINT, runsPython, winPython3Shim, winStoreStub, shCheckBin, SH_ENV_NOISE, reapBgJob, pdfHowTo, underRoot, winCanonCase, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES, docToText, slidesToText, sheetsToText }, TOOL_DEFS, executeTool, ownRootFiles, releaseRun, holdRun, runHeld, reapLeftoverStrays, badToolArgs, outputFiles, turnSnapshot, statOutputs, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withLibraryBase, libBase, notesFileOf, LIB_DIR, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage, canvasSafeName, setConnectorHost, checkConnector, sandboxStatus, warmSandbox, setOwnerDirs, setReplyBase: MEDIA.setReplyBase, withReplyBase: MEDIA.withReplyBase };
+  _internals: { memberMustSandbox, setDepsAppDir: (d) => { depsAppDir = d; }, depsGuardEnv, searchBodyError, searchHttpError, toItems, pickHits, SEARCH_HTTP_HINT, searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, execCheck, extCheck, EXT_CHECK_MAX, openHiddenWeb, hiddenWeb, WEB_PARTITION, checkPage, runShell, runNode, startBackground, sandboxFor, sandboxOpts, sandboxDeniedHint, trackBgGroup, noteStray, strays, psRows, verifiedPgids, reapStrays, reapStraysAtExit, strayFile, saveStrays, auditHtml, savedAt, markDuplicates, pickShell, winTextEnv, fetchRetry, nearestTool, viaMedia, lookAtImage, pickEye, mainCanSee, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, unitsFor, anySignal, sleepFor, videoPlan: mediaModels.videoPlan, editFile, planEdit, planMulti, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, WIN_PYTHON_HINT, runsPython, winPython3Shim, winStoreStub, shCheckBin, SH_ENV_NOISE, reapBgJob, pdfHowTo, underRoot, winCanonCase, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES, docToText, slidesToText, sheetsToText }, TOOL_DEFS, executeTool, ownRootFiles, releaseRun, holdRun, runHeld, reapLeftoverStrays, badToolArgs, outputFiles, turnSnapshot, statOutputs, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withLibraryBase, libBase, notesFileOf, LIB_DIR, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage, canvasSafeName, setConnectorHost, checkConnector, sandboxStatus, warmSandbox, setOwnerDirs, setReplyBase: MEDIA.setReplyBase, withReplyBase: MEDIA.withReplyBase };
