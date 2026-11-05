@@ -2755,7 +2755,7 @@ function modePrompt(mode) {
     try {
       // claude 那边实际用的档位：engine_options 里手填的 permissionMode 最大（见 claude-code.js）；只读那一趟除外
       const claudeMode = readOnly ? guard.claudeMode : opts.permissionMode || guard.claudeMode;
-      const systemPrompt = await engineSystemPrompt(cwd, mode, user, bridged, { projectContext, projectName, history, lang, engine: backend.id, claudeMode, foreignCwd: !!importCwd, canvasSession: canvasStore.canvasSessionOf(sessionId) });
+      const systemPrompt = await engineSystemPrompt(cwd, mode, user, bridged, { projectContext, history, lang, projectName, engine: backend.id, claudeMode, foreignCwd: !!importCwd, canvasSession: canvasStore.canvasSessionOf(sessionId) });
       await filesOut.ready; // 开跑前的基线必须先落定，否则引擎第一步写的文件会被当成「本来就有」
       const runWith = (resumeId) => backend.run({
         prompt: enginePrompt(history, resumeId, cwd),
