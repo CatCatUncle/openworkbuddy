@@ -3248,7 +3248,7 @@ function modePrompt(mode) {
     const stableSystem = (rolePrompt || (await coordinatorSystemPrompt(user, memHint, baseDir))) + langBlock(lang) + (coding ? codeProfile.modeBlock(mode) : modePrompt(mode));
     const quoteFirst = canvasStore.canvasSessionOf(sessionId);
     const system = stableSystem + (await volatileSystemBlock({ user, memHint, projBlock: projBlock + brandBlock, mediaReopened }))
-      + (coding ? codeProfile.gitContext(safeWorkspaceDir(baseDir)) : "")
+      + (coding ? await codeProfile.gitContext((args) => require("./tools").sandboxedGit(safeWorkspaceDir(baseDir), args, { sec: config.security, actor: user })) : "")
       + (quoteFirst ? canvasStore.canvasMediaPrompt(mediaModels.resolve(config)) : "");
     const systemStableLen = stableSystem.length;
     // 画布任务（s_canvas_ 会话）不摆生图 / 生视频 / 配音：那边先交清单、用户点「开跑」才生成。

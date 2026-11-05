@@ -14,12 +14,15 @@
  * 太长就截，并在提示词里明说截了多少——审了一半却以为审完了，比不审还糟。
  */
 const { execFileSync } = require("child_process");
+const safeGit = require("../util/safe-git");
 
 const DIFF_MAX = 80000;   // 字符。再多模型也看不仔细，不如让人分几次审
 const UNTRACKED_MAX = 50;
 
 function git(cwd, args) {
-  return execFileSync("git", args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 20000, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  const hard = safeGit.args(cwd);
+  if (!hard) throw new Error("这个仓库的 git 配置不安全，没有执行");
+  return execFileSync("git", [...hard, ...args], { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 20000, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
 }
 
 /** 取改动。返回 { error } 或 { base, label, diff, stat, untracked, total, truncated, empty } */

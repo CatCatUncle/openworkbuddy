@@ -16,7 +16,6 @@
  *
  * 只换提示词和工具清单，安全闸、审批、沙箱、记忆、技能一样不少。
  */
-const { spawnSync } = require("child_process");
 
 /** 写代码常驻的工具 */
 const CODE_TOOLS = new Set([
@@ -74,17 +73,17 @@ function loadGroup(group, all, tools, offered) {
  * 拿不到就不写：不是 git 仓库、git 没装、仓库太大超时都不是问题，这段只是省事的。
  * @param {string} cwd
  */
-function gitContext(cwd) {
-  const git = (/** @type {string[]} */ args) => {
-    const r = spawnSync("git", args, { cwd, encoding: "utf8", timeout: 1500, windowsHide: true, maxBuffer: 256 * 1024 });
+async function gitContext(run) {
+  const git = async (/** @type {string[]} */ args) => {
+    const r = await run(args);
     return r.status === 0 ? String(r.stdout || "").trim() : null;
   };
-  const branch = git(["rev-parse", "--abbrev-ref", "HEAD"]);
+  const branch = await git(["rev-parse", "--abbrev-ref", "HEAD"]);
   if (branch === null) return "";
-  const lines = (git(["status", "--short"]) || "").split("\n").filter(Boolean);
+  const lines = ((await git(["status", "--short", "--ignore-submodules=all"])) || "").split("\n").filter(Boolean);
   const shown = lines.slice(0, 20).join("\n");
   const more = lines.length > 20 ? `\n…还有 ${lines.length - 20} 个改动` : "";
-  const log = git(["log", "-3", "--format=%h %s"]) || "";
+  const log = (await git(["log", "-3", "--format=%h %s"])) || "";
   return `\n\n## 当前 git 状态（开工时的快照）\n- 分支：${branch}\n${shown ? "- 未提交：\n" + shown + more + "\n" : "- 工作区干净\n"}${log ? "- 最近提交：\n" + log : ""}`;
 }
 

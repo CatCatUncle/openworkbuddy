@@ -30,6 +30,7 @@ const path = require("path");
 const crypto = require("crypto");
 const childProcess = require("child_process");
 const { spawnSync } = childProcess;
+const safeGit = require("../util/safe-git");
 
 const BRANCH_PREFIX = "owb/";
 const SEED_MAX_FILES = 200;            // 没跟踪的文件带过去的上限
@@ -37,8 +38,12 @@ const SEED_MAX_BYTES = 20 * 1024 * 1024;
 const KEEP_DAYS = 14;                  // 没人管的分身留这么久；有改动的只删目录不删分支
 const GIT_TIMEOUT = 60000;
 
+// 这里的 git 跑在沙箱外，而 .git/config、钩子 agent 改得到，所以都要加固，见 src/util/safe-git.js
+const REFUSED = { status: 1, stdout: "", stderr: "这个仓库的 git 配置不安全，没有执行" };
 function git(cwd, args, opt) {
-  return spawnSync("git", ["-C", cwd, ...args], {
+  const hard = safeGit.args(cwd);
+  if (!hard) return REFUSED;
+  return spawnSync("git", ["-C", cwd, ...hard, ...args], {
     encoding: "utf8", timeout: GIT_TIMEOUT, maxBuffer: 64 * 1048576, windowsHide: true, ...opt,
   });
 }
@@ -126,8 +131,10 @@ const REPO_CACHE_MAX = 64;
 const repoCache = new Map(); // 绝对路径 → { at, p }
 
 function gitAsync(cwd, args, opt) {
+  const hard = safeGit.args(cwd);
+  if (!hard) return Promise.resolve(REFUSED);
   return new Promise((resolve) => {
-    childProcess.execFile("git", ["-C", cwd, ...args], {
+    childProcess.execFile("git", ["-C", cwd, ...hard, ...args], {
       encoding: "utf8", timeout: GIT_TIMEOUT, maxBuffer: 64 * 1048576, windowsHide: true, ...opt,
     }, (err, stdout, stderr) => {
       // 跟 spawnSync 的返回长一个样，out() 两边通用：没起来（没装 git / 超时被杀）算非 0
@@ -203,7 +210,7 @@ function seedFrom(src, dst) {
     if (names) {
       const patch = git(src, ["diff", "HEAD", "--binary"], { encoding: "buffer", maxBuffer: 256 * 1048576 });
       if (patch.status === 0 && patch.stdout && patch.stdout.length) {
-        const ap = spawnSync("git", ["-C", dst, "apply", "--whitespace=nowarn"], { input: patch.stdout, encoding: "utf8", timeout: GIT_TIMEOUT, windowsHide: true });
+        const ap = git(dst, ["apply", "--whitespace=nowarn"], { input: patch.stdout });
         if (ap.status === 0) note.patched = names.split("\n").length;
         else note.skipped = "没提交的改动打不进分身（" + String(ap.stderr || "").trim().split("\n")[0].slice(0, 80) + "）";
       }

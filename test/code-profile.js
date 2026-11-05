@@ -46,12 +46,14 @@ ok(cp.modeBlock("ask") && cp.modeBlock("plan") && cp.modeBlock("craft") === "", 
 
 console.log("【4】git 上下文");
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-cp-"));
-ok(cp.gitContext(dir) === "", "不是 git 仓库：什么都不写");
+const gitIn = (args) => require("child_process").spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+(async () => {
+ok((await cp.gitContext(gitIn)) === "", "不是 git 仓库：什么都不写");
 const sh = (a) => require("child_process").spawnSync("git", a, { cwd: dir, stdio: "ignore" });
 sh(["init", "-q", "-b", "main"]); sh(["config", "user.email", "t@t"]); sh(["config", "user.name", "t"]);
 fs.writeFileSync(path.join(dir, "a.js"), "1"); sh(["add", "."]); sh(["commit", "-qm", "第一次"]);
 fs.writeFileSync(path.join(dir, "a.js"), "2");
-const g = cp.gitContext(dir);
+const g = await cp.gitContext(gitIn);
 ok(/分支：main/.test(g) && /a\.js/.test(g) && /第一次/.test(g), "分支、未提交、最近提交都在：省掉开工那一轮");
 
 console.log("【5】目录判定");
@@ -67,3 +69,4 @@ ok(/profile: laneId === "cli" \? "code"/.test(fs.readFileSync(path.join(__dirnam
 fs.rmSync(dir, { recursive: true, force: true }); fs.rmSync(docs, { recursive: true, force: true });
 console.log(`\n写代码那一档：${pass} 过 / ${fail} 挂`);
 process.exit(fail ? 1 : 0);
+})();

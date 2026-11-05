@@ -11,6 +11,7 @@ const path = require("path");
 const { DATA_DIR, dataPath, appPath } = require("../platform/paths");
 const { spawn, spawnSync } = require("child_process");
 const { outDecoder } = require("../util/out-decode");
+const safeGit = require("../util/safe-git");
 const security = require("../core/safety/security");
 const larkMessage = require("../core/ext/lark-message");
 const netGuard = require("../core/safety/net-guard"); // 联网工具的地址闸：本机/内网默认拦、OWB 自己的端口永远拦、发请求钉住判过的 IP
@@ -1225,6 +1226,31 @@ function sandboxDeniedHint(text, box, platform = process.platform) {
   if (!box || !box.sandboxed || platform !== "win32" || !DENIED_RE.test(String(text || ""))) return "";
   return "（这条命令在系统沙箱里跑：只能写工作区和临时目录，Key 和账本读不到。开关在 设置 → 安全 → 系统沙箱。）";
 }
+/**
+ * 在 agent 写得到的目录里跑 git。
+ *
+ * git 由应用自己调用，不进沙箱的话，agent 改一下 .git/config 就能借它逃出去：
+ * core.fsmonitor 能执行命令，core.worktree 能把 git diff 指到 Key 所在的目录。
+ * 所以走跟 run_shell 同一层沙箱，再叠上 safe-git 的参数。谁的任务就按谁的档位，
+ * 成员的隔离立不起来就不跑，调用方当成「不是仓库」处理。
+ * @param {string} cwd @param {string[]} args
+ * @param {{ sec?: any, actor?: any, timeout?: number, maxBuffer?: number }} [o]
+ * @returns {Promise<{ status: number, stdout: string, stderr: string, truncated?: boolean }>}
+ */
+async function sandboxedGit(cwd, args, { sec, actor, timeout = 1500, maxBuffer = 256 * 1024 } = {}) {
+  const box = await sandboxFor(sec || security.DEFAULTS, actor);
+  if (box.error) return { status: 1, stdout: "", stderr: box.error };
+  const hard = safeGit.args(cwd);
+  if (!hard) return { status: 1, stdout: "", stderr: "这个仓库的 git 配置不安全，没有执行" };
+  const w = /** @type {Wrapped} */ (box.wrap("git", ["-C", cwd, ...hard, ...args], {}));
+  return new Promise((resolve) => {
+    require("child_process").execFile(w.bin, w.args, { cwd, encoding: "utf8", timeout, maxBuffer, windowsHide: true, env: buildChildEnv({ PATH: shellPath(), GIT_OPTIONAL_LOCKS: "0", ...w.env }), ...w.opts }, (err, stdout, stderr) => {
+      const code = /** @type {any} */ (err)?.code;
+      resolve({ status: err ? (typeof code === "number" ? code : 1) : 0, stdout: String(stdout || ""), stderr: String(stderr || ""), truncated: code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" });
+    });
+  });
+}
+
 /** 启动时先预检一遍：设置页一打开就有现状，第一条命令也不用等 */
 function warmSandbox(sec) {
   return sandboxFor(sec || security.DEFAULTS).then(() => sandboxStatus(), () => sandboxStatus());
@@ -5502,4 +5528,5 @@ const diskConnectorHost = {
 };
 
 module.exports = {
+  sandboxedGit,
   _internals: { memberMustSandbox, setDepsAppDir: (d) => { depsAppDir = d; }, depsGuardEnv, searchBodyError, searchHttpError, toItems, pickHits, SEARCH_HTTP_HINT, searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, execCheck, extCheck, EXT_CHECK_MAX, openHiddenWeb, hiddenWeb, WEB_PARTITION, checkPage, runShell, runNode, startBackground, sandboxFor, sandboxOpts, sandboxDeniedHint, trackBgGroup, noteStray, strays, psRows, verifiedPgids, reapStrays, reapStraysAtExit, strayFile, saveStrays, auditHtml, savedAt, markDuplicates, pickShell, winTextEnv, fetchRetry, nearestTool, viaMedia, lookAtImage, pickEye, mainCanSee, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, unitsFor, anySignal, sleepFor, videoPlan: mediaModels.videoPlan, editFile, planEdit, planMulti, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, WIN_PYTHON_HINT, runsPython, winPython3Shim, winStoreStub, shCheckBin, SH_ENV_NOISE, reapBgJob, pdfHowTo, underRoot, winCanonCase, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES, docToText, slidesToText, sheetsToText }, TOOL_DEFS, executeTool, ownRootFiles, releaseRun, holdRun, runHeld, reapLeftoverStrays, badToolArgs, outputFiles, turnSnapshot, statOutputs, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withLibraryBase, libBase, notesFileOf, LIB_DIR, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage, canvasSafeName, setConnectorHost, checkConnector, sandboxStatus, warmSandbox, setOwnerDirs, setReplyBase: MEDIA.setReplyBase, withReplyBase: MEDIA.withReplyBase };

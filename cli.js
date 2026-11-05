@@ -3194,9 +3194,10 @@ function splitFiles(text) {
         } catch { return { path: p, state: "gone" }; }
       });
       let git = "", notRepo = false;
-      const inRepo = spawnSync("git", ["-C", ws, "rev-parse", "--is-inside-work-tree"], { encoding: "utf8", windowsHide: true });
+      const hard = require("./src/util/safe-git").args(ws);
+      const inRepo = hard ? spawnSync("git", ["-C", ws, ...hard, "rev-parse", "--is-inside-work-tree"], { encoding: "utf8", windowsHide: true }) : { status: 1 };
       if (inRepo.status === 0 && String(inRepo.stdout).trim() === "true") {
-        const d = spawnSync("git", ["-C", ws, "diff", "--stat", "HEAD"], { encoding: "utf8", windowsHide: true });
+        const d = spawnSync("git", ["-C", ws, ...hard, "diff", "--stat", "--no-ext-diff", "--no-textconv", "HEAD"], { encoding: "utf8", windowsHide: true });
         git = d.status === 0 ? String(d.stdout).trim() : "";
         if (!git) git = "跟 HEAD 一模一样，没有未提交的改动。";
       } else notRepo = true;
