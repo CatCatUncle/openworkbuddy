@@ -28,10 +28,11 @@ app.whenReady().then(async () => {
   win = new BrowserWindow({ show: false, width: 900, height: 700, webPreferences: { contextIsolation: false, sandbox: false, backgroundThrottling: false } });
   await win.loadURL(base);
   assert.ok(!read("public/index.html").includes("app-10-share.js"));
-  assert.ok(!read("public/js/app-02.js").includes('act === "share"'));
+  // 入口只在平台管理员打开后才出现
+  assert.ok(/settingsCache\?\.session_shares \? \["share"/.test(read("public/js/app-02.js")));
   const results = await win.webContents.executeJavaScript(`(() => {
     if (typeof openSessionShare !== "undefined" || document.getElementById("session-share-panel")) throw Error("分享入口未关闭");
-    return ["主界面不加载分享脚本", "任务菜单没有分享操作", "没有分享面板或弹窗"];
+    return ["主界面不加载分享脚本", "默认不显示分享入口", "没有分享面板或弹窗"];
   })()`);
   for (const name of results) console.log("✓ " + name);
   let more = 0;

@@ -10,14 +10,14 @@
  *   filter.<x>.clean      git status / diff 读改过的文件时执行
  *   core.hooksPath、钩子   post-index-change、post-checkout 等
  *   log.showSignature     git log 时执行 gpg.program
- *   diff.external         git diff 时执行
+ *   diff.external         git diff 时执行（这条 -c 盖不掉，见 guard）
  * 命令行的 -c 优先级最高，盖得住仓库配置。筛选器的名字是仓库自己起的，要先查出来逐个盖掉。
  * core.worktree 盖不掉，要读文件内容时还得放进沙箱，见 tools.js sandboxedGit。
  */
 const { spawnSync } = require("child_process");
 
 const NULL_FILE = process.platform === "win32" ? "NUL" : "/dev/null";
-const FIXED = ["core.fsmonitor=false", `core.hooksPath=${NULL_FILE}`, "core.pager=cat", "diff.external=", "log.showSignature=false", "submodule.recurse=false", "core.quotepath=false"];
+const FIXED = ["core.fsmonitor=false", `core.hooksPath=${NULL_FILE}`, "core.pager=cat", "log.showSignature=false", "submodule.recurse=false", "core.quotepath=false"];
 
 /** 配了哪些筛选器。读配置不会执行任何东西。 */
 function filterNames(cwd) {
@@ -33,4 +33,14 @@ function args(cwd) {
   return [...FIXED, ...off].flatMap((value) => ["-c", value]);
 }
 
-module.exports = { args };
+/**
+ * 子命令自己的防线。diff.external 不能用 -c 置空：空值也算配了外部程序，
+ * git diff 会去执行空命令然后报错，所以必须在 diff 后面带 --no-ext-diff。
+ * @param {string[]} list 子命令和它的参数
+ */
+function guard(list) {
+  const at = list.findIndex((item) => !item.startsWith("-"));
+  return list[at] === "diff" ? [...list.slice(0, at + 1), "--no-ext-diff", "--no-textconv", ...list.slice(at + 1)] : list;
+}
+
+module.exports = { args, guard };

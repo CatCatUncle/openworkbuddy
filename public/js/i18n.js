@@ -154,6 +154,7 @@
       "做视频": "Create a video",
       "添加到画布": "Add to canvas",
       "分享给同事": "Share with colleagues",
+      "好的": "OK",
       "分享失败": "Could not share",
       "分享链接": "Share link",
       "链接已复制。同组织成员登录后可以查看。": "Link copied. Colleagues in your organization can view it after signing in.",

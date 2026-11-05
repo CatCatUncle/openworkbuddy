@@ -882,7 +882,7 @@ html[data-theme="dark"] .ui-select {
 .code-diff-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 42px; padding: 6px 12px; border-bottom: 1px solid var(--owb-border); }
 .code-diff-head b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .code-diff-head button { flex: none; }
-.code-diff-body { flex: 1; min-height: 0; margin: 0; padding: 8px 0; overflow: auto; font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.code-diff-body { flex: 1; min-height: 0; margin: 0; padding: 8px 0; overflow: auto; font: 12px/1.55 var(--font-mono); }
 .cd-line { display: block; min-width: max-content; padding: 0 12px; white-space: pre; }
 .cd-add { background: rgba(46, 160, 67, .15); }
 .cd-del { background: rgba(248, 81, 73, .15); }

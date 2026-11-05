@@ -22,7 +22,7 @@ const UNTRACKED_MAX = 50;
 function git(cwd, args) {
   const hard = safeGit.args(cwd);
   if (!hard) throw new Error("这个仓库的 git 配置不安全，没有执行");
-  return execFileSync("git", [...hard, ...args], { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 20000, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  return execFileSync("git", [...hard, ...safeGit.guard(args)], { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 20000, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
 }
 
 /** 取改动。返回 { error } 或 { base, label, diff, stat, untracked, total, truncated, empty } */

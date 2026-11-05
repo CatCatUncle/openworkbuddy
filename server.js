@@ -9463,6 +9463,54 @@ app.get("/api/eval/run/:dir", (req, res) => {
   if (j.results && j.results.length) j.human = evalJudge.humanStats(j.results);
   res.json({ dir, ...j });
 });
+/** 后台「成员权限」页：哪些连接器和技能开放给成员、能不能分享任务 */
+app.get("/api/admin/member-access", (req, res) => {
+  if (!isPlatformOwner(req)) return res.status(403).json({ error: "这项设置归平台管理员", platform_only: true });
+  const off = (kind) => new Set(memberAccess.offList(config, kind));
+  const mcpOff = off("mcp"), skillOff = off("skills");
+  res.json({
+    session_shares: config.session_shares === true,
+    mcp: (config.mcp_servers || []).map((s) => ({ name: s.name, shared: !mcpOff.has(s.name) })),
+    skills: (runtime ? runtime.getSkills() : []).map((s) => ({ name: s.name, shared: !skillOff.has(s.name) })),
+  });
+});
+app.post("/api/admin/member-access", (req, res) => {
+  if (!isPlatformOwner(req)) return res.status(403).json({ error: "这项设置归平台管理员", platform_only: true });
+  try {
+    const b = req.body || {};
+    if (b.kind === "session_shares") { if (b.shared === true) config.session_shares = true; else delete config.session_shares; }
+    else memberAccess.setShared(config, b.kind, b.name, b.shared !== false);
+    saveConfig();
+    security.audit("成员权限", `${b.kind} ${b.name || ""} → ${b.shared === false ? "关闭" : "开放"}`, "放行");
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+/** 后台「存储」页：各账号工作目录和数据目录占了多少 */
+app.get("/api/admin/storage", async (req, res) => {
+  if (!isPlatformOwner(req)) return res.status(403).json({ error: "这项设置归平台管理员", platform_only: true });
+  try {
+    const spaces = require("./src/domains/account/spaces");
+    const places = [
+      ...spaces.homes().map((dir) => ({ kind: "member", name: path.basename(dir), dir })),
+      { kind: "system", name: "共享工作目录", dir: getWorkspaceDir() },
+      { kind: "system", name: "任务记录与账本", dir: dataPath("data") },
+      { kind: "system", name: "备份", dir: dataPath("backups") },
+    ];
+    const rows = [];
+    for (const place of places) rows.push({ kind: place.kind, name: place.name, ...(await storageUsage.measure(place.dir)) });
+    let free = null;
+    try { const st = fs.statfsSync(dataPath()); free = Number(st.bavail) * Number(st.bsize); } catch {}
+    res.json({ rows, free, quota_mb: Number(config.member_storage_mb) || 0 });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post("/api/admin/storage/quota", (req, res) => {
+  if (!isPlatformOwner(req)) return res.status(403).json({ error: "这项设置归平台管理员", platform_only: true });
+  const mb = Math.round(Number((req.body || {}).mb));
+  if (!Number.isFinite(mb) || mb < 0 || mb > 100 * 1024 * 1024) return res.status(400).json({ error: "配额填 0（不限）或正整数 MB" });
+  if (mb) config.member_storage_mb = mb; else delete config.member_storage_mb;
+  saveConfig();
+  res.json({ ok: true, quota_mb: mb });
+});
 // 盲评：左右对应只留在服务端，选完才揭晓（理由见 eval/blind.js）
 const blindFile = (id) => dataPath("eval", "blind", `${id}.json`);
 const blindRun = (dir) => store.readJson(dataPath("eval", "runs", dir, "results.json"), null);
@@ -9667,54 +9715,6 @@ app.post("/api/models/share", (req, res) => {
   else delete p.share_members;
   saveConfig();
   res.json({ ok: true, channel: p.id, shared: p.share_members !== false });
-});
-/** 后台「成员权限」页：哪些连接器和技能开放给成员、能不能分享任务 */
-app.get("/api/admin/member-access", (req, res) => {
-  if (!isPlatformOwner(req)) return res.status(403).json({ error: "这项设置归平台管理员", platform_only: true });
-  const off = (kind) => new Set(memberAccess.offList(config, kind));
-  const mcpOff = off("mcp"), skillOff = off("skills");
-  res.json({
-    session_shares: config.session_shares === true,
-    mcp: (config.mcp_servers || []).map((s) => ({ name: s.name, shared: !mcpOff.has(s.name) })),
-    skills: (runtime ? runtime.getSkills() : []).map((s) => ({ name: s.name, shared: !skillOff.has(s.name) })),
-  });
-});
-app.post("/api/admin/member-access", (req, res) => {
-  if (!isPlatformOwner(req)) return res.status(403).json({ error: "这项设置归平台管理员", platform_only: true });
-  try {
-    const b = req.body || {};
-    if (b.kind === "session_shares") { if (b.shared === true) config.session_shares = true; else delete config.session_shares; }
-    else memberAccess.setShared(config, b.kind, b.name, b.shared !== false);
-    saveConfig();
-    security.audit("成员权限", `${b.kind} ${b.name || ""} → ${b.shared === false ? "关闭" : "开放"}`, "放行");
-    res.json({ ok: true });
-  } catch (e) { res.status(400).json({ error: e.message }); }
-});
-/** 后台「存储」页：各账号工作目录和数据目录占了多少 */
-app.get("/api/admin/storage", async (req, res) => {
-  if (!isPlatformOwner(req)) return res.status(403).json({ error: "这项设置归平台管理员", platform_only: true });
-  try {
-    const spaces = require("./src/domains/account/spaces");
-    const places = [
-      ...spaces.homes().map((dir) => ({ kind: "member", name: path.basename(dir), dir })),
-      { kind: "system", name: "共享工作目录", dir: getWorkspaceDir() },
-      { kind: "system", name: "任务记录与账本", dir: dataPath("data") },
-      { kind: "system", name: "备份", dir: dataPath("backups") },
-    ];
-    const rows = [];
-    for (const place of places) rows.push({ kind: place.kind, name: place.name, ...(await storageUsage.measure(place.dir)) });
-    let free = null;
-    try { const st = fs.statfsSync(dataPath()); free = Number(st.bavail) * Number(st.bsize); } catch {}
-    res.json({ rows, free, quota_mb: Number(config.member_storage_mb) || 0 });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-app.post("/api/admin/storage/quota", (req, res) => {
-  if (!isPlatformOwner(req)) return res.status(403).json({ error: "这项设置归平台管理员", platform_only: true });
-  const mb = Math.round(Number((req.body || {}).mb));
-  if (!Number.isFinite(mb) || mb < 0 || mb > 100 * 1024 * 1024) return res.status(400).json({ error: "配额填 0（不限）或正整数 MB" });
-  if (mb) config.member_storage_mb = mb; else delete config.member_storage_mb;
-  saveConfig();
-  res.json({ ok: true, quota_mb: mb });
 });
 /** 平台管理员：成员能不能自己填 Key。关掉之后成员已经填的留着不删，只是用不了，再打开就回来 */
 app.post("/api/models/member-byok", (req, res) => {

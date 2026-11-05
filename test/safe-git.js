@@ -39,7 +39,7 @@ function repo(name) {
 const fired = (dir, args, hardened) => {
   fs.rmSync(marker, { force: true });
   const hard = hardened ? safeGit.args(dir) : [];
-  spawnSync("git", ["-C", dir, ...hard, ...args], { encoding: "utf8", timeout: 8000 });
+  spawnSync("git", ["-C", dir, ...hard, ...(hardened ? safeGit.guard(args) : args)], { encoding: "utf8", timeout: 8000 });
   return fs.existsSync(marker);
 };
 
@@ -63,8 +63,10 @@ const plain = repo("plain");
 const hard = safeGit.args(plain.dir);
 const out = spawnSync("git", ["-C", plain.dir, ...hard, "status", "--short"], { encoding: "utf8" }).stdout;
 ok(/a\.txt/.test(out), "status 还是看得到改动");
-const diff = spawnSync("git", ["-C", plain.dir, ...hard, "diff", "--no-ext-diff"], { encoding: "utf8" }).stdout;
-ok(/-一/.test(diff) && /\+二/.test(diff), "diff 内容照常");
+const diff = spawnSync("git", ["-C", plain.dir, ...hard, ...safeGit.guard(["diff", "HEAD", "--binary"])], { encoding: "utf8" });
+ok(diff.status === 0 && /-一/.test(diff.stdout) && /\+二/.test(diff.stdout), "diff 内容照常，退出码也是 0");
+ok(safeGit.guard(["--literal-pathspecs", "diff", "HEAD"]).join(" ") === "--literal-pathspecs diff --no-ext-diff --no-textconv HEAD", "全局选项后面的 diff 也认得");
+ok(safeGit.guard(["status", "--short"]).join(" ") === "status --short", "别的子命令不动");
 
 console.log("【3】盖不掉的筛选器名字：不跑");
 const odd = repo("odd");

@@ -43,7 +43,7 @@ const REFUSED = { status: 1, stdout: "", stderr: "这个仓库的 git 配置不�
 function git(cwd, args, opt) {
   const hard = safeGit.args(cwd);
   if (!hard) return REFUSED;
-  return spawnSync("git", ["-C", cwd, ...hard, ...args], {
+  return spawnSync("git", ["-C", cwd, ...hard, ...safeGit.guard(args)], {
     encoding: "utf8", timeout: GIT_TIMEOUT, maxBuffer: 64 * 1048576, windowsHide: true, ...opt,
   });
 }
@@ -134,7 +134,7 @@ function gitAsync(cwd, args, opt) {
   const hard = safeGit.args(cwd);
   if (!hard) return Promise.resolve(REFUSED);
   return new Promise((resolve) => {
-    childProcess.execFile("git", ["-C", cwd, ...hard, ...args], {
+    childProcess.execFile("git", ["-C", cwd, ...hard, ...safeGit.guard(args)], {
       encoding: "utf8", timeout: GIT_TIMEOUT, maxBuffer: 64 * 1048576, windowsHide: true, ...opt,
     }, (err, stdout, stderr) => {
       // 跟 spawnSync 的返回长一个样，out() 两边通用：没起来（没装 git / 超时被杀）算非 0

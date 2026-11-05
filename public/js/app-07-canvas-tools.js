@@ -58,11 +58,10 @@ function canvasOpenPalette(client) {
   input.addEventListener("input", () => { active = 0; paint(); });
   input.addEventListener("keydown", (event) => {
     event.stopPropagation();
-    if (event.isComposing) return;
-    if (event.key === "Escape") { event.preventDefault(); close(); }
+    if (event.key === "Escape" && !imeKey(event)) { event.preventDefault(); close(); }
     else if (event.key === "ArrowDown") { event.preventDefault(); active = rows.length ? (active + 1) % rows.length : 0; paint(); }
     else if (event.key === "ArrowUp") { event.preventDefault(); active = rows.length ? (active - 1 + rows.length) % rows.length : 0; paint(); }
-    else if (event.key === "Enter") { event.preventDefault(); pick(rows[active]); }
+    else if (event.key === "Enter" && !imeKey(event)) { event.preventDefault(); pick(rows[active]); }
   });
   list.addEventListener("click", async (event) => {
     const remove = event.target.closest("[data-canvas-flow-delete]");
@@ -98,7 +97,7 @@ function canvasOpenGridMenu(node, clientX, clientY) {
     menu.remove(); document.removeEventListener("pointerdown", close, true); document.removeEventListener("keydown", onKey, true);
     if (canvasState.contextMenuClose === close) canvasState.contextMenuClose = null;
   };
-  const onKey = (event) => { if (event.key === "Escape") close(); };
+  const onKey = (event) => { if (event.key === "Escape" && !imeKey(event)) close(); };
   canvasState.contextMenuClose = close;
   menu.querySelectorAll("[data-canvas-grid]").forEach((button) => button.addEventListener("click", () => {
     const [rows, cols] = button.dataset.canvasGrid.split("x").map(Number); close(); canvasSplitGrid(node, rows, cols);
@@ -266,7 +265,7 @@ function canvasSelectionExtras(box, selected, images) {
   box.querySelector("[data-canvas-flow-save]")?.addEventListener("click", canvasSaveWorkflow);
   box.querySelector("[data-canvas-batch-run]")?.addEventListener("click", canvasBatchGenerate);
   const prompt = box.querySelector("[data-canvas-batch-prompt]");
-  prompt?.addEventListener("keydown", (event) => { event.stopPropagation(); if (event.key === "Enter" && !event.isComposing) { event.preventDefault(); canvasBatchPrompt(prompt.value); } });
+  prompt?.addEventListener("keydown", (event) => { event.stopPropagation(); if (event.key === "Enter" && !imeKey(event)) { event.preventDefault(); canvasBatchPrompt(prompt.value); } });
   prompt?.addEventListener("change", () => canvasBatchPrompt(prompt.value));
 }
 

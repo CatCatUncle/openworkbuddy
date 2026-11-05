@@ -42,7 +42,7 @@ function codeDiffHtml(text) {
 }
 
 function codeCloseReview() { document.getElementById("code-review")?.remove(); document.removeEventListener("keydown", codeReviewKey, true); }
-function codeReviewKey(event) { if (event.key === "Escape" && !document.querySelector(".ask-mask")) { event.preventDefault(); codeCloseReview(); } }
+function codeReviewKey(event) { if (event.key === "Escape" && !imeKey(event) && !document.querySelector(".ask-mask")) { event.preventDefault(); codeCloseReview(); } }
 
 async function codeShowFile(box, row) {
   box.querySelectorAll("[data-code-file]").forEach((el) => el.classList.toggle("on", el.dataset.codeFile === row.path));

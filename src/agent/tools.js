@@ -1243,7 +1243,7 @@ async function sandboxedGit(cwd, args, { sec, actor, timeout = 1500, maxBuffer =
   if (box.error) return { status: 1, stdout: "", stderr: box.error };
   const hard = safeGit.args(cwd);
   if (!hard) return { status: 1, stdout: "", stderr: "这个仓库的 git 配置不安全，没有执行" };
-  const w = /** @type {Wrapped} */ (box.wrap("git", ["-C", cwd, ...hard, ...args], {}));
+  const w = /** @type {Wrapped} */ (box.wrap("git", ["-C", cwd, ...hard, ...safeGit.guard(args)], {}));
   return new Promise((resolve) => {
     require("child_process").execFile(w.bin, w.args, { cwd, encoding: "utf8", timeout, maxBuffer, windowsHide: true, env: buildChildEnv({ PATH: shellPath(), GIT_OPTIONAL_LOCKS: "0", ...w.env }), ...w.opts }, (err, stdout, stderr) => {
       const code = /** @type {any} */ (err)?.code;

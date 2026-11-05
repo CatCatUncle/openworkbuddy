@@ -206,7 +206,7 @@ console.log("\n【7】大文件不过内存：请求体流进同目录的临时�
     // Exercise Windows filename policy on every host, plus real NTFS in Windows CI.
     uploadName: { ...uploads, uploadBaseName: name => uploads.uploadBaseName(name, "win32") },
     safePath, libRel: name => name, libPath: safePath, getSession: () => ({}), sessionAllowed: () => true,
-    perChatHere: () => false, getWorkspaceDir: () => routeDir, noteUserInput() {}, isUserInput: () => true,
+    perChatHere: () => false, getWorkspaceDir: () => routeDir, noteUserInput() {}, isUserInput: () => true, memberStorageProblem: () => "",
   });
   const listener = await new Promise(resolve => { const s = app.listen(0, "127.0.0.1", () => resolve(s)); });
   try {

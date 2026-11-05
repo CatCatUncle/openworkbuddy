@@ -168,7 +168,7 @@ function evBlindOpen(session, runs) {
   document.body.appendChild(mask);
   const nameOf = (dir) => { const h = runs.find((x) => x.dir === dir); return h ? `${String(h.at || "").slice(0, 16).replace("T", " ")} · ${h.model || ""}` : dir; };
   const close = () => { mask.remove(); document.removeEventListener("keydown", onKey, true); };
-  const onKey = (event) => { if (event.key === "Escape") close(); };
+  const onKey = (event) => { if (event.key === "Escape" && !imeKey(event)) close(); };
   document.addEventListener("keydown", onKey, true);
   let at = session.items.findIndex((item) => !item.pick); if (at < 0) at = 0;
   const showResult = (r) => {
