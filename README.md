@@ -5,6 +5,7 @@
 使用你选择的模型，查看执行过程，在成果区核对交付文件。</p>
 <p align="center"><a href="#quick-start"><b>▶ 做一份项目汇报 PPT</b></a> · <a href="https://github.com/CatCatUncle/openworkbuddy/releases/latest">下载安装包</a> · <a href="https://catcatuncle.github.io/openworkbuddy/zh/?utm_source=github&amp;utm_medium=readme&amp;utm_campaign=first_result">项目网站</a> · <a href="#文档">文档</a> · <a href="README.en.md">English</a></p>
 <p align="center"><a href="https://github.com/CatCatUncle/openworkbuddy/releases/latest"><img src="https://img.shields.io/github/v/release/CatCatUncle/openworkbuddy?style=flat-square" alt="正式发布版本"></a> <a href="LICENSE"><img src="https://img.shields.io/badge/License-PolyForm%20NC-5b5ff7?style=flat-square" alt="PolyForm Noncommercial 许可证"></a> <a href="https://github.com/CatCatUncle/openworkbuddy/stargazers"><img src="https://img.shields.io/github/stars/CatCatUncle/openworkbuddy?style=flat-square&label=Star&color=5b5ff7" alt="收藏项目"></a></p>
+<p align="center"><a href="https://www.opensourcealternatives.to"><img src="https://www.opensourcealternatives.to/badge-osa.svg" alt="As seen on Open Source Alternatives" width="378" height="28"></a></p>
 <p align="center"><sub>个人非商用、学校和公益机构免费；公司及个人商用须获 <a href="COMMERCIAL-LICENSE.md">商业授权</a>。购买授权：<a href="mailto:contact@aijentra.com">contact@aijentra.com</a> · 微信：<b>agi_smith</b>。模型与媒体服务的费用由所选服务商决定。</sub></p>
 <p align="center"><img src="docs/images/demo.gif" width="720" alt="OpenWorkBuddy 操作演示：输入任务、查看执行过程、打开成果文件"><br><sub>界面流程演示；首次成功耗时按下面的任务实测。</sub></p>
 
