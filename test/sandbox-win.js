@@ -186,7 +186,9 @@ async function wiring() {
   ok(st && st.platform === process.platform, "设置接口带上是哪个系统（界面按它决定画不画开关）", st);
   if (!WIN && process.platform !== "darwin") {
     await R.sandboxFor({ sandbox: "auto" });
-    ok(/macOS 和 Windows/.test(T.sandboxStatus().reason || ""), "别的系统：照实说只有 macOS 和 Windows 上有", T.sandboxStatus());
+    // Linux 有 bubblewrap，没装时要说清缺什么；再别的系统才是真没有
+    const why = T.sandboxStatus().reason || "";
+    ok(process.platform === "linux" ? (T.sandboxStatus().ok || /bubblewrap/.test(why)) : /没有系统沙箱/.test(why), "别的系统：说清楚有没有、缺什么", T.sandboxStatus());
   }
 
   const ui = src("public/js/app-06.js");

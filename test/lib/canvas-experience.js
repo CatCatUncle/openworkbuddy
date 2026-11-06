@@ -604,6 +604,8 @@ async function runCanvasExperience({ run, win, ok }) {
       没有省略: meta.scrollWidth <= meta.clientWidth + 1 };
     const time = bar.querySelector(".msg-time"); out.时间靠右 = time.compareDocumentPosition(meta) & Node.DOCUMENT_POSITION_FOLLOWING;
     out.时间靠右 = !!out.时间靠右 && getComputedStyle(time).marginLeft !== "6px";
+    const edge = (name) => bar.querySelector('[data-a="' + name + '"]').getBoundingClientRect();
+    out.点赞在最右 = edge("up").left > meta.getBoundingClientRect().right - 1 && edge("down").right >= edge("up").right && edge("up").left - edge("regen").right > 40;
     out.短数字 = shortTokens(999) === "999" && shortTokens(12300) === "12.3K" && shortTokens(1000000) === "1M";
     return out;
   })()`);

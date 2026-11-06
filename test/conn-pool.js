@@ -135,7 +135,8 @@ llm.listen(0, "127.0.0.1", () => {
   cfg.models = [{ name: "假模型", provider: "openai", base_url: `http://127.0.0.1:${p}/v1`, api_key: "k", model: "mock", stream: false }];
   cfg.active_model = "假模型";
   cfg.mcp_servers = [];
-  cfg.agent = { ...(cfg.agent || {}), max_steps: 4, llm_timeout_ms: 180000 };
+  // 这里量的是 8 趟同时跑时连接够不够用，名额写死：CI 机器内存小，按内存算只放 5 趟
+  cfg.agent = { ...(cfg.agent || {}), max_steps: 4, llm_timeout_ms: 180000, max_parallel_tasks: 8 };
   fs.writeFileSync(path.join(home, "config.json"), JSON.stringify(cfg));
   child = spawn(process.env.OWB_NODE || "node", [entry("server")], {
     cwd: ROOT,

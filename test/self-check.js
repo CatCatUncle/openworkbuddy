@@ -112,7 +112,8 @@ const reset = () => { calls.sync = 0; calls.exec.length = 0; };
     reset();
     hold = [];
     const pending = selfCheck(esm, "m.js");
-    await wait(20);
+    // 等到真的发出去：CI 上起得慢，固定等 20ms 会扑空
+    for (let i = 0; i < 200 && !hold.length; i += 1) await wait(10);
     const cb = hold.shift();
     hold = null;
     cb(Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" }), "", "");

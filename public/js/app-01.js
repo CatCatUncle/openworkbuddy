@@ -2239,11 +2239,12 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
     bar.innerHTML =
       `<button class="ta-btn" data-a="copy" title="复制回复" aria-label="复制回复">${ic("copy")}</button>` +
       `<button class="ta-btn" data-a="quote" title="引用这条回复来追问（先选中一段就只引那一段）" aria-label="引用">${ic("text-quote")}</button>` +
-      `<button class="ta-btn" data-a="up" title="有帮助" aria-label="有帮助">${ic("thumbs-up")}</button>` +
-      `<button class="ta-btn" data-a="down" title="没帮助" aria-label="没帮助">${ic("thumbs-down")}</button>` +
       `<button class="ta-btn" data-a="regen" title="重新生成" aria-label="重新生成">${ic("refresh-cw")}</button>` +
       (typeof amPlatformOwner === "function" && amPlatformOwner() ? `<button class="ta-btn" data-a="trace" title="看这一轮调了哪些工具、花了多久" aria-label="执行过程">${ic("activity")}</button>` : "") +
-      `<time class="msg-time"></time><span class="ta-meta"></span>`;
+      // 左边是对这条回复做事，右边是看信息和打分，两类分开放
+      `<span class="ta-right"><time class="msg-time"></time><span class="ta-meta"></span>` +
+      `<button class="ta-btn" data-a="up" title="有帮助" aria-label="有帮助">${ic("thumbs-up")}</button>` +
+      `<button class="ta-btn" data-a="down" title="没帮助" aria-label="没帮助">${ic("thumbs-down")}</button></span>`;
     if (typeof paintMsgTime === "function") paintMsgTime(bar.querySelector(".msg-time"), turn.dataset.replyAt);
     const traceBtn = bar.querySelector("[data-a=trace]");
     if (traceBtn) traceBtn.onclick = () => openTraceOfTurn(turn, turnSid);

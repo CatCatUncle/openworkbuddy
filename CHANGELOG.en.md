@@ -29,7 +29,7 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 - **Nov 6** Built-in Ark retirement table warns ahead of shutdown and hides retired models; image and video generation fall back in order without resubmitting accepted or moderated jobs. Doubao voice, transcription and custom speech APIs are added, built from the official docs; test them against your account first. Admins can control member-supplied models, and first owner setup asks for the password twice with a reminder.
 
-- **Nov 6** Hover a message to see its time, jump from a reply to its trace and back, and read TTFT, TPOT and tok/s in traces. The sidebar lists projects directly without pushing tabs away, sized to window height. AGENTS.md adds a licensing notice for AI assistants.
+- **Nov 6** Hover a message to see its time. Reply actions are icons with a short token count, and ratings sit on the right. Jump from a reply to its trace and back, and read TTFT, TPOT and tok/s in traces. The sidebar lists projects directly without pushing tabs away, sized to window height. AGENTS.md adds a licensing notice for AI assistants.
 
 - **Nov 4** v0.18.4: cloud onboarding supports selecting and refreshing models or entering Ark endpoint IDs. Discovery caches are scoped by URL, key and protocol; saved credentials cannot follow changed destinations. Fixed Claude/Gemini/Ollama discovery, Ark modality metadata and stale replies; refreshed Ark/DeepSeek defaults. Endpoint access errors distinguish unavailability from invalid IDs, and Seedance 2.x uses JSON options with current duration/resolution limits.
 
