@@ -130,6 +130,8 @@ module.exports = {
     "eval/tasks.js",
     "eval/judge.js",
     "eval/rejudge.js",
+    "eval/custom-sets.js",
+    "eval/blind.js",
     "experts.json",
     "config.example.json",
     "package.json",

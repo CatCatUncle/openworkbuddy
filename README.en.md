@@ -277,7 +277,7 @@ The built-in Agent alternates model decisions and tool execution, with concurren
 
 ## What's new
 
-- **Nov 6** v0.19.0: multi-user Linux runs member commands in a system sandbox, closing a blocklist bypass that could read key files. Install bubblewrap before upgrading. See [deployment](docs/部署.md).
+- **Nov 6** v0.19.1: multi-user Linux runs member commands in a system sandbox, closing a blocklist bypass that could read key files. Install bubblewrap before upgrading. See [deployment](docs/部署.md).
 
 - **Nov 6** The admin console controls which connectors and skills members can use, sets storage quotas and turns on in-organization task sharing. Connector setup gains built-in checks.
 

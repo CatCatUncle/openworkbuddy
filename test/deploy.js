@@ -262,6 +262,15 @@ ok(/^seedDataDir\(\);/m.test(serverSrc), "server.js 启动时真的调了 seedDa
 // 它只管本仓库的文件在不在包里。npm 包在不在，只能看 dependencies 写没写。
 // 开发机的 node_modules 是一层层装出来的，别的包顺带带进来的东西这儿也 require 得到，
 // 于是本地全绿、用户那份照着 dependencies 装的包一用就 MODULE_NOT_FOUND。
+console.log("\n【4b】eval/ 下的运行时文件都进安装包");
+{
+  // 这份白名单是逐个文件写的，只有打包时才会被核对。v0.19.0 就是在打包这一步才发现
+  // server.js 引的两个新文件不在名单里：测试全绿，装出来却打不开
+  const listed = new Set(require(path.join(ROOT, "electron-builder.config.js")).files.filter((f) => typeof f === "string"));
+  const left = fs.readdirSync(path.join(ROOT, "eval")).filter((f) => f.endsWith(".js") && !listed.has("eval/" + f));
+  ok(left.length === 0, "eval/*.js 都在 files 白名单里", left);
+}
+
 console.log("\n【5】用到的 npm 包，package.json 里有没有声明");
 
 {
