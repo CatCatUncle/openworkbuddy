@@ -6396,6 +6396,23 @@ const LIBWS_CHECKS = `
   ok("  ← 从最外层看起，并且这个视图记到本地", window.libState.view === "ws" && window.libState.wsDir === "" && mem.owb_lib_view === "ws",
      JSON.stringify({ view: window.libState.view, wsDir: window.libState.wsDir, mem }));
   ok("  ← 标签跟着亮", page.querySelector('.lib-tab[data-view="ws"]').classList.contains("on"));
+  // 一次只亮一颗。笔记不是视图：打开时 view 还留着原值，以前「全部文件」和「笔记」会一起亮
+  const litTabs = () => [...page.querySelectorAll(".lib-tabs:not(.lib-fold-tabs) .lib-tab.on")].map((b) => b.textContent.trim());
+  const tabOf = (sel) => page.querySelector(".lib-tabs:not(.lib-fold-tabs) " + sel);
+  const keepView = window.libState.view;
+  for (const [sel, name] of [['[data-view="rec"]', "推荐"], ['[data-view="fav"]', "收藏"], ['[data-view="img"]', "图像"], ['[data-view="all"]', "全部文件"], ["[data-folder]", "文件夹"]]) {
+    tabOf(sel).click();
+    await until(() => litTabs().join() === name);
+    ok("  ← 点「" + name + "」只亮它一颗", litTabs().join() === name, litTabs().join());
+    tabOf('[data-src="notes"]').click();
+    await until(() => litTabs().length === 1 && /笔记/.test(litTabs()[0]));
+    ok("  ← 从「" + name + "」点笔记：只亮笔记", litTabs().length === 1 && /笔记/.test(litTabs()[0]), litTabs().join());
+    ok("  ← 笔记的 aria 也对", tabOf('[data-src="notes"]').getAttribute("aria-selected") === "true" && tabOf(sel).getAttribute("aria-selected") === "false");
+  }
+  tabOf('[data-view="all"]').click();
+  await until(() => litTabs().join() === "全部文件");
+  ok("  ← 再点回全部文件，笔记让开", litTabs().join() === "全部文件", litTabs().join());
+  window.libState.view = keepView; window.libState.pick = null; await renderLibPage();
   ok("  ← 面包屑第一截是「工作区」", crumbs().join("/") === "工作区", crumbs().join("/"));
 
   // ---- 2. 最外层：文件夹在前（带项数），文件在后 ----

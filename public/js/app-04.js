@@ -703,14 +703,18 @@ function libViewRemember(key, data) {
   return json;
 }
 /** 选中态先换、列表先压暗：不等网络。真画出来的时候这些节点整个被换掉，不用收尾 */
+/** 这颗页签亮不亮。笔记不是一种视图，打开时 view 还留着原值，所以别的页签要让开，不然两颗一起亮 */
+function libTabOn(tab) {
+  const notes = !!(libState.pick && libState.pick.src === "notes");
+  if (tab === "notes") return notes;
+  if (notes) return false;
+  return tab === "folder" ? ["dir", "task", "ws"].includes(libState.view) : libState.view === tab;
+}
 function libMarkPending(page) {
-  const folderView = ["dir", "task", "ws"].includes(libState.view);
-  page.querySelectorAll(".lib-tab[data-view]").forEach((b) => {
-    const on = b.dataset.view === libState.view;
+  page.querySelectorAll(".lib-tab[data-view], .lib-tab[data-folder], .lib-tab[data-src]").forEach((b) => {
+    const on = libTabOn(b.dataset.view || (b.dataset.src ? "notes" : "folder"));
     b.classList.toggle("on", on); b.setAttribute("aria-selected", String(on));
   });
-  const folderTab = page.querySelector(".lib-tab[data-folder]");
-  if (folderTab) { folderTab.classList.toggle("on", folderView); folderTab.setAttribute("aria-selected", String(folderView)); }
   const main = page.querySelector(".lib-main");
   if (main) main.setAttribute("aria-busy", "true");
 }
@@ -873,14 +877,14 @@ async function renderLibPage(opts) {
       <div class="lib-side">
         <div class="hub-search">${ic("search")}<input id="lb-q" placeholder="搜文件名、正文、任务名…" value="${esc(libState.q)}">${q ? `<a href="#" id="lb-qx" class="lb-qx" title="清空搜索">${ic("x")}</a>` : ""}</div>
         <div class="lib-tabs" role="tablist">
-          <button type="button" class="lib-tab ${libState.view === "rec" ? "on" : ""}" data-view="rec" role="tab" aria-selected="${libState.view === "rec"}">${ic("clock")}推荐</button>
-          <button type="button" class="lib-tab ${libState.view === "fav" ? "on" : ""}" data-view="fav" role="tab" aria-selected="${libState.view === "fav"}">${ic("star")}收藏</button>
-          <button type="button" class="lib-tab ${folderView ? "on" : ""}" data-folder role="tab" aria-selected="${folderView}">${ic("folder-tree")}文件夹</button>
-          <button type="button" class="lib-tab ${libState.view === "img" ? "on" : ""}" data-view="img" role="tab" aria-selected="${libState.view === "img"}">${ic("image")}图像</button>
-          <button type="button" class="lib-tab ${libState.view === "all" ? "on" : ""}" data-view="all" role="tab" aria-selected="${libState.view === "all"}">${ic("file-text")}全部文件</button>
-          <button type="button" class="lib-tab ${libState.pick && libState.pick.src === "notes" ? "on" : ""}" data-src="notes" role="tab" title="给助理留的长期备忘：不是文件，是几句话。每次任务它查资料库时都会连着读到" aria-selected="${!!(libState.pick && libState.pick.src === "notes")}">${ic("lightbulb")}笔记 ${(lib.notes || []).length || ""}</button>
+          <button type="button" class="lib-tab ${libTabOn("rec") ? "on" : ""}" data-view="rec" role="tab" aria-selected="${libTabOn("rec")}">${ic("clock")}推荐</button>
+          <button type="button" class="lib-tab ${libTabOn("fav") ? "on" : ""}" data-view="fav" role="tab" aria-selected="${libTabOn("fav")}">${ic("star")}收藏</button>
+          <button type="button" class="lib-tab ${libTabOn("folder") ? "on" : ""}" data-folder role="tab" aria-selected="${libTabOn("folder")}">${ic("folder-tree")}文件夹</button>
+          <button type="button" class="lib-tab ${libTabOn("img") ? "on" : ""}" data-view="img" role="tab" aria-selected="${libTabOn("img")}">${ic("image")}图像</button>
+          <button type="button" class="lib-tab ${libTabOn("all") ? "on" : ""}" data-view="all" role="tab" aria-selected="${libTabOn("all")}">${ic("file-text")}全部文件</button>
+          <button type="button" class="lib-tab ${libTabOn("notes") ? "on" : ""}" data-src="notes" role="tab" title="给助理留的长期备忘：不是文件，是几句话。每次任务它查资料库时都会连着读到" aria-selected="${libTabOn("notes")}">${ic("lightbulb")}笔记 ${(lib.notes || []).length || ""}</button>
         </div>
-        ${folderView ? `<div class="lib-tabs lib-fold-tabs" role="tablist" aria-label="文件查找方式">${[["dir", "目录", "folder-tree"], ["task", "按任务", "sparkles"], ["ws", "工作区", "hard-drive"]].map(([v, label, icon]) => `<button type="button" class="lib-tab ${libState.view === v ? "on" : ""}" data-view="${v}" role="tab" aria-selected="${libState.view === v}">${ic(icon)}${esc(label)}</button>`).join("")}</div>` : ""}
+        ${folderView ? `<div class="lib-tabs lib-fold-tabs" role="tablist" aria-label="文件查找方式">${[["dir", "目录", "folder-tree"], ["task", "按任务", "sparkles"], ["ws", "工作区", "hard-drive"]].map(([v, label, icon]) => `<button type="button" class="lib-tab ${libTabOn(v) ? "on" : ""}" data-view="${v}" role="tab" aria-selected="${libTabOn(v)}">${ic(icon)}${esc(label)}</button>`).join("")}</div>` : ""}
         <div class="lib-kinds">${LIB_KINDS.map(([k, label]) => `<button type="button" class="lib-kind ${(libState.kind || "all") === k ? "on" : ""}" data-kind="${k}">${esc(label)}</button>`).join("")}</div>
         ${!folderView && !q ? `<label class="lib-source">来源<select id="lb-from"><option value="all"${libState.from === "all" ? " selected" : ""}>全部来源</option><option value="lib"${libState.from === "lib" ? " selected" : ""}>参考资料</option><option value="ws"${libState.from === "ws" ? " selected" : ""}>本地产物</option></select></label>` : ""}
         <div class="lib-side-tip">我的文档<br>

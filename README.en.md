@@ -277,6 +277,8 @@ The built-in Agent alternates model decisions and tool execution, with concurren
 
 ## What's new
 
+- **Nov 6** v0.19.2: library tabs no longer stay highlighted when Notes is open, so only one tab is selected at a time.
+
 - **Nov 6** v0.19.1: multi-user Linux runs member commands in a system sandbox, closing a blocklist bypass that could read key files. Install bubblewrap before upgrading. See [deployment](docs/部署.md).
 
 - **Nov 6** The admin console controls which connectors and skills members can use, sets storage quotas and turns on in-organization task sharing. Connector setup gains built-in checks.
@@ -302,8 +304,6 @@ The built-in Agent alternates model decisions and tool execution, with concurren
 - **Nov 3** v0.18.3: recoverable file cleanup protects output directories and active tasks; previews fit automatically on open, and long tasks reconcile progress during execution. See [cleanup and recovery](docs/文件清理与恢复.md) (Chinese).
 
 - **Nov 1** v0.18.2: deleting a task selects its dedicated folder for cleanup by default. Uncheck to keep files. Cleanup moves files to the trash and preserves project roots and shared folders.
-
-- **Nov 1** Deletion waits for task shutdown and final saves. Failures keep the conversation and show the reason; success refreshes library entries and stale previews, preventing final saves from recreating deleted tasks.
 
 Format support and limits: [file previews and conversion](docs/文件预览与转换.md). Full history: [CHANGELOG](CHANGELOG.en.md).
 
