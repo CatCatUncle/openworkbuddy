@@ -1267,7 +1267,10 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
   // 锚点里的名字是整的（】收尾），拿来认清单里哪几段顿号其实是同一个文件名
   const anchored = new Set([...rawText.matchAll(/【(?:图片|视频|音频|文本摘录|文件)\s*\d+：([^】]+)】/g)].map((m) => m[1].trim()));
   let bodyText = rawText
-    .replace(/（已上传文件：([^）]+)）/g, (_, names) => {
+    // 文件名自己可能带中文右括号（「报告（终版）.docx」），按第一个「）」收尾会截成「报告（终版」。
+    // 发送时这句总在最后一行，先认到行尾为止的那种；老会话里写在句子中间的才退回到第一个「）」
+    .replace(/（已上传文件：(.+)）$|（已上传文件：([^）]+)）/gm, (_, tail, inline) => {
+      const names = tail || inline;
       for (const n of splitUploadNames(names, (x) => anchored.has(x))) addAtt(n);
       return "";
     })

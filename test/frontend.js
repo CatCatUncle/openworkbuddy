@@ -17700,6 +17700,21 @@ const BUBBLE_CHECKS = `
     ok("折完那句话读着还是通的", b.textContent.trim().startsWith("帮我看看这个"), JSON.stringify(b.textContent));
   }
 
+  // 文件名带中文右括号：以前按第一个「）」收尾，「报告（终版）.docx」被截成「报告（终版」，
+  // 气泡里多出一个打不开的附件，后面还漏出一截「.docx）」
+  {
+    attachPaths.clear(); sessionDirs.clear();
+    const pillsOf = (b) => [...b.querySelectorAll(".bubble-attach .batt")].map((p) => p.textContent);
+    const b1 = bubbleOf("看看这份\\n【文件 1：报告（终版）.docx】\\n（已上传文件：报告（终版）.docx）");
+    ok("★名字带）：只出一个附件，名字是整的★", JSON.stringify(pillsOf(b1)) === '["报告（终版）.docx"]', JSON.stringify(pillsOf(b1)));
+    const bodyOnly = (b) => { const c = b.cloneNode(true); c.querySelectorAll(".bubble-attach").forEach((x) => x.remove()); return c.textContent.trim(); };
+    ok("★名字带）：气泡正文里不漏出半截名字★", bodyOnly(b1) === "看看这份", JSON.stringify(bodyOnly(b1)));
+    const b2 = bubbleOf("（已上传文件：（附件）通知.pdf、报价（2）.xlsx）");
+    ok("★多个带括号的名字、没有锚点也拆得对★", JSON.stringify(pillsOf(b2)) === '["（附件）通知.pdf","报价（2）.xlsx"]', JSON.stringify(pillsOf(b2)));
+    const b3 = bubbleOf("帮我看看这个（已上传文件：日志.txt）后面还有字");
+    ok("老会话里写在句子中间的那句：照旧按第一个）收尾", JSON.stringify(pillsOf(b3)) === '["日志.txt"]' && /后面还有字/.test(b3.textContent), JSON.stringify(pillsOf(b3)));
+  }
+
   // 文件名自己带顿号：「这是一个测、试文件.txt」以前被清单那句拆成「这是一个测」「试文件.txt」两个假附件，加上锚点那个一共三条
   {
     attachPaths.clear(); sessionDirs.clear();

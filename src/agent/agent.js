@@ -2901,6 +2901,13 @@ function modePrompt(mode) {
     return out;
   }
 
+  /**
+   * 「（已上传文件：a、b）」那句。文件名自己可能带中文右括号（「报告（终版）.docx」），
+   * 按第一个「）」收尾会截成「报告（终版」：气泡里多出一个打不开的附件，本机引擎也拿不到路径。
+   * 发送时这句总是放在最后一行，所以先认「到行尾为止」的那种，取到行尾最后一个「）」；
+   * 老会话里写在句子中间的才退回到第一个「）」。
+   */
+  const UPLOAD_NOTE_RE = /（已上传文件：(.+)）$|（已上传文件：([^）]+)）/gmu;
   function attachedFilesNote(text, cwd) {
     let root = ""; try { root = getWorkspaceDir(); } catch {}
     const dirs = [...new Set([cwd, root].filter((d) => d && path.isAbsolute(d)))];
@@ -2915,7 +2922,7 @@ function modePrompt(mode) {
     const src = String(text || "");
     for (const m of src.matchAll(/【(图片|视频|音频|文本摘录|文件)\s*(\d+)：([^】]+)】/gu)) add(m[3], `${m[1]} ${m[2]}`);
     const onDisk = (n) => n === path.basename(n) && dirs.some((d) => { try { return fs.statSync(path.join(d, n)).isFile(); } catch { return false; } });
-    for (const m of src.matchAll(/（已上传文件：([^）]+)）/gu)) for (const n of splitUploadNames(m[1], onDisk)) add(n, "");
+    for (const m of src.matchAll(UPLOAD_NOTE_RE)) for (const n of splitUploadNames(m[1] || m[2], onDisk)) add(n, "");
     if (!lines.length) return "";
     return "\n\n（随消息传上来的文件在下面，按完整路径直接读。别用 rg --files、find 去搜：工作目录在 git 仓库里时，被 .gitignore 忽略的文件它们看不见）\n" +
       lines.slice(0, 20).join("\n");

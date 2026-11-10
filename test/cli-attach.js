@@ -205,12 +205,19 @@ console.log("\n⑥ 「（已上传文件：…）」跟网页端一个字节都�
   ok(web02.includes("【${ATTACH_KIND[type].label} ${index}：${markerName(name)}】"),
     "★网页端上传后会在输入框留下可见素材锚点★", "app-02.js");
   const web01 = fs.readFileSync(path.join(ROOT, "public", "js", "app-01.js"), "utf8");
-  const m = web01.match(/\/（已上传文件：\(\[\^）\]\+\)）\/g/);
+  const m = web01.match(/\.replace\((\/（已上传文件：.+?\/gm), \(_, tail, inline\)/);
   ok(!!m, "★网页端解标记的那个正则还在★", "app-01.js");
-  const re = /（已上传文件：([^）]+)）/g;
-  const hit = re.exec(A.note(["图 1.png", "b.csv"]));
-  eq(hit && hit[1].split("、"), ["图 1.png", "b.csv"],
+  // 用网页端那份正则原样解：两边口径一个字节都不能差
+  const re = new Function("return " + m[1])();
+  const hit = re.exec(A.withNote("看看", ["图 1.png", "b.csv"]));
+  eq(hit && (hit[1] || hit[2]).split("、"), ["图 1.png", "b.csv"],
     "★CLI 挂的标记，网页历史里要能还原成两个附件名★ 终端发的会话在网页上打开就靠这一条");
+  re.lastIndex = 0;
+  const paren = re.exec(A.withNote("看看", ["报告（终版）.docx"]));
+  eq(paren && (paren[1] || paren[2]), "报告（终版）.docx", "★文件名带中文右括号：整个名字解得回来，不在「（终版）」那里截断★");
+  // 本机引擎那边（agent.js attachedFilesNote）按同一份正则找文件路径：截断了就把这份附件漏给 Claude Code / Codex
+  const agentRe = fs.readFileSync(path.join(ROOT, "src", "agent", "agent.js"), "utf8").match(/const UPLOAD_NOTE_RE = \/(.+)\/gmu;/);
+  eq(agentRe && agentRe[1], m[1].slice(1, -3), "★agent.js 跟网页端用的是同一个正则★");
 
   // 注释里提这句话是应该的（那儿解释的正是这套协议），代码里再拼一遍才是事故
   const cliCode = CLI_SRC.split("\n").filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");

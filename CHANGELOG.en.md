@@ -9,6 +9,8 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 ## 2026
 
+- **Nov 10** v0.19.3: fixes attachment names with a Chinese closing parenthesis being cut short. 报告（终版）.docx no longer shows up as a broken 报告（终版 attachment, and local engines get the full path.
+
 - **Nov 6** v0.19.2: fixes library tabs staying highlighted when Notes is open. All Files, Recommended and other tabs now clear, so only one tab is selected at a time.
 
 - **Nov 6** Evals add blind comparison: two runs' results side by side per task with sources hidden, revealed only after every task is judged. Self-evolution proposals can run an eval with the candidate rule and compare against the baseline before adoption.
