@@ -32,7 +32,7 @@ function repo(name) {
   const dir = path.join(root, name); fs.mkdirSync(dir);
   const sh = (...a) => spawnSync("git", a, { cwd: dir, stdio: "ignore" });
   sh("init", "-q", "-b", "main"); sh("config", "user.email", "t@t"); sh("config", "user.name", "t");
-  fs.writeFileSync(path.join(dir, "a.txt"), "一\n"); sh("add", "."); sh("commit", "-qm", "第一次");
+  fs.writeFileSync(path.join(dir, "a.txt"), "一\n"); fs.writeFileSync(path.join(dir, "b.txt"), "不改\n"); sh("add", "."); sh("commit", "-qm", "第一次");
   fs.writeFileSync(path.join(dir, "a.txt"), "二\n");
   return { dir, sh };
 }
@@ -48,7 +48,13 @@ const cases = [
   ["core.fsmonitor", ["status", "--short"], ({ sh }) => sh("config", "core.fsmonitor", evil)],
   ["filter.clean", ["diff", "--no-ext-diff"], ({ dir, sh }) => { fs.writeFileSync(path.join(dir, ".gitattributes"), "*.txt filter=x\n"); sh("config", "filter.x.clean", evil); }],
   ["diff.external", ["diff"], ({ sh }) => sh("config", "diff.external", evil)],
-  ["post-index-change 钩子", ["status", "--short"], ({ dir }) => { fs.writeFileSync(path.join(dir, ".git", "hooks", "post-index-change"), `#!/bin/sh\ntouch "${marker}"\n`, { mode: 0o755 }); }],
+  // 钩子只在 git 重写索引时触发。把一个没改内容的文件时间戳设到将来，git 每次 status
+  // 都把它当成可能改过、重新核对并重写索引，先跑哪一组都触发。不这样做的话，
+  // 触不触发取决于提交和改文件是不是落在同一秒，CI 上加固组先跑完就不再触发
+  ["post-index-change 钩子", ["status", "--short"], ({ dir }) => {
+    fs.writeFileSync(path.join(dir, ".git", "hooks", "post-index-change"), `#!/bin/sh\ntouch "${marker}"\n`, { mode: 0o755 });
+    const later = new Date(Date.now() + 60000); fs.utimesSync(path.join(dir, "b.txt"), later, later);
+  }],
 ];
 for (const [name, args, plant] of cases) {
   const r = repo(name.replace(/\W/g, "_") + Math.random().toString(36).slice(2, 6)); plant(r);
