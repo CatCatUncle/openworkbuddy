@@ -4027,7 +4027,14 @@ app.whenReady().then(async () => {
       const 移到 = (at) => 指(document.elementFromPoint(at.x, at.y) || document.body, "pointermove", at);
       const 线 = () => canvasState.graph.getLinks().map((l) => canvasEndpointId(l.get("source")) + ">" + canvasEndpointId(l.get("target"))).sort();
       const 盘上线 = () => (((window.__store.jia || {}).main || {}).edges || []).map((e) => canvasEndpointId(e.source) + ">" + canvasEndpointId(e.target)).sort();
-      const 视口 = (s, x, y) => { canvasZoom(page, s); canvasState.x = x; canvasState.y = y; canvasState.paper.translate(x, y); };
+      const 视口 = (s, x, y) => {
+        // Earlier scenarios may scroll the shared page to inspect controls.
+        // Restore the visible viewport before measuring native pointer hit targets.
+        for (let el = 视窗(); el; el = el.parentElement) el.scrollTop = 0;
+        canvasZoom(page, s);
+        canvasState.x = x; canvasState.y = y;
+        canvasState.paper.translate(x, y);
+      };
       const 清选 = () => { canvasSetSelection(new Set()); canvasState.suppressInspectorUntil = 0; canvasState.skipNodeClick = null; };
       const 残留 = () => ({ 线层: !!document.querySelector(".canvas-wire-layer"), 原因: !!document.querySelector(".canvas-wire-tag"),
         框: document.querySelectorAll(".is-link-ok, .is-link-bad").length, 拉着: !!canvasState.wire, 拉线中: 视窗().classList.contains("is-wiring"),
