@@ -4203,6 +4203,10 @@ function attachOfficeReadingControls(host) {
       }
     };
     doc.addEventListener("input", () => { dirty = true; setPreviewEditor(true, editing, true, { toggle, save }); });
+    doc.addEventListener("paste", (event) => {
+      event.preventDefault();
+      document.execCommand("insertText", false, event.clipboardData?.getData("text/plain") || "");
+    });
     setPreviewEditor(true, false, false, { toggle, save });
   }
   doc.replaceWith(reader); const viewport = reader.lastElementChild; viewport.append(doc);
@@ -5351,6 +5355,29 @@ async function previewFile(name, root, opts) {
         withRoot("/api/files/office-view/" + fpath(name) + "?v=" + ver, pvRoot),
         withRoot("/api/files/preview/" + fpath(name) + "?v=" + ver, pvRoot));
     } catch (error) { if (!stale()) body.innerHTML = pvFallback(error.message); }
+  } else if (kind === "doc" && /\.docx$/i.test(name) && window.OWBDocumentViewer) {
+    const info = await fetch(withRoot("/api/files/office-info/" + fpath(name), pvRoot)).then(r => r.json()).catch(() => null);
+    if (stale()) return;
+    try { await OWBDocumentViewer.mount(body, url, kind); }
+    catch (error) { if (!stale()) body.innerHTML = pvFallback(error.message); }
+    if (!stale() && info?.editable) {
+      setPreviewEditor(true, false, false, { toggle: async () => {
+        const d = await fetch(withRoot("/api/files/preview/" + fpath(name), pvRoot)).then(r => r.json()).catch(() => null);
+        if (stale()) return;
+        if (!d || d.error || d.truncated) {
+          toast("文档预览不完整，请使用系统 Office 编辑", "circle-x");
+          return;
+        }
+        body.innerHTML = docHtml(d);
+        body.dataset.officeEditable = "true";
+        attachOfficeReadingControls(body);
+        const note = document.createElement("div");
+        note.className = "ov-note";
+        note.textContent = "轻量编辑，保存可能改变原版式。";
+        body.prepend(note);
+        pvEditorActions?.toggle();
+      } });
+    }
   } else if ((kind === "doc" || kind === "ofd") && window.OWBDocumentViewer) {
     try { await OWBDocumentViewer.mount(body, url, kind); }
     catch (error) { if (!stale()) body.innerHTML = pvFallback(error.message); }

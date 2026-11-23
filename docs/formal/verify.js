@@ -26,7 +26,7 @@ if (lake === binary) {
 }
 
 const result = spawnSync(lake, ["build"], {
-  cwd: path.join(__dirname, "..", "docs", "formal"),
+  cwd: __dirname,
   stdio: "inherit",
 });
 if (result.error && result.error.code === "ENOENT") {

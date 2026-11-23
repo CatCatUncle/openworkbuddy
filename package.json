@@ -11,7 +11,7 @@
     "start": "node server.js",
     "app": "bash scripts/run-app.sh",
     "test": "node test/all.js",
-    "verify:lean": "node scripts/verify-lean.js",
+    "verify:lean": "node docs/formal/verify.js",
     "stats": "node scripts/stats.js",
     "skill-hashes": "node scripts/skill-hashes.js",
     "test:e2e": "node test/e2e.js",

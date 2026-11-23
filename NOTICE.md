@@ -39,10 +39,10 @@ Required Notice: Any use not permitted by the PolyForm Noncommercial License 1.0
 | echarts | 6.1.0 | Apache-2.0 | https://github.com/apache/echarts |
 | electron-updater | 6.8.9 | MIT | https://github.com/electron-userland/electron-builder |
 | exceljs | 4.4.0 | MIT | https://github.com/exceljs/exceljs |
-| express | 4.22.2 | MIT | https://github.com/expressjs/express |
+| express | 4.22.3 | MIT | https://github.com/expressjs/express |
 | jszip | 3.10.1 | MIT | https://github.com/Stuk/jszip |
-| mermaid | 11.17.0 | MIT | https://github.com/mermaid-js/mermaid |
-| nodemailer | 9.1.1 | MIT-0 | https://github.com/nodemailer/nodemailer |
+| mermaid | 11.17.2 | MIT | https://github.com/mermaid-js/mermaid |
+| nodemailer | 10.6.1 | MIT-0 | https://github.com/nodemailer/nodemailer |
 | pptxgenjs | 3.12.0 | MIT | https://github.com/gitbrent/PptxGenJS |
 | qrcode | 1.5.4 | MIT | https://github.com/soldair/node-qrcode |
 | Electron | 43.x | MIT | https://github.com/electron/electron |

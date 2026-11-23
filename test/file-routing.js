@@ -51,6 +51,29 @@ async function check(label, fn) { await fn(); count++; console.log("✓ " + labe
     const read = await call("GET", "/api/files/view/index.html?root=" + key(B) + "&sid=s_other");
     assert.ok(read.text.includes("PROJECT_B") && !read.text.includes("PROJECT_A"));
   });
+  await check("spreadsheet saves stay in the writable project and preserve the other workbook", async () => {
+    const ExcelJS = require("exceljs");
+    for (const [dir, title] of [[A, "A"], [B, "B"]]) {
+      const book = new ExcelJS.Workbook();
+      book.addWorksheet("Sheet").getCell("A1").value = title;
+      await book.xlsx.writeFile(path.join(dir, "edit.xlsx"));
+    }
+    const readCell = async (dir, address) => {
+      const book = new ExcelJS.Workbook();
+      await book.xlsx.readFile(path.join(dir, "edit.xlsx"));
+      return book.getWorksheet("Sheet").getCell(address).value;
+    };
+    const route = "/api/files/edit-xlsx/edit.xlsx?root=" + key(B);
+    const body = { changes: [{ sheet: "Sheet", row: 1, col: 2, value: "=1+2" }] };
+    assert.equal((await call("POST", route, body, "")).status, 401);
+    assert.equal((await call("POST", route, body, member)).status, 400);
+    assert.equal((await call("POST", "/api/files/edit-xlsx/edit.xlsx?root=00000000", body)).status, 400);
+    assert.equal(await readCell(B, "B1"), null);
+    assert.equal((await call("POST", route, body)).status, 200);
+    assert.equal(await readCell(A, "B1"), null);
+    assert.equal(await readCell(B, "A1"), "B");
+    assert.equal((await readCell(B, "B1")).formula, "1+2");
+  });
   await check("trace APIs aggregate known projects and keep owner-only access", async () => {
     const write = (root, id) => {
       const dir = path.join(root, ".openworkbuddy"); fs.mkdirSync(dir, { recursive: true });
