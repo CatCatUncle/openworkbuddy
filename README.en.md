@@ -277,6 +277,8 @@ The built-in Agent alternates model decisions and tool execution, with concurren
 
 ## What's new
 
+- **Nov 23** v0.20.1: Give editing and annotation distinct icons and fix missing files and inaccurate counts in This chat.
+
 - **Nov 23** v0.20.0: Reuse provider settings across models, default to low reasoning effort, edit Word and Excel in preview, and verify routing rules with Lean.
 
 - **Nov 10** v0.19.3: attachment names with a Chinese closing parenthesis are no longer cut short, so conversations stop showing a broken extra attachment.

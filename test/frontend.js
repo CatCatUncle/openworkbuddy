@@ -1048,8 +1048,9 @@ const TURNOUT_CHECKS = `
     ok("接线：这一轮写回根上的老产出（不在自己那格、也不是别的任务格）记进 sessionRootFiles，「本对话」照样摆它",
       /const ownDir = !isReplaying && sessionDirs\\.get\\(turnSid\\);\\s*if \\(ownDir\\) for \\(const n of ev\\.changed \\|\\| \\[\\]\\) \\{[\\s\\S]{0,200}?startsWith\\(ownDir \\+ "\\/"\\)[\\s\\S]{0,200}?sessionRootFiles\\.get\\(turnSid\\)\\.add\\(String\\(n\\)\\)/.test(FILES_EV), FILES_EV.slice(FILES_EV.indexOf("ownDir") - 60, FILES_EV.indexOf("ownDir") + 400));
     ok("接线：角标只数面板里点得到的（outputArrivalPlan 收 listed: ev.files，面板只画 ev.files）", FILES_EV.includes("listed: ev.files"), FILES_EV.slice(FILES_EV.indexOf("outputArrivalPlan")));
+    const visibleChatFiles = FILES_EV.slice(FILES_EV.indexOf("if (!isReplaying && turnSid === sessionId) {"), FILES_EV.indexOf("else if (!isReplaying && Array.isArray(ev.files)"));
     ok("接线：只有眼前这个对话的回合才重画成果区（后台对话只更新缓存）",
-      FILES_EV.includes("if (!isReplaying && turnSid === sessionId) { if (ev.root) filesRoot = ev.root; renderFiles(ev.files); }"), FILES_EV.slice(FILES_EV.indexOf("renderFiles") - 200, FILES_EV.indexOf("renderFiles") + 200));
+      visibleChatFiles.includes("renderFiles(ev.files)") && visibleChatFiles.includes("scheduleSessionOutputRefresh()"), visibleChatFiles);
     const p = outPool({ files: [F("a.md"), F("任务/b.png", 1)], turn_files: [F("任务/b.png", 2), F("任务/x/y/z/深.png", 3)] });
     ok("outPool：并起来、按名字去重（files 那份优先）", p.map((f) => f.name).join() === "a.md,任务/b.png,任务/x/y/z/深.png" && p[1].size === 1, JSON.stringify(p));
     ok("  ← 老记录没有 turn_files：原样就是 files", outPool({ files: [F("a.md")] }).length === 1 && outPool({}).length === 0);
@@ -1356,7 +1357,7 @@ const TURNOUT_CHECKS = `
 const REVEALBTN_STUB = `const revealBtn = (name) => '<span class="dl rv" data-rv="' + esc(name) + '">RV</span>';`;
 const TURNOUT_STUBS_REALRV = (() => {
   if (!TURNOUT_STUBS.includes(REVEALBTN_STUB)) throw new Error("TURNOUT_STUBS 里 revealBtn 的桩子改过了，BCP-3 那组没法换成真源码");
-  return TURNOUT_STUBS.replace(REVEALBTN_STUB, srcLine("const revealBtn = (name) =>")) + "\n" + HOSTCAP_SRC + "\nvar settingsCache = null;";
+  return TURNOUT_STUBS.replace(REVEALBTN_STUB, srcLine("const revealBtn = (name, root) =>")) + "\n" + HOSTCAP_SRC + "\nvar settingsCache = null;";
 })();
 const REPLAY_NOHOST_CHECKS = `
 (() => {
@@ -2167,7 +2168,7 @@ const FILELIST_CHECKS = `
   const scopeSeg = () => [...document.querySelectorAll("#fp-scope .fp-seg")];
   ok("默认只摆本对话文件夹里的，别的对话的一个不见", dirs().length === 1 && /本对话/.test(dirs()[0]) && !el.querySelector(".time-head")
     && !/昨天干的|上周的|老的|工作空间根目录/.test(el.textContent), JSON.stringify(dirs()));
-  ok("顶上摆出「本对话 / 全部对话」，各带条数", scopeSeg().map((b) => b.textContent).join("|") === "本对话 2|全部对话 6" && scopeSeg()[0].classList.contains("on"),
+  ok("顶上摆出「本对话 / 工作区」，各带条数", scopeSeg().map((b) => b.textContent).join("|") === "本对话 2|工作区 6" && scopeSeg()[0].classList.contains("on"),
     scopeSeg().map((b) => b.textContent).join("|"));
   scopeSeg()[1].click();
   ok("点「全部对话」整个工作空间回来", heads().length === 4 && dirs().some((d) => d.includes("上周的")) && scopeSeg()[1].classList.contains("on"), JSON.stringify(dirs()));
@@ -2226,6 +2227,33 @@ const FILELIST_CHECKS = `
   window.sessionId = "s_now"; window.settingsCache = { platform_owner: true };
   renderFiles(data.slice(0, 2));
   ok("反向对照：全是本对话的文件时不摆「本对话 / 全部对话」", document.getElementById("fp-scope").hidden, document.getElementById("fp-filter").innerHTML.slice(0, 160));
+
+  // 工作区快照没收录这份文件，数量和行都要按对话接口返回的结果显示。
+  renderFiles(data);
+  const savedFetch = window.fetch;
+  let fileRequest, finishRequest;
+  window.fetch = (url) => {
+    fileRequest = url;
+    return new Promise(resolve => { finishRequest = resolve; });
+  };
+  const checking = refreshSessionOutputs();
+  ok("只请求当前对话，核对期间显示加载，不误报空", fileRequest === "/api/session/s_now/output-files" &&
+     /正在核对本对话/.test(el.textContent) && scopeSeg()[0].textContent === "本对话 …");
+  finishRequest({ ok: true, json: async () => ({ files: [{ ...f("旧项目/深目录/报告.xlsx", t0.getTime()), root: "abcdef12" }] }) });
+  await checking;
+  const matched = el.querySelector(".file-item");
+  ok("本对话计数与服务端清单一致，下载保留文件原项目", scopeSeg()[0].textContent === "本对话 1" &&
+     matched?.dataset.root === "abcdef12" && matched.querySelector("a.dl").href.includes("root=abcdef12") &&
+     el.querySelectorAll(".file-item").length === 1, el.innerHTML);
+  window.fetch = async () => ({ ok: false });
+  await refreshSessionOutputs();
+  ok("读取失败有独立状态，不误报空", scopeSeg()[0].textContent === "本对话 —" && /暂未取回/.test(el.textContent));
+  window.sessionId = null;
+  await refreshSessionOutputs();
+  ok("新对话还没开始时，已有的工作区文件不算当前对话产出", scopeSeg()[0].textContent === "本对话 0" && !el.querySelector(".file-item"));
+  window.sessionId = "s_now";
+  window.fetch = savedFetch;
+  sessionOutputView = null;
 
   // 用户自选工作目录：压根不建对话文件夹，文件全在根目录，那才是正文，得原样摊开
   window.sessionDirs = new Map();
@@ -4026,7 +4054,8 @@ function testCompactWiring() {
 const MULTIRUN_I18N_CASES = [
   // [界面上真出现的那句, 源码里必须有的固定部分]。用户自己起的名字、服务端原话用英文占位——「一个汉字不剩」查的是我们写的那部分
   ["正在载入这段对话…"], ["正在载入页面…"], ["20 秒没等到应用回话，这次没启动"],
-  ["只看这个对话自己文件夹里的"], ["整个工作空间，含别的对话的产出"], ["这个对话还没产出文件，做出来就在这里"],
+  ["只看这个对话的文件"], ["当前工作区的近期文件"], ["这个对话还没产出文件，做出来就在这里"],
+  ["正在核对本对话的文件…"], ["本对话文件暂未取回，重新打开面板可重试"], ["已达到扫描上限，列表可能还有遗漏"],
   // 文件管理器按这台机器的系统叫（mac 访达、Windows 资源管理器、Linux 文件管理器），源码里写死的只有后半句
   ["在访达中打开这个文件夹", "中打开这个文件夹"], ["在资源管理器中打开这个文件夹", "中打开这个文件夹"], ["在文件管理器中打开这个文件夹", "中打开这个文件夹"],
   ["在访达中打开工作空间根目录", "中打开工作空间根目录"], ["在资源管理器中打开工作空间根目录", "中打开工作空间根目录"],
@@ -4036,8 +4065,8 @@ const MULTIRUN_I18N_CASES = [
   ["等了 20 秒没等到这段对话的记录", "秒没等到这段对话的记录"],
   ["这段对话的记录没取回来：HTTP 500", "这段对话的记录没取回来："],
   ["这次没启动：EADDRINUSE", "这次没启动："],
-  ["本对话 3", "本对话 "], ["全部对话 12", "全部对话 "],
-  ["没有名字里带「report」的文件。只找了本对话的，切到「全部对话」再找找", "只找了本对话的，切到「全部对话」再找找"],
+  ["本对话 3", "本对话 "], ["本对话 …", "本对话 "], ["本对话 —", "本对话 "], ["工作区 12", "工作区 "], ["工作区 500+", "工作区 "],
+  ["没有名字里带「report」的文件。只找了本对话的，切到「工作区」再找找", "只找了本对话的，切到「工作区」再找找"],
   ["这个对话里还没有成果文件（4 个中间材料已折起）", "个中间材料已折起"],
   ["连接中断：60 秒没收到任何数据。任务可能仍在后台运行，刷新即可接回；别点重新生成，会重复执行", "任务可能仍在后台运行，刷新即可接回"],
   ["停下「weekly」", "停下「"],
@@ -18455,7 +18484,7 @@ app.whenReady().then(async () => {
     const win5 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await win5.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(FILELIST_HTML));
-      const names5 = await win5.webContents.executeJavaScript(IC_BOOT + FILELIST_STUBS + "\n" + PATHHELP_SRC + "\n" + HOSTCAP_SRC + "\n" + DELIVER_SRC + "\n" + FILELIST_SRC + "\n" + FILELIST_CHECKS, true);
+      const names5 = await win5.webContents.executeJavaScript(IC_BOOT + FILELIST_STUBS + "\n" + PATHHELP_SRC + "\n" + HOSTCAP_SRC + "\n" + srcBlock("function withRoot(url, root) {") + "\n" + DELIVER_SRC + "\n" + FILELIST_SRC + "\n" + FILELIST_CHECKS, true);
       for (const n of names5) console.log("  ✓ " + n);
       console.log(`✅ 前端：成果面板按时间分段（今天/昨天/7天/按月·取最近动过·折叠独立·根目录降级）${names5.length} 项通过`);
     } finally {

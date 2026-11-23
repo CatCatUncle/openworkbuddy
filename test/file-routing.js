@@ -7,6 +7,7 @@ const { spawn } = require("child_process");
 const { entry } = require("./lib/entry");
 const { mod } = require("./lib/mod");
 const key = require(mod("tools")).workspaceKeyOf;
+const { canonDir } = require(mod("task-dirs"));
 const A = path.join(HOME, "workspace"), B = path.join(HOME, "other-project"), C = path.join(HOME, "external project 中文");
 for (const [dir, content] of [[A, "PROJECT_A"], [B, "PROJECT_B"], [C, "PROJECT_C"]]) { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(path.join(dir, "index.html"), "<!doctype html><title>" + content + "</title>" + content); }
 fs.writeFileSync(path.join(C, "package.json"), '{"name":"fixture"}');
@@ -74,6 +75,32 @@ async function check(label, fn) { await fn(); count++; console.log("✓ " + labe
     assert.equal(await readCell(A, "B1"), null);
     assert.equal(await readCell(B, "A1"), "B");
     assert.equal((await readCell(B, "B1")).formula, "1+2");
+  });
+  await check("a conversation lists its older, deep, and cross-project files without picking up same-name files", async () => {
+    const dir = "任务_1123_报表", deep = dir + "/" + "nested/".repeat(14) + "report.html";
+    fs.mkdirSync(path.dirname(path.join(B, deep)), { recursive: true });
+    fs.writeFileSync(path.join(B, deep), "deep report");
+    fs.writeFileSync(path.join(A, "own.txt"), "older file");
+    const oldDir = "任务_1015_报表", oldFile = oldDir + "/archive.xlsx";
+    fs.mkdirSync(path.join(A, oldDir));
+    fs.writeFileSync(path.join(A, oldFile), "archived report");
+    fs.writeFileSync(path.join(B, "deleted.txt"), "other project's same name");
+    fs.writeFileSync(path.join(B, "unrelated.txt"), "unrelated");
+    if (process.platform !== "win32") fs.symlinkSync(path.join(A, "own.txt"), path.join(B, dir, "link.txt"));
+    fs.writeFileSync(path.join(HOME, "data", "sessions", "s_outputs.json"), JSON.stringify({
+      id: "s_outputs", owner: "owner", user: "owner", title: "Reports", root: B, dir, dirs: { [canonDir(A)]: oldDir }, history: [],
+      transcript: [{ type: "assistant", events: [{ type: "files", root: key(A), changed: ["own.txt", "deleted.txt"] }] }],
+    }));
+    const route = "/api/session/s_outputs/output-files";
+    assert.equal((await call("GET", route, undefined, member)).status, 403);
+    const data = await call("GET", route);
+    assert.equal(data.status, 200, data.text);
+    assert.deepEqual(new Map(data.json.files.map(f => [f.name, f.root])), new Map([[deep, key(B)], [oldFile, key(A)], ["own.txt", key(A)]]));
+    assert.equal(data.json.capped, false);
+    fs.unlinkSync(path.join(B, deep));
+    const afterDelete = await call("GET", route);
+    assert.equal(afterDelete.status, 200, afterDelete.text);
+    assert.deepEqual(new Set(afterDelete.json.files.map(f => f.name)), new Set([oldFile, "own.txt"]));
   });
   if (process.env.OWB_TEST_LIBREOFFICE === "1") {
     await check("LibreOffice saves an edited Word preview in the selected project", async () => {

@@ -160,4 +160,4 @@ function derive(w) {
 
 function _reset() { clear(); failAll(new Error("reset")); dropWorker(); broken = 0; }
 
-module.exports = { walk, clear, touch, derive, FRESH_MS, SETTLE_MS, KEEP_MS, _reset, _state: () => ({ entries: entries.size, worker: !!worker, broken }) };
+module.exports = { walk, walkFresh: walkOffThread, clear, touch, derive, FRESH_MS, SETTLE_MS, KEEP_MS, _reset, _state: () => ({ entries: entries.size, worker: !!worker, broken }) };

@@ -9299,6 +9299,85 @@ app.get("/api/session/:id", (req, res) => {
   res.json({ billing_scope: s.billing_scope === "team" ? "team" : "personal", transcript: s.transcript, dir: perChat ? sessDirOf(s) : null, root_files: perChat ? rootFilesOf(s) : [], att_dir: s.dir || null, att_spots: attachSpotsOf(s), model: s.model || null, goal: s.goal || null, feedback, title: s.title || "", kind: s.kind || "" });
 });
 
+// 成果面板按对话取清单，避免旧文件被工作区的近期快照挤掉。
+app.get("/api/session/:id/output-files", async (req, res, next) => {
+  const s = guardSession(req, res);
+  if (!s) return;
+  try {
+    const def = dataPath("workspace"), fence = rootFence(req);
+    const appDataDir = await fs.promises.realpath(dataPath("data")).catch(() => dataPath("data"));
+    const byKey = new Map(knownRoots(req).map((r) => [workspaceKeyOf(r), r]));
+    const eligible = new Map();
+    const add = (r) => {
+      if (!r) return;
+      const key = workspaceKeyOf(r);
+      if (byKey.has(key)) eligible.set(key, r);
+    };
+    add(s.root || def);
+    const previousRoots = Object.keys(s.dirs || {});
+    if (previousRoots.length) {
+      const byPlace = new Map([...byKey.values()].map((r) => [taskDirs.canonDir(r), r]));
+      for (const r of previousRoots) add(byPlace.get(taskDirs.canonDir(r)));
+    }
+    for (const turn of s.transcript || []) for (const ev of turn?.events || []) {
+      if (ev?.type === "files" && ev.changed?.length) add(ev.root ? byKey.get(ev.root) : def);
+    }
+    const list = new Map();
+    const cap = 2000;
+    let capped = false;
+    const keep = (key, name, file) => {
+      const id = key + "\0" + name;
+      if (list.has(id)) return;
+      if (list.size >= cap) { capped = true; return; }
+      list.set(id, { name, root: key, size: file.size, mtime: file.mtime });
+    };
+    // 目录和散落文件都必须按原根核实，避免串租户或找到另一个项目的同名文件。
+    for (const [key, r] of eligible) {
+      if (list.size >= cap) { capped = true; break; }
+      const realRoot = await fs.promises.realpath(r).catch(() => "");
+      if (!realRoot || (fence && !fence(realRoot))) continue;
+      const safeOutput = async (name) => {
+        try {
+          const parts = wsBrowse.relSegments(name);
+          if (!parts.length) return "";
+          let p = realRoot;
+          for (const part of parts) {
+            p = path.join(p, part);
+            if (wsBrowse.skipEntry(part, p, appDataDir)) return "";
+          }
+          const real = await fs.promises.realpath(p);
+          return real === p && (!fence || fence(p)) ? p : "";
+        } catch { return ""; }
+      };
+      const dir = taskDirs.sessDirAt(s, r, def);
+      if (dir) {
+        const folder = await safeOutput(dir);
+        if (folder) {
+          const walk = await wsIndex.walkFresh(folder, { appDataDir, maxDepth: Infinity, cap: cap - list.size });
+          capped ||= walk.capped;
+          for (const f of walk.files) {
+            if (!fence || fence(path.join(folder, f.name))) keep(key, dir + "/" + f.name, f);
+          }
+        }
+      }
+      const flat = taskDirs.flatOutputs(s, r, def, key, cap);
+      capped ||= flat.length >= cap;
+      for (let i = 0; i < flat.length && list.size < cap; i += 24) {
+        const batch = flat.slice(i, i + 24);
+        await Promise.all(batch.map(async (name) => {
+          const p = await safeOutput(name);
+          if (!p) return;
+          const st = await fs.promises.stat(p).catch(() => null);
+          if (st?.isFile()) keep(key, name, { size: st.size, mtime: st.mtime.toISOString() });
+        }));
+      }
+      if (list.size >= cap) capped = true;
+    }
+    res.set("Cache-Control", "private, no-store");
+    res.json({ files: [...list.values()].sort((a, b) => b.mtime.localeCompare(a.mtime)), capped });
+  } catch (e) { next(e); }
+});
+
 // 归档目标：目标卡上点 ✕。已达成/不想要了都走这里，不删记录只改状态
 app.post("/api/session/:id/goal", (req, res) => {
   const s = guardSession(req, res);

@@ -2061,8 +2061,11 @@ function createTurnUI(userText, turnMode, forSid, shown, into) {
       // 回放历史任务时这些是当时的文件列表：拿它去刷右侧面板会把现在的状态盖成旧的。产出 chip 照摆，其余一律不动
       // 后台在跑的别的对话：只悄悄更新清单，不重画右侧——以前这里不分是谁的回合，
       // 几个对话同时跑时，成果区被别的对话的产出一遍遍刷掉，看着像文件串了
-      if (!isReplaying && turnSid === sessionId) { if (ev.root) filesRoot = ev.root; renderFiles(ev.files); }
-      else if (!isReplaying && Array.isArray(ev.files) && (!ev.root || ev.root === filesRoot)) filesCache = ev.files;
+      if (!isReplaying && turnSid === sessionId) {
+        if (ev.root) filesRoot = ev.root;
+        renderFiles(ev.files);
+        if (document.getElementById("files-panel")?.classList.contains("show")) scheduleSessionOutputRefresh();
+      } else if (!isReplaying && Array.isArray(ev.files) && (!ev.root || ev.root === filesRoot)) filesCache = ev.files;
       // 产出到了不抢版面：以前是「有产出就把右侧预览 / 成果文件面板弹出来」，又抢版面又难看。
       // 现在结论在正文里、产出是一排 chip，右侧只在用户本来就开着预览看这个文件时原地刷新。
       // 该做什么由 outputArrivalPlan 这个纯函数决定，前端 harness 直接验它的输入输出
@@ -3245,10 +3248,47 @@ const openDirs = new Set(); // 记住展开状态，刷新列表不回弹
 let onlyResults = (() => { try { return localStorage.getItem("owb-files-only") === "1"; } catch { return false; } })();
 // 搜索词不落盘：刷新之后该看到的是全部文件，不是上次搜了一半的残影
 let fileQuery = "";
-// 「本对话 / 全部对话」：默认工作空间里每个对话各有一个成果文件夹，默认只摆本对话那一格。
-// 以前整个工作空间一锅端，几个对话一起跑，打开成果区满眼是别的对话的文件。
-// 不落盘：换一个对话就回到「本对话」（openSession / 新任务里清掉）
+// 换对话就回到「本对话」。工作区范围仍使用近期文件快照。
 let filesAllScope = false;
+let sessionOutputView = null;
+let sessionOutputTimer = 0;
+function currentSessionOutput() {
+  return sessionOutputView?.sid === sessionId ? sessionOutputView : null;
+}
+async function refreshSessionOutputs() {
+  const sid = sessionId;
+  if (!sid) {
+    sessionOutputView = { sid, files: [] };
+    renderFiles(filesCache);
+    return;
+  }
+  const previous = currentSessionOutput();
+  const view = { sid, loading: true, files: previous?.files, capped: previous?.capped };
+  sessionOutputView = view;
+  renderFiles(filesCache);
+  try {
+    const r = await fetch("/api/session/" + encodeURIComponent(sid) + "/output-files", { signal: AbortSignal.timeout(10000) });
+    if (!r.ok) throw Error("output-files");
+    const data = await r.json();
+    if (!Array.isArray(data.files)) throw Error("output-files");
+    view.files = data.files;
+    view.capped = data.capped === true;
+  } catch {
+    view.files = undefined;
+    view.error = true;
+  } finally {
+    view.loading = false;
+    if (currentSessionOutput() === view) renderFiles(filesCache);
+  }
+}
+function scheduleSessionOutputRefresh() {
+  if (sessionOutputTimer) return;
+  const sid = sessionId;
+  sessionOutputTimer = setTimeout(() => {
+    sessionOutputTimer = 0;
+    if (sid === sessionId && document.getElementById("files-panel")?.classList.contains("show")) refreshSessionOutputs();
+  }, 750);
+}
 /** 换过根之后重新认一遍这条对话的那格（服务端只给当前根下的，没有就是 null） */
 function resyncSessionDir(sid) {
   const hadDir = sessionDirs.delete(sid), hadFlat = sessionRootFiles.delete(sid); // 摊在根上的那批也是按旧根算的
@@ -3285,6 +3325,8 @@ function wsPerChat() {
 /** 成果区此刻该摆哪些：{ list, scoped, outside }。scoped=true 时 list 只含本对话文件夹里的 */
 function filesInScope(all) {
   const files = all || [];
+  const view = currentSessionOutput();
+  if (view && !filesAllScope) return { list: view.files || [], scoped: true, outside: 0, all: files.length, verified: true };
   const curDir = sessionDirs.get(sessionId);
   const own = !!curDir || wsPerChat();
   if (!own || filesAllScope) return { list: files, scoped: false, outside: 0, all: files.length };
@@ -3457,7 +3499,7 @@ function downloadFile(name, root) {
   a.download = String(name).split("/").pop();
   document.body.appendChild(a); a.click(); a.remove();
 }
-const revealBtn = (name) => (canOpenOnHost() ? `<span class="dl rv" data-rv="${esc(name)}" title="打开所在位置">${ic("folder-open")}</span>` : "");
+const revealBtn = (name, root) => (canOpenOnHost() ? `<span class="dl rv" data-rv="${esc(name)}" data-root="${esc(root || "")}" title="打开所在位置">${ic("folder-open")}</span>` : "");
 
 // 按名字找文件。一个任务跑下来几十个
 // 文件，分组能解决「浏览」，解决不了「我就要那一个」。匹配的是整条相对路径，所以文件夹名
@@ -3482,19 +3524,22 @@ function renderFileFilter() {
   const find = document.getElementById("fp-q");
   const sc = filesInScope(filesCache);
   const pool = sc.list;
+  const view = currentSessionOutput();
   const nres = pool.filter((f) => isResultFile(f.name)).length;
   const showSeg = pool.length > 0 && nres > 0 && nres < pool.length;
   const showFind = pool.length >= FIND_MIN || !!fileQuery; // 搜空了也得留着框，不然没法清
   // 本对话之外一个文件都没有时不摆：切了看不出差别
-  const showScope = filesAllScope || (sc.scoped && sc.outside > 0);
+  const showScope = !!view || filesAllScope || (sc.scoped && sc.outside > 0);
   box.hidden = !showSeg && !showFind && !showScope;
   if (find) find.hidden = !showFind;
   if (scope) {
     scope.hidden = !showScope;
-    const nMine = filesCache.filter((f) => ownsFile(sessionId, f.name)).length;
+    const nMine = view
+      ? view.files ? `${view.files.length}${view.capped ? "+" : ""}` : view.error ? "—" : "…"
+      : filesCache.filter((f) => ownsFile(sessionId, f.name)).length;
     scope.innerHTML = !showScope ? "" :
-      `<button class="fp-seg${filesAllScope ? "" : " on"}" data-all="0" title="只看这个对话自己文件夹里的">本对话 ${nMine}</button>` +
-      `<button class="fp-seg${filesAllScope ? " on" : ""}" data-all="1" title="整个工作空间，含别的对话的产出">全部对话 ${filesCache.length}</button>`;
+      `<button class="fp-seg${filesAllScope ? "" : " on"}" data-all="0" title="只看这个对话的文件">本对话 ${nMine}</button>` +
+      `<button class="fp-seg${filesAllScope ? " on" : ""}" data-all="1" title="当前工作区的近期文件">工作区 ${filesCache.length}${filesCache.length >= 500 ? "+" : ""}</button>`;
     scope.querySelectorAll(".fp-seg").forEach((b) => { b.onclick = () => {
       filesAllScope = b.dataset.all === "1";
       renderFiles(filesCache);
@@ -3533,8 +3578,10 @@ function renderFiles(files) {
   const hits = q ? matchFiles(files, q) : files;
   if (!hits.length) {
     const tip = (t) => `<div style="padding:10px;color:var(--owb-text-3);font-size: 13px">${t}</div>`;
-    el.innerHTML = q
-      ? tip(`没有名字里带「${esc(q)}」的文件${onlyResults ? "。「只看成果」开着，切回「全部」再找找" : sc.scoped && sc.outside ? "。只找了本对话的，切到「全部对话」再找找" : ""}`)
+    const v = currentSessionOutput();
+    el.innerHTML = sc.verified && !v.files ? tip(v.loading ? "正在核对本对话的文件…" : "本对话文件暂未取回，重新打开面板可重试")
+      : q
+      ? tip(`没有名字里带「${esc(q)}」的文件${onlyResults ? "。「只看成果」开着，切回「全部」再找找" : sc.scoped && (sc.outside || sc.verified) ? "。只找了本对话的，切到「工作区」再找找" : ""}`)
       : onlyResults && pool.length
       ? tip(`这个${sc.scoped ? "对话" : "工作目录"}里还没有成果文件（${hiddenN} 个中间材料已折起）`)
       : sc.scoped
@@ -3543,20 +3590,22 @@ function renderFiles(files) {
     return;
   }
   // 搜出来的行要带上它在哪个文件夹——同名的 index.html 一个任务能有好几份
-  const fileRow = (f, nested, withDir) =>
-    `<div class="file-item${nested ? " nested" : ""}${isResultFile(f.name) ? " res" : ""}" style="cursor:pointer" data-name="${esc(f.name)}" title="${esc(f.name)}">
+  const fileRow = (f, nested, withDir) => {
+    const download = "/api/files/download/" + fpath(f.name);
+    return `<div class="file-item${nested ? " nested" : ""}${isResultFile(f.name) ? " res" : ""}" style="cursor:pointer" data-name="${esc(f.name)}" data-root="${esc(f.root || "")}" title="${esc(f.name)}">
       <span>${ic(fileIcon(f.name))}</span>
       <span style="min-width:0"><div class="name">${esc(f.name.split("/").pop())}</div><div class="meta">${withDir && f.name.includes("/") ? esc(f.name.slice(0, f.name.lastIndexOf("/"))) + " · " : ""}${fmtSize(f.size)}</div></span>
-      ${revealBtn(f.name)}
-      <a class="dl" href="/api/files/download/${fpath(f.name)}" download title="下载">${ic("download")}</a>
+      ${revealBtn(f.name, f.root)}
+      <a class="dl" href="${esc(f.root ? withRoot(download, f.root) : download)}" download title="下载">${ic("download")}</a>
     </div>`;
+  };
   // 行上的点击：打开预览 / 定位到 Finder。分组视图和搜索结果共用
   const wireRows = () => {
-    el.querySelectorAll("[data-rv]").forEach(b => { b.onclick = (e) => revealFile(b.dataset.rv, e); });
+    el.querySelectorAll("[data-rv]").forEach(b => { b.onclick = (e) => revealFile(b.dataset.rv, e, b.dataset.root); });
     el.querySelectorAll(".file-item").forEach(item => item.onclick = (e) => {
       if (e.target.closest(".dl")) return; // 下载/定位按钮不拦截
       e.preventDefault();
-      previewFile(item.dataset.name);
+      previewFile(item.dataset.name, item.dataset.root);
     });
   };
   // 子目录归成可折叠分组，再按时间装进「今天／昨天／过去 7 天／更早（按月）」。
@@ -3584,6 +3633,14 @@ function renderFiles(files) {
   // 一个真实文件夹里 data/ 的十几个 json 会把那份 pptx 冲到下面去，用户得自己一行行找
   const resFirst = (tie) => (a, b2) => (isResultFile(b2.name) ? 1 : 0) - (isResultFile(a.name) ? 1 : 0) || (tie ? tie(a, b2) : 0);
   const resCount = (list) => list.filter((f) => isResultFile(f.name)).length;
+  // 一个对话可能跨项目，逐行保留原根，避免同名文件夹被并到一起。
+  if (sc.verified) {
+    const limitNote = currentSessionOutput()?.capped ? '<div class="fp-hidden">已达到扫描上限，列表可能还有遗漏</div>' : "";
+    const filterNote = hiddenN ? `<div class="fp-hidden">已折起 ${hiddenN} 个中间材料（脚本 / 数据 / 日志）</div>` : "";
+    el.innerHTML = hits.slice().sort(resFirst()).map(f => fileRow(f, false, true)).join("") + filterNote + limitNote;
+    wireRows();
+    return;
+  }
   // 搜索结果不分组：分组是给"翻"用的，搜是"我就要那一个"。成果排前面，其余按路径
   if (q) {
     const rest = files.length - hits.length;
@@ -6832,7 +6889,7 @@ function clearFilesBadge() {
 document.getElementById("toggle-files").onclick = () => {
   const fp = document.getElementById("files-panel");
   fp.classList.toggle("show");
-  if (fp.classList.contains("show")) { clearFilesBadge(); renderFiles(filesCache); } // 看过了，「没看过的新产出」就归零；清单按此刻这个对话重画
+  if (fp.classList.contains("show")) { clearFilesBadge(); refreshSessionOutputs(); } // 取这条对话的真实文件，不借用近期项目快照
   // 预览和成果文件面板互斥：右侧只留一个。双开把聊天区挤没，窄窗下两个浮层还互相盖字
   if (fp.classList.contains("show") && pvPanel.classList.contains("show")) closePreview(); // 收起就连里面的网页/音视频一起停掉
 };
