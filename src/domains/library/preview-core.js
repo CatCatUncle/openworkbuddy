@@ -497,7 +497,7 @@ async function xlsxToSheets(file) {
     const lastCol = Math.max(0, (dim ? dim.right : ws.columnCount) || 0);
     const nCols = Math.min(lastCol, LIMITS.cols);
     const nRows = Math.min(lastRow, LIMITS.rows, Math.floor(cellBudget / Math.max(1, nCols)));
-    const rows = [];
+    const rows = [], types = {};
     const styles = {}, heights = {};
     const color = c => c && /^[\da-f]{8}$/i.test(c.argb || "") ? "#" + c.argb.slice(-6) : "";
     for (let r = 1; r <= nRows; r++) {
@@ -507,6 +507,8 @@ async function xlsxToSheets(file) {
       const cells = [];
       for (let c = 1; c <= nCols; c++) {
         const cell = row.getCell(c), text = clip(cellText(cell)).slice(0, Math.max(0, charBudget)); cells.push(text); charBudget -= text.length; cellBudget--;
+        const val = cell.value;
+        types[r + "," + c] = val == null ? "blank" : cell.formula || val?.sharedFormula ? "formula" : val instanceof Date ? "date" : typeof val === "number" ? "number" : typeof val === "boolean" ? "boolean" : "string";
         if (styleBudget > 0 && (cell.value != null || cell.isMerged)) {
           styleBudget--;
           const f = cell.font || {}, a = cell.alignment || {}, b = cell.border || {};
@@ -521,7 +523,7 @@ async function xlsxToSheets(file) {
     sheets.push({
       name: ws.name,
       rows,
-      layout: { styles, heights, columns: Array.from({ length: nCols }, (_, i) => ({ width: ws.getColumn(i + 1).width || 10, hidden: !!ws.getColumn(i + 1).hidden })),
+      layout: { styles, types, heights, columns: Array.from({ length: nCols }, (_, i) => ({ width: ws.getColumn(i + 1).width || 10, hidden: !!ws.getColumn(i + 1).hidden })),
         merges: Object.values(ws._merges || {}).map(m => m.model).filter(m => m && m.top <= nRows && m.left <= nCols)
           .map(m => ({ top: m.top, left: m.left, bottom: Math.min(m.bottom, nRows), right: Math.min(m.right, nCols) })) },
       // 只有上限真咬着了才算截断。以前这里拿 actualRowCount 跟自己比，永远是 false

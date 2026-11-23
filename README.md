@@ -1,9 +1,9 @@
 <p align="center"><img src="build/icon.png" width="64" alt="OpenWorkBuddy"></p>
 <h1 align="center">OpenWorkBuddy</h1>
-<p align="center"><b>本机优先的 AI 办公工作台，把你的资料和要求变成可打开、可修改的文件。</b><br>
+<p align="center"><b>本机优先、源码可查看的 AI 办公工作台，把你的资料和要求变成可打开、可修改的文件。</b><br>
 给经常做周报、PPT、表格和文档的人，也给需要自托管的团队。<br>
 使用你选择的模型，查看执行过程，在成果区核对交付文件。</p>
-<p align="center"><a href="#quick-start"><b>▶ 做一份项目汇报 PPT</b></a> · <a href="https://github.com/CatCatUncle/openworkbuddy/releases/latest">下载安装包</a> · <a href="https://catcatuncle.github.io/openworkbuddy/zh/?utm_source=github&amp;utm_medium=readme&amp;utm_campaign=first_result">项目网站</a> · <a href="#文档">文档</a> · <a href="README.en.md">English</a></p>
+<p align="center"><a href="#quick-start"><b>▶ 做一份项目汇报 PPT</b></a> · <a href="https://github.com/CatCatUncle/openworkbuddy/releases/latest">下载安装包</a> · <a href="https://openworkbuddy.work/?utm_source=github&amp;utm_medium=readme&amp;utm_campaign=first_result">项目网站</a> · <a href="#文档">文档</a> · <a href="README.en.md">English</a></p>
 <p align="center"><a href="https://github.com/CatCatUncle/openworkbuddy/releases/latest"><img src="https://img.shields.io/github/v/release/CatCatUncle/openworkbuddy?style=flat-square" alt="正式发布版本"></a> <a href="LICENSE"><img src="https://img.shields.io/badge/License-PolyForm%20NC-5b5ff7?style=flat-square" alt="PolyForm Noncommercial 许可证"></a> <a href="https://github.com/CatCatUncle/openworkbuddy/stargazers"><img src="https://img.shields.io/github/stars/CatCatUncle/openworkbuddy?style=flat-square&label=Star&color=5b5ff7" alt="收藏项目"></a></p>
 <p align="center"><a href="https://www.opensourcealternatives.to"><img src="https://www.opensourcealternatives.to/badge-osa.svg" alt="As seen on Open Source Alternatives" width="378" height="28"></a></p>
 <p align="center"><sub>个人非商用、学校和公益机构免费；公司及个人商用须获 <a href="COMMERCIAL-LICENSE.md">商业授权</a>。购买授权：<a href="mailto:contact@aijentra.com">contact@aijentra.com</a> · 微信：<b>agi_smith</b>。模型与媒体服务的费用由所选服务商决定。</sub></p>
@@ -38,7 +38,7 @@
 **计时方式**：从开始安装计到首次打开且核对通过，分别记录下载、启动、模型配置和任务等待。“三分钟”是优化目标，实际时间取决于网络、模型准备情况和任务执行，当前没有发布实测成功率。
 
 <details>
-<summary><b>从源码运行：Node.js 18+、npm 与 Git</b></summary>
+<summary><b>从源码运行：Node.js 22+、npm 与 Git</b></summary>
 
 ```bash
 git clone https://github.com/CatCatUncle/openworkbuddy.git
@@ -144,7 +144,7 @@ DeepSeek / 通义 / 智谱 / Kimi / OpenRouter / Ollama 界面点一下就切；
 <summary><b>📣 想推荐给别人？这段直接复制</b></summary>
 
 ```text
-OpenWorkBuddy：开源的 AI 办公助理，跑在自己电脑上。
+OpenWorkBuddy：源码可查看的 AI 办公工作台，跑在自己的电脑上（PolyForm Noncommercial 1.0.0）。
 说一句话，它自己规划、动手、验收，交给你能打开的 PPT / Word / Excel / 网页，不是一段聊天记录。
 · 模型随便换：DeepSeek、通义、Kimi、智谱、Ollama，本机的 Claude Code / Codex 也能直接当发动机
 · 数据全在本机，默认只听 127.0.0.1；也能放服务器给团队用，每个人绑自己的微信、飞书
@@ -278,6 +278,8 @@ openworkbuddy engines use claude-code # 换执行引擎：跑在你已经付过�
 
 ## 最新动态
 
+- **11-23** v0.20.0：从渠道卡直接添加对话和媒体模型，共用已配置的地址与 Key；思考强度默认低档；DOCX / XLSX 预览支持编辑保存（DOCX 保存需安装 LibreOffice）。新增 Lean 4 渠道路由规格并由 CI 编译验证。源码运行最低要求升至 Node.js 22，以使用已修复的运行依赖并避开已停止维护的 Node.js 18 / 20。
+
 - **11-10** v0.19.3：附件名带中文右括号时不再被截断，对话里不再多出打不开的附件。
 
 - **11-06** v0.19.2：资料库打开笔记时，全部文件等页签不再一起高亮，一次只选中一个页签。
@@ -360,19 +362,19 @@ openworkbuddy engines use claude-code # 换执行引擎：跑在你已经付过�
 
 📮 商业授权与合作：邮箱 **[contact@aijentra.com](mailto:contact@aijentra.com)** · 微信 **`agi_smith`**
 
-## 从别家换过来：Claude Cowork、Codex、豆包办公的开源替代
+## 从别家换过来：Claude Cowork、Codex、豆包办公的源码可查看替代方案
 
-在找 **Claude Cowork、Codex、豆包办公、千问办公的开源替代**，或者想给 **DeepSeek 找一个 agent 外壳（harness）**？每一家都写了一页老实对比，也写了什么时候还是用它更合适：
+在找 **Claude Cowork、Codex、豆包办公、千问办公的源码可查看替代方案**，或者想给 **DeepSeek 找一个 agent 外壳（harness）**？每一家都写了一页老实对比，也写了什么时候还是用它更合适：
 
 | 你在用 / 在找 | 对比页 |
 |---|---|
-| Claude Cowork | [Claude Cowork 开源替代：本机运行、模型随便换](https://catcatuncle.github.io/openworkbuddy/zh/alternatives/claude-cowork/) |
-| Codex | [Codex 办公版替代：交付的是文件，还能拿 Codex 当发动机](https://catcatuncle.github.io/openworkbuddy/zh/alternatives/codex/) |
-| 豆包办公 | [豆包办公开源替代：也能用豆包模型](https://catcatuncle.github.io/openworkbuddy/zh/alternatives/doubao/) |
-| 千问办公 | [千问办公开源替代：通义模型照样用](https://catcatuncle.github.io/openworkbuddy/zh/alternatives/qwen/) |
+| Claude Cowork | [Claude Cowork 源码可查看替代方案：本机运行、模型可选](https://openworkbuddy.work/alternatives/claude-cowork/) |
+| Codex | [Codex 办公替代方案：交付的是文件，还能连接 Codex CLI](https://openworkbuddy.work/alternatives/codex/) |
+| 豆包办公 | [豆包办公替代方案：也能用豆包模型](https://openworkbuddy.work/alternatives/doubao/) |
+| 千问办公 | [千问办公替代方案：通义模型照样用](https://openworkbuddy.work/alternatives/qwen/) |
 | DeepSeek | [DeepSeek agent 外壳：填上 Key 就能干活](https://catcatuncle.github.io/openworkbuddy/zh/alternatives/deepseek-agent/) |
 
-OpenWorkBuddy 是独立开源项目，跟上面这些公司都没有关联。
+OpenWorkBuddy 是独立的源码可查看项目，按 PolyForm Noncommercial 1.0.0 授权，与上面这些公司没有关联。公司实际业务、个人商用和客户交付需购买商业授权。
 
 ## 文档
 
@@ -413,7 +415,7 @@ Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle)
 
 ## 免责声明
 
-独立开源项目，与腾讯及其 WorkBuddy 产品无任何关联，不含其代码或素材；对接的 IM 均走公开接口。借鉴来源见 [NOTICE.md](NOTICE.md)。有问题请开 [Issue](https://github.com/CatCatUncle/openworkbuddy/issues)。
+独立的源码可查看项目，按 PolyForm Noncommercial 1.0.0 授权，与腾讯及其 WorkBuddy 产品无任何关联，不含其代码或素材；对接的 IM 均走公开接口。借鉴来源见 [NOTICE.md](NOTICE.md)。有问题请开 [Issue](https://github.com/CatCatUncle/openworkbuddy/issues)。
 
 ## 支持这个项目
 

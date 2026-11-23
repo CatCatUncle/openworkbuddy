@@ -1454,7 +1454,7 @@ function createLLM(config) {
     const picked = config.models.find((m) => m.name === config.active_model) || config.models[0];
     // 思考模式是一个全局档位（设置页那个下拉框），单条模型可以自己写 thinking 覆盖它。
     // 这里就地合成，下面两条路（anthropic / openai 兼容）读的都是 entry.thinking
-    const level = picked.thinking || ((config.agent || {}).thinking || "auto");
+    const level = picked.thinking || ((config.agent || {}).thinking || "low");
     const entry = { ...picked, thinking: level };
     const chat = chatFor(entry);
     return {

@@ -174,7 +174,9 @@ function resolveEdge(fromAbs, e) {
 
 // ── 扫仓库 ─────────────────────────────────────────────────────────────────
 // extension/：装进用户 Chrome 里跑的扩展，不在服务端的 require 图里
-const CODE_SKIP = /^(test|public|skills|docs|node_modules|dist|build|out|extension)\//;
+// website/ is a separately built static site; the application layer graph below
+// intentionally covers the desktop/server runtime only.
+const CODE_SKIP = /^(test|public|skills|docs|website|node_modules|dist|build|out|extension)\//;
 const listed = execFileSync("git", ["ls-files", "-co", "--exclude-standard", "--", "*.js"], { cwd: REPO, encoding: "utf8" })
   .split("\n").filter((f) => f && !CODE_SKIP.test(f) && fs.existsSync(path.join(REPO, f)));
 const codeFiles = [...new Set(listed)].sort();

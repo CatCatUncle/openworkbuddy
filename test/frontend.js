@@ -6970,7 +6970,7 @@ const GATE_CHECKS = `
     posts.length === 1 && posts[0].url === "/api/settings" && posts[0].body.model_follow_last === false, JSON.stringify(posts));
   owner = true;
   await renderSettings("models");
-  const mpo = mBody.querySelector("#settings-pane");
+  let mpo = mBody.querySelector("#settings-pane");
   // 能力卡的张数钉在 MEDIA_CAPS 上（加一路能力只改那张表），但光比「等于自己」的话，
   // 把 MEDIA_CAPS 清空也能全绿——所以再压一条下限：少于 5 路就是有人把能力卡删没了。
   ok("反向对照：平台管理员那排单选钮、行尾 ⋯、渠道增删改和每一路媒体一样不少",
@@ -6987,6 +6987,50 @@ const GATE_CHECKS = `
     && mpo.querySelectorAll("#prov-list .ch-card.open").length === 0
     && mpo.querySelector("#chat-overview").textContent.includes("主力"),
     "摊开的渠道卡 " + mpo.querySelectorAll("#prov-list .ch-card.open").length);
+  // 方舟夹具尚未填写 Key，产品会把它放在「还没填 Key」折叠区，先展开后再测渠道卡快捷入口。
+  const idleToggle = mpo.querySelector("#idle-toggle");
+  ok("未配置 Key 的渠道可展开查看", !!idleToggle);
+  idleToggle.click();
+  mpo = mBody.querySelector("#settings-pane");
+  {
+    const arkHead = [...mpo.querySelectorAll(".ch-head[data-chan]")].find((x) => x.dataset.chan === "ark");
+    ok("夹具里的方舟渠道卡已渲染", !!arkHead);
+    arkHead.click();
+    const shortcut = mpo.querySelector('[data-add-media-cap="image"][data-chan="ark"]');
+    ok("展开渠道后，能从渠道卡直接添加媒体模型", !!shortcut);
+    if (shortcut) {
+      // 真实表单初始化会拉模型目录；这个 DOM 测试只验证渠道复用，隔离网络并快速返回空目录。
+      const fetch0 = window.fetch;
+      window.fetch = async () => ({ ok: true, json: async () => ({ kinds: [], catalog: {} }) });
+      try { await shortcut.onclick(); } finally { window.fetch = fetch0; }
+      const mediaForm = mpo.querySelector('.mm-form[data-cap="image"]');
+      ok("媒体模型表单复用选中的渠道和 Key，不再要求重复选渠道",
+        mediaForm && mediaForm.querySelector(".mm-prov").value === "ark"
+        && getComputedStyle(mediaForm.querySelector(".mm-prov")).display === "none"
+        && mediaForm.querySelector(".mm-route-note").textContent.includes("复用渠道")
+        && mediaForm.querySelector(".mm-route-note").textContent.includes("火山方舟（豆包）"));
+      const cancelMedia = mediaForm && mediaForm.querySelector(".mm-cancel");
+      ok("媒体表单保留取消控件", !!cancelMedia);
+      if (cancelMedia) cancelMedia.click();
+      const imageHead = mpo.querySelector('#media-pane .ch-head[data-cap="image"]');
+      if (imageHead && imageHead.closest(".ch-card").classList.contains("open")) imageHead.click();
+    }
+    const chatShortcut = mpo.querySelector('.ca-new[data-chan="ark"]');
+    ok("方舟渠道卡提供添加对话模型入口", !!chatShortcut);
+    if (chatShortcut) {
+      chatShortcut.click();
+      const channelForm = mpo.querySelector('.ca-form[data-chan="ark"]');
+      ok("从渠道添加对话模型时，表单也绑定该渠道并提示共享 Key",
+        !!channelForm && channelForm.querySelector(".ca-chan").value === "ark"
+        && getComputedStyle(channelForm.querySelector(".ca-chan")).display === "none"
+        && channelForm.querySelector(".ca-route-note").textContent.includes("复用渠道"));
+      const cancelChat = channelForm && channelForm.querySelector(".ca-cancel");
+      ok("对话模型表单保留取消控件", !!cancelChat);
+      if (cancelChat) cancelChat.click();
+    }
+    arkHead.click();
+    mpo.querySelector("#idle-toggle").click(); // 恢复后续断言依赖的默认折叠状态
+  }
   {
     window.toasts = [];
     const overview = mpo.querySelector("#chat-overview");

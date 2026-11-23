@@ -1,0 +1,6 @@
+dist/
+dist-*/
+*.tar.gz
+__pycache__/
+indexnow-key.txt
+deployment-results.json

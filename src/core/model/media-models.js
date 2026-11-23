@@ -231,7 +231,9 @@ const CAP_HINT = {
   // 这里不写光秃秃的 asr / stt：它们太短，any 型号名里蹭上三个字母就会误伤，所以钉在分隔符上。
   asr: /(whisper|sensevoice|paraformer|transcrib|(^|[-_/])asr([-_/.\d]|$)|speech-?to-?text|(^|[-_/])stt([-_/.\d]|$))/i,
   tts: /(tts|speech|voice|cosyvoice|audio-?gen|sambert)/i,
-  vision: /(vl|vision|gpt-[45]|claude|gemini|glm-4v|omni|seed-1|multimodal)/i,
+  // DeepSeek 官方 deepseek-flash（当前 Flash API 型号）支持 OpenAI 兼容 Chat Completions 图片输入；
+  // v4-pro 不在名单里，它不支持图像。独立看图模型只作为不支持视觉的主模型的后备。
+  vision: /(vl|vision|gpt-[45]|claude|gemini|glm-4v|omni|seed-1|multimodal|deepseek-flash)/i,
 };
 function guessCap(modelId) {
   const s = String(modelId || "");

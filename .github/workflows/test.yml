@@ -63,6 +63,15 @@ jobs:
       - name: Check UI color tokens
         run: node test/lib/css-token-gate.js
       - run: npm ci
+      # Lean 的小型规格不依赖 mathlib；在全套回归那条腿上编译，防止证明只留在本机。
+      - if: matrix.os == 'macos-15-intel'
+        uses: leanprover/lean-action@fe408643ea7367d8c0404a8be3975bb145f5fb64 # v1.7.0
+        with:
+          lake-package-directory: docs/formal
+          build: true
+          test: false
+          lint: false
+          use-mathlib-cache: false
       # 只在 ubuntu 那条腿装发行版的 ffmpeg：它带 libass/drawtext，本机 Homebrew 那份不带，
       # 烧字幕这类分支只有在这儿才真跑得到。中文字体给 libass 排字用。macOS 那条腿不装，照旧跳过真 ffmpeg 段。
       - if: runner.os == 'Linux'

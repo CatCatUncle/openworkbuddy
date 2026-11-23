@@ -9,6 +9,8 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 ## 2026
 
+- **Nov 23** v0.20.0: Add chat and media models directly from a provider card, reusing its endpoint and API key. New configurations default to low thinking effort, and DOCX / XLSX previews can be edited and saved (DOCX saving requires LibreOffice). A Lean 4 routing specification is compiled in CI. Source installs now require Node.js 22 to use patched runtime dependencies and avoid unsupported Node.js 18 / 20.
+
 - **Nov 10** v0.19.3: fixes attachment names with a Chinese closing parenthesis being cut short. 报告（终版）.docx no longer shows up as a broken 报告（终版 attachment, and local engines get the full path.
 
 - **Nov 6** v0.19.2: fixes library tabs staying highlighted when Notes is open. All Files, Recommended and other tabs now clear, so only one tab is selected at a time.

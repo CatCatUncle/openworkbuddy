@@ -12,7 +12,7 @@ for (const [file, label, why, commercial] of [["README.md", "## 快速开始："
  assert.ok(text.indexOf('href="#quick-start"') < start);
  const quick = text.slice(start, text.indexOf(why));
  assert.ok(!brokenStrong.test(quick), file + ": a punctuation-ended bold label must not touch the following word");
- assert.ok(quick.includes("project-update.pptx")); assert.ok(quick.includes("npm ci\nnpm start")); assert.ok(quick.includes("localhost:3800")); assert.ok(quick.includes("Node.js 18+"));
+ assert.ok(quick.includes("project-update.pptx")); assert.ok(quick.includes("npm ci\nnpm start")); assert.ok(quick.includes("localhost:3800")); assert.ok(quick.includes("Node.js 22+"));
  assert.ok(quick.includes("16:9") && quick.includes("PowerPoint") && quick.includes("LibreOffice"));
  const prompt = quick.match(/```text\n([\s\S]*?)\n```/);
  assert.ok(prompt, file + ": a copyable presentation task is required");

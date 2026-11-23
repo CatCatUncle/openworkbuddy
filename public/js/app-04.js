@@ -1499,7 +1499,6 @@ async function renderLibPreview(prev, lib) {
     <a class="link" href="#" id="lb-copy" title="把文件本身放进剪贴板，之后直接粘到微信 / 邮件里">复制文件</a>` : ""}
     ${isCopyableText(name) ? `<a class="link" href="#" id="lb-copytext" title="把里面的文字整份复制，贴进飞书 / Word 保留格式">复制全文</a>` : ""}
     <a class="link" href="${dlUrl}" download>下载</a>
-    ${canConvertMarkdown(name) ? '<button type="button" class="link" id="lb-markdown">转为 MD</button>' : ""}
     ${src === "lib" ? `<a class="link danger" href="#" id="lb-del">删除</a>` : ""}
     </div></div>
   ${from ? `<div class="lib-from">${ic("sparkles")}<span>出自任务</span><a href="#" class="link" data-open="${esc(from.id)}"${fromTurn == null ? "" : ` data-turn="${fromTurn}"`} title="${fromTurn == null ? "回到产生这份文件的那次对话" : "回到产生这份文件的那次对话，并停在写出它的那一段"}">${esc(from.title)}</a><em>${esc(libWhen(from.at))}</em>${fromTurn == null ? "" : `<span class="lib-from-at">第 ${fromTurn + 1} 轮</span>`}</div>` : ""}`;
@@ -1512,8 +1511,6 @@ async function renderLibPreview(prev, lib) {
     controller.abort(); prev.classList.remove("lib-prev-expanded"); libState.pick = null;
     const page = prev.closest(".lib-page"); if (page) page.dataset.prev = "off";
   };
-  const md = prev.querySelector("#lb-markdown");
-  if (md) md.onclick = () => exportDocumentMarkdown((src === "lib" ? "/api/library/markdown/" : "/api/files/markdown/") + fpath(name) + (sid ? "?sid=" + encodeURIComponent(sid) : ""), md);
   prev.onkeydown = event => { if (event.key === "Escape" && !imeKey(event) && prev.classList.contains("lib-prev-expanded")) { event.preventDefault(); prev.querySelector("#lb-expand").click(); prev.querySelector("#lb-expand").focus(); } };
   dropOldBlob();
   const body = prev.lastElementChild;

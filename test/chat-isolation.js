@@ -32,6 +32,7 @@ const crypto = require("crypto");
 const { spawn } = require("child_process");
 const { mod } = require("./lib/mod");
 const { entry: entryPath } = require("./lib/entry");
+const TASK_QUEUE_MAX_WAIT_MS = require("../src/core/automation/run-governor").HOLD_MAX_MS + 15000;
 
 const ROOT = path.join(__dirname, "..");
 const J = JSON.stringify;
@@ -389,7 +390,7 @@ function electronMain() {
       const st = PLAN[X][n] || { say: `${X} 做完了` };
       await sleep(300);
       // C 读改 共享.md 要等 A/B/D 都停在最后一步：它们这时都「在跑」，谁的收尾都还没来得及认领这份改动
-      if (st.gate) await waitFor(() => ["A", "B", "D"].every((k) => heldOnce.has(k)), 60000, 200);
+      if (st.gate) await waitFor(() => ["A", "B", "D"].every((k) => heldOnce.has(k)), TASK_QUEUE_MAX_WAIT_MS, 200);
       const answer = () => reply(res, st.say ? say(st.say) : toolCall(st));
       if (st.hold && !released.has(X)) {
         held.set(X, { res, answer });
@@ -591,7 +592,8 @@ function electronMain() {
     const bad = [];
     let cycles = 0;
     const t0 = Date.now();
-    while (Date.now() - t0 < 90000) {
+    // 内存保护最多延迟 HOLD_MAX_MS；留出余量，让隔离断言测到真实并发任务而非过早超时。
+    while (Date.now() - t0 < TASK_QUEUE_MAX_WAIT_MS) {
       for (const X of ["A", "B", "C", "D"]) {
         const o = await js(`__iso.open(${J(SID[X])}, ${J(DIR[X])})`);
         cycles++;

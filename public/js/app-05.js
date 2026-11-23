@@ -964,6 +964,7 @@ const MEDIA_CAPS = [
     hint: "录音转文字，可出 .srt 字幕。OpenAI 兼容接口，单文件 ≤25MB；暂不支持通义百炼转写。" },
 ];
 let mediaCatalog = null; // 精选目录，一次会话拉一次
+let mediaCatalogRequest = null; // 并发初始化共用同一个请求
 const liveModels = new Map(); // 渠道 id → 那边 /models 现拉回来的清单
 const liveModelEpoch = new Map();
 function forgetLiveModels(id) {
@@ -975,6 +976,8 @@ function forgetLiveModels(id) {
 const openChans = new Set();
 /** 展开着的那几路能力。四张卡默认全收着：大多数人只配一两路，四段说明一起摊开正是上一版「字太多」的来源 */
 const openCaps = new Set();
+// 记住每路最近使用的渠道：连续添加同一渠道下的模型时不必反复选择。
+const lastMediaProvider = new Map();
 let chanFirstPaint = true;
 /** 「还没配 Key 的渠道」那一栏是不是展开着。默认收起——十来家服务商摊开是一堵墙 */
 let idleOpen = false;
@@ -983,10 +986,17 @@ let rowMenuBound = false;
 
 async function loadMediaCatalog() {
   if (mediaCatalog) return mediaCatalog;
+  if (mediaCatalogRequest) return mediaCatalogRequest;
   // 拉失败的不缓存：缓存了空目录，这一整次会话下拉都是空的、挂错家也认不出，下回调用再拉一次
-  const got = await fetch("/api/model-catalog").then((r) => (r.ok ? r.json() : null)).catch(() => null);
-  if (got && Array.isArray(got.kinds)) mediaCatalog = got;
-  return mediaCatalog || { kinds: [], catalog: {} };
+  mediaCatalogRequest = fetch("/api/model-catalog")
+    .then((r) => (r.ok ? r.json() : null))
+    .then((got) => {
+      if (got && Array.isArray(got.kinds)) mediaCatalog = got;
+      return mediaCatalog || { kinds: [], catalog: {} };
+    })
+    .catch(() => ({ kinds: [], catalog: {} }))
+    .finally(() => { mediaCatalogRequest = null; });
+  return mediaCatalogRequest;
 }
 
 /**
@@ -1171,6 +1181,7 @@ function capCard(c, s, provName) {
         }).join("") : `<div class="ch-note">还没配。加一个之后 agent 才用得了 ${esc(c.tool)}。</div>`}
         ${mine.length > 1 ? `<div class="ch-note">挂了多个：平时走「主用」那条；要指定别的，在对话里点名它的名字（例如「用${esc((mine.find((m) => !m.default) || mine[0]).name)}画」），agent 会按名字挑。</div>` : ""}
         <div class="mm-form" data-cap="${c.cap}" style="display:none;border-top:1px solid var(--owb-border);padding-top:8px;margin-top:6px">
+          <div class="mm-route-note" style="display:none"></div>
           <div class="form-row">
             <select class="mm-prov"></select>
             <select class="mm-model"></select>
@@ -1216,10 +1227,22 @@ function bindMedia(box, s) {
     const f = box.querySelector(`.mm-form[data-cap="${b.dataset.cap}"]`);
     f.style.display = "";
     fillProvSelect(f, s);
+    const route = f.querySelector(".mm-route-note");
+    route.style.display = "none";
+    f.querySelector(".mm-prov").style.display = "";
+  }));
+  box.querySelectorAll(".mm-route-change").forEach((b) => (b.onclick = () => {
+    const f = b.closest(".mm-form");
+    f.dataset.boundProvider = "";
+    f.querySelector(".mm-route-note").style.display = "none";
+    f.querySelector(".mm-prov").style.display = "";
   }));
   box.querySelectorAll(".mm-cancel").forEach((b) => (b.onclick = () => (b.closest(".mm-form").style.display = "none")));
   box.querySelectorAll(".mm-form").forEach((f) => {
-    f.querySelector(".mm-prov").onchange = () => fillModelSelect(f, s);
+    f.querySelector(".mm-prov").onchange = () => {
+      lastMediaProvider.set(f.dataset.cap, f.querySelector(".mm-prov").value);
+      fillModelSelect(f, s);
+    };
     f.querySelector(".mm-model").onchange = () => {
       f.querySelector(".mm-model").dataset.picked = "1";
       const custom = f.querySelector(".mm-model").value === "__custom__";
@@ -1260,6 +1283,7 @@ function bindMedia(box, s) {
         toast(`「${model}」是${kindLabel(want)}的型号，已自动挂到「${fix.name}」渠道`);
       }
       s.media_models.push({ id: "", cap, name, provider: use, model, voice, default: !s.media_models.some((m) => m.cap === cap) });
+      lastMediaProvider.set(cap, use);
       if (await saveMediaTables(s, msg)) repaintMedia(box, s);
     };
   });
@@ -1413,14 +1437,55 @@ function kindLabel(kind) {
   return (k && k.label) || kind || "（未知渠道）";
 }
 
-function fillProvSelect(f, s) {
+function fillProvSelect(f, s, preferredId = "") {
   const sel = f.querySelector(".mm-prov");
   // Anthropic / DeepSeek / Kimi 只做对话，没有画图配音接口。列出来只会让人选完发现跑不通
   // decide_only（Jev）一并挡掉：它连文字都不产，更不可能画图配音
   const chatOnly = new Set(((mediaCatalog || {}).kinds || []).filter((k) => k.chat_only || k.decide_only).map((k) => k.kind));
   const usable = s.providers.filter((p) => !chatOnly.has(p.kind));
   sel.innerHTML = provOptions(usable, s.providers);
+  const cap = f.dataset.cap;
+  const preferred = preferredId || lastMediaProvider.get(cap) || "";
+  if (preferred && usable.some((p) => p.id === preferred)) sel.value = preferred;
+  else if (usable.length) sel.value = usable[0].id;
+  if (sel.value) lastMediaProvider.set(cap, sel.value);
   fillModelSelect(f, s);
+}
+
+function bindMediaRoute(f, s, providerId, refreshModels = true) {
+  const p = s.providers.find((x) => x.id === providerId);
+  if (!p) return toast("找不到这条渠道，请先检查渠道列表");
+  const sel = f.querySelector(".mm-prov");
+  const note = f.querySelector(".mm-route-note");
+  sel.value = providerId;
+  sel.style.display = "none";
+  f.dataset.boundProvider = providerId;
+  note.innerHTML = `${ic("key-round", "i-sm")}复用渠道 <b>${esc(p.name)}</b> 的地址与 API Key${chanIdle(p) ? " · 尚未填 Key" : " · Key 已配置"} <button type="button" class="btn-plain mm-route-change">更换渠道</button>`;
+  note.style.display = "flex";
+  lastMediaProvider.set(f.dataset.cap, providerId);
+  if (refreshModels) fillModelSelect(f, s);
+  const change = note.querySelector(".mm-route-change");
+  change.onclick = () => {
+    f.dataset.boundProvider = "";
+    note.style.display = "none";
+    sel.style.display = "";
+    sel.focus();
+  };
+}
+
+async function startMediaModelAdd(pane, s, cap, providerId) {
+  await loadMediaCatalog();
+  openCaps.add(cap);
+  lastMediaProvider.set(cap, providerId);
+  const mediaPane = pane.querySelector("#media-pane");
+  paintMedia(mediaPane, s);
+  const f = mediaPane.querySelector(`.mm-form[data-cap="${cap}"]`);
+  if (!f) return toast("这个渠道不能添加该类型的模型");
+  f.style.display = "";
+  fillProvSelect(f, s, providerId);
+  bindMediaRoute(f, s, providerId, false);
+  f.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  f.querySelector(".mm-model").focus({ preventScroll: true });
 }
 
 /**
@@ -1703,6 +1768,8 @@ function paintModels(pane, s) {
   renderMediaPane(pane.querySelector("#media-pane"), s);
   bindModels(pane, s, po);
   bindMemberModels(pane, s);
+  pane.querySelectorAll("[data-add-media-cap]").forEach((b) => (b.onclick = () =>
+    startMediaModelAdd(pane, s, b.dataset.addMediaCap, b.dataset.chan)));
 }
 
 /**
@@ -1843,6 +1910,7 @@ function chatOverview(s, po, kindLabel) {
             <select class="ca-chan"></select>
             <select class="ca-model"></select>
           </div>
+          <div class="ca-route-note" style="display:none"></div>
           <div class="form-row">
             <input class="ca-custom" placeholder="模型名（上面选「自己填…」时用这个）" style="display:none">
             <input class="ca-name" placeholder="别名（可空，默认用模型名；对话里按这个名字认）">
@@ -2001,6 +2069,7 @@ function chanCard(p, s, po, kindLabel, dupeTag) {
   const i = s.providers.indexOf(p);
   const mine = s.models.filter((m) => m.channel === p.id);
   const mediaN = s.media_models.filter((m) => m.provider === p.id).length;
+  const mediaKinds = MEDIA_CAPS.filter((c) => mmCanHost(p.kind, c.cap));
   const open = openChans.has(p.id);
   const noKey = chanIdle(p);
   // 预置渠道的名字本来就是这家的中文名，再把同一句话当副标题印一遍，读起来就是同一个词写了两遍。
@@ -2033,12 +2102,17 @@ function chanCard(p, s, po, kindLabel, dupeTag) {
           <input type="checkbox" class="ch-share-cb" data-chan="${esc(p.id)}" style="margin:0" ${p.share_members !== false ? "checked" : ""}>成员能用这个渠道的对话模型</label>`}`}
         ${mine.length ? mine.map((m) => modelRow(m, s, po)).join("")
           : `<div class="ch-note">这个渠道下面还没有对话模型。${po ? "加一个，它就会出现在输入框右下角那个选择器里。" : ""}</div>`}
-        ${!po ? "" : `
+        ${po && mediaKinds.length ? `<div class="ch-media-add"><span>同一渠道添加媒体模型</span>${mediaKinds.map((c) => {
+          const n = s.media_models.filter((m) => m.provider === p.id && m.cap === c.cap).length;
+          return `<button type="button" class="btn-plain" data-add-media-cap="${c.cap}" data-chan="${esc(p.id)}" title="复用此渠道已配置的地址和 API Key">${ic("plus", "i-sm")}${esc(c.title)}${n ? ` · ${n}` : ""}</button>`;
+        }).join("")}</div>` : ""}
+        ${!po || !mmCanHost(p.kind, "chat") ? "" : `
         <div class="ca-form" data-chan="${esc(p.id)}" style="display:none;border-top:1px solid var(--owb-border);padding-top:8px;margin-top:6px">
           <div class="form-row">
             <select class="ca-chan"></select>
             <select class="ca-model"></select>
           </div>
+          <div class="ca-route-note" style="display:none"></div>
           <div class="form-row">
             <input class="ca-custom" placeholder="模型名（上面选「自己填…」时用这个）" style="display:none">
             <input class="ca-name" placeholder="别名（可空，默认用模型名；对话里按这个名字认）">
@@ -2048,7 +2122,7 @@ function chanCard(p, s, po, kindLabel, dupeTag) {
           <button class="btn-brand ca-save">保存</button>
           <button class="btn-plain ca-cancel">取消</button>
         </div>
-        <button class="btn-plain ca-new" data-chan="${esc(p.id)}" style="margin-top:6px">${ic("plus")}添加模型</button>`}
+        <button class="btn-plain ca-new" data-chan="${esc(p.id)}" style="margin-top:6px">${ic("plus")}添加对话模型</button>`}
       </div>`}
     </div>`;
 }
@@ -2378,6 +2452,23 @@ function bindModels(pane, s, po) {
     // "__all__" 是「对话」总览里那张表单：它横跨所有渠道，所以渠道由模型自己说了算，
     // 新建时就停在下拉的第一项上让人挑
     fillChanSelect(f, s, (m && m.channel) || (chanId === "__all__" ? "" : chanId));
+    const channelSelect = f.querySelector(".ca-chan");
+    const routeNote = f.querySelector(".ca-route-note");
+    const candidate = chanId !== "__all__" ? s.providers.find((x) => x.id === chanId) : null;
+    const bound = candidate && mmCanHost(candidate.kind, "chat") ? candidate : null;
+    if (bound) {
+      channelSelect.style.display = "none";
+      routeNote.innerHTML = `${ic("key-round", "i-sm")}复用渠道 <b>${esc(bound.name)}</b> 的地址与 API Key${chanIdle(bound) ? " · 尚未填 Key" : " · Key 已配置"} <button type="button" class="btn-plain ca-route-change">更换渠道</button>`;
+      routeNote.style.display = "flex";
+      routeNote.querySelector(".ca-route-change").onclick = () => {
+        routeNote.style.display = "none";
+        channelSelect.style.display = "";
+        channelSelect.focus();
+      };
+    } else {
+      channelSelect.style.display = "";
+      routeNote.style.display = "none";
+    }
     f.querySelector(".ca-name").value = (m && m.name) || "";
     const caps = m && Array.isArray(m.caps) ? m.caps : null;
     const cbT = f.querySelector(".ca-cap-tools"), cbV = f.querySelector(".ca-cap-vision");
@@ -3314,10 +3405,9 @@ async function renderAgentPane(pane, s) {
       <div id="ag-engines" class="eng-list"><div class="eng-msg">正在看本机装了哪些…</div></div>
     </div>
     <div class="card-item">
-      <div class="t">思考模式</div>
-      <div class="d" style="margin-bottom:8px">关掉更快更省，调高适合难题。默认不发任何参数。</div>
-      <select id="ag-thinking"><option value="auto">跟随模型默认</option></select>
-      <div class="d" id="ag-thinking-note" style="margin-top:6px">正在看这一档对当前模型是怎么生效的…</div>
+      <div class="t">思考强度</div>
+      <select id="ag-thinking"><option value="low">低</option></select>
+      <div class="d" id="ag-thinking-note" style="margin-top:6px"></div>
       <div class="ok-msg" id="ag-thinking-msg"></div>
     </div>
     <div class="card-item">
@@ -3430,22 +3520,15 @@ async function renderAgentPane(pane, s) {
  */
 async function renderThinkingCard(sel, note, msg) {
   const d = await fetch("/api/thinking").then((r) => r.json()).catch(() => null);
-  if (!d || !d.levels) { note.textContent = "读不到思考模式的支持情况，先按「跟随模型默认」用。"; return; }
-  const where = d.via === "engine" ? `本机 ${esc(d.target)}` : (d.target ? esc(d.target) : "当前模型");
-  sel.innerHTML = d.levels.map((l) => `<option value="${esc(l.level)}"${l.level === d.current ? " selected" : ""}>${esc(l.label)}${l.supported ? "" : "（对当前模型不生效）"}</option>`).join("");
-  const show = () => {
-    const l = d.levels.find((x) => x.level === sel.value) || d.levels[0];
-    setMsg(note, l.supported ? "" : "triangle-alert", (l.supported ? `对 ${where}：` : `对 ${where} 不生效 —— `) + (l.note || ""));
-    note.style.color = l.supported ? "" : "var(--warn, #c2410c)";
-  };
+  if (!d || !d.levels) return;
+  sel.innerHTML = d.levels.map((l) => `<option value="${esc(l.level)}"${l.level === (d.current || "low") ? " selected" : ""}>${esc(l.label)}</option>`).join("");
   sel.onchange = async () => {
-    show();
     if (!msg) return; // 别处复用这张卡时不带存档位的格子，只更新说明
     msg.textContent = "保存中…";
     const ok = await saveSettings({ agent: { thinking: sel.value } }, null);
     msg.textContent = ok ? "✓ 已保存并生效" : (lastSaveError || "保存失败");
   };
-  show();
+  if (note) note.textContent = "";
 }
 /**
  * `2.1.278 (Claude Code)` → `2.1.278`；`codex-cli 0.154.0` → `0.154.0`。

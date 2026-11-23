@@ -12106,7 +12106,7 @@ async function testThinkingSettingsApi() {
     assert(up, "真 server.js 没起来，这条测试作废：" + bootWhy);
     const s0 = await req("GET", "/api/settings");
     assert(s0.json && s0.json.agent, "设置读不出来");
-    assert(s0.json.agent.thinking === "auto", "新装的默认档不是 auto（存量用户的行为会被改）：" + s0.json.agent.thinking);
+    assert(s0.json.agent.thinking === "low", "新配置默认思考档位应为 low，存量显式设置仍应保留：" + s0.json.agent.thinking);
 
     const w = await req("POST", "/api/settings", { agent: { thinking: "off" } });
     assert(w.code === 200, "存不进去（HTTP " + w.code + " " + w.body.slice(0, 200) + "）");

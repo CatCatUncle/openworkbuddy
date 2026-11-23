@@ -53,6 +53,8 @@ build/
 .github/
 .history/
 .wrangler/
+.lake/
+docs/formal/.lake/
 .tmp/
 .claude/
 eval/runs/

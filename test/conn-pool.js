@@ -25,6 +25,7 @@
  */
 
 const { entry } = require("./lib/entry");
+const TASK_QUEUE_MAX_WAIT_MS = require("../src/core/automation/run-governor").HOLD_MAX_MS + 15000;
 if (!process.versions.electron) {
   const fs0 = require("fs");
   let bin = null;
@@ -425,7 +426,8 @@ app.whenReady().then(async () => {
     if (run.length !== 8) return false;
     for (const sid of R.slice(6)) if (!(await lastAsst(sid)).some((e) => e.type === "files")) return false;
     return (await M.js(`liveCh.subs.size`)) === 8;
-  }, 30000, 300);
+  // 内存保护最多让排队任务等 HOLD_MAX_MS；本用例验证连接复用，不应把这段安全等待误判成连接故障。
+  }, TASK_QUEUE_MAX_WAIT_MS, 300);
   ok(got6 === 6 && up, "8 趟都在跑、都挂到了这一页（后两趟中途写了文件，记录里有 files）", { got6, up, held: held.length });
   if (!up) { console.log(log.slice(-1500)); return finish(1); }
 

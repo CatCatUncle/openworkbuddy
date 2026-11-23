@@ -934,6 +934,15 @@
   /* 一条说明，不是一条可选项：没填 Key 的模型不进列表（点下去必然 401），但得有地方交代它们去哪了。
      没有 border-top——紧跟着的「管理模型…」自带一条，两条挨在一起太吵 */
   .picker-menu .mi-note { display: flex; align-items: center; gap: 6px; white-space: normal; padding: 6px 12px; font-size: 12px; line-height: 1.6; color: var(--owb-text-3); }
+  .thinking-quick { width:252px; padding:12px; }
+  .thinking-quick .tq-head { display:flex; align-items:center; justify-content:space-between; margin:0 1px 9px; font-size:13px; font-weight:600; }
+  .thinking-quick .tq-current { color:var(--owb-brand-text); font-size:12px; font-weight:600; }
+  .thinking-quick .tq-options { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:3px; padding:3px; border:1px solid var(--owb-border); border-radius:var(--radius-lg); background:var(--owb-bg-side); }
+  .thinking-quick .tq-option { min-width:0; height:32px; padding:0 3px; border:0; border-radius:var(--radius-md); background:transparent; color:var(--owb-text-2); font-size:12px; cursor:pointer; transition:background .14s var(--owb-ease),color .14s var(--owb-ease),box-shadow .14s var(--owb-ease); }
+  .thinking-quick .tq-option:hover { color:var(--owb-text); background:var(--owb-bg-hover); }
+  .thinking-quick .tq-option[aria-pressed="true"] { background:var(--owb-bg); color:var(--owb-brand-text); box-shadow:0 1px 3px rgba(0,0,0,.12); font-weight:600; }
+  .thinking-quick .tq-options.is-saving { opacity:.62; pointer-events:none; }
+  @media (max-width:700px) { .thinking-quick { width:auto; padding:12px; } }
   /* 兜底：任何一条菜单项都不许把菜单撑出屏幕。以前没有上限，一段长说明就能把它撑到
      一千多像素宽，右对齐的菜单于是往左飞出可视区，字被裁掉一半 */
   .picker-menu { max-width: min(340px, calc(100vw - 24px)); }
@@ -1156,6 +1165,8 @@
   /* 几何统一到桥接层（这一排四颗都带 .icon-btn），这里只留颜色 */
   .pv-head button { border: none; background: transparent; font-size: 15px; cursor: pointer; color: var(--owb-text-2); }
   .pv-head button:hover { background: var(--owb-bg-hover); }
+  .pv-head #pv-edit.on { color: var(--owb-brand-text); background: var(--owb-brand-weak); }
+  .pv-head #pv-save:not([hidden]) { color: var(--owb-brand-text); }
   .pv-deploy { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 12px; font-size: 13px; color: var(--owb-text-2); background: var(--owb-brand-weak); border-bottom: 1px solid var(--owb-border); }
   .pv-deploy button { border: 1px solid var(--owb-border); background: var(--owb-bg); border-radius: var(--radius-md); padding: 3px 10px; font-size: 13px; color: var(--owb-text-2); cursor: pointer; }
   .pv-deploy button.primary { background: var(--owb-brand); border-color: var(--owb-brand-text); color: #fff; }
@@ -1224,6 +1235,7 @@
   :is(#pv-body, .lib-prev) .ov-table th, :is(#pv-body, .lib-prev) .ov-table td { border: 1px solid var(--owb-border); padding: 5px 10px; text-align: left; vertical-align: top; max-width: 340px; overflow-wrap: anywhere; }
   :is(#pv-body, .lib-prev) .ov-table th { background: var(--owb-bg-side); font-weight: 600; position: sticky; top: 0; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
   :is(#pv-body, .lib-prev) .ov-sheet td, :is(#pv-body, .lib-prev) .ov-sheet th { white-space: pre-wrap; }
+  #pv-body .ov-editing .ov-sheet td[contenteditable="true"] { outline:1px solid color-mix(in srgb, var(--owb-brand-text) 50%, transparent); outline-offset:-1px; cursor:text; }
   :is(#pv-body, .lib-prev) .ov-styled { table-layout:fixed; background:#fff; color:#222; }
   :is(#pv-body, .lib-prev) .ov-styled td { overflow:hidden; max-width:none; padding:2px 5px; }
   :is(#pv-body, .lib-prev) .ov-styled th { background:var(--owb-bg-side); color:#626773; text-align:center; font-size:11px; }
@@ -1232,6 +1244,7 @@
   .office-reader { display:flex; flex-direction:column; width:100%; min-height:360px; height:100%; min-width:0; }
   .office-reader-tools { position:sticky; top:0; display:flex; justify-content:flex-end; align-items:center; gap:5px; background:var(--owb-bg); padding:4px 0 7px; z-index:2; }
   .office-reader-tools button { border:1px solid var(--owb-border); border-radius:var(--radius-sm); background:var(--owb-bg); color:var(--owb-text); padding:3px 8px; cursor:pointer; }
+  .office-reader-tools button.on { border-color:var(--owb-brand-text); color:var(--owb-brand-text); background:var(--owb-bg-side); }
   .office-zoom-value { margin-right:auto; font-size:11px; color:var(--owb-text-3); }
   .office-reader-viewport { overflow:auto; flex:1; min-height:0; min-width:0; }
   .office-reader-viewport>.ov-doc { transform-origin:top left; padding:0 0 16px!important; }
@@ -1635,6 +1648,12 @@
   .ch-key label { flex: none; font-size: 12px; color: var(--owb-text-2); }
   .ch-key .ck-input { flex: 1; min-width: 180px; margin: 0; }
   .ch-key .btn-brand { margin: 0; }
+  .ch-media-add { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin:8px 0 10px; padding:8px 10px; border:1px solid var(--owb-border); border-radius:var(--radius-md); background:var(--owb-bg-side); }
+  .ch-media-add > span { color:var(--owb-text-3); font-size:12px; margin-right:2px; }
+  .ch-media-add .btn-plain { font-size:12px; padding:4px 8px; }
+  .mm-route-note,.ca-route-note { display:flex; align-items:center; flex-wrap:wrap; gap:6px; margin:0 0 8px; padding:7px 9px; border-radius:var(--radius-md); background:var(--owb-brand-weak); color:var(--owb-text-2); font-size:12px; line-height:1.5; }
+  .mm-route-note .i,.ca-route-note .i { color:var(--owb-brand-text); }
+  .mm-route-note .btn-plain,.ca-route-note .btn-plain { font-size:12px; padding:2px 6px; }
   /* 没填 Key 的渠道收进这一栏：不占主列表，又随时点得开 */
   .idle-sec { margin-top: 10px; }
   .idle-head { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 12px; border: 1px dashed var(--owb-border);
@@ -3299,6 +3318,10 @@
             <button class="picker-btn" id="model-btn"><svg class="i" aria-hidden="true"><use href="#i-sparkles"></use></svg> <span id="model-label">模型</span> <svg class="i" aria-hidden="true"><use href="#i-chevron-down"></use></svg></button>
             <div class="picker-menu" id="model-menu"></div>
           </div>
+          <div class="picker" id="thinking-picker">
+            <button class="picker-btn" id="thinking-btn" title="快速调整默认思考强度">思考 <span id="thinking-label">低</span><svg class="i" aria-hidden="true"><use href="#i-chevron-down"></use></svg></button>
+            <div class="picker-menu" id="thinking-menu"></div>
+          </div>
           <button id="interject-btn" title="不等当前任务结束，把这条消息立即注入正在执行的任务"><svg class="i" aria-hidden="true"><use href="#i-zap"></use></svg> 插队</button>
           <button id="send" title="发送"><svg class="i" aria-hidden="true"><use href="#i-arrow-up"></use></svg></button>
         </div>
@@ -3329,11 +3352,12 @@
   <div class="rsz l" data-rsz="pv" role="separator" aria-orientation="vertical" tabindex="0" aria-label="拖动调整预览面板宽度" title="拖动调整宽度 · 双击恢复默认"></div>
   <div class="pv-head">
     <span class="pv-name" id="pv-name"></span>
-    <button id="pv-markdown" class="icon-btn" title="转为 Markdown" aria-label="转为 Markdown" hidden>MD</button>
     <button id="pv-expand" class="icon-btn" title="展开预览" aria-label="展开预览"><svg class="i" aria-hidden="true"><use href="#i-maximize-2"></use></svg></button>
     <button id="pv-copy" class="icon-btn" title="复制图片（可直接粘到微信 / Word / PPT）" hidden><svg class="i" aria-hidden="true"><use href="#i-copy"></use></svg></button>
     <button id="pv-sys" class="icon-btn" title="用系统默认程序打开"><svg class="i" aria-hidden="true"><use href="#i-app-window"></use></svg></button>
     <button id="pv-rv" class="icon-btn" title="打开所在位置"><svg class="i" aria-hidden="true"><use href="#i-folder-open"></use></svg></button>
+    <button id="pv-edit" class="icon-btn" type="button" title="编辑" aria-label="编辑" hidden><svg class="i" aria-hidden="true"><use href="#i-pencil"></use></svg></button>
+    <button id="pv-save" class="icon-btn" type="button" title="保存修改" aria-label="保存修改" hidden><svg class="i" aria-hidden="true"><use href="#i-save"></use></svg></button>
     <a id="pv-dl" class="icon-btn" href="#" download title="下载" style="text-decoration:none"><svg class="i" aria-hidden="true"><use href="#i-download"></use></svg></a>
     <button id="pv-annotate" class="icon-btn" title="圈选批注"><svg class="i" aria-hidden="true"><use href="#i-pencil"></use></svg></button>
     <button id="pv-close" class="icon-btn" title="关闭"><svg class="i" aria-hidden="true"><use href="#i-x"></use></svg></button>

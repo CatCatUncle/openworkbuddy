@@ -1170,13 +1170,15 @@ async function catalogLoadChecks() {
   const a = src.indexOf("async function loadMediaCatalog(");
   const b = src.indexOf("\n}\n", a);
   if (a < 0 || b < 0) throw new Error("app-05.js 里的 loadMediaCatalog 找不到了（函数名被改过？）");
-  let calls = 0, mode = "down";
+  let calls = 0, mode = "down", releaseWait;
   const box = {
     mediaCatalog: null,
+    mediaCatalogRequest: null,
     fetch: async () => {
       calls++;
       if (mode === "down") throw new Error("connect ECONNREFUSED");
       if (mode === "500") return { ok: false, json: async () => ({ error: "boom" }) };
+      if (mode === "wait") return new Promise((resolve) => { releaseWait = () => resolve({ ok: true, json: async () => mm.clientCatalog() }); });
       return { ok: true, json: async () => mm.clientCatalog() };
     },
   };
@@ -1196,6 +1198,13 @@ async function catalogLoadChecks() {
   got = await box.loadMediaCatalog();
   eq(calls, 3, "★对照★ 缓存住以后不再发请求");
   ok(got.kinds.length > 0, "★对照★ 之后再断网也用缓存那份");
+  box.mediaCatalog = null;
+  mode = "wait";
+  const before = calls, first = box.loadMediaCatalog(), second = box.loadMediaCatalog();
+  eq(calls, before + 1, "并发初始化只发一个目录请求");
+  releaseWait();
+  const [one, two] = await Promise.all([first, second]);
+  ok(one === two && box.mediaCatalog === one, "并发调用共用同一份成功结果并写缓存");
 }
 
 // ---------------------------------------------------------------- 5e

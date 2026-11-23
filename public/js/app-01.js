@@ -3797,10 +3797,26 @@ async function pvFreshTag(url, seen) {
  * 音视频先停再撤掉 src（光摘掉节点，解码器要等垃圾回收才放）。
  * 再次打开照常走 previewFile，它本来就每次重建这一块。
  */
+let pvEditorActions = null;
+function setPreviewEditor(enabled, editing = false, dirty = false, actions = pvEditorActions) {
+  const edit = document.getElementById("pv-edit"), save = document.getElementById("pv-save");
+  if (!edit || !save) return;
+  pvEditorActions = actions;
+  edit.hidden = !enabled; save.hidden = !enabled || !dirty;
+  if (!enabled) save.disabled = false;
+  edit.classList.toggle("on", !!editing);
+  edit.title = editing ? "完成编辑" : "编辑";
+  edit.setAttribute("aria-label", edit.title);
+  edit.querySelector("use")?.setAttribute("href", editing ? "#i-check" : "#i-pencil");
+  save.title = "保存修改"; save.setAttribute("aria-label", save.title);
+  edit.onclick = enabled && actions?.toggle ? () => actions.toggle() : null;
+  save.onclick = enabled && actions?.save ? () => actions.save() : null;
+}
 function unloadPreview() {
   cancelPvUnload(); // 当场拆了，排着的那次就不用了
   const body = document.getElementById("pv-body");
   if (!body) return;
+  setPreviewEditor(false, false, false, null);
   releaseSheetDocuments(body);
   if (body._fitAbort) { body._fitAbort.abort(); body._fitAbort = null; }
   body.querySelectorAll("audio,video").forEach((m) => {
@@ -3899,20 +3915,6 @@ function previewKind(name) {
   if (PV_BINARY_RE.test(name)) return "binary";
   return "text"; // 认不出来的一律先当文本试，试不成再退回去
 }
-function canConvertMarkdown(name) { return /\.(doc|dot|docx|docm|dotx|dotm|wps|wpt|rtf|odt|ppt|pptx|pptm|ppsx|dps|dpt|odp|xls|xlsx|xlsm|xltx|et|ett|ods|pdf|ofd|ceb|cebx|html?|md|markdown|txt|csv|tsv)$/i.test(name); }
-async function exportDocumentMarkdown(url, button) {
-  if (button.disabled) return;
-  const text = button.textContent; button.disabled = true; button.textContent = "转换中…";
-  try {
-    const response = await fetch(url), data = await response.json();
-    if (!response.ok || data.error) throw Error(data.error || "文档转换失败");
-    const blob = URL.createObjectURL(new Blob([data.markdown], { type: "text/markdown;charset=utf-8" }));
-    const a = document.createElement("a"); a.href = blob; a.download = data.name; a.click(); setTimeout(() => URL.revokeObjectURL(blob), 1000);
-    toast(data.warnings?.length ? "已转为 Markdown，文末附有转换说明，请核对" : "已转为 Markdown", "file");
-  } catch (error) { toast(error.message || "转换未完成", "circle-x"); }
-  finally { button.disabled = false; button.textContent = text; }
-}
-
 /** 这段内容到底是不是文本：有 NUL 就是二进制；UTF-8 解码非法字节会吐 U+FFFD，
  *  正经文本一个都不该有（按字节截断只会在末尾留一个，所以阈值放到 8 个以上且占比超 1%） */
 function looksBinary(text) {
@@ -4157,6 +4159,7 @@ async function renderCompatibleDocument(host, infoURL, viewURL, previewURL) {
   const info = await fetch(infoURL).then(r => r.json());
   if (info.error) throw Error(info.error);
   if (!host.isConnected) return;
+  host.dataset.officeEditable = info.editable === true ? "true" : "false";
   if (["doc", "msdoc", "html-doc"].includes(info.kind)) return OWBDocumentViewer.mount(host, viewURL, info.kind);
   if (info.kind === "pdf") { host.innerHTML = `<iframe title="兼容文档预览" src="${esc(viewURL)}" style="width:100%;height:100%;min-height:450px;border:0"></iframe>`; return; }
   const data = await fetch(previewURL).then(r => r.json());
@@ -4167,13 +4170,41 @@ async function renderCompatibleDocument(host, infoURL, viewURL, previewURL) {
     host.querySelectorAll(".ov-tab").forEach(x => x.classList.toggle("on", x === t));
     host.querySelectorAll(".ov-pane").forEach(p => { p.hidden = p.dataset.pane !== t.dataset.sheet; });
   }; });
-  attachOfficeReadingControls(host);
+  if (data.kind === "sheet") attachSheetEditControls(host);
+  else attachOfficeReadingControls(host);
 }
 function attachOfficeReadingControls(host) {
   const doc = host.querySelector(".ov-doc");
   if (!doc || host.querySelector(".office-reader")) return;
   const reader = document.createElement("div"); reader.className = "office-reader";
   reader.innerHTML = '<div class="office-reader-tools" role="group" aria-label="文档缩放"><span class="office-zoom-value">100%</span><button type="button" data-office-zoom="less" aria-label="缩小">' + ic("minus") + '</button><button type="button" data-office-zoom="fit">适合宽度</button><button type="button" data-office-zoom="more" aria-label="放大">' + ic("plus") + '</button></div><div class="office-reader-viewport"></div>';
+  const editableDocx = host.id === "pv-body" && host.dataset.officeEditable === "true" && /\.docx$/i.test(String(pvCurrent || ""));
+  if (editableDocx) {
+    const fileName = pvCurrent, fileRoot = pvRoot;
+    let editing = false, dirty = false;
+    const toggle = () => {
+      editing = !editing; doc.contentEditable = String(editing); doc.classList.toggle("ov-editing", editing);
+      if (editing) { fit = false; doc.focus(); }
+      setPreviewEditor(true, editing, dirty, { toggle, save });
+    };
+    const save = async () => {
+      const button = document.getElementById("pv-save"); if (!button || !dirty || button.disabled) return;
+      button.disabled = true; button.title = "保存中…";
+      try {
+        const response = await fetch(withRoot("/api/files/edit-docx/" + fpath(fileName), fileRoot), {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ html: doc.innerHTML }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || data.error) throw Error(data.error || "保存失败");
+        toast("Word 文档已保存", "file");
+        if (pvCurrent === fileName && pvRoot === fileRoot) previewFile(fileName, fileRoot);
+      } catch (error) {
+        toast(error.message || "保存失败", "circle-x"); button.disabled = false; button.title = "保存修改";
+      }
+    };
+    doc.addEventListener("input", () => { dirty = true; setPreviewEditor(true, editing, true, { toggle, save }); });
+    setPreviewEditor(true, false, false, { toggle, save });
+  }
   doc.replaceWith(reader); const viewport = reader.lastElementChild; viewport.append(doc);
   if (host._officeCleanup) host._officeCleanup();
   let zoom = 1, naturalWidth = 0, fit = true, frame = 0, closed = false, lastWidth = -1;
@@ -4253,7 +4284,9 @@ function sheetGrid(sh, page = 0) {
       if (["top", "middle", "bottom"].includes(s.vertical)) style.push("vertical-align:" + s.vertical);
       style.push("white-space:" + (s.wrap ? "pre-wrap" : "pre"));
       for (const edge of ["top", "bottom", "left", "right"]) if (color(s.borders?.[edge])) style.push(`border-${edge}:1px solid ${color(s.borders[edge])}`);
-      return `<td${merge ? ` colspan="${merge.colspan}" rowspan="${merge.rowspan}"` : ""} style="${esc(style.join(";"))}">${esc(merge ? merge.text : sh.rows[r - 1][c.n - 1] || "")}</td>`;
+      const saved = sh.changes && Object.prototype.hasOwnProperty.call(sh.changes, key) ? sh.changes[key] : null;
+      const value = saved == null ? (merge ? merge.text : sh.rows[r - 1][c.n - 1] || "") : saved;
+      return `<td data-cell="${r},${c.n}" data-cell-type="${esc(layout.types?.[key] || "string")}"${merge ? ` colspan="${merge.colspan}" rowspan="${merge.rowspan}"` : ""} style="${esc(style.join(";"))}">${esc(value)}</td>`;
     }).join("") + "</tr>");
   }
   const pages = Math.ceil(sh.rows.length / 100);
@@ -4265,8 +4298,57 @@ document.addEventListener("click", event => {
   const doc = (tab || pager)?.closest("[data-sheet-document]"); if (!doc) return;
   const sheets = sheetDocuments.get(doc.dataset.sheetDocument); if (!sheets) return;
   const pane = tab ? doc.querySelector(`.ov-pane[data-pane="${Number(tab.dataset.sheet)}"]`) : pager.closest(".ov-pane");
-  if (pane && (pager || !pane.dataset.loaded)) { const sh = sheets[Number(pane.dataset.pane)]; pane.innerHTML = sheetGrid(sh, pager ? Number(pager.dataset.shPage) : 0) + sheetLimitNote(sh); pane.dataset.loaded = "1"; }
+  if (pane && (pager || !pane.dataset.loaded)) {
+    const sh = sheets[Number(pane.dataset.pane)]; pane.innerHTML = sheetGrid(sh, pager ? Number(pager.dataset.shPage) : 0) + sheetLimitNote(sh); pane.dataset.loaded = "1";
+    if (doc.classList.contains("ov-editing")) {
+      pane.querySelectorAll(".ov-sheet td[data-cell]").forEach(cell => { cell.contentEditable = "true"; });
+      setPreviewEditor(true, true, sheetChangesPresent(sheets), pvEditorActions);
+    }
+  }
 });
+document.addEventListener("input", event => {
+  const cell = event.target.closest?.(".ov-sheet td[data-cell][contenteditable=true]");
+  const doc = cell?.closest("[data-sheet-document]"), pane = cell?.closest(".ov-pane");
+  if (!cell || !doc || !pane) return;
+  const sheets = sheetDocuments.get(doc.dataset.sheetDocument), sheet = sheets && sheets[Number(pane.dataset.pane)];
+  if (!sheet) return;
+  if (!sheet.changes) sheet.changes = {};
+  sheet.changes[cell.dataset.cell] = cell.innerText.replace(/\r/g, "");
+  setPreviewEditor(true, true, true, pvEditorActions);
+});
+function sheetChangesPresent(sheets) { return (sheets || []).some(sheet => Object.keys(sheet.changes || {}).length > 0); }
+function attachSheetEditControls(host) {
+  const doc = host.querySelector("[data-sheet-document]");
+  if (!doc || host.id !== "pv-body" || !/\.xlsx$/i.test(String(pvCurrent || ""))) return;
+  const fileName = pvCurrent, fileRoot = pvRoot;
+  let editing = false;
+  const toggle = () => {
+    editing = !editing;
+    doc.classList.toggle("ov-editing", editing);
+    doc.querySelectorAll(".ov-sheet td[data-cell]").forEach(cell => { cell.contentEditable = String(editing); });
+    setPreviewEditor(true, editing, sheetChangesPresent(sheetDocuments.get(doc.dataset.sheetDocument)), { toggle, save });
+  };
+  const save = async () => {
+    const button = document.getElementById("pv-save"), sheets = sheetDocuments.get(doc.dataset.sheetDocument) || [];
+    if (!button || button.disabled) return;
+    const changes = sheets.flatMap(sheet => Object.entries(sheet.changes || {}).map(([address, value]) => {
+      const [row, col] = address.split(",").map(Number);
+      return { sheet: sheet.name, row, col, value, type: sheet.layout?.types?.[address] || "string" };
+    }));
+    if (!changes.length) { toast("没有修改的单元格", "circle-check"); return; }
+    button.disabled = true; button.title = "保存中…";
+    try {
+      const response = await fetch(withRoot("/api/files/edit-xlsx/" + fpath(fileName), fileRoot), {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ changes }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || result.error) throw Error(result.error || "保存失败");
+      toast(`已保存 ${changes.length} 个单元格`, "file");
+      if (pvCurrent === fileName && pvRoot === fileRoot) previewFile(fileName, fileRoot);
+    } catch (error) { toast(error.message || "保存失败", "circle-x"); button.disabled = false; setPreviewEditor(true, editing, true, { toggle, save }); }
+  };
+  setPreviewEditor(true, false, false, { toggle, save });
+}
 function sheetHtml(d) {
   const key = String(++sheetDocumentSeq); sheetDocuments.set(key, d.sheets);
   while (sheetDocuments.size > 4) sheetDocuments.delete(sheetDocuments.keys().next().value);
@@ -5161,11 +5243,6 @@ async function previewFile(name, root, opts) {
   unloadPreview(); // 上一份（网页/音视频）先停掉再换，别在后台接着跑到被垃圾回收
   document.getElementById("pv-body").innerHTML = pvNotice("loader-circle", "正在打开…");
   const pvName = document.getElementById("pv-name");
-  const markdownButton = document.getElementById("pv-markdown");
-  if (markdownButton) {
-    markdownButton.hidden = !canConvertMarkdown(name);
-    markdownButton.onclick = () => exportDocumentMarkdown(withRoot("/api/files/markdown/" + fpath(name), pvRoot), markdownButton);
-  }
   const activeTask = typeof sessionId !== "undefined" && typeof sessions !== "undefined" && sessionId
     ? sessions.find((s) => s.id === sessionId) : null;
   const taskDir = activeTask && String(activeTask.dir || "").replace(/\\/g, "/").replace(/\/+$/, "");
@@ -5289,7 +5366,8 @@ async function previewFile(name, root, opts) {
       body.querySelectorAll(".ov-tab").forEach((x) => x.classList.toggle("on", x === t));
       body.querySelectorAll(".ov-pane").forEach((p) => { p.hidden = p.dataset.pane !== t.dataset.sheet; });
     }; });
-    attachOfficeReadingControls(body);
+    if (kind === "sheet") attachSheetEditControls(body);
+    else attachOfficeReadingControls(body);
   } else if (kind === "binary") {
     body.innerHTML = pvFallback("这是二进制文件");
   } else {
@@ -6781,6 +6859,47 @@ document.addEventListener("click", () => closeAllMenus());
 
 // ================= 模型选择（输入卡片右下角，仿官方 Auto ▾） =================
 const modelMenu = setupPicker("model-btn", "model-menu");
+const thinkingMenu = setupPicker("thinking-btn", "thinking-menu");
+let quickThinking = null;
+const quickThinkLabel = { auto: "自动", off: "关", low: "低", medium: "中", high: "高" };
+function updateQuickThinkingLabel(level) {
+  const label = document.getElementById("thinking-label");
+  if (label) label.textContent = quickThinkLabel[level] || "低";
+}
+async function renderQuickThinking() {
+  if (!thinkingMenu) return;
+  const ids = ["auto", "off", "low", "medium", "high"];
+  thinkingMenu.innerHTML = `<div class="thinking-quick"><div class="tq-head"><span>思考强度</span><span class="tq-current" data-tq-value>低</span></div><div class="tq-options" role="group" aria-label="思考强度">${ids.map((id) => `<button type="button" class="tq-option" data-level="${id}" aria-pressed="false">${quickThinkLabel[id]}</button>`).join("")}</div></div>`;
+  const value = thinkingMenu.querySelector("[data-tq-value]"), options = [...thinkingMenu.querySelectorAll(".tq-option")];
+  const data = await fetch("/api/thinking").then(r => r.json()).catch(() => null);
+  quickThinking = data;
+  let saved = ids.indexOf(data?.current || "low"); if (saved < 0) saved = 2;
+  const draw = (level) => {
+    value.textContent = quickThinkLabel[level] || quickThinkLabel.low;
+    options.forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.level === level)));
+    updateQuickThinkingLabel(level);
+  };
+  draw(ids[saved]);
+  options.forEach((button) => { button.onclick = async () => {
+    const level = button.dataset.level;
+    if (level === (data?.current || "low")) return;
+    const group = button.parentElement;
+    group.classList.add("is-saving");
+    let ok = false;
+    try {
+      if (typeof saveSettings === "function") ok = await saveSettings({ agent: { thinking: level } }, null);
+      else {
+        const response = await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ agent: { thinking: level } }) });
+        ok = response.ok;
+      }
+      if (ok) { if (data) data.current = level; draw(level); }
+      else draw(data?.current || "low");
+    } catch { draw(data?.current || "low"); }
+    group.classList.remove("is-saving");
+  }; });
+}
+thinkingMenu?.addEventListener("click", (event) => event.stopPropagation());
+document.getElementById("thinking-btn")?.addEventListener("click", () => { if (thinkingMenu.classList.contains("show")) renderQuickThinking(); });
 async function refreshSettingsCache() {
   const wasPerChat = wsPerChat();
   const wasRoot = settingsCache && settingsCache.workspace_dir;
@@ -6797,6 +6916,7 @@ async function refreshSettingsCache() {
     // 首次拿到配置时给还没动过的新对话套上「沿用上次模型」；之后的刷新不再动，免得盖掉用户手动清掉的选择
     if (!refreshSettingsCache._inited) { refreshSettingsCache._inited = true; if (sessionId === null && !pendingModel) pendingModel = defaultPendingModel(); }
     updateModelLabel();
+    updateQuickThinkingLabel(settingsCache.agent?.thinking || "low");
     document.getElementById("ws-label").textContent = settingsCache.workspace_dir.split(/[\\/]/).pop() || "工作空间";
     renderModelMenu();
     renderWsMenu();

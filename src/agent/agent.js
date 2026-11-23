@@ -2774,7 +2774,7 @@ function modePrompt(mode) {
         guard: runGuard,
         // 思考模式跟 app 设置对齐：设置页选什么档，接管的本机 CLI 就用什么档。
         // 放在 opts 前面 = 单个引擎还能自己覆盖（engine_options[id].thinking）
-        thinking: prefs.agentCfg(config).thinking || "auto",
+        thinking: prefs.agentCfg(config).thinking || "low",
         ...(bridged ? bridged.runOpts : {}),
         ...opts, // 用户在设置里给这个引擎填的 model / bin / extraArgs 等，最后覆盖
         // env 例外，不整个盖：属主在引擎设置里写了 PATH 的话，桥挂在最前面的 owb 目录会被顶掉，模型敲 owb 就找不到

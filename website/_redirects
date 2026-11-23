@@ -1,0 +1,4 @@
+/index.html / 301
+/login / 301
+/login/ / 301
+https://www.openworkbuddy.work/* https://openworkbuddy.work/:splat 301

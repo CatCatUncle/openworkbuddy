@@ -2296,7 +2296,7 @@ app.get("/api/settings", (req, res) => {
       // 上面这两个开关共用一面旗子：没配判断模型的时候，它们打开也不会生效，别让界面假装能开
       judge_ready: jev.status(config).ready,
       failover_model: config.agent.failover_model || "",
-      thinking: thinking.norm(myAgent.thinking), // 思考模式档位，默认 auto=跟随模型自己的默认
+      thinking: thinking.norm(myAgent.thinking || "low"), // 新配置默认低；已保存的档位优先
       engine: myEngine,
       // 前端那个模型选择器要靠它说实话：走本机 CLI 的时候，API 模型列表整个不生效
       engine_label: (engines.list().find((e) => e.id === myEngine) || {}).label || "",
@@ -3720,7 +3720,7 @@ app.get("/api/thinking", async (req, res) => {
       return { level: lv, label: thinking.LEVEL_LABEL[lv], supported: active.supported, note: active.note };
     });
     res.json({
-      current: thinking.norm(myAgent.thinking),
+      current: thinking.norm(myAgent.thinking || "low"),
       via: engineId === "builtin" ? "api" : "engine",
       target: engineId === "builtin" ? (entry.name || "") : engineId,
       levels,
@@ -4985,19 +4985,14 @@ app.get("/api/library/preview/*", async (req, res) => {
   }
 });
 for (const [prefix, resolve] of [["/api/library", (req) => libPath(relOf(req))], ["/api/files", (req) => rootedPath(req, relOf(req))]]) {
-  for (const mode of ["office-info", "office-view", "markdown"]) app.get(prefix + "/" + mode + "/*", async (req, res) => {
+  for (const mode of ["office-info", "office-view"]) app.get(prefix + "/" + mode + "/*", async (req, res) => {
     try {
       const p = resolve(req);
       if (!fs.existsSync(p) || !fs.statSync(p).isFile()) return res.status(404).json({ error: "文件不存在" });
-      if (mode === "markdown") {
-        const controller = new AbortController();
-        res.once("close", () => { if (!res.writableEnded) controller.abort(); });
-        const result = await require("./src/domains/library/document-markdown").documentMarkdown(p, relOf(req), { signal: controller.signal });
-        res.set("Cache-Control", "private, no-store"); return res.json(result);
-      }
       const result = await require("./src/domains/library/office-compat").officeFile(p, relOf(req));
       res.set("Cache-Control", "private, no-store");
-      if (mode === "office-info") return res.json({ kind: result.kind, converted: result.converted });
+      if (mode === "office-info") return res.json({ kind: result.kind, converted: result.converted,
+        editable: prefix === "/api/files" && path.extname(p).toLowerCase() === ".docx" && !!require("./src/domains/library/office-compat").officeBinary() });
       res.type(result.ext).sendFile(result.file);
     } catch (error) { res.status(400).json({ error: error.message }); }
   });
@@ -7945,6 +7940,21 @@ function electronDialog() {
     return { dialog: e.dialog, win };
   } catch { return null; }
 }
+// LibreOffice should receive document markup only. Keep this filter outside the
+// route callback so route-structure checks can accurately verify route nesting.
+function sanitizeEditableOfficeHtml(html) {
+  return html.replace(/<\s*(script|iframe|object|embed|form|style|svg|math|audio|video|source)\b[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi, "")
+    .replace(/<\s*(script|iframe|object|embed|form|style|svg|math|audio|video|source|link|meta|base)\b[^>]*\/?\s*>/gi, "")
+    .replace(/\s+on[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "")
+    // LibreOffice must not fetch remote/local resources while converting user supplied markup.
+    // Only bounded inline raster images are retained; links, CSS URLs and other resource hints go.
+    .replace(/\s+(?:href|xlink:href|srcset|background|poster)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "")
+    .replace(/\s+src\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))/gi, (_attr, _whole, dq, sq, bare) => {
+      const value = dq ?? sq ?? bare ?? "";
+      return /^data:image\/(?:png|jpe?g|gif|webp);base64,[a-z0-9+/=]+$/i.test(value) ? ` src="${value}"` : "";
+    })
+    .replace(/\s+style\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "");
+}
 app.post("/api/files/save", async (req, res) => {
   let p = "";
   try {
@@ -7966,6 +7976,92 @@ app.post("/api/files/save", async (req, res) => {
     // 翻遍日志一行记录都没有）。留一行，带上路径和 errno
     console.error(`[存盘] 失败 ${p || req.body?.name || "?"}：${e.code || ""} ${e.message}`);
     res.status(400).json({ error: saveErrorText(e, p) });
+  }
+});
+// Word 预览中的轻量编辑：把可编辑正文交给本机 LibreOffice 转回 DOCX，再原子替换原文件。
+// 只开放标准 .docx；旧版 .doc/WPS 和表格、幻灯片仍可用系统 Office 编辑，避免假保存。
+app.post("/api/files/edit-docx/*", async (req, res) => {
+  let tempDir = "", tempFile = "", backupFile = "";
+  try {
+    const rel = relOf(req), target = rootedPath(req, rel);
+    if (path.extname(target).toLowerCase() !== ".docx") return res.status(400).json({ error: "预览内编辑目前支持 DOCX 文件" });
+    if (!fs.existsSync(target) || !fs.statSync(target).isFile()) return res.status(404).json({ error: "文件不存在" });
+    let html = req.body?.html;
+    if (typeof html !== "string" || !html.trim()) return res.status(400).json({ error: "文档内容为空" });
+    if (Buffer.byteLength(html, "utf8") > 8 * 1024 * 1024) return res.status(413).json({ error: "文档正文超过 8 MB，暂不支持在预览中保存" });
+    // 移除可执行或主动加载外部内容的标签和属性；LibreOffice 只接收文档标记，不执行页面脚本。
+    html = sanitizeEditableOfficeHtml(html);
+    const compat = require("./src/domains/library/office-compat");
+    const binary = compat.officeBinary();
+    if (!binary) return res.status(400).json({ error: "预览内保存 DOCX 需要安装 LibreOffice；原文件没有改动" });
+    tempDir = await fs.promises.mkdtemp(path.join(require("os").tmpdir(), "owb-docx-edit-"));
+    const input = path.join(tempDir, "edited.html"), output = path.join(tempDir, "edited.docx");
+    await fs.promises.writeFile(input, '<!doctype html><html><head><meta charset="utf-8"><style>body{font-family:Arial,sans-serif;font-size:11pt}.ov-h{font-weight:bold}.ov-p{margin:8px 0}.ov-li{margin:4px 0}.ov-table{border-collapse:collapse}.ov-table td,.ov-table th{border:1px solid #aaa;padding:4px}.ov-chrome{color:#666;font-size:9pt}</style></head><body>' + html + '</body></html>', "utf8");
+    const profile = path.join(tempDir, "profile");
+    await fs.promises.mkdir(path.join(profile, "user"), { recursive: true });
+    await new Promise((resolve, reject) => require("child_process").execFile(binary,
+      ["-env:UserInstallation=" + require("url").pathToFileURL(profile).href, "--headless", "--norestore", "--nodefault", "--nolockcheck", "--convert-to", "docx", "--outdir", tempDir, input],
+      { cwd: tempDir, timeout: 60000, maxBuffer: 1024 * 1024, windowsHide: true }, error => error ? reject(Error("LibreOffice 没能保存 DOCX")) : resolve()));
+    const st = await fs.promises.stat(output).catch(() => null);
+    if (!st?.size || st.size > 50 * 1024 * 1024) return res.status(400).json({ error: "DOCX 转换失败，原文件没有改动" });
+    tempFile = target + ".owb-edit-" + process.pid + ".tmp";
+    await fs.promises.copyFile(output, tempFile);
+    // Windows 不允许 rename 覆盖现有文件：先把原件挪到旁边，替换失败就恢复。
+    backupFile = target + ".owb-backup-" + process.pid + ".tmp";
+    await fs.promises.rename(target, backupFile);
+    try { await fs.promises.rename(tempFile, target); tempFile = ""; }
+    catch (error) { await fs.promises.rename(backupFile, target); backupFile = ""; throw error; }
+    await fs.promises.rm(backupFile, { force: true }); backupFile = "";
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(400).json({ error: error.message || "保存 DOCX 失败" });
+  } finally {
+    if (tempFile) await fs.promises.rm(tempFile, { force: true }).catch(() => {});
+    if (tempDir) await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+});
+// Excel 预览里的单元格编辑：只修改提交的单元格值，ExcelJS 保留原工作表和大部分单元格样式。
+app.post("/api/files/edit-xlsx/*", async (req, res) => {
+  let tempFile = "", backupFile = "";
+  try {
+    const target = rootedPath(req, relOf(req));
+    if (path.extname(target).toLowerCase() !== ".xlsx") return res.status(400).json({ error: "预览内编辑目前支持 XLSX 文件" });
+    const stat = await fs.promises.stat(target).catch(() => null);
+    if (!stat?.isFile()) return res.status(404).json({ error: "文件不存在" });
+    if (stat.size > 50 * 1024 * 1024) return res.status(413).json({ error: "超过 50 MB 的工作簿暂不支持预览内编辑" });
+    const changes = req.body?.changes;
+    if (!Array.isArray(changes) || !changes.length || changes.length > 5000) return res.status(400).json({ error: "没有有效的单元格修改（一次最多保存 5000 格）" });
+    if (Buffer.byteLength(JSON.stringify(changes), "utf8") > 8 * 1024 * 1024) return res.status(413).json({ error: "这批单元格内容超过 8 MB，无法保存" });
+    if (changes.some(c => !c || typeof c.sheet !== "string" || !c.sheet || !Number.isInteger(c.row) || c.row < 1 || c.row > 2000 || !Number.isInteger(c.col) || c.col < 1 || c.col > 60 || typeof c.value !== "string" || c.value.length > 20000)) {
+      return res.status(400).json({ error: "单元格坐标或内容无效" });
+    }
+    const ExcelJS = require("exceljs"), book = new ExcelJS.Workbook();
+    await book.xlsx.readFile(target);
+    for (const change of changes) {
+      const ws = book.getWorksheet(change.sheet);
+      if (!ws) return res.status(400).json({ error: `找不到工作表：${change.sheet}` });
+      const cell = ws.getCell(change.row, change.col), value = change.value;
+      if (value === "") cell.value = null;
+      else if (value.startsWith("=")) cell.value = { formula: value.slice(1) };
+      else if (change.type === "number" || change.type === "blank" && /^[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?$/i.test(value.trim())) {
+        const n = Number(value); if (!Number.isFinite(n)) return res.status(400).json({ error: `单元格 ${change.row},${change.col} 不是有效数字` }); cell.value = n;
+      } else if (change.type === "boolean" && /^(true|false)$/i.test(value.trim())) cell.value = value.trim().toLowerCase() === "true";
+      else if (change.type === "date" && !Number.isNaN(Date.parse(value))) cell.value = new Date(value);
+      else cell.value = value;
+    }
+    const tag = process.pid + "-" + Date.now();
+    tempFile = target + ".owb-edit-" + tag + ".xlsx";
+    await book.xlsx.writeFile(tempFile);
+    backupFile = target + ".owb-backup-" + tag + ".tmp";
+    await fs.promises.rename(target, backupFile);
+    try { await fs.promises.rename(tempFile, target); tempFile = ""; }
+    catch (error) { await fs.promises.rename(backupFile, target); backupFile = ""; throw error; }
+    await fs.promises.rm(backupFile, { force: true }); backupFile = "";
+    res.json({ ok: true, changed: changes.length });
+  } catch (error) {
+    res.status(400).json({ error: error.message || "保存工作簿失败" });
+  } finally {
+    if (tempFile) await fs.promises.rm(tempFile, { force: true }).catch(() => {});
   }
 });
 /**

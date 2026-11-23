@@ -1,9 +1,9 @@
 <p align="center"><img src="build/icon.png" width="64" alt="OpenWorkBuddy"></p>
 <h1 align="center">OpenWorkBuddy</h1>
-<p align="center"><b>A local-first AI office workbench that turns your material into files you can open and edit.</b><br>
+<p align="center"><b>A local-first, source-available AI office workbench that turns your material into files you can open and edit.</b><br>
 For people who prepare reports, decks, spreadsheets and documents, and teams that need self-hosting.<br>
 Choose your model, inspect execution, and review the delivered files.</p>
-<p align="center"><a href="#quick-start"><b>▶ Make a project update deck</b></a> · <a href="https://github.com/CatCatUncle/openworkbuddy/releases/latest">Download</a> · <a href="https://catcatuncle.github.io/openworkbuddy/?utm_source=github&amp;utm_medium=readme&amp;utm_campaign=first_result">Project website</a> · <a href="#docs">Docs</a> · <a href="README.md">中文</a></p>
+<p align="center"><a href="#quick-start"><b>▶ Make a project update deck</b></a> · <a href="https://github.com/CatCatUncle/openworkbuddy/releases/latest">Download</a> · <a href="https://openworkbuddy.work/?utm_source=github&amp;utm_medium=readme&amp;utm_campaign=first_result">Project website</a> · <a href="#docs">Docs</a> · <a href="README.md">中文</a></p>
 <p align="center"><a href="https://github.com/CatCatUncle/openworkbuddy/releases/latest"><img src="https://img.shields.io/github/v/release/CatCatUncle/openworkbuddy?style=flat-square" alt="Published release"></a> <a href="LICENSE"><img src="https://img.shields.io/badge/License-PolyForm%20NC-5b5ff7?style=flat-square" alt="PolyForm Noncommercial license"></a> <a href="https://github.com/CatCatUncle/openworkbuddy/stargazers"><img src="https://img.shields.io/github/stars/CatCatUncle/openworkbuddy?style=flat-square&label=Star&color=5b5ff7" alt="Bookmark the project"></a></p>
 <p align="center"><a href="https://www.opensourcealternatives.to"><img src="https://www.opensourcealternatives.to/badge-osa.svg" alt="As seen on Open Source Alternatives" width="378" height="28"></a></p>
 <p align="center"><sub>Free for personal non-commercial use, schools and non-profits. Company and personal commercial use require a <a href="COMMERCIAL-LICENSE.md">commercial license</a>. To purchase: <a href="mailto:contact@aijentra.com">contact@aijentra.com</a> · WeChat: <b>agi_smith</b>. Model and media services have their own costs.</sub></p>
@@ -39,7 +39,7 @@ and provide an openable file in the results panel.
 **Timing:** start when installation begins and stop when the first file opens and passes review. Record download, startup, model setup and task wait separately. Three minutes is a design target; actual time depends on network, model readiness and execution. No measured first-success rate has been published yet.
 
 <details>
-<summary><b>Run from source: Node.js 18+, npm and Git</b></summary>
+<summary><b>Run from source: Node.js 22+, npm and Git</b></summary>
 
 ```bash
 git clone https://github.com/CatCatUncle/openworkbuddy.git
@@ -145,7 +145,7 @@ Model routing, tool calls, file acceptance, memory, permissions and local traces
 <summary><b>📣 Want to tell someone about it? Copy this</b></summary>
 
 ```text
-OpenWorkBuddy: an open-source AI office assistant that runs on your own machine.
+OpenWorkBuddy: a source-available AI office workbench that runs on your own machine under PolyForm Noncommercial 1.0.0.
 Ask once; it plans, does the work, checks it, and hands you a PPT / Word / Excel / web page you can open, not a chat log.
 · Any model: DeepSeek, Qwen, Kimi, GLM, Ollama, or the Claude Code / Codex already on your machine
 · Your data stays local and it listens on 127.0.0.1 by default; or run it on a server for your team, each person binding their own WeChat or Feishu
@@ -277,6 +277,8 @@ The built-in Agent alternates model decisions and tool execution, with concurren
 
 ## What's new
 
+- **Nov 23** v0.20.0: Add chat and media models directly from a provider card, reusing its endpoint and API key. New configurations default to low thinking effort, and DOCX / XLSX previews can be edited and saved (DOCX saving requires LibreOffice). A Lean 4 routing specification is compiled in CI. Source installs now require Node.js 22 to use patched runtime dependencies and avoid unsupported Node.js 18 / 20.
+
 - **Nov 10** v0.19.3: attachment names with a Chinese closing parenthesis are no longer cut short, so conversations stop showing a broken extra attachment.
 
 - **Nov 6** v0.19.2: library tabs no longer stay highlighted when Notes is open, so only one tab is selected at a time.
@@ -320,9 +322,9 @@ It runs commands, edits files and goes online, so there are command approvals, f
 
 Project layout, tests and PR conventions are in [CONTRIBUTING.md](CONTRIBUTING.md). No need to open an issue first — send the PR.
 
-## Coming from another tool: open-source alternative to Claude Cowork, Codex and more
+## Coming from another tool: source-available alternatives to Claude Cowork, Codex and more
 
-Looking for an **open-source alternative to Claude Cowork, Codex, Doubao or Qwen office features**, or a **DeepSeek agent harness**? Each has an honest comparison page, including when the other product is the better fit:
+Looking for a **source-available alternative to Claude Cowork, Codex, Doubao or Qwen office features**, or a **DeepSeek agent harness**? Each has an honest comparison page, including when the other product is the better fit:
 
 | You use / you're looking for | Comparison |
 |---|---|
@@ -332,7 +334,7 @@ Looking for an **open-source alternative to Claude Cowork, Codex, Doubao or Qwen
 | Qwen | [Qwen office alternative — runs Qwen via DashScope or Ollama](https://catcatuncle.github.io/openworkbuddy/alternatives/qwen/) |
 | DeepSeek | [DeepSeek agent harness — paste a key and it works](https://catcatuncle.github.io/openworkbuddy/alternatives/deepseek-agent/) |
 
-OpenWorkBuddy is an independent open-source project, not affiliated with any of these companies.
+OpenWorkBuddy is an independent project under PolyForm Noncommercial 1.0.0, not affiliated with any of these companies. Commercial use requires a separate license.
 
 ## Docs
 
@@ -405,7 +407,7 @@ Copyright (c) 2026 开发者猫叔 (DeveloperCatUncle)
 
 ## Disclaimer
 
-An independent open-source project, not affiliated with Tencent or its WorkBuddy product, containing none of its code or assets; IM integrations use public APIs only. Borrowed ideas are credited in [NOTICE.md](NOTICE.md). Concerns → [Issues](https://github.com/CatCatUncle/openworkbuddy/issues).
+An independent, source-available project under PolyForm Noncommercial 1.0.0, not affiliated with Tencent or its WorkBuddy product and containing none of its code or assets; IM integrations use public APIs only. Borrowed ideas are credited in [NOTICE.md](NOTICE.md). Concerns → [Issues](https://github.com/CatCatUncle/openworkbuddy/issues).
 
 ## Support this project
 
