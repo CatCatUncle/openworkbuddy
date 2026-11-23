@@ -277,7 +277,7 @@ The built-in Agent alternates model decisions and tool execution, with concurren
 
 ## What's new
 
-- **Nov 23** v0.20.0: Add chat and media models directly from a provider card, reusing its endpoint and API key. New configurations default to low thinking effort, and DOCX / XLSX previews can be edited and saved (DOCX saving requires LibreOffice). A Lean 4 routing specification is compiled in CI. Source installs now require Node.js 22 to use patched runtime dependencies and avoid unsupported Node.js 18 / 20.
+- **Nov 23** v0.20.0: Reuse provider settings across models, default to low reasoning effort, edit Word and Excel in preview, and verify routing rules with Lean.
 
 - **Nov 10** v0.19.3: attachment names with a Chinese closing parenthesis are no longer cut short, so conversations stop showing a broken extra attachment.
 
