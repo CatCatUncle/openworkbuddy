@@ -8040,7 +8040,7 @@ app.post("/api/files/edit-docx/*", async (req, res) => {
     const profile = path.join(tempDir, "profile");
     await fs.promises.mkdir(path.join(profile, "user"), { recursive: true });
     await new Promise((resolve, reject) => require("child_process").execFile(binary,
-      ["-env:UserInstallation=" + require("url").pathToFileURL(profile).href, "--headless", "--norestore", "--nodefault", "--nolockcheck", "--convert-to", "docx", "--outdir", tempDir, input],
+      ["-env:UserInstallation=" + require("url").pathToFileURL(profile).href, "--headless", "--norestore", "--nodefault", "--nolockcheck", "--convert-to", "docx:Office Open XML Text", "--outdir", tempDir, input],
       { cwd: tempDir, timeout: 60000, maxBuffer: 1024 * 1024, windowsHide: true }, error => error ? reject(Error("LibreOffice 没能保存 DOCX")) : resolve()));
     const st = await fs.promises.stat(output).catch(() => null);
     if (!st?.size || st.size > 50 * 1024 * 1024) return res.status(400).json({ error: "DOCX 转换失败，原文件没有改动" });

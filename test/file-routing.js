@@ -21,7 +21,8 @@ function request(port, method, route, token, body) {
     const req = http.request({ hostname: "127.0.0.1", port, path: route, method, headers: { ...(token ? { Cookie: "openworkbuddy_token=" + token } : {}), ...(data ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) } : {}) } }, res => {
       let text = ""; res.on("data", d => { text += d; }); res.on("end", () => { let json; try { json = JSON.parse(text); } catch {} resolve({ status: res.statusCode, text, json }); });
     });
-    req.on("error", reject); req.setTimeout(15000, () => req.destroy(new Error("request timeout"))); req.end(data);
+    const timeout = route.startsWith("/api/files/edit-docx/") ? 75000 : 15000;
+    req.on("error", reject); req.setTimeout(timeout, () => req.destroy(new Error(method + " " + route + " timed out"))); req.end(data);
   });
 }
 async function check(label, fn) { await fn(); count++; console.log("✓ " + label); }
@@ -74,6 +75,24 @@ async function check(label, fn) { await fn(); count++; console.log("✓ " + labe
     assert.equal(await readCell(B, "A1"), "B");
     assert.equal((await readCell(B, "B1")).formula, "1+2");
   });
+  if (process.env.OWB_TEST_LIBREOFFICE === "1") {
+    await check("LibreOffice saves an edited Word preview in the selected project", async () => {
+      const { Document, Packer, Paragraph } = require("docx");
+      const original = new Document({ sections: [{ children: [new Paragraph("Original text")] }] });
+      fs.writeFileSync(path.join(B, "edit.docx"), await Packer.toBuffer(original));
+      const info = await call("GET", "/api/files/office-info/edit.docx?root=" + key(B));
+      assert.equal(info.status, 200, info.text);
+      assert.equal(info.json.editable, true, info.text);
+      const route = "/api/files/edit-docx/edit.docx?root=" + key(B);
+      const body = { html: '<p class="ov-p"><b>Edited text</b></p>' };
+      assert.equal((await call("POST", route, body, member)).status, 400);
+      const save = await call("POST", route, body);
+      assert.equal(save.status, 200, save.text);
+      const preview = await call("GET", "/api/files/preview/edit.docx?root=" + key(B));
+      assert.equal(preview.status, 200, preview.text);
+      assert.ok(preview.text.includes("Edited text") && !preview.text.includes("Original text"), preview.text);
+    });
+  }
   await check("trace APIs aggregate known projects and keep owner-only access", async () => {
     const write = (root, id) => {
       const dir = path.join(root, ".openworkbuddy"); fs.mkdirSync(dir, { recursive: true });
